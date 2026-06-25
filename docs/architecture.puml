@@ -1,0 +1,241 @@
+@startuml AgentHub Architecture
+' ============================================================
+' AgentHub — 整体架构模块图
+' ============================================================
+
+skinparam packageStyle rectangle
+skinparam backgroundColor #FEFEFE
+skinparam package {
+  BorderColor #4A90D9
+  FontColor #1A1A2E
+  BackgroundColor #F0F6FF
+}
+skinparam component {
+  FontSize 11
+}
+
+title AgentHub 整体架构模块图
+
+' ============================================================
+' L5 — UI 组件层
+' ============================================================
+package "L5 — UI 组件层\n(src/components/)" as L5 #E8F5E9 {
+
+  package "会话交互" as ui_conversation #F5F5F5 {
+    [ChatPanel] as ui_chatpanel
+    [MessageList] as ui_msglist
+    [MessageItem] as ui_msgitem
+    [MessageParts] as ui_msgparts
+    [MessageInput] as ui_msginput
+    [Markdown] as ui_md
+    [CodeBlock] as ui_code
+    [QuotedMessage] as ui_quote
+    [EditMessageInput] as ui_edit
+  }
+
+  package "Agent 管理" as ui_agent #F5F5F5 {
+    [AgentLibrary] as ui_agentlib
+    [AgentCreateWizard] as ui_agentwiz
+    [AgentInfoPopover] as ui_agentpop
+    [AddAgentDialog] as ui_addagent
+    [AgentAvatar] as ui_avt
+  }
+
+  package "产物 & 文件" as ui_artifact #F5F5F5 {
+    [ArtifactPreviewPanel] as ui_artpreview
+    [ArtifactLibrary] as ui_artlib
+    [ArtifactCodeEditor] as ui_artcode
+    [FileExplorerPanel] as ui_filex
+    [FileTab] as ui_filetab
+    [FileLibraryDialog] as ui_filelib
+  }
+
+  package "Orchestrator 面板" as ui_orch #F5F5F5 {
+    [DispatchPlanCard] as ui_plan
+    [PendingBashPanel] as ui_bash
+    [PendingWritesPanel] as ui_writes
+    [PendingWriteDiffTab] as ui_diff
+  }
+
+  package "全局 UI" as ui_global #F5F5F5 {
+    [Sidebar] as ui_sidebar
+    [SettingsDialog] as ui_settings
+    [GlobalSearch] as ui_search
+    [StreamProvider] as ui_stream
+    [ThemeProvider] as ui_theme
+    [UsageDashboard] as ui_usage
+    [ConversationOutline] as ui_outline
+    [SelectionPopover] as ui_selpop
+    [SlashCommandMenu] as ui_slash
+  }
+}
+
+' ============================================================
+' L4 — 状态 & 传输层
+' ============================================================
+package "L4 — 状态 & 传输层\n(src/stores/ / src/lib/)" as L4 #FFF3E0 {
+
+  package "Zustand Store\n(src/stores/)" as l4_store #F5F5F5 {
+    [AppStore\n(Zustand + Immer)] as l4_appstore
+    [SearchStore] as l4_searchstore
+  }
+
+  package "前端工具库\n(src/lib/)" as l4_lib #F5F5F5 {
+    [API 客户端\n(api.ts)] as l4_api
+    [ArtifactGroups] as l4_artgroup
+    [ArtifactPreview] as l4_artprev
+    [Highlighter] as l4_highlight
+    [ToolDisplay] as l4_tooldisp
+    [UICommandEvents] as l4_uicmd
+    [Utils] as l4_utils
+  }
+}
+
+' ============================================================
+' L3 — 应用服务层
+' ============================================================
+package "L3 — 应用服务层\n(src/server/)" as L3 #E3F2FD {
+
+  package "核心服务" as l3_core #F5F5F5 {
+    [AgentRunner\n(Agent 运行引擎)] as l3_runner
+    [AgentService\n(Agent CRUD)] as l3_agentsvc
+    [AgentDraftService\n(Agent 草稿)] as l3_draft
+    [ConversationService\n(会话管理)] as l3_convsvc
+    [ConversationContext\n(跨 run 上下文)] as l3_convctx
+    [ContextCompaction\n(上下文压缩)] as l3_compact
+    [EventBus\n(事件总线)] as l3_eventbus
+    [ArtifactService\n(产物管理)] as l3_artsvc
+    [ArtifactContent\n(产物内容)] as l3_artcontent
+    [AttachmentService\n(附件管理)] as l3_attach
+    [FsService\n(文件系统)] as l3_fs
+    [SearchService\n(全文搜索)] as l3_search
+    [WorkspaceUtils\n(Workspace 工具)] as l3_wsutils
+  }
+
+  package "Orchestrator 调度" as l3_orch #F5F5F5 {
+    [DispatchPlan\n(任务分解)] as l3_plan
+    [DispatchFileWrites\n(文件写入分发)] as l3_filewrites
+    [PendingBashCommands] as l3_pendbash
+    [PendingDispatchPlans] as l3_pendplan
+    [PendingQuestions] as l3_pendq
+    [PendingWrites] as l3_pendwrites
+  }
+
+  package "安全 & 平台" as l3_sec #F5F5F5 {
+    [Security\n(命令黑名单)] as l3_security
+    [BashCommandApproval\n(命令审批)] as l3_bashappr
+    [Platform\n(平台抽象)] as l3_platform
+    [InternalToolAuth] as l3_inttool
+    [NetworkHints] as l3_nethints
+  }
+
+  package "扩展服务" as l3_ext #F5F5F5 {
+    [SettingsService\n(设置管理)] as l3_settings
+    [DeploymentService\n(部署)] as l3_deploy
+    [DeployCommandService\n(部署命令)] as l3_deploycmd
+    [MobileService\n(移动端)] as l3_mobile
+    [MobileAuth\n(移动端认证)] as l3_mobileauth
+    [MobileCors] as l3_mcors
+    [CompanionConfig] as l3_companion
+    [PptExport\n(PPT 导出)] as l3_ppt
+    [TaskResultReport] as l3_taskreport
+  }
+}
+
+' ============================================================
+' L2 — Adapter 层
+' ============================================================
+package "L2 — Agent Platform Adapters\n(src/server/adapters/)" as L2 #F3E5F5 {
+
+  [Types\n(统一接口契约)] as l2_types
+  [Registry\n(适配器注册)] as l2_registry
+  [AdapterUtils\n(适配器工具)] as l2_utils
+
+  package "Adapter 实现" as l2_impl #F5F5F5 {
+    [ClaudeCodeAdapter\n(Claude Agent SDK)] as l2_claude
+    [CodexAdapter\n(OpenAI Codex)] as l2_codex
+    [CustomAgentAdapter\n(OpenAI 兼容)] as l2_custom
+    [CustomProviderClient\n(自定义 Provider)] as l2_custprov
+    [MockAdapter\n(测试用)] as l2_mock
+  }
+
+  [SessionStore\n(Session 持久化)] as l2_session
+}
+
+' ============================================================
+' L1 — 持久化层
+' ============================================================
+package "L1 — 持久化层\n(src/db/)" as L1 #FCE4EC {
+
+  [Schema\n(Drizzle ORM)] as l1_schema
+  [Client\n(better-sqlite3)] as l1_client
+  [Bootstrap\n(初始化)] as l1_bootstrap
+  [BuiltinAgents\n(内置 Agent)] as l1_builtin
+  [Seed\n(种子数据)] as l1_seed
+
+  package "数据库迁移" as l1_migrate #F5F5F5 {
+    [app-settings] as l1_m1
+    [api-base-url] as l1_m2
+    [message-search] as l1_m3
+    [workspace-mode] as l1_m4
+    [fs-write-approval] as l1_m5
+    [bookmarks] as l1_m6
+    [conversation-pin] as l1_m7
+    [message-usage] as l1_m8
+    [run-usage] as l1_m9
+    [read-attachment] as l1_m10
+  }
+}
+
+' ============================================================
+' 共享层
+' ============================================================
+package "共享层\n(src/shared/)" as SHARED #ECEFF1 {
+
+  [Types\n(共享类型定义)] as sh_types
+  [Constants\n(全局常量)] as sh_const
+  [ModelRegistry\n(模型注册表)] as sh_model
+  [OpenAICompatible\n(OpenAI 兼容)] as sh_oai
+  [CodexCompat\n(Codex 兼容)] as sh_codex
+  [PptNormalize\n(PPT 规范化)] as sh_ppt
+  [PptTheme\n(PPT 主题)] as sh_ppttheme
+  [MermaidNormalize\n(Mermaid 规范化)] as sh_mermaid
+  [ArtifactVersionDiff\n(产物版本比较)] as sh_artdiff
+  [AgentBuilderConfig\n(Agent 构建配置)] as sh_builder
+}
+
+' ============================================================
+' API 路由层
+' ============================================================
+package "API 路由\n(src/app/api/)" as API #FFF9C4 {
+
+  [agents] as api_agents
+  [conversations] as api_conv
+  [messages] as api_msg
+  [artifacts] as api_art
+  [attachments] as api_attach
+  [runs] as api_runs
+  [stream\n(SSE)] as api_stream
+  [settings] as api_settings
+  [search] as api_search
+  [fs] as api_fs
+  [deployments] as api_deploy
+  [usage] as api_usage
+  [mobile] as api_mobile
+  [platform] as api_platform
+}
+
+' ============================================================
+' 分层关系
+' ============================================================
+L5 -down-> L4 : 依赖
+L4 -down-> API : HTTP / SSE
+API -down-> L3 : 调用
+L3 -down-> L2 : 通过 AgentRunner
+L3 -down-> L1 : 通过 Drizzle
+L2 -down-> L1 : Session 缓存
+L3 .right.> SHARED : 使用共享类型
+L4 .right.> SHARED : 使用共享类型
+L5 .right.> SHARED : 使用共享类型
+
+@enduml

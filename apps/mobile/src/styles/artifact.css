@@ -1,0 +1,416 @@
+/* Artifact bottom sheet + content views, GitHub-style diff coloring, and the approvals
+   surface (file-write cards, question blocks, freeform "其他" input). */
+
+/* ---- Bottom sheet ---- */
+.artifact-sheet-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 10px;
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+}
+
+.artifact-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgb(0 0 0 / 0.4);
+  backdrop-filter: blur(4px);
+  animation: fade-in 0.2s var(--ease);
+}
+
+.artifact-sheet {
+  position: relative;
+  display: flex;
+  width: min(100%, 520px);
+  max-height: min(86vh, 780px);
+  min-height: 360px;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+  border-radius: var(--r-lg) var(--r-lg) var(--r-md) var(--r-md);
+  background: var(--surface);
+  padding: 8px 14px 14px;
+  box-shadow: var(--shadow-float);
+  animation: sheet-in 0.34s var(--ease);
+}
+
+.artifact-sheet-handle {
+  width: 40px;
+  height: 5px;
+  flex: 0 0 auto;
+  align-self: center;
+  border-radius: var(--r-pill);
+  background: var(--separator-strong);
+}
+
+.artifact-sheet-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.artifact-sheet-header h2 {
+  font-size: 18px;
+  line-height: 1.15;
+}
+
+.artifact-sheet-header p {
+  margin-top: 4px;
+  color: var(--label-2);
+  font-size: 12px;
+}
+
+.artifact-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.artifact-title-row h2 { overflow-wrap: anywhere; }
+
+.artifact-type-icon {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  border-radius: var(--r-sm);
+  background: var(--accent-tint);
+  color: var(--accent);
+  padding: 8px;
+}
+
+.artifact-loading,
+.artifact-empty {
+  display: grid;
+  min-height: 260px;
+  place-items: center;
+  color: var(--label-2);
+  text-align: center;
+}
+
+.artifact-empty {
+  gap: 8px;
+  align-content: center;
+  padding: 28px;
+}
+
+.artifact-empty h3 { overflow-wrap: anywhere; }
+
+.artifact-empty p {
+  color: var(--label-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.artifact-empty-icon {
+  width: 30px;
+  height: 30px;
+  color: var(--accent);
+}
+
+.artifact-view {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* iOS segmented control */
+.artifact-toolbar {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  flex: 0 0 auto;
+  gap: 2px;
+  border-radius: var(--r-sm);
+  background: var(--fill);
+  padding: 2px;
+}
+
+.segmented-button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--label-2);
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background-color 0.12s var(--ease), color 0.12s var(--ease);
+}
+
+.segmented-button.active {
+  background: var(--surface);
+  color: var(--label);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.12);
+}
+
+.artifact-web-frame {
+  min-height: 420px;
+  width: 100%;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: #ffffff;
+}
+
+.artifact-source-view {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.artifact-file-select {
+  min-height: 38px;
+  width: 100%;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--label);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.artifact-source-view pre {
+  min-height: 300px;
+  overflow: auto;
+  margin: 0;
+  border-radius: var(--r-sm);
+  background: var(--code-bg);
+  color: var(--code-fg);
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.artifact-document {
+  min-height: 0;
+  overflow: auto;
+  flex: 1 1 auto;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  padding: 14px;
+}
+
+.artifact-image-wrap {
+  display: flex;
+  min-height: 260px;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  overflow: hidden;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: var(--fill);
+  padding: 12px;
+}
+
+.artifact-image-wrap img {
+  max-width: 100%;
+  max-height: 58vh;
+  object-fit: contain;
+}
+
+.artifact-image-wrap p {
+  color: var(--label-2);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ---- GitHub-style line diff (approvals + diff artifact) ---- */
+.diff-view {
+  overflow: auto;
+  max-height: 280px;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  padding: 6px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diff-line {
+  display: block;
+  padding: 0 12px 0 22px;
+  color: var(--label);
+  text-indent: -10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diff-line.add {
+  background: var(--diff-add-bg);
+  color: var(--diff-add-fg);
+}
+
+.diff-line.del {
+  background: var(--diff-del-bg);
+  color: var(--diff-del-fg);
+}
+
+.diff-line.hunk {
+  margin: 4px 0;
+  background: var(--fill);
+  color: var(--label-3);
+}
+
+/* ---- Approvals ---- */
+.approval-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  padding: 16px;
+  box-shadow: var(--shadow-card);
+}
+
+.approval-card h3 {
+  word-break: break-all;
+  font-size: 15px;
+}
+
+.approval-card p {
+  margin-top: 4px;
+  color: var(--label-2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.content-preview {
+  border: 1px solid var(--separator);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+}
+
+.content-preview summary {
+  color: var(--label);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.preview-label {
+  margin: 10px 0 6px;
+  color: var(--label-2);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.question-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.question-title {
+  color: var(--label);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.option-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.option-button {
+  display: flex;
+  min-height: 48px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  border: 1.5px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--label);
+  padding: 11px 13px;
+  text-align: left;
+  transition: border-color 0.12s var(--ease), background-color 0.12s var(--ease);
+}
+
+.option-button span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.option-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.option-button small {
+  color: var(--label-2);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.option-button.selected {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.option-button.other {
+  border-style: dashed;
+}
+
+.option-button.other.selected {
+  border-color: var(--orange);
+  background: var(--orange-tint);
+}
+
+.freeform-input {
+  width: 100%;
+  min-height: 64px;
+  resize: vertical;
+  border: 1px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--label);
+  outline: none;
+  padding: 9px 11px;
+  font-size: 13px;
+  line-height: 1.45;
+  transition: border-color 0.12s var(--ease), box-shadow 0.12s var(--ease);
+}
+
+.freeform-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(100%);
+  }
+}

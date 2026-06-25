@@ -1,0 +1,200 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.591 0.222 263.57); /* 字节蓝 #3370FF */
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.652 0.232 30.51); /* 火山红 #FE3B25 */
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.591 0.222 263.57);
+  --chart-1: oklch(0.591 0.222 263.57);
+  --chart-2: oklch(0.652 0.232 30.51);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.591 0.222 263.57);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.591 0.222 263.57);
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.65 0.2 263.57); /* dark mode 略提亮的字节蓝 */
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.7 0.215 30.51);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.65 0.2 263.57);
+  --chart-1: oklch(0.65 0.2 263.57);
+  --chart-2: oklch(0.7 0.215 30.51);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.65 0.2 263.57);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.65 0.2 263.57);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+
+  /* Shiki 双主题：pre 自身透明（让外层容器统一底色），token color 在 dark 模式切到 dark theme */
+  .shiki {
+    background-color: transparent !important;
+  }
+  .dark .shiki,
+  .dark .shiki span {
+    color: var(--shiki-dark) !important;
+    font-style: var(--shiki-dark-font-style) !important;
+    font-weight: var(--shiki-dark-font-weight) !important;
+    text-decoration: var(--shiki-dark-text-decoration) !important;
+  }
+}
+
+/* 跳转后短暂的「底部辉光」高亮 —— ConversationOutline / QuotedMessage 跳转用。
+   只发光，不加描边；和现有 bubble 的 border 共存。
+   关键帧 alpha 按近似指数衰减铺，timing-function 用 linear 让 keyframe 自身定义曲线（避免被 ease 二次扭曲）。 */
+@keyframes message-glow-pulse {
+  0%   { box-shadow: 0 16px 36px -8px rgba(51, 112, 255, 0); }
+  6%   { box-shadow: 0 26px 60px -2px rgba(51, 112, 255, 0.62); }   /* 快速 ramp up */
+  12%  { box-shadow: 0 28px 64px -2px rgba(51, 112, 255, 0.65); }   /* peak */
+  20%  { box-shadow: 0 27px 60px -3px rgba(51, 112, 255, 0.55); }   /* 微衰减 */
+  32%  { box-shadow: 0 25px 56px -4px rgba(51, 112, 255, 0.44); }
+  45%  { box-shadow: 0 23px 52px -5px rgba(51, 112, 255, 0.33); }
+  58%  { box-shadow: 0 22px 48px -6px rgba(51, 112, 255, 0.23); }
+  72%  { box-shadow: 0 20px 44px -7px rgba(51, 112, 255, 0.14); }
+  85%  { box-shadow: 0 18px 40px -8px rgba(51, 112, 255, 0.07); }
+  94%  { box-shadow: 0 17px 38px -8px rgba(51, 112, 255, 0.02); }
+  100% { box-shadow: 0 16px 36px -8px rgba(51, 112, 255, 0); }
+}
+
+.message-glow {
+  animation: message-glow-pulse 2s linear;
+}
+
+@keyframes search-highlight {
+  0%   { background-color: color-mix(in oklch, var(--primary) 28%, transparent); }
+  100% { background-color: transparent; }
+}
+
+.search-highlight-flash {
+  animation: search-highlight 2s ease-out;
+  border-radius: 0.5rem;
+}
+
+/* Snippet match highlight inside search results — brand-tinted, not browser yellow. */
+.search-snippet mark {
+  background-color: color-mix(in oklch, var(--primary) 22%, transparent);
+  color: inherit;
+  border-radius: 0.1875rem;
+  padding: 0 0.125rem;
+  font-weight: 600;
+}
+
+/* 日夜切换图标的入场旋转 —— ThemeToggle 每次 swap 都换了图标元素，动画随之重放。
+   provider 开了 disableTransitionOnChange，切主题那帧会抹掉所有 transition，
+   所以 swap 用 keyframe（不受影响），hover / press 才用 transition。 */
+@keyframes theme-toggle-in {
+  from { opacity: 0; transform: rotate(-30deg) scale(0.7); }
+  to   { opacity: 1; transform: rotate(0) scale(1); }
+}
+
+.theme-toggle-icon {
+  animation: theme-toggle-in 260ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-toggle-icon {
+    animation: none;
+  }
+}

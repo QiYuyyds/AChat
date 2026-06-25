@@ -1,0 +1,109 @@
+/* iOS-flavored design tokens — single source of truth for color/space/radius/material.
+   Light is the default; dark overrides via prefers-color-scheme. Components must use these
+   variables, never raw hex, so the whole app stays coherent. */
+:root {
+  color-scheme: light dark;
+
+  /* Grouped backgrounds (iOS systemGroupedBackground family) */
+  --bg: #f2f2f7;
+  --surface: #ffffff;
+  --surface-2: #f2f2f7;
+
+  /* Translucent material for nav bar / composer / drawer / sheet */
+  --glass: rgb(255 255 255 / 0.72);
+  --glass-strong: rgb(255 255 255 / 0.9);
+
+  /* Hairline separators */
+  --separator: rgb(60 60 67 / 0.18);
+  --separator-strong: rgb(60 60 67 / 0.29);
+
+  /* System fills (inputs, segmented control track, chips) */
+  --fill: rgb(120 120 128 / 0.12);
+  --fill-2: rgb(120 120 128 / 0.2);
+
+  /* Label hierarchy */
+  --label: rgb(0 0 0 / 0.92);
+  --label-2: rgb(60 60 67 / 0.6);
+  --label-3: rgb(60 60 67 / 0.32);
+
+  /* Brand accent (kept Feishu blue) + system semantics */
+  --accent: #3370ff;
+  --accent-press: #2a5fe0;
+  --accent-tint: rgb(51 112 255 / 0.12);
+  --on-accent: #ffffff;
+  --green: #34c759;
+  --green-tint: rgb(52 199 89 / 0.14);
+  --red: #ff3b30;
+  --red-tint: rgb(255 59 48 / 0.12);
+  --orange: #ff9500;
+  --orange-tint: rgb(255 149 0 / 0.14);
+
+  /* Diff line tints */
+  --diff-add-bg: rgb(52 199 89 / 0.14);
+  --diff-add-fg: #1b7a34;
+  --diff-del-bg: rgb(255 59 48 / 0.12);
+  --diff-del-fg: #c4271c;
+
+  /* Code surface (kept dark in both schemes for contrast) */
+  --code-bg: #0f172a;
+  --code-fg: #e5e7eb;
+
+  /* Radius scale */
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-pill: 999px;
+
+  /* Elevation — iOS leans on hairlines + blur, so shadows stay subtle */
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.04);
+  --shadow-float: 0 8px 30px rgb(0 0 0 / 0.12);
+
+  /* Chrome metrics + motion */
+  --nav-h: 44px;
+  --blur: saturate(180%) blur(20px);
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --skeleton-sheen: rgb(255 255 255 / 0.55);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #000000;
+    --surface: #1c1c1e;
+    --surface-2: #2c2c2e;
+
+    --glass: rgb(30 30 32 / 0.72);
+    --glass-strong: rgb(30 30 32 / 0.92);
+
+    --separator: rgb(84 84 88 / 0.4);
+    --separator-strong: rgb(84 84 88 / 0.65);
+
+    --fill: rgb(120 120 128 / 0.24);
+    --fill-2: rgb(120 120 128 / 0.36);
+
+    --label: rgb(255 255 255 / 0.95);
+    --label-2: rgb(235 235 245 / 0.6);
+    --label-3: rgb(235 235 245 / 0.3);
+
+    --accent: #5b8cff;
+    --accent-press: #4f8cff;
+    --accent-tint: rgb(91 140 255 / 0.2);
+    --green: #30d158;
+    --green-tint: rgb(48 209 88 / 0.2);
+    --red: #ff453a;
+    --red-tint: rgb(255 69 58 / 0.18);
+    --orange: #ff9f0a;
+    --orange-tint: rgb(255 159 10 / 0.2);
+
+    --diff-add-bg: rgb(48 209 88 / 0.18);
+    --diff-add-fg: #5ce07e;
+    --diff-del-bg: rgb(255 69 58 / 0.18);
+    --diff-del-fg: #ff8a82;
+
+    --code-bg: #020617;
+    --code-fg: #e5e7eb;
+
+    --shadow-card: none;
+    --shadow-float: 0 8px 30px rgb(0 0 0 / 0.5);
+    --skeleton-sheen: rgb(255 255 255 / 0.07);
+  }
+}

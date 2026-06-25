@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(.venv/Scripts/python.exe -c \"import importlib.util as u; print\\('pypdf', bool\\(u.find_spec\\('pypdf'\\)\\)\\); print\\('pdfminer', bool\\(u.find_spec\\('pdfminer'\\)\\)\\); print\\('PyPDF2', bool\\(u.find_spec\\('PyPDF2'\\)\\)\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_claude_adapter.py -q)",
+      "Bash(.venv/Scripts/python.exe -m ruff check app/adapters/claude_adapter.py tests/test_claude_adapter.py)",
+      "Bash(.venv/Scripts/python.exe -c \"from app.adapters.claude_adapter import ClaudeAdapter; a=ClaudeAdapter\\(\\); print\\('name=', a.name\\)\")",
+      "Bash(.venv/Scripts/python.exe -m ruff check app/adapters)",
+      "Bash(.venv/Scripts/python.exe -)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_custom_adapter.py -q)",
+      "Bash(.venv/Scripts/python.exe -m ruff check app/adapters/custom_adapter.py tests/test_custom_adapter.py)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_mock_adapter.py -q)",
+      "Bash(.venv/Scripts/python.exe -m ruff check app/adapters/mock_adapter.py tests/test_mock_adapter.py)",
+      "Bash(.venv/Scripts/python.exe -c \"from app.adapters.custom_adapter import CustomAdapter; print\\('import ok'\\)\")"
+    ]
+  }
+}

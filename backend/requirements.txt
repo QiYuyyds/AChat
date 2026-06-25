@@ -1,0 +1,24 @@
+# Web Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sse-starlette>=2.2.0
+python-multipart>=0.0.17
+
+# Database
+sqlalchemy[asyncio]>=2.0.36
+aiosqlite>=0.20.0
+alembic>=1.14.0
+
+# Validation
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+
+# AI SDKs
+anthropic>=0.40.0
+openai>=1.57.0
+
+# Utilities
+nanoid>=2.0.0
+httpx>=0.28.0
+python-dotenv>=1.0.1
+pypdf>=5.1.0  # read_attachment PDF text extraction (replaces TS pdf-parse)

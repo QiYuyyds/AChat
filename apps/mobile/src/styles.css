@@ -1,0 +1,8 @@
+/* Mobile companion styles — split into focused partials (see ./styles/).
+   tokens first (variables), then base (reset/shell), then component skins.
+   main.tsx imports this single entry; Vite inlines the @imports at build. */
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/components.css";
+@import "./styles/chat.css";
+@import "./styles/artifact.css";
