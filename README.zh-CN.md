@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="./README.md">English</a> · <b>简体中文</b>
+  <b>简体中文</b>
 </p>
 
 AgentHub 是一个 local-first 的多 Agent 协作工作空间，把 AI 协作做成 IM 群聊式的体验。
