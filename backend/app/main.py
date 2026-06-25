@@ -52,6 +52,7 @@ def create_app() -> FastAPI:
         artifacts,
         attachments,
         conversations,
+        deployments,
         fs,
         messages,
         pending,
@@ -75,6 +76,9 @@ def create_app() -> FastAPI:
     app.include_router(runs_misc.router, prefix="/api", tags=["runs-misc"])
     app.include_router(mobile_routes.router, prefix="/api", tags=["mobile"])
     app.include_router(stream.router, prefix="/api", tags=["stream"])
+    # deployment preview assets served at root /deployments/{id}/... (no /api prefix);
+    # the previewPath the agent emits is /deployments/{id}. Frontend proxies via rewrite.
+    app.include_router(deployments.router, tags=["deployments"])
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:
