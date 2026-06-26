@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = None
     embedding_api_url: str | None = None
     embedding_model: str | None = None
+
+    # ─── LLM (for RAG rewrite/rerank/answer/KG extraction) ───
+    llm_api_key: str | None = None
+    llm_api_url: str | None = None
+    llm_model: str | None = None
 
     # ─── RAG ───
     rag_chunk_size: int = 200

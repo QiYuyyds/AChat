@@ -29,12 +29,13 @@ _rag_service = None
 _infrastructure = None
 _app_ref = None
 _document_service = None
+_kg_wired = False
 
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
-    global _memory_service, _rag_service, _infrastructure, _app_ref, _document_service
+    global _memory_service, _rag_service, _infrastructure, _app_ref, _document_service, _kg_wired
     _app_ref = app_instance
 
     # Startup
@@ -86,6 +87,11 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             logger.info("RAG: generate_fn injected")
         else:
             logger.warning("RAG: generate_fn not available (no LLM API key)")
+
+        # Wire KG backend if Neo4j driver and LLM are both available
+        if _infrastructure and _infrastructure.neo4j_driver and generate_fn:
+            _wire_kg_to_rag(_rag_service, _infrastructure.neo4j_driver, settings, generate_fn)
+            _kg_wired = True
 
         await _rag_service.initialize()
     except Exception as e:
@@ -188,6 +194,10 @@ def _log_startup_dashboard(settings) -> None:
     rag_status = "✓ RAGService" if _rag_service else "✗ RAGService not initialized"
     logger.info("RAG System:      %s", rag_status)
 
+    # KG backend
+    kg_status = "✓ wired" if _kg_wired else "✗ not wired"
+    logger.info("KG Backend:      %s", kg_status)
+
     # Prompt assembler
     has_assembler = bool(getattr(_app_ref.state, "prompt_assembler", None)) if _app_ref else False
     assembler_status = "✓ PromptAssembler" if has_assembler else "✗ PromptAssembler not initialized"
@@ -224,16 +234,29 @@ def _make_embed_fn(settings):
 
 
 def _make_generate_fn(settings):
-    """Create LLM generate function using OpenAI-compatible API."""
-    api_key = settings.openai_api_key or settings.deepseek_api_key
-    if not api_key:
-        return None
-    if settings.openai_api_key:
+    """Create LLM generate function using OpenAI-compatible API.
+
+    Priority: llm_api_key > openai_api_key > deepseek_api_key.
+    When llm_api_key is set, uses llm_api_url and llm_model for full configurability
+    (e.g. DashScope, Ollama, or any OpenAI-compatible endpoint).
+    """
+    # Priority 1: dedicated LLM config (supports DashScope and other OpenAI-compatible APIs)
+    if settings.llm_api_key:
+        api_key = settings.llm_api_key
+        api_url = settings.llm_api_url or "https://api.openai.com/v1"
+        model = settings.llm_model or "gpt-4o-mini"
+    # Priority 2: OpenAI key
+    elif settings.openai_api_key:
+        api_key = settings.openai_api_key
         api_url = "https://api.openai.com/v1"
         model = "gpt-4o-mini"
-    else:
+    # Priority 3: DeepSeek key
+    elif settings.deepseek_api_key:
+        api_key = settings.deepseek_api_key
         api_url = "https://api.deepseek.com/v1"
         model = "deepseek-chat"
+    else:
+        return None
     import httpx
     client = httpx.Client(timeout=60.0)
     def generate(system_prompt: str, user_msg: str) -> str:
@@ -360,6 +383,29 @@ def _wire_es_to_rag(rag_service, es_client):
     rag_service.set_es_backend(es_search, es_index)
     rag_service.set_es_delete_fn(es_delete)
     logger.info("RAG: Elasticsearch backend wired")
+
+
+def _wire_kg_to_rag(rag_service, neo4j_driver, settings, generate_fn):
+    """Wire KGStore into RAGService's HybridStore for KG search/index/delete."""
+    from app.graph.kgstore import KGStore
+    from app.graph.extractor import Extractor
+
+    extractor = Extractor(generate_fn)
+    kg_store = KGStore(settings, neo4j_driver, extractor)
+
+    async def kg_search(query_text, k):
+        return await kg_store.search(query_text, k)
+
+    async def kg_index(doc_hash, chunks):
+        await kg_store.index_document(doc_hash, chunks)
+
+    async def kg_delete(doc_hash):
+        await kg_store.delete_document(doc_hash)
+
+    rag_service.set_kg_backend(kg_search)
+    rag_service.set_kg_index_fn(kg_index)
+    rag_service.set_kg_delete_fn(kg_delete)
+    logger.info("RAG: KG backend wired")
 
 
 def create_app() -> FastAPI:

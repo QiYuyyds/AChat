@@ -59,6 +59,10 @@ class RAGService:
     def set_kg_backend(self, search_fn: Callable) -> None:
         self._hybrid.set_kg_backend(search_fn)
 
+    def set_kg_index_fn(self, fn: Callable) -> None:
+        """Inject KG index function for document entity extraction."""
+        self._hybrid.set_kg_index_fn(fn)
+
     def set_es_delete_fn(self, fn: Callable) -> None:
         """Inject ES delete-by-ids function for document cleanup."""
         self._es_delete_fn = fn

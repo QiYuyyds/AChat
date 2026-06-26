@@ -81,7 +81,9 @@ class TestHybridStoreDegradation:
         """When only ES available, should use keyword search."""
         settings = _make_settings()
         hs = HybridStore(settings)
-        hs.set_es_backend(lambda q, k: [{"pg_id": 2, "score": 0.8, "content": "es result"}])
+        async def es_search(q, k):
+            return [{"pg_id": 2, "score": 0.8, "content": "es result"}]
+        hs.set_es_backend(es_search)
 
         async def mock_load(ids):
             return {2: {"content": "es content", "parent_content": ""}}
@@ -98,7 +100,9 @@ class TestHybridStoreDegradation:
         settings = _make_settings()
         hs = HybridStore(settings)
         hs.set_milvus_backend(lambda emb, k: [{"pg_id": 1, "score": 0.9}])
-        hs.set_es_backend(lambda q, k: [{"pg_id": 1, "score": 0.8}])
+        async def es_search(q, k):
+            return [{"pg_id": 1, "score": 0.8}]
+        hs.set_es_backend(es_search)
         hs.set_embed_fn(lambda text: [0.1] * 1024)
 
         async def mock_load(ids):

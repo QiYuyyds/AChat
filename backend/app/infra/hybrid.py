@@ -21,6 +21,7 @@ from sqlalchemy import select, text
 from app.config import Settings
 from app.db.engine import get_db
 from app.db.models import RagChunk
+from app.graph.types import ChunkRef
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,10 @@ class HybridStore:
         self._milvus_insert_fn: Optional[Callable] = None  # (ids, contents, embs) -> None
         self._es_index_fn: Optional[Callable] = None       # (pg_id, content, doc_hash, idx) -> None
 
+        # KG index/delete backends
+        self._kg_index_fn: Optional[Callable] = None   # (doc_hash, chunks: List[ChunkRef]) -> None
+        self._kg_delete_fn: Optional[Callable] = None  # (doc_hash) -> None
+
     def set_embed_fn(self, fn: EmbedFn) -> None:
         self._embed_fn = fn
 
@@ -85,6 +90,12 @@ class HybridStore:
 
     def set_kg_backend(self, search_fn: Callable) -> None:
         self._kg_search_fn = search_fn
+
+    def set_kg_index_fn(self, fn: Callable) -> None:
+        self._kg_index_fn = fn
+
+    def set_kg_delete_fn(self, fn: Callable) -> None:
+        self._kg_delete_fn = fn
 
     def set_reranker(self, reranker) -> None:
         self._reranker = reranker
@@ -167,6 +178,14 @@ class HybridStore:
                     await self._es_index_fn(pg_id, contents[i], doc_hash, i)
                 except Exception as e:
                     logger.warning("ES index failed (pg_id=%s): %s", pg_id, e)
+
+        # KG index (fire-and-forget)
+        if self._kg_index_fn and self._kg_ok() and pg_ids:
+            chunk_refs = [
+                ChunkRef(id=i, pg_id=pid, content=contents[i])
+                for i, pid in enumerate(pg_ids)
+            ]
+            asyncio.create_task(self._kg_index_fn(doc_hash, chunk_refs))
 
         return pg_ids
 
@@ -380,7 +399,7 @@ class HybridStore:
         if not self._kg_ok():
             return _PathHits(ok=False)
         try:
-            hits = self._kg_search_fn(query, fetch_k) or []
+            hits = (await self._kg_search_fn(query, fetch_k)) or []
             return _PathHits(hits=hits, ok=True)
         except Exception as e:
             logger.warning("KG search failed: %s", e)
