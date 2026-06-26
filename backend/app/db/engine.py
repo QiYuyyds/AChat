@@ -23,26 +23,24 @@ async def init_db() -> None:
     global _engine, _session_factory
 
     settings = get_settings()
+
+    # PostgreSQL (asyncpg) engine configuration
     _engine = create_async_engine(
         settings.database_url,
-        echo=settings.debug,
+        echo=False,
         future=True,
+        pool_size=10,
+        max_overflow=20,
+        pool_pre_ping=True,
     )
 
-    # SQLite enforces foreign keys (and thus ON DELETE CASCADE) only when the
-    # PRAGMA is set per-connection. Without this, deleting a conversation would
-    # NOT cascade to its messages/artifacts/runs and would instead error or
-    # orphan rows. Enable it on every pooled connection.
+    # SQLite needs per-connection PRAGMAs for FK cascade + WAL concurrency.
     if settings.database_url.startswith("sqlite"):
 
         @event.listens_for(_engine.sync_engine, "connect")
         def _init_sqlite_connection(dbapi_connection, connection_record):  # type: ignore[no-untyped-def]
             cursor = dbapi_connection.cursor()
-            # FK cascade needs the pragma per-connection (see note above).
             cursor.execute("PRAGMA foreign_keys=ON")
-            # WAL = concurrent readers alongside one writer; busy_timeout makes a
-            # blocked writer wait for the lock instead of erroring "database is
-            # locked" — the runner spawns concurrent run-tasks that all write.
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()

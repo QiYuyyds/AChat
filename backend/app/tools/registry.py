@@ -30,6 +30,13 @@ from app.tools.read_artifact import read_artifact_tool
 from app.tools.read_attachment import read_attachment_tool
 from app.tools.report_task_result import report_task_result_tool
 from app.tools.write_artifact import write_artifact_tool
+from app.tools.memory_rag import (
+    memory_recall_tool,
+    rag_delete_document_tool,
+    rag_ingest_tool,
+    rag_list_documents_tool,
+    rag_search_tool,
+)
 
 
 class ToolRegistry:
@@ -77,6 +84,11 @@ def _build_registry() -> ToolRegistry:
     reg.register(fs_write_tool)
     reg.register(bash_tool)
     reg.register(ask_user_tool)
+    reg.register(rag_search_tool)
+    reg.register(rag_ingest_tool)
+    reg.register(rag_list_documents_tool)
+    reg.register(rag_delete_document_tool)
+    reg.register(memory_recall_tool)
     return reg
 
 

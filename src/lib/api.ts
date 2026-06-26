@@ -9,12 +9,18 @@ import type {
 } from '@/db/schema'
 import type {
   AskUserAnswer,
+  CreateDocumentRequest,
   DeployCandidateRecord,
   DeployStatusRecord,
+  DocumentRow,
+  IngestResult,
   PendingBashCommand,
   PendingDispatchPlan,
   PendingQuestion,
   PendingWrite,
+  UploadResult,
+  VersionRow,
+  WriteDocumentResponse,
 } from '@/shared/types'
 import type { AgentConfigDraft, AgentDraftRequest } from '@/shared/agent-builder-config'
 
@@ -808,4 +814,65 @@ export async function regenerateMobileDeviceToken(): Promise<AppSettingsRow> {
     fetch(API_BASE_URL + '/api/settings/mobile-token', { method: 'POST' }),
   )
   return settings
+}
+
+// ─── Documents (知识库) ──────────────────────────
+export async function fetchDocuments(): Promise<DocumentRow[]> {
+  const { documents } = await json<{ documents: DocumentRow[] }>(
+    fetch(API_BASE_URL + '/api/documents'),
+  )
+  return documents
+}
+
+export async function createDocument(body: CreateDocumentRequest): Promise<WriteDocumentResponse> {
+  return json<WriteDocumentResponse>(
+    fetch(API_BASE_URL + '/api/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
+}
+
+export async function getDocument(documentId: string): Promise<{ document: DocumentRow; version: VersionRow }> {
+  return json<{ document: DocumentRow; version: VersionRow }>(
+    fetch(`${API_BASE_URL}/api/documents/${documentId}`),
+  )
+}
+
+export async function listVersions(documentId: string): Promise<VersionRow[]> {
+  const { versions } = await json<{ versions: VersionRow[] }>(
+    fetch(`${API_BASE_URL}/api/documents/${documentId}/versions`),
+  )
+  return versions
+}
+
+export async function deleteDocument(documentId: string): Promise<{ ok: boolean; deletedChunks: number }> {
+  return json<{ ok: boolean; deletedChunks: number }>(
+    fetch(`${API_BASE_URL}/api/documents/${documentId}`, { method: 'DELETE' }),
+  )
+}
+
+export async function ingestDocument(documentId: string, versionId: string): Promise<IngestResult> {
+  return json<IngestResult>(
+    fetch(`${API_BASE_URL}/api/documents/${documentId}/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ versionId }),
+    }),
+  )
+}
+
+export async function uploadDocument(file: File): Promise<UploadResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${API_BASE_URL}/api/documents/upload`, {
+    method: 'POST',
+    body: form,
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`HTTP ${res.status}: ${body || res.statusText}`)
+  }
+  return res.json() as Promise<UploadResult>
 }

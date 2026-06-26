@@ -8,11 +8,15 @@ See specs/13-conversation-context.md.
 
 The returned messages are plain dicts ({"role", "content", ...}) matching OpenAI's
 ChatCompletionMessageParam shape — the same wire format the TS produced.
+
+Task 4.7: build_history_for() now delegates to PromptAssembler for schema-driven
+context assembly while preserving backward compatibility for existing callers.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Optional
 
 from sqlalchemy import select
 
@@ -21,6 +25,11 @@ from app.db.models import Agent, Artifact, Conversation, Message
 from app.services.context_compaction_service import (
     get_latest_context_summary,
     render_conversation_summary_block,
+)
+from app.services.prompt_assembler import (
+    ContextAssembler,
+    Query,
+    RuntimeContext,
 )
 from app.utils.model_registry import estimate_tokens
 
@@ -56,8 +65,98 @@ async def build_history_for(
     agent_id: str,
     conversation_id: str,
     options: BuildHistoryOptions | None = None,
+    assembler: ContextAssembler | None = None,
 ) -> list[ChatMessage]:
-    """Serialize a conversation into OpenAI chat messages for the given agent."""
+    """Serialize a conversation into OpenAI chat messages for the given agent.
+    
+    If an assembler is provided, delegates to PromptAssembler for schema-driven
+    context assembly. Otherwise falls back to the original implementation for
+    backward compatibility.
+    """
+    if assembler is not None:
+        return await _build_history_with_assembler(
+            agent_id, conversation_id, options, assembler
+        )
+    return await _build_history_legacy(
+        agent_id, conversation_id, options
+    )
+
+
+async def _build_history_with_assembler(
+    agent_id: str,
+    conversation_id: str,
+    options: BuildHistoryOptions | None,
+    assembler: ContextAssembler,
+) -> list[ChatMessage]:
+    """Build history using PromptAssembler for schema-driven context assembly."""
+    opts = options or BuildHistoryOptions()
+    max_turns = opts.max_turns if opts.max_turns is not None else DEFAULT_MAX_TURNS
+    exclude_message_id = opts.exclude_message_id
+
+    latest_summary = await get_latest_context_summary(conversation_id)
+
+    async with get_db() as db:
+        # Load recent messages for query context
+        recent_stmt = (
+            select(Message)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.status == "complete",
+            )
+            .order_by(Message.created_at.desc())
+            .limit(max_turns)
+        )
+        if exclude_message_id:
+            recent_stmt = recent_stmt.where(Message.id != exclude_message_id)
+        if latest_summary is not None:
+            recent_stmt = recent_stmt.where(
+                Message.created_at > latest_summary.covered_until_created_at
+            )
+        recent = (await db.execute(recent_stmt)).scalars().all()
+        recent_asc = sorted(recent, key=lambda m: m.created_at)
+
+        # Load agent info for profile
+        agent = (
+            await db.execute(select(Agent).where(Agent.id == agent_id))
+        ).scalars().first()
+
+    # Build query text from recent messages
+    query_text = "\n".join(
+        _extract_message_text(m) for m in recent_asc[-3:] if m.role == "user"
+    )
+
+    # Determine schema mode based on options
+    mode = "chat"
+    if opts.token_budget is not None and opts.token_budget < 1000:
+        mode = "chat"
+    # Could be extended to detect "tool" or "react" modes
+
+    # Assemble context using PromptAssembler
+    query = Query(
+        text=query_text,
+        mode=mode,
+        conversation_id=conversation_id,
+    )
+    ctx: RuntimeContext = await assembler.assemble(query)
+
+    # Render to OpenAI chat format
+    system_messages = ctx.render_history()
+    
+    # Fall back to legacy message serialization for conversation history
+    legacy_messages = await _build_history_legacy(
+        agent_id, conversation_id, options
+    )
+    
+    # Combine: system context + conversation history
+    return system_messages + legacy_messages
+
+
+async def _build_history_legacy(
+    agent_id: str,
+    conversation_id: str,
+    options: BuildHistoryOptions | None,
+) -> list[ChatMessage]:
+    """Original implementation preserved for backward compatibility."""
     opts = options or BuildHistoryOptions()
     max_turns = opts.max_turns if opts.max_turns is not None else DEFAULT_MAX_TURNS
     include_pinned = opts.include_pinned if opts.include_pinned is not None else True
@@ -186,6 +285,16 @@ async def build_history_for(
             continue
         out.extend(it.serialized)
     return out
+
+
+def _extract_message_text(msg: Message) -> str:
+    """Extract plain text from a message for query context."""
+    parts = msg.parts_list
+    texts = []
+    for p in parts:
+        if p.get("type") == "text" and p.get("content"):
+            texts.append(p["content"])
+    return "\n".join(texts).strip()
 
 
 # ─── token estimation (coarse, 4 chars ≈ 1 token) ───────────────────────────

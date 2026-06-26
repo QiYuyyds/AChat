@@ -65,6 +65,62 @@ from app.utils.workspace_utils import get_effective_cwd
 logger = logging.getLogger(__name__)
 
 
+# ─── PromptAssembler integration (lazy, degrades gracefully) ─────────────────
+def _get_prompt_assembler():
+    """Retrieve the PromptAssembler from app.state, or None if unavailable."""
+    try:
+        from app.main import _app_ref
+        if _app_ref is None:
+            return None
+        return getattr(_app_ref.state, "prompt_assembler", None)
+    except Exception:
+        return None
+
+
+def _get_memory_service():
+    """Retrieve the MemoryService singleton, or None if unavailable."""
+    try:
+        from app.main import _memory_service
+        return _memory_service
+    except Exception:
+        return None
+
+
+async def _post_run_memory_hook(
+    prompt: str,
+    result: RunExecutionResult,
+    conversation_id: str,
+) -> None:
+    """Background hook: write user prompt + agent output into memory subsystem.
+
+    Runs as an asyncio.create_task so it never blocks the main run path.
+    """
+    ms = _get_memory_service()
+    if ms is None:
+        return
+    try:
+        await ms.on_message_end("user", prompt)
+        # Collect agent output text from output_message_ids
+        if result.output_message_ids:
+            async with get_db() as db:
+                from app.db.models import Message
+                for msg_id in result.output_message_ids:
+                    msg = (
+                        await db.execute(select(Message).where(Message.id == msg_id))
+                    ).scalar_one_or_none()
+                    if msg:
+                        text_parts = [
+                            p.get("content", "")
+                            for p in msg.parts_list
+                            if p.get("type") == "text"
+                        ]
+                        agent_text = "\n".join(text_parts)
+                        if agent_text:
+                            await ms.on_message_end("assistant", agent_text)
+    except Exception as e:
+        logger.warning("_post_run_memory_hook error: %s", e)
+
+
 # ─── Args / results (mirror the TS interfaces) ───────────────────────────────
 @dataclass
 class RunArgs:
@@ -364,7 +420,12 @@ async def execute_run(
             )
         if cancel_event.is_set():
             return await finalize(run_id, args, "aborted", result)
-        return await finalize_ok(run_id, args, result)
+        final_result = await finalize_ok(run_id, args, result)
+        # ─── Post-run memory hook (Task 5.4) ───
+        asyncio.create_task(
+            _post_run_memory_hook(prompt, result, args.conversation_id)
+        )
+        return final_result
     except asyncio.CancelledError:
         return await finalize(run_id, args, "aborted", _empty_run_execution_result())
     except Exception as err:  # noqa: BLE001 - faithful catch-all; surfaced via finalize
@@ -1069,6 +1130,20 @@ async def build_adapter_input(
                 err,
             )
             history = []
+
+    # ─── PromptAssembler enrichment (Task 5.3) ───
+    assembler = _get_prompt_assembler()
+    if assembler and not args.override_prompt:
+        try:
+            from app.services.prompt_assembler import Query
+            mode = "react" if "plan_tasks" in (tool_names or []) else "chat"
+            q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id)
+            ctx = await assembler.assemble(q)
+            enriched = ctx.render_system_prompt()
+            if enriched:
+                system_prompt_with_workspace += "\n\n" + enriched
+        except Exception as err:  # noqa: BLE001 - assembler is best-effort
+            logger.warning("[agent-runner] PromptAssembler enrichment failed: %s", err)
 
     effective_prompt = prompt
     if agent.adapter_name in ("claude-code", "codex") and not args.override_prompt:

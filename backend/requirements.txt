@@ -5,8 +5,8 @@ sse-starlette>=2.2.0
 python-multipart>=0.0.17
 
 # Database
-sqlalchemy[asyncio]>=2.0.36
-aiosqlite>=0.20.0
+sqlalchemy[postgresql_asyncio]>=2.0.36
+asyncpg>=0.29.0
 alembic>=1.14.0
 
 # Validation
@@ -17,8 +17,24 @@ pydantic-settings>=2.6.0
 anthropic>=0.40.0
 openai>=1.57.0
 
+# Milvus (vector search)
+pymilvus>=2.4.0
+
+# Elasticsearch (full-text search)
+elasticsearch[async]>=8.14.0,<9.0.0
+
+# Neo4j (knowledge graph)
+neo4j>=5.0.0
+
+# Kafka (optional event bus)
+kafka-python>=2.0.0
+
 # Utilities
 nanoid>=2.0.0
 httpx>=0.28.0
 python-dotenv>=1.0.1
 pypdf>=5.1.0  # read_attachment PDF text extraction (replaces TS pdf-parse)
+
+# Document Parser pipeline (ported from AGI-memory)
+pdfplumber>=0.9.0    # PDF parsing - first-choice extractor
+PyPDF2>=3.0.0        # PDF parsing - pure-Python fallback

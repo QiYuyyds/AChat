@@ -1,19 +1,29 @@
 """SQLAlchemy ORM models matching TypeScript Drizzle schema.
 
 Corresponds to src/db/schema.ts in the original TypeScript codebase.
+Extended with AGI-memory tables (LongTermMemory, UserPreference, RagChunk,
+ChatHistory, MemoryNode, MemoryEdge).
 """
 
 import json
 from typing import Any, Literal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
+    Float,
     ForeignKey,
     Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
+from sqlalchemy.types import JSON as _BaseJSON
+
+# SQLAlchemy JSON type auto-uses JSONB on PostgreSQL dialect; plain JSON on SQLite.
+JSONB = _BaseJSON
+
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -42,19 +52,24 @@ CompanionMode = Literal["off", "lan", "tailnet"]
 
 
 def _json_serializer(obj: Any) -> str:
-    """Serialize Python object to JSON string."""
+    """Serialize Python object to json string (kept for backward-compat helpers)."""
     return json.dumps(obj, ensure_ascii=False)
 
 
 def _json_deserializer(s: str | None) -> Any:
-    """Deserialize JSON string to Python object."""
+    """Deserialize JSON string to Python object (kept for backward-compat helpers)."""
     if s is None:
         return None
     return json.loads(s)
 
 
+# ---------------------------------------------------------------------------
+# Core domain models (existing 9 tables, JSON columns upgraded to JSONB)
+# ---------------------------------------------------------------------------
+
+
 class Agent(Base):
-    """Agent model - AI agents that can participate in conversations."""
+    """Agent model - AI agents who can participate in conversations."""
 
     __tablename__ = "agents"
 
@@ -62,7 +77,9 @@ class Agent(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     avatar: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=False)
-    capabilities: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    # JSONB columns (upgraded from Text)
+    capabilities: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
     system_prompt: Mapped[str] = mapped_column(
         String, name="system_prompt", nullable=False
@@ -84,9 +101,7 @@ class Agent(Base):
         String, name="api_base_url", nullable=True
     )
 
-    tool_names: Mapped[str] = mapped_column(
-        Text, name="tool_names", nullable=False, default="[]"
-    )
+    tool_names: Mapped[list] = mapped_column(JSONB, name="tool_names", nullable=False, default=list)
 
     is_builtin: Mapped[bool] = mapped_column(
         Boolean, name="is_builtin", nullable=False, default=False
@@ -98,7 +113,7 @@ class Agent(Base):
         Boolean, name="supports_vision", nullable=False, default=False
     )
 
-    created_at: Mapped[int] = mapped_column(Integer, name="created_at", nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
     # Relationships
     messages: Mapped[list["Message"]] = relationship(back_populates="agent")
@@ -107,23 +122,21 @@ class Agent(Base):
 
     @property
     def capabilities_list(self) -> list[str]:
-        """Get capabilities as Python list."""
-        return _json_deserializer(self.capabilities) or []
+        """Get capabilities as Python list (JSONB already returns list)."""
+        return list(self.capabilities) if self.capabilities else []
 
     @capabilities_list.setter
     def capabilities_list(self, value: list[str]) -> None:
-        """Set capabilities from Python list."""
-        self.capabilities = _json_serializer(value)
+        self.capabilities = value
 
     @property
     def tool_names_list(self) -> list[str]:
-        """Get tool_names as Python list."""
-        return _json_deserializer(self.tool_names) or []
+        """Get tool_names as Python list (JSONB already returns list)."""
+        return list(self.tool_names) if self.tool_names else []
 
     @tool_names_list.setter
     def tool_names_list(self, value: list[str]) -> None:
-        """Set tool_names from Python list."""
-        self.tool_names = _json_serializer(value)
+        self.tool_names = value
 
 
 class Conversation(Base):
@@ -134,26 +147,27 @@ class Conversation(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     mode: Mapped[str] = mapped_column(String, nullable=False)  # 'single' | 'group'
-    agent_ids: Mapped[str] = mapped_column(
-        Text, name="agent_ids", nullable=False, default="[]"
+
+    # JSONB columns (upgraded from Text)
+    agent_ids: Mapped[list] = mapped_column(JSONB, name="agent_ids", nullable=False, default=list)
+    pinned_message_ids: Mapped[list] = mapped_column(
+        JSONB, name="pinned_message_ids", nullable=False, default=list
     )
-    pinned_message_ids: Mapped[str] = mapped_column(
-        Text, name="pinned_message_ids", nullable=False, default="[]"
+    bookmarked_message_ids: Mapped[list] = mapped_column(
+        JSONB, name="bookmarked_message_ids", nullable=False, default=list
     )
-    bookmarked_message_ids: Mapped[str] = mapped_column(
-        Text, name="bookmarked_message_ids", nullable=False, default="[]"
-    )
+
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     pinned_at: Mapped[int | None] = mapped_column(
-        Integer, name="pinned_at", nullable=True
+        BigInteger, name="pinned_at", nullable=True
     )
 
     fs_write_approval_mode: Mapped[str] = mapped_column(
         String, name="fs_write_approval_mode", nullable=False, default="review"
     )
 
-    created_at: Mapped[int] = mapped_column(Integer, name="created_at", nullable=False)
-    updated_at: Mapped[int] = mapped_column(Integer, name="updated_at", nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
 
     # Relationships
     messages: Mapped[list["Message"]] = relationship(
@@ -181,33 +195,27 @@ class Conversation(Base):
 
     @property
     def agent_ids_list(self) -> list[str]:
-        """Get agent_ids as Python list."""
-        return _json_deserializer(self.agent_ids) or []
+        return list(self.agent_ids) if self.agent_ids else []
 
     @agent_ids_list.setter
     def agent_ids_list(self, value: list[str]) -> None:
-        """Set agent_ids from Python list."""
-        self.agent_ids = _json_serializer(value)
+        self.agent_ids = value
 
     @property
     def pinned_message_ids_list(self) -> list[str]:
-        """Get pinned_message_ids as Python list."""
-        return _json_deserializer(self.pinned_message_ids) or []
+        return list(self.pinned_message_ids) if self.pinned_message_ids else []
 
     @pinned_message_ids_list.setter
     def pinned_message_ids_list(self, value: list[str]) -> None:
-        """Set pinned_message_ids from Python list."""
-        self.pinned_message_ids = _json_serializer(value)
+        self.pinned_message_ids = value
 
     @property
     def bookmarked_message_ids_list(self) -> list[str]:
-        """Get bookmarked_message_ids as Python list."""
-        return _json_deserializer(self.bookmarked_message_ids) or []
+        return list(self.bookmarked_message_ids) if self.bookmarked_message_ids else []
 
     @bookmarked_message_ids_list.setter
     def bookmarked_message_ids_list(self, value: list[str]) -> None:
-        """Set bookmarked_message_ids from Python list."""
-        self.bookmarked_message_ids = _json_serializer(value)
+        self.bookmarked_message_ids = value
 
 
 class Message(Base):
@@ -231,23 +239,24 @@ class Message(Base):
         nullable=True,
     )
 
-    parts: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # JSONB columns (upgraded from Text)
+    parts: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
     status: Mapped[str] = mapped_column(String, nullable=False)
     parent_message_id: Mapped[str | None] = mapped_column(
         String, name="parent_message_id", nullable=True
     )
-    mentioned_agent_ids: Mapped[str] = mapped_column(
-        Text, name="mentioned_agent_ids", nullable=False, default="[]"
+    mentioned_agent_ids: Mapped[list] = mapped_column(
+        JSONB, name="mentioned_agent_ids", nullable=False, default=list
     )
 
     run_id: Mapped[str | None] = mapped_column(
         String, name="run_id", nullable=True
     )
 
-    usage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    created_at: Mapped[int] = mapped_column(Integer, name="created_at", nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
@@ -259,33 +268,27 @@ class Message(Base):
 
     @property
     def parts_list(self) -> list[dict]:
-        """Get parts as Python list."""
-        return _json_deserializer(self.parts) or []
+        return list(self.parts) if self.parts else []
 
     @parts_list.setter
     def parts_list(self, value: list[dict]) -> None:
-        """Set parts from Python list."""
-        self.parts = _json_serializer(value)
+        self.parts = value
 
     @property
     def mentioned_agent_ids_list(self) -> list[str]:
-        """Get mentioned_agent_ids as Python list."""
-        return _json_deserializer(self.mentioned_agent_ids) or []
+        return list(self.mentioned_agent_ids) if self.mentioned_agent_ids else []
 
     @mentioned_agent_ids_list.setter
     def mentioned_agent_ids_list(self, value: list[str]) -> None:
-        """Set mentioned_agent_ids from Python list."""
-        self.mentioned_agent_ids = _json_serializer(value)
+        self.mentioned_agent_ids = value
 
     @property
     def usage_dict(self) -> dict | None:
-        """Get usage as Python dict."""
-        return _json_deserializer(self.usage)
+        return dict(self.usage) if self.usage else None
 
     @usage_dict.setter
     def usage_dict(self, value: dict | None) -> None:
-        """Set usage from Python dict."""
-        self.usage = _json_serializer(value) if value else None
+        self.usage = value
 
 
 class Artifact(Base):
@@ -303,7 +306,9 @@ class Artifact(Base):
 
     type: Mapped[str] = mapped_column(String, nullable=False)
     title: Mapped[str] = mapped_column(String, nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # JSONB column (upgraded from Text)
+    content: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     parent_artifact_id: Mapped[str | None] = mapped_column(
@@ -316,7 +321,7 @@ class Artifact(Base):
         name="created_by_agent_id",
         nullable=False,
     )
-    created_at: Mapped[int] = mapped_column(Integer, name="created_at", nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="artifacts")
@@ -328,13 +333,11 @@ class Artifact(Base):
 
     @property
     def content_dict(self) -> dict:
-        """Get content as Python dict."""
-        return _json_deserializer(self.content) or {}
+        return dict(self.content) if self.content else {}
 
     @content_dict.setter
     def content_dict(self, value: dict) -> None:
-        """Set content from Python dict."""
-        self.content = _json_serializer(value)
+        self.content = value
 
 
 class Workspace(Base):
@@ -355,7 +358,7 @@ class Workspace(Base):
     bound_path: Mapped[str | None] = mapped_column(
         String, name="bound_path", nullable=True
     )
-    created_at: Mapped[int] = mapped_column(Integer, name="created_at", nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="workspace")
@@ -380,7 +383,7 @@ class Attachment(Base):
     size: Mapped[int] = mapped_column(Integer, nullable=False)
     mime_type: Mapped[str] = mapped_column(String, name="mime_type", nullable=False)
 
-    created_at: Mapped[int] = mapped_column(Integer, name="created_at", nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="attachments")
@@ -419,11 +422,16 @@ class AgentRun(Base):
         String, name="parent_run_id", nullable=True
     )
 
-    usage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSONB column (upgraded from Text)
+    usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    started_at: Mapped[int] = mapped_column(Integer, name="started_at", nullable=False)
+    # JSONB columns for dispatch plan/results (orchestrator)
+    dispatch_plan: Mapped[dict | None] = mapped_column(JSONB, name="dispatch_plan", nullable=True)
+    dispatch_results: Mapped[dict | None] = mapped_column(JSONB, name="dispatch_results", nullable=True)
+
+    started_at: Mapped[int] = mapped_column(BigInteger, name="started_at", nullable=False)
     finished_at: Mapped[int | None] = mapped_column(
-        Integer, name="finished_at", nullable=True
+        BigInteger, name="finished_at", nullable=True
     )
 
     # Relationships
@@ -436,13 +444,11 @@ class AgentRun(Base):
 
     @property
     def usage_dict(self) -> dict | None:
-        """Get usage as Python dict."""
-        return _json_deserializer(self.usage)
+        return dict(self.usage) if self.usage else None
 
     @usage_dict.setter
     def usage_dict(self, value: dict | None) -> None:
-        """Set usage from Python dict."""
-        self.usage = _json_serializer(value) if value else None
+        self.usage = value
 
 
 class ContextSummary(Base):
@@ -462,7 +468,7 @@ class ContextSummary(Base):
         String, name="covered_until_message_id", nullable=False
     )
     covered_until_created_at: Mapped[int] = mapped_column(
-        Integer, name="covered_until_created_at", nullable=False
+        BigInteger, name="covered_until_created_at", nullable=False
     )
     source_message_count: Mapped[int] = mapped_column(
         Integer, name="source_message_count", nullable=False
@@ -476,7 +482,7 @@ class ContextSummary(Base):
     model_id: Mapped[str | None] = mapped_column(
         String, name="model_id", nullable=True
     )
-    created_at: Mapped[int] = mapped_column(Integer, name="created_at", nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="context_summaries")
@@ -522,4 +528,177 @@ class AppSettings(Base):
     deployment_public_base_url: Mapped[str | None] = mapped_column(
         String, name="deployment_public_base_url", nullable=True
     )
-    updated_at: Mapped[int] = mapped_column(Integer, name="updated_at", nullable=False)
+
+    # JSONB column (upgraded from Text)
+    settings: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+
+
+# ---------------------------------------------------------------------------
+# AGI-memory new models (6 new tables)
+# ---------------------------------------------------------------------------
+
+
+class LongTermMemory(Base):
+    """Long-term memory items with embedding vectors for semantic recall."""
+
+    __tablename__ = "long_term_memory"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    embedding: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    last_accessed: Mapped[float] = mapped_column(Float, nullable=False)
+    category: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    slot_hint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    __table_args__ = (
+        Index("idx_ltm_category", "category"),
+        Index("idx_ltm_created", "created_at"),
+    )
+
+
+class UserPreference(Base):
+    """User preference key-value pairs extracted from conversation."""
+
+    __tablename__ = "user_preferences"
+
+    user_id: Mapped[str] = mapped_column(String, primary_key=True, default="default_user")
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class RagChunk(Base):
+    """RAG document chunks stored with embeddings for hybrid retrieval."""
+
+    __tablename__ = "rag_chunks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    doc_hash: Mapped[str] = mapped_column(String, nullable=False)
+    chunk_idx: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    # Document traceability fields (nullable for bare-ingest chunks without a Document)
+    document_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("documents.id", ondelete="SET NULL"), nullable=True
+    )
+    version_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True
+    )
+
+    __table_args__ = (
+        Index("idx_rag_doc_hash", "doc_hash"),
+    )
+
+
+class ChatHistory(Base):
+    """Chat history rows for ShortTerm Memory persistence."""
+
+    __tablename__ = "chat_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class MemoryNode(Base):
+    """Memory graph nodes (Neo4j mirror table in PG)."""
+
+    __tablename__ = "memory_nodes"
+
+    mem_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+
+
+class MemoryEdge(Base):
+    """Memory graph edges (Neo4j mirror table in PG)."""
+
+    __tablename__ = "memory_edges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    from_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("memory_nodes.mem_id"), nullable=False
+    )
+    to_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("memory_nodes.mem_id"), nullable=False
+    )
+    rel_type: Mapped[str] = mapped_column(
+        String(32), nullable=False
+    )  # FOLLOWS / SIMILAR_TO / CAUSES / BELONGS_TO
+    weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+
+    __table_args__ = (
+        Index("idx_memory_edges_from", "from_id"),
+        Index("idx_memory_edges_to", "to_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Document + Version models (global knowledge base)
+# ---------------------------------------------------------------------------
+
+
+class Document(Base):
+    """Global knowledge-base document — independent of conversations."""
+
+    __tablename__ = "documents"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    doc_type: Mapped[str] = mapped_column(String(64), nullable=False, default="note")
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="agent_generated"
+    )  # agent_generated | user_upload
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active"
+    )  # active | deleted
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False, default="agent")
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    updated_at: Mapped[float] = mapped_column(Float, nullable=False)
+    latest_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latest_version_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+
+    # Relationships
+    versions: Mapped[list["DocumentVersion"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("idx_documents_updated", "updated_at"),
+    )
+
+
+class DocumentVersion(Base):
+    """Versioned content of a Document — each update creates a new version row."""
+
+    __tablename__ = "document_versions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_md: Mapped[str] = mapped_column(Text, nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "metadata" is reserved on DeclarativeBase; use "meta" in Python, "metadata" in DB
+    meta: Mapped[dict] = mapped_column(JSONB, name="metadata", nullable=False, default=dict)
+    created_at: Mapped[float] = mapped_column(Float, nullable=False)
+
+    # Relationships
+    document: Mapped["Document"] = relationship(back_populates="versions")
+
+    __table_args__ = (
+        Index("idx_doc_versions_doc_id", "document_id", "version"),
+        UniqueConstraint("document_id", "version"),
+    )

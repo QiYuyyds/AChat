@@ -56,6 +56,20 @@ from app.schemas.messages import (
     ToolResultPart,
     ToolUsePart,
 )
+from app.schemas.document import (
+    DeleteDocumentResponse,
+    DocumentDetailResponse,
+    DocumentListItem,
+    DocumentListResponse,
+    DocumentResponse,
+    IngestResultResponse,
+    IngestVersionRequest,
+    UploadDocumentResponse,
+    VersionListResponse,
+    VersionResponse,
+    WriteDocumentRequest,
+    WriteDocumentResponse,
+)
 from app.schemas.requests import (
     AgentResponse,
     AttachmentListResponse,
@@ -187,4 +201,17 @@ __all__ = [
     "MobileTokenResponse",
     "MobileSnapshotResponse",
     "ErrorResponse",
+    # Documents
+    "WriteDocumentRequest",
+    "IngestVersionRequest",
+    "DocumentResponse",
+    "VersionResponse",
+    "DocumentListItem",
+    "DocumentListResponse",
+    "DocumentDetailResponse",
+    "VersionListResponse",
+    "IngestResultResponse",
+    "WriteDocumentResponse",
+    "DeleteDocumentResponse",
+    "UploadDocumentResponse",
 ]

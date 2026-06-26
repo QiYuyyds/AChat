@@ -84,3 +84,13 @@ def new_context_summary_id() -> str:
 def new_deployment_id() -> str:
     """Generate deployment ID: dep_<nanoid>"""
     return _gen_id("dep_")
+
+
+def new_document_id() -> str:
+    """Generate document ID: doc_<nanoid>"""
+    return _gen_id("doc_")
+
+
+def new_document_version_id() -> str:
+    """Generate document version ID: ver_<nanoid>"""
+    return _gen_id("ver_")

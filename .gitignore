@@ -69,6 +69,10 @@ next-env.d.ts
 # IDE
 .vscode/
 .idea/
+.qoder/
 
 # Docs learning
 /docs/learning/
+
+# 待融合项目
+/待融合项目/

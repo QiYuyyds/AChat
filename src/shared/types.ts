@@ -488,3 +488,80 @@ export interface SearchHit {
   /** FTS5 path: contains <mark>...</mark> tags. LIKE path: plain text. */
   snippetHtml: string
 }
+
+// ─── Document + Version (知识库) ──────────────────────────────
+export interface DocumentRow {
+  id: string
+  title: string
+  docType: string
+  source: 'agent_generated' | 'user_upload'
+  status: 'active' | 'deleted'
+  createdBy: string
+  createdAt: number
+  updatedAt: number
+  latestVersion: number
+  latestVersionId: string
+  latestMetadata?: {
+    filename?: string
+    parser?: string
+    pages?: number
+    textChars?: number
+    needsOcr?: boolean
+  }
+  latestContentChars?: number
+  latestParser?: string
+}
+
+export interface VersionRow {
+  id: string
+  documentId: string
+  version: number
+  contentMd: string
+  summary?: string | null
+  metadata: Record<string, unknown>
+  createdAt: number
+}
+
+export interface CreateDocumentRequest {
+  documentId?: string
+  title: string
+  docType?: string
+  source?: string
+  createdBy?: string
+  contentMd: string
+  summary?: string
+  metadata?: Record<string, unknown>
+  ingestToRag?: boolean
+}
+
+export interface WriteDocumentResponse {
+  document: DocumentRow
+  version: VersionRow
+  created: boolean
+  ingest?: {
+    chunk_count: number
+    doc_hash: string
+    indexed_count: number
+  }
+}
+
+export interface IngestResult {
+  versionId: string
+  chunkCount: number
+  docHash: string
+}
+
+export interface UploadResult {
+  filename: string
+  contentType?: string
+  parser?: string
+  pages?: number
+  textChars?: number
+  needsOcr?: boolean
+  chunkCount?: number
+  docHash?: string
+  document?: DocumentRow
+  version?: VersionRow
+  success: boolean
+  message?: string
+}
