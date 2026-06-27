@@ -10,6 +10,7 @@ const AGENTHUB_TOOL_LABELS = {
   fs_write: '写入文件',
   bash: '执行命令',
   ask_user: '询问用户',
+  web_search: '联网搜索',
 } as const
 
 const EXTERNAL_TOOL_LABELS: Record<string, string> = {

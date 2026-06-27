@@ -79,6 +79,7 @@ export const toolRegistry = buildRegistry()
 | `fs_read` | 读 workspace 内文本文件 | 读文件系统 | 需要看用户项目代码的 agent |
 | `fs_write` | 写 workspace 内文本文件 | 写文件系统 | 需要生成 / 修改文件的 agent |
 | `bash` | 在 workspace 内跑 shell 命令 | 进程 / 文件系统 | 需要 git / 编译 / 测试的 agent |
+| `web_search` | 用 Tavily 搜公网 | 调外部 API（`api.tavily.com`，耗 Tavily 额度） | 需要实时联网信息的 custom agent（**opt-in，不自动注入**） |
 
 ### write_artifact
 
@@ -378,6 +379,31 @@ curl -s http://127.0.0.1:3000/health
 **工具 description 按平台变体**（详见 Spec 11 「工具描述按平台变体」节）：description 字段在模块加载时根据 `currentPlatform()` 拼接，POSIX 展示用户 login shell 回退策略、POSIX 命令示例与 POSIX 黑名单文案，Windows 展示 PowerShell 示例与 Windows 黑名单文案。这是 LLM 选择命令语法的关键提示。
 
 **返回**：`{ cwd, command, exitCode, output, truncated, timedOut }`
+
+---
+
+### web_search
+
+源文件：`backend/app/tools/web_search.py`
+
+用 Tavily Search API 搜公网,给 agent 返回实时信息。
+
+**参数**：`{ query: string }`(非空)。
+
+**装备方式**:**opt-in,仅 custom agent**。agent 的 `tool_names` 里含 `web_search` 才生效;不像 `memory_recall` / RAG 工具那样被 `agent_runner` 自动注入。SDK(claude/codex)agent 的 `tool_names` 在创建时被强制清空,用各自 SDK 自带工具,**拿不到本工具**。
+
+**密钥**:`TAVILY_API_KEY`,经 `config.Settings.tavily_api_key` + `apply_env_overrides` 从 `.env` 兜底读取;不硬编码。缺 key 时 handler 返回错误结果,不崩溃、不在启动时拒服务。
+
+**流程**:
+1. zod/pydantic 校验 `query` 非空
+2. 读 `get_settings().tavily_api_key`,缺失 → `err(...)`
+3. `httpx.AsyncClient` `POST https://api.tavily.com/search`,body `{query, max_results: 5, include_answer: true}`,header `Authorization: Bearer <key>`,**15s 超时**
+4. 请求与 `ctx.cancel_event` 用 `asyncio.wait(FIRST_COMPLETED)` 竞争;run 中止则取消请求并返回 `err("web_search cancelled")`
+5. HTTP / JSON 错误映射为 `err(...)`
+
+**返回**:`{ answer: string | null, results: [{ title, url, content, score }] }`。结果限 **top-5**,每条 `content` 截断到 **2000 字符**(防灌爆 context;Tavily 返回属不可信外部文本,见 §安全)。
+
+**审批**:无审批门(只读外部调用,不改 host / 文件 / 依赖,与 `rag_search` 一致)。
 
 ---
 

@@ -25,11 +25,6 @@ from app.tools.deploy_workspace import (
 from app.tools.fs_list import fs_list_tool
 from app.tools.fs_read import fs_read_tool
 from app.tools.fs_write import fs_write_tool
-from app.tools.plan_tasks import plan_tasks_tool
-from app.tools.read_artifact import read_artifact_tool
-from app.tools.read_attachment import read_attachment_tool
-from app.tools.report_task_result import report_task_result_tool
-from app.tools.write_artifact import write_artifact_tool
 from app.tools.memory_rag import (
     memory_recall_tool,
     rag_delete_document_tool,
@@ -37,6 +32,12 @@ from app.tools.memory_rag import (
     rag_list_documents_tool,
     rag_search_tool,
 )
+from app.tools.plan_tasks import plan_tasks_tool
+from app.tools.read_artifact import read_artifact_tool
+from app.tools.read_attachment import read_attachment_tool
+from app.tools.report_task_result import report_task_result_tool
+from app.tools.web_search import web_search_tool
+from app.tools.write_artifact import write_artifact_tool
 
 
 class ToolRegistry:
@@ -89,6 +90,7 @@ def _build_registry() -> ToolRegistry:
     reg.register(rag_list_documents_tool)
     reg.register(rag_delete_document_tool)
     reg.register(memory_recall_tool)
+    reg.register(web_search_tool)
     return reg
 
 

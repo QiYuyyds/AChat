@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     deepseek_api_key: str | None = None
     ark_api_key: str | None = None
+    tavily_api_key: str | None = None
 
     # Server
     host: str = "127.0.0.1"
@@ -127,6 +128,7 @@ def apply_env_overrides() -> None:
         ("OPENAI_API_KEY", s.openai_api_key),
         ("DEEPSEEK_API_KEY", s.deepseek_api_key),
         ("ARK_API_KEY", s.ark_api_key),
+        ("TAVILY_API_KEY", s.tavily_api_key),
     ):
         if value and not os.environ.get(name):
             os.environ[name] = value

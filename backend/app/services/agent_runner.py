@@ -296,6 +296,11 @@ class AgentRunnerImpl:
         if not entry:
             return False
         task, cancel_event = entry
+        # Idempotent: once a run is already cancelling, do NOT cancel the task again.
+        # A second task.cancel() can interrupt finalize() before it publishes RunEndEvent,
+        # which drops the run.end event and leaves the frontend retrying abort forever.
+        if cancel_event.is_set():
+            return True
         cancel_event.set()
         task.cancel()  # best-effort: stop pending awaits promptly
         return True

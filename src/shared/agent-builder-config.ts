@@ -28,6 +28,7 @@ export const AVAILABLE_AGENT_TOOLS = [
   'fs_read',
   'fs_write',
   'bash',
+  'web_search',
 ] as const
 
 export type AgentToolName = (typeof AVAILABLE_AGENT_TOOLS)[number]
@@ -45,7 +46,20 @@ export const AGENT_TOOL_PRESETS: readonly AgentToolPreset[] = [
     id: 'all-purpose',
     label: '全栈通用',
     desc: '本地代码 + artifact 交付',
-    tools: AVAILABLE_AGENT_TOOLS,
+    // web_search intentionally excluded — keep it opt-in (avoids spending Tavily
+    // credits on every all-purpose agent). Tick it explicitly when search is needed.
+    tools: [
+      'write_artifact',
+      'deploy_artifact',
+      'deploy_workspace',
+      'read_artifact',
+      'read_attachment',
+      'ask_user',
+      'fs_list',
+      'fs_read',
+      'fs_write',
+      'bash',
+    ],
   },
   {
     id: 'local-code',
@@ -80,6 +94,7 @@ export const AGENT_TOOL_META: Record<AgentToolName, { label: string; desc: strin
   fs_read: { label: '读取文件', desc: '读取工作区内的文件（源码 / 配置等），仅限沙箱目录' },
   fs_write: { label: '写入文件', desc: '在工作区内新建 / 修改文件；review 模式下需用户批准' },
   bash: { label: '执行命令', desc: '在工作区内运行命令行；受命令黑名单与沙箱目录约束' },
+  web_search: { label: '联网搜索', desc: '用 Tavily 搜索公网获取实时信息；调用会消耗 Tavily 额度' },
 }
 
 export interface AgentDraftAssumption {

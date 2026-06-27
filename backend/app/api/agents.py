@@ -402,12 +402,28 @@ _AVAILABLE_AGENT_TOOLS: tuple[str, ...] = (
     "fs_read",
     "fs_write",
     "bash",
+    "web_search",
 )
+
+# Tools included by the "全栈通用" preset. web_search is intentionally excluded so it
+# stays opt-in (avoids silently spending Tavily credits on every all-purpose agent).
+_ALL_PURPOSE_TOOLS: list[str] = [
+    "write_artifact",
+    "deploy_artifact",
+    "deploy_workspace",
+    "read_artifact",
+    "read_attachment",
+    "ask_user",
+    "fs_list",
+    "fs_read",
+    "fs_write",
+    "bash",
+]
 
 _AGENT_TOOL_PRESETS: dict[str, dict[str, Any]] = {
     "all-purpose": {
         "label": "全栈通用",
-        "tools": list(_AVAILABLE_AGENT_TOOLS),
+        "tools": list(_ALL_PURPOSE_TOOLS),
     },
     "local-code": {
         "label": "本地代码",
@@ -465,6 +481,10 @@ _AGENT_TOOL_META: dict[str, dict[str, str]] = {
     "fs_read": {"label": "读取文件", "desc": "读取工作区内的文件（源码 / 配置等），仅限沙箱目录"},
     "fs_write": {"label": "写入文件", "desc": "在工作区内新建 / 修改文件；review 模式下需用户批准"},
     "bash": {"label": "执行命令", "desc": "在工作区内运行命令行；受命令黑名单与沙箱目录约束"},
+    "web_search": {
+        "label": "联网搜索",
+        "desc": "用 Tavily 搜索公网获取实时信息；调用会消耗 Tavily 额度",
+    },
 }
 
 
