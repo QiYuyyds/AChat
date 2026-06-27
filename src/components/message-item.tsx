@@ -188,12 +188,12 @@ function MessageItemImpl({ message }: { message: MessageRow }) {
       )}
 
       <div className={cn('flex max-w-[80%] min-w-0 flex-1 flex-col gap-1', isUser && 'items-end')}>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground font-mono">
           <span className="font-medium">{name}</span>
           <span>{formatTime(message.createdAt)}</span>
           {isBookmarked && (
-            <span className="text-amber-500" title="已收藏（导航书签）">
-              <Star className="size-3 fill-amber-400" />
+            <span className="text-warning" title="已收藏（导航书签）">
+              <Star className="size-3 fill-warning" />
             </span>
           )}
           {isPinned && (
@@ -224,10 +224,10 @@ function MessageItemImpl({ message }: { message: MessageRow }) {
           data-selection-target="message"
           data-selection-label={isUser ? '我的消息' : `${name} 的消息`}
           className={cn(
-            'min-w-0 rounded-lg border bg-card px-3 py-2',
-            isUser && 'bg-primary/5 border-primary/20',
-            message.status === 'error' && 'border-red-300 bg-red-50/40 dark:border-red-900/50 dark:bg-red-950/20',
-            message.status === 'aborted' && 'border-zinc-300 bg-zinc-50/60 dark:border-zinc-700 dark:bg-zinc-900/40',
+            'min-w-0 rounded-lg bg-card px-3 py-2 shadow-[var(--inset-hi)]',
+            isUser && 'border-l-2 border-primary bg-transparent shadow-none',
+            message.status === 'error' && 'border-destructive/40 bg-destructive/10',
+            message.status === 'aborted' && 'border-muted-foreground/40 bg-muted/60',
             editing && 'w-full max-w-xl',
             isHighlighted && 'message-glow',
           )}
@@ -331,7 +331,7 @@ function MessageItemImpl({ message }: { message: MessageRow }) {
                   type="button"
                   onClick={() => setConfirmWithdraw(true)}
                   disabled={busy}
-                  className="transition hover:text-red-600 disabled:opacity-30"
+                  className="transition hover:text-destructive disabled:opacity-30"
                   title="撤回此消息及之后的回复"
                 >
                   <Trash2 className="size-3.5" />
@@ -370,7 +370,7 @@ function MessageItemImpl({ message }: { message: MessageRow }) {
             </Button>
             <Button
               variant="default"
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-destructive hover:bg-destructive/90"
               onClick={() => void handleWithdraw()}
               disabled={busy}
             >

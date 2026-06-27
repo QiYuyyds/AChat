@@ -1443,7 +1443,7 @@ function ProjectView({
             </span>
           )}
           {truncated && (
-            <span className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
+            <span className="shrink-0 rounded bg-warning/10 px-1.5 py-0.5 text-[10px] text-warning">
               已截断
             </span>
           )}
@@ -1694,8 +1694,8 @@ function DiffArtifactView({ content }: { content: Extract<ArtifactContent, { typ
           className={cn(
             'rounded border px-1.5 py-0.5 text-[10px]',
             content.applied
-              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-              : 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+              ? 'border-success/30 bg-success/10 text-success'
+              : 'border-warning/30 bg-warning/10 text-warning',
           )}
         >
           {content.applied ? '已应用' : '未应用'}

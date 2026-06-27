@@ -441,7 +441,7 @@ function MobileConnectionHints({
       ) : (
         <div className="flex flex-col gap-2">
           {restartRequired && (
-            <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-2 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-200">
+            <div className="flex gap-2 rounded-md border border-warning/30 bg-warning/10 px-2 py-2 text-warning">
               <AlertTriangle className="mt-0.5 size-4 flex-none" />
               <div className="min-w-0">
                 <p className="text-xs font-semibold">请重启桌面端 App</p>

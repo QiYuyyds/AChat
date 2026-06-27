@@ -205,7 +205,7 @@ function BarRow({
       </div>
       <div className="h-1 overflow-hidden rounded-full bg-muted">
         <div
-          className="h-full rounded-full bg-[#3370FF]/70 transition-all"
+          className="h-full rounded-full bg-primary/70 transition-all"
           style={{ width: `${pct}%` }}
         />
       </div>

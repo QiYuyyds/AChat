@@ -161,7 +161,7 @@ export function SkillLibrary() {
               : '拖入含 SKILL.md 的文件或文件夹，或点「上传技能」选择'}
         </div>
         {error && (
-          <div className="mt-1.5 rounded-md border border-red-500/30 bg-red-50/30 px-2 py-1.5 text-[10px] text-red-700 dark:bg-red-950/10 dark:text-red-400">
+          <div className="mt-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[10px] text-destructive">
             {error}
           </div>
         )}
@@ -218,7 +218,7 @@ export function SkillLibrary() {
                       setDeleteTargetSlug(skill.slug)
                     }}
                     title="删除技能"
-                    className="shrink-0 self-center opacity-0 transition group-hover:opacity-100 hover:text-red-600"
+                    className="shrink-0 self-center opacity-0 transition group-hover:opacity-100 hover:text-destructive"
                   >
                     <Trash2 className="size-3.5" />
                   </button>
@@ -248,7 +248,7 @@ export function SkillLibrary() {
                 取消
               </Button>
               <Button
-                className="bg-red-600 hover:bg-red-700"
+                className="bg-destructive hover:bg-destructive/90"
                 size="sm"
                 onClick={() => void handleDelete()}
                 disabled={deleting}

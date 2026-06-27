@@ -25,7 +25,7 @@ const SIZE_CLASS: Record<NonNullable<AgentAvatarProps['size']>, string> = {
 const PALETTE = [
   'bg-rose-500',
   'bg-orange-500',
-  'bg-amber-600',
+  'bg-yellow-600',
   'bg-emerald-500',
   'bg-teal-500',
   'bg-sky-500',

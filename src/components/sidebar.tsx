@@ -419,7 +419,7 @@ export function Sidebar() {
             </Button>
             <Button
               variant="default"
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-destructive hover:bg-destructive/90"
               onClick={() => void confirmDelete()}
               disabled={deleting}
             >
@@ -463,10 +463,10 @@ function CollapsedItem({
         </Avatar>
       )}
       {conv.pinnedAt && (
-        <Pin className="absolute -right-0 -top-0 size-3 fill-amber-400 text-amber-500" />
+        <Pin className="absolute -right-0 -top-0 size-3 fill-warning text-warning" />
       )}
       {unread > 0 && !isActive && (
-        <span className="absolute -bottom-0.5 -right-0.5 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-medium leading-none text-white">
+        <span className="absolute -bottom-0.5 -right-0.5 inline-flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-medium leading-none text-white">
           {unread > 9 ? '9+' : unread}
         </span>
       )}
@@ -505,8 +505,8 @@ function ConversationItem({
     <div
       className={cn(
         'group flex w-full items-center gap-3 rounded-md px-2 py-2 transition hover:bg-accent',
-        isActive && 'bg-accent',
-        isPinned && 'bg-amber-50/40 dark:bg-amber-950/10',
+        isActive && 'border-l-2 border-primary bg-transparent',
+        isPinned && 'bg-warning/10',
       )}
     >
       <button
@@ -524,7 +524,7 @@ function ConversationItem({
             </Avatar>
           )}
           {unread > 0 && !isActive && (
-            <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-none text-white">
+            <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium leading-none text-white">
               {unread > 99 ? '99+' : unread}
             </span>
           )}
@@ -539,7 +539,7 @@ function ConversationItem({
             />
           ) : (
             <div className="flex items-center gap-1">
-              {isPinned && <Pin className="size-3 shrink-0 fill-amber-400 text-amber-500" />}
+              {isPinned && <Pin className="size-3 shrink-0 fill-warning text-warning" />}
               <div className="truncate text-sm font-medium">{conversation.title}</div>
             </div>
           )}
@@ -559,7 +559,7 @@ function ConversationItem({
             title={isPinned ? '取消置顶' : '置顶'}
             className={cn(
               'transition-colors',
-              isPinned ? 'text-amber-500 hover:text-amber-600' : 'hover:text-amber-500',
+              isPinned ? 'text-warning hover:text-warning/80' : 'hover:text-warning',
             )}
           >
             {isPinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
@@ -593,7 +593,7 @@ function ConversationItem({
               onRequestDelete()
             }}
             title="删除会话"
-            className="transition-colors hover:text-red-600"
+            className="transition-colors hover:text-destructive"
           >
             <Trash2 className="size-4" />
           </button>
@@ -666,7 +666,7 @@ function TabButton({
         title={label}
         className={cn(
           'flex size-9 items-center justify-center rounded-md transition',
-          active ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent',
+          active ? 'ring-2 ring-primary bg-transparent' : 'text-muted-foreground hover:bg-accent',
         )}
       >
         {icon}
@@ -680,7 +680,7 @@ function TabButton({
       className={cn(
         'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-xs font-medium transition',
         active
-          ? 'bg-primary text-primary-foreground'
+          ? 'text-primary shadow-[inset_0_-2px_0_0_var(--color-primary)]'
           : 'text-muted-foreground hover:bg-accent hover:text-foreground',
       )}
     >

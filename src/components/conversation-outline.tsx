@@ -109,7 +109,7 @@ export function ConversationOutline({ conversationId }: { conversationId: string
               className={cn(
                 'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] transition disabled:cursor-not-allowed disabled:opacity-40',
                 onlyStarred
-                  ? 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-300'
+                  ? 'border-warning/40 bg-warning/10 text-warning'
                   : 'border-transparent text-muted-foreground hover:bg-accent hover:text-foreground',
               )}
               title={onlyStarred ? '显示全部' : `只看收藏 (${starredCount})`}
@@ -190,7 +190,7 @@ function OutlineItem({
         active && 'bg-primary/10 ring-1 ring-primary/20 hover:bg-primary/10',
         starred &&
           !active &&
-          'bg-amber-50/60 hover:bg-amber-50 dark:bg-amber-950/20 dark:hover:bg-amber-950/40',
+          'bg-warning/10 hover:bg-warning/20',
       )}
     >
       <button
@@ -216,12 +216,12 @@ function OutlineItem({
         className={cn(
           'mt-0.5 shrink-0 rounded p-0.5 transition disabled:opacity-50',
           starred
-            ? 'text-amber-500'
-            : 'text-muted-foreground/30 opacity-0 hover:text-amber-500 group-hover:opacity-100',
+            ? 'text-warning'
+            : 'text-muted-foreground/30 opacity-0 hover:text-warning group-hover:opacity-100',
         )}
         title={starred ? '取消收藏' : '收藏（仅用于导航定位）'}
       >
-        <Star className={cn('size-3.5', starred && 'fill-amber-400')} />
+        <Star className={cn('size-3.5', starred && 'fill-warning')} />
       </button>
     </div>
   )

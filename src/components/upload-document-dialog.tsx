@@ -148,13 +148,13 @@ export function UploadDocumentDialog({
             dragOver
               ? 'border-primary bg-primary/5'
               : file
-                ? 'border-green-500/40 bg-green-50/30 dark:bg-green-950/10'
+                ? 'border-success/40 bg-success/10'
                 : 'border-border hover:border-foreground/30 hover:bg-accent/50',
           )}
         >
           {file ? (
             <div className="flex flex-col items-center gap-1">
-              <CheckCircle2 className="size-6 text-green-500" />
+              <CheckCircle2 className="size-6 text-success" />
               <span className="text-xs font-medium">{file.name}</span>
               <span className="text-[10px] text-muted-foreground">
                 {(file.size / 1024).toFixed(1)} KB
@@ -217,8 +217,8 @@ export function UploadDocumentDialog({
           <div className={cn(
             'rounded-md border px-3 py-2 text-xs',
             result.success
-              ? 'border-green-500/30 bg-green-50/30 text-green-700 dark:bg-green-950/10 dark:text-green-400'
-              : 'border-amber-500/30 bg-amber-50/30 text-amber-700 dark:bg-amber-950/10 dark:text-amber-400',
+              ? 'border-success/30 bg-success/10 text-success'
+              : 'border-warning/30 bg-warning/10 text-warning',
           )}>
             <div className="flex items-center gap-1.5 font-medium">
               {result.success ? <CheckCircle2 className="size-3.5" /> : <AlertCircle className="size-3.5" />}
@@ -228,14 +228,14 @@ export function UploadDocumentDialog({
             {result.pages != null && <div className="text-[10px]">页数: {result.pages}</div>}
             {result.textChars != null && <div className="text-[10px]">字数: {result.textChars}</div>}
             {result.chunkCount != null && <div className="text-[10px]">分块数: {result.chunkCount}</div>}
-            {result.needsOcr && <div className="text-[10px] text-amber-600">需要 OCR</div>}
+            {result.needsOcr && <div className="text-[10px] text-warning">需要 OCR</div>}
             {result.message && <div className="mt-0.5 text-[10px]">{result.message}</div>}
           </div>
         )}
 
         {/* Error */}
         {error && (
-          <div className="rounded-md border border-red-500/30 bg-red-50/30 px-3 py-2 text-xs text-red-700 dark:bg-red-950/10 dark:text-red-400">
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             <div className="flex items-center gap-1.5 font-medium">
               <AlertCircle className="size-3.5" />
               上传出错

@@ -206,7 +206,7 @@ export function FileLibraryDialog({
               取消
             </Button>
             <Button
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-destructive hover:bg-destructive/90"
               onClick={() => void confirmDelete()}
               disabled={deleting}
             >
@@ -316,7 +316,7 @@ function ImageGridItem({
             e.preventDefault()
             onDelete()
           }}
-          className="rounded-full bg-black/60 p-1 text-white transition hover:bg-red-600"
+          className="rounded-full bg-black/60 p-1 text-white transition hover:bg-destructive"
           title="删除"
         >
           <Trash2 className="size-3" />
@@ -376,7 +376,7 @@ function FileRow({
       <button
         type="button"
         onClick={onDelete}
-        className="shrink-0 opacity-0 transition group-hover:opacity-100 hover:text-red-600"
+        className="shrink-0 opacity-0 transition group-hover:opacity-100 hover:text-destructive"
         title="删除"
       >
         <Trash2 className="size-3.5" />

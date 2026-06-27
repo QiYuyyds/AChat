@@ -187,7 +187,7 @@ function AskUserBody({
           {agent ? (
             <AgentAvatar agent={agent} size="sm" />
           ) : (
-            <HelpCircle className="size-4 text-[#3370FF]" />
+            <HelpCircle className="size-4 text-primary" />
           )}
           <span>{agentName} 想确认几件事</span>
           {queueSize > 1 && (
@@ -227,7 +227,7 @@ function AskUserBody({
         </span>
         <Button
           size="sm"
-          className="bg-[#3370FF] text-white hover:bg-[#2860e5]"
+          className="bg-primary text-primary-foreground hover:bg-primary/90"
           disabled={!allAnswered || busy}
           onClick={() => void handleSubmit()}
         >
@@ -264,7 +264,7 @@ function QuestionBlock({
   return (
     <section className="space-y-2 rounded-lg border bg-card p-3">
       <div className="flex items-start gap-2">
-        <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-md bg-[#3370FF]/10 px-1.5 py-0.5 text-[10px] font-medium text-[#3370FF]">
+        <span className="mt-0.5 inline-flex shrink-0 items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
           <Sparkles className="size-2.5" />
           {question.header}
         </span>
@@ -287,14 +287,14 @@ function QuestionBlock({
               className={cn(
                 'flex items-start gap-2 rounded-md border px-2.5 py-2 text-left text-xs transition',
                 isSel
-                  ? 'border-[#3370FF] bg-[#3370FF]/5'
+                  ? 'border-primary bg-primary/5'
                   : 'border-transparent bg-muted/30 hover:border-foreground/20',
               )}
             >
               <span
                 className={cn(
                   'mt-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-full border-2',
-                  isSel ? 'border-[#3370FF] bg-[#3370FF]' : 'border-muted-foreground/40',
+                  isSel ? 'border-primary bg-primary' : 'border-muted-foreground/40',
                 )}
               >
                 {isSel && <span className="size-1 rounded-full bg-white" />}
@@ -320,14 +320,14 @@ function QuestionBlock({
           className={cn(
             'flex items-start gap-2 rounded-md border px-2.5 py-2 text-left text-xs transition',
             otherSelected
-              ? 'border-amber-400 bg-amber-50/60 dark:bg-amber-950/20'
+              ? 'border-warning bg-warning/10'
               : 'border-dashed border-muted-foreground/30 hover:border-foreground/30',
           )}
         >
           <span
             className={cn(
               'mt-0.5 inline-flex size-3.5 shrink-0 items-center justify-center rounded-full border-2',
-              otherSelected ? 'border-amber-500 bg-amber-500' : 'border-muted-foreground/40',
+              otherSelected ? 'border-warning bg-warning' : 'border-muted-foreground/40',
             )}
           >
             {otherSelected && <span className="size-1 rounded-full bg-white" />}
