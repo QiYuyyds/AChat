@@ -115,13 +115,29 @@ export function ArtifactPreviewPanel() {
     [id, upsertArtifact, openPreview],
   )
 
+  // Esc 关闭预览
+  useEffect(() => {
+    if (!id) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [id, close])
+
   if (!id || !artifact) return null
 
   const versionCount = versions?.length ?? 0
   const hasMultiple = versionCount > 1
 
   return (
-    <aside className="flex w-1/2 min-w-[420px] shrink-0 flex-col border-l bg-card max-md:fixed max-md:inset-0 max-md:z-40 max-md:w-full max-md:min-w-0">
+    <>
+      {/* 桌面端遮罩：点击关闭。移动端面板全屏覆盖，无需遮罩 */}
+      <div
+        className="fixed inset-0 z-30 hidden bg-foreground/10 animate-in fade-in md:block"
+        onClick={close}
+      />
+      <aside className="fixed inset-y-0 right-0 z-40 flex w-1/2 min-w-[420px] flex-col border-l bg-card shadow-xl animate-in slide-in-from-right duration-200 max-md:inset-0 max-md:w-full max-md:min-w-0">
       <header className="flex shrink-0 items-center justify-between border-b px-4 py-3">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <TypeIcon type={artifact.type} />
@@ -255,7 +271,8 @@ export function ArtifactPreviewPanel() {
       ) : (
         <ArtifactView artifact={artifact} onSaveVersion={handleSaveVersion} />
       )}
-    </aside>
+      </aside>
+    </>
   )
 }
 

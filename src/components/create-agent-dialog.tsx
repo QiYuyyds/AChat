@@ -26,6 +26,7 @@ import {
   type UpdateAgentBody,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { pickRandomAgentIcon } from '@/shared/agent-icons'
 import {
   AGENT_BUILDER_PROVIDER_DEFAULTS as PROVIDER_DEFAULTS,
   AGENT_TOOL_META as TOOL_META,
@@ -257,7 +258,7 @@ export function CreateAgentDialog({
       const isSdkAgent = draft.adapterName === 'claude-code' || draft.adapterName === 'codex'
       const body: CreateAgentBody = {
         name: draft.name.trim(),
-        avatar: draft.avatar,
+        avatar: pickRandomAgentIcon(),
         description: draft.description.trim(),
         capabilities: draft.capabilities,
         systemPrompt: draft.systemPrompt.trim(),
@@ -338,7 +339,7 @@ export function CreateAgentDialog({
       } else {
         const body: CreateAgentBody = {
           name: trimmed,
-          avatar: '',
+          avatar: pickRandomAgentIcon(),
           description: description.trim(),
           capabilities,
           systemPrompt: systemPrompt.trim(),

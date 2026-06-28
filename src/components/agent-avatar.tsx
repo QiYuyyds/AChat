@@ -1,15 +1,16 @@
 'use client'
 
+import { agentIconUrl, isAgentIconToken } from '@/shared/agent-icons'
 import { cn } from '@/lib/utils'
 
 /**
- * AgentAvatar — 统一的 Agent 头像渲染。Monogram + 哈希配色（Linear/Notion 风格）。
+ * AgentAvatar — 统一的 Agent 头像渲染。
  *
- * 不再使用 emoji，让产品看起来不那么「AI 工具感」。
+ * avatar 为图标 token（icon-NN）时渲染图标库图片；否则回退到 Monogram + 哈希配色。
  */
 
 interface AgentAvatarProps {
-  agent: { id: string; name: string }
+  agent: { id: string; name: string; avatar?: string | null }
   size?: 'xs' | 'sm' | 'md' | 'lg'
   className?: string
 }
@@ -64,6 +65,20 @@ export function getAgentColor(agentId: string): string {
 }
 
 export function AgentAvatar({ agent, size = 'md', className }: AgentAvatarProps) {
+  if (isAgentIconToken(agent.avatar)) {
+    return (
+      <img
+        src={agentIconUrl(agent.avatar as string)}
+        alt={agent.name}
+        className={cn(
+          'shrink-0 select-none rounded-full object-cover',
+          SIZE_CLASS[size],
+          className,
+        )}
+      />
+    )
+  }
+
   const color = getAgentColor(agent.id)
   const text = getMonogram(agent.name)
 
