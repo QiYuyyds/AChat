@@ -178,7 +178,7 @@ store.previewArtifactId → ArtifactPreviewPanel
 .agenthub-data/deployments/dep_xxx/
   index.html                  # 运行态 HTML，继承 buildWebAppHtml 注入效果
   ...                         # 对外可服务的静态资源
-  .agenthub/manifest.json     # AgentHub 私有发布元数据
+  .agenthub/manifest.json     # AChat 私有发布元数据
   .agenthub/source/**         # 原始 artifact source，用于源码包下载
 ```
 
@@ -210,7 +210,7 @@ store.previewArtifactId → ArtifactPreviewPanel
 
 `sourceType='artifact'` 的记录来自聊天内 `web_app` artifact；`sourceType='workspace'` 的记录来自本地 workspace 静态输出目录，`artifactId` 使用 `workspace:<workspacePath>` 占位，`version` 固定为 `0`。
 
-若 `app_settings` 配置了外部静态发布目标，`deploy_artifact` / `deploy_workspace` 会额外把公开文件复制到 `<deployment_publish_dir>/<deploymentId>/`，并把 `previewPath` 设为 `deployment_public_base_url + deploymentId + '/'`。这种情况下 `localPreviewPath` 保留本地回退路径，`publishPath` 是实际写入目录。AgentHub 不启动外部托管服务，用户需要让 nginx / Caddy / Tailscale Serve / Pages 同步等服务指向该发布根目录。
+若 `app_settings` 配置了外部静态发布目标，`deploy_artifact` / `deploy_workspace` 会额外把公开文件复制到 `<deployment_publish_dir>/<deploymentId>/`，并把 `previewPath` 设为 `deployment_public_base_url + deploymentId + '/'`。这种情况下 `localPreviewPath` 保留本地回退路径，`publishPath` 是实际写入目录。AChat 不启动外部托管服务，用户需要让 nginx / Caddy / Tailscale Serve / Pages 同步等服务指向该发布根目录。
 
 `summaryInstruction` 只给 Agent 看，用于约束最终文字总结：本地发布时不得自造公网域名；外部发布时只能引用结构化返回的 `previewPath` / `publicUrl`，不得改写成其它 URL。UI 展示仍以结构化部署卡片为准。
 

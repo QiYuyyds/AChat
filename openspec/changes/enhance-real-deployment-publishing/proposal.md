@@ -2,7 +2,7 @@
 
 ## Why
 
-`deploy_artifact` currently creates a local AgentHub preview and downloadable source/container packages. This is useful for inspection, but it does not publish the artifact to a user-controlled static hosting location. Users still need to move files manually.
+`deploy_artifact` currently creates a local AChat preview and downloadable source/container packages. This is useful for inspection, but it does not publish the artifact to a user-controlled static hosting location. Users still need to move files manually.
 
 ## What Changes
 

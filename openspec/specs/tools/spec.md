@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Defines AgentHub-managed tools, approval boundaries, and adapter-specific tool ownership. Detailed tool specs live in `specs/07-tools.md`.
+Defines AChat-managed tools, approval boundaries, and adapter-specific tool ownership. Detailed tool specs live in `specs/07-tools.md`.
 
 ## Requirements
 
 ### Requirement: Tool definitions SHALL be registered centrally
 
-AgentHub-managed tools MUST be registered through `toolRegistry` with name, description, JSON schema, and handler.
+AChat-managed tools MUST be registered through `toolRegistry` with name, description, JSON schema, and handler.
 
 #### Scenario: Custom agent enables a tool
 - **WHEN** an agent's `toolNames` includes `fs_read`
@@ -20,7 +20,7 @@ AgentHub-managed tools MUST be registered through `toolRegistry` with name, desc
 
 #### Scenario: Agent reads a PDF attachment
 - **WHEN** `read_attachment` receives an attachment whose MIME type, filename, or file header identifies it as a PDF
-- **THEN** AgentHub extracts local PDF text before returning the tool result
+- **THEN** AChat extracts local PDF text before returning the tool result
 - **AND** truncates the returned text at the same bounded length used for text files
 - **AND** returns a clear note when the PDF has no extractable text and likely needs OCR.
 
@@ -47,35 +47,35 @@ The bash tool MUST reject commands that match the platform-specific banned patte
 
 ### Requirement: Key bash commands SHALL require user approval
 
-AgentHub MUST require explicit user approval before executing bash commands that are not banned but can materially change dependencies, discard files, or affect host-level runtime state. This approval gate MUST apply to AgentHub's `bash` tool and SDK command hooks where the adapter exposes a pre-execution permission callback.
+AChat MUST require explicit user approval before executing bash commands that are not banned but can materially change dependencies, discard files, or affect host-level runtime state. This approval gate MUST apply to AChat's `bash` tool and SDK command hooks where the adapter exposes a pre-execution permission callback.
 
 #### Scenario: Agent installs dependencies
 - **WHEN** an agent requests `pnpm install`
-- **THEN** AgentHub records a pending bash command
+- **THEN** AChat records a pending bash command
 - **AND** emits it through the conversation event stream
 - **AND** executes the command only after user approval.
 
 ### Requirement: Review mode SHALL require write approval
 
-In review mode, file write effects managed by AgentHub MUST create pending approvals instead of directly mutating workspace files.
+In review mode, file write effects managed by AChat MUST create pending approvals instead of directly mutating workspace files.
 
 #### Scenario: Agent proposes a file write
 - **WHEN** `fs_write` is called in review mode
-- **THEN** AgentHub records a pending write
+- **THEN** AChat records a pending write
 - **AND** waits for explicit user approval.
 
 ### Requirement: SDK tool sets SHALL be documented separately
 
-Claude Code and Codex SDK adapters MUST document their built-in tool ownership and any approval bridge limitations instead of pretending those tools are AgentHub `toolRegistry` tools.
+Claude Code and Codex SDK adapters MUST document their built-in tool ownership and any approval bridge limitations instead of pretending those tools are AChat `toolRegistry` tools.
 
 #### Scenario: Codex agent runs in review mode
 - **WHEN** a Codex agent is selected
 - **THEN** Codex uses read-only sandbox mode
-- **AND** AgentHub exposes only the allowlisted AgentHub MCP tools to Codex.
+- **AND** AChat exposes only the allowlisted AChat MCP tools to Codex.
 
-### Requirement: AgentHub SHALL inject tool-call guidance for available tools
+### Requirement: AChat SHALL inject tool-call guidance for available tools
 
-AgentHub MUST append usage guidance and concrete examples for the AgentHub-managed tools available to the current run. Guidance MUST be scoped to the actual tool set, and MUST call out common argument-shape mistakes for tools whose schemas are often confused.
+AChat MUST append usage guidance and concrete examples for the AChat-managed tools available to the current run. Guidance MUST be scoped to the actual tool set, and MUST call out common argument-shape mistakes for tools whose schemas are often confused.
 
 #### Scenario: Custom agent has file and artifact tools
 - **WHEN** a custom agent run is built with `fs_read`, `fs_write`, `read_artifact`, and `write_artifact`
@@ -87,24 +87,24 @@ AgentHub MUST append usage guidance and concrete examples for the AgentHub-manag
 - **THEN** the injected guidance warns against empty `write_artifact({})` calls
 - **AND** includes a complete document artifact template with `type`, `title`, and `content`.
 
-#### Scenario: SDK adapter receives AgentHub MCP tools
+#### Scenario: SDK adapter receives AChat MCP tools
 - **WHEN** a Claude Code or Codex run is built
-- **THEN** the injected guidance includes the allowlisted AgentHub MCP tools exposed by that adapter
+- **THEN** the injected guidance includes the allowlisted AChat MCP tools exposed by that adapter
 - **AND** examples use the exact camelCase argument names accepted by the tool schemas.
 
 #### Scenario: Local workspace code task has file tools
 - **WHEN** a run is built for a local workspace
-- **AND** the agent has AgentHub file tools or SDK local file tools
+- **AND** the agent has AChat file tools or SDK local file tools
 - **THEN** the injected guidance tells the agent to prefer direct workspace file/command tools for project source work
 - **AND** tells the agent not to use `write_artifact` for source files that should be written to disk.
 
 ### Requirement: Agents SHALL be able to ask structured user questions
 
-AgentHub MUST provide an `ask_user` tool for finite user choices. The tool SHALL accept 1-4 questions, each with 2-4 options, and SHALL suspend the run until the user answers or the run is aborted.
+AChat MUST provide an `ask_user` tool for finite user choices. The tool SHALL accept 1-4 questions, each with 2-4 options, and SHALL suspend the run until the user answers or the run is aborted.
 
 #### Scenario: Agent needs a blocking finite choice
 - **WHEN** an available agent tool call submits `ask_user` with valid questions
-- **THEN** AgentHub records a pending user question
+- **THEN** AChat records a pending user question
 - **AND** emits the pending question through the conversation event stream
 - **AND** returns the selected answers to the agent after the user responds.
 
@@ -115,7 +115,7 @@ AgentHub MUST provide an `ask_user` tool for finite user choices. The tool SHALL
 
 ### Requirement: Web app artifacts SHALL be deployable to preview URLs
 
-AgentHub MUST provide a `deploy_artifact` tool that accepts a web app artifact id and returns a deployment status record with a preview path. The tool MUST create a local static deployment and SHOULD additionally publish it to a configured external static directory.
+AChat MUST provide a `deploy_artifact` tool that accepts a web app artifact id and returns a deployment status record with a preview path. The tool MUST create a local static deployment and SHOULD additionally publish it to a configured external static directory.
 
 #### Scenario: Agent deploys a web app artifact
 - **WHEN** `deploy_artifact` receives a valid `web_app` artifact id
@@ -135,7 +135,7 @@ AgentHub MUST provide a `deploy_artifact` tool that accepts a web app artifact i
 
 ### Requirement: Workspace static directories SHALL be deployable to preview URLs
 
-AgentHub MUST provide a `deploy_workspace` tool that accepts a static output directory inside the current workspace and returns a deployment status record. The tool MUST copy existing static files only; it MUST NOT run build commands. Workspace deployments MUST enforce workspace path isolation, reject missing or non-directory sources, require an HTML entry file, and exclude private or dependency directories such as `.agenthub`, `.git`, and `node_modules`.
+AChat MUST provide a `deploy_workspace` tool that accepts a static output directory inside the current workspace and returns a deployment status record. The tool MUST copy existing static files only; it MUST NOT run build commands. Workspace deployments MUST enforce workspace path isolation, reject missing or non-directory sources, require an HTML entry file, and exclude private or dependency directories such as `.agenthub`, `.git`, and `node_modules`.
 
 #### Scenario: Agent deploys a built local project
 - **WHEN** `deploy_workspace` receives `path="dist"` and `dist/index.html` exists inside the conversation workspace
@@ -146,11 +146,11 @@ AgentHub MUST provide a `deploy_workspace` tool that accepts a static output dir
 - **WHEN** a user sends `/deploy`
 - **AND** the conversation has no `web_app` artifact candidates
 - **AND** a common static output directory such as `dist`, `build`, `out`, or `client/dist` exists with `index.html`
-- **THEN** AgentHub deploys that workspace directory and inserts a `deploy_status` message part.
+- **THEN** AChat deploys that workspace directory and inserts a `deploy_status` message part.
 
 ### Requirement: Child tasks SHALL report semantic task outcomes
 
-AgentHub MUST provide a `report_task_result` tool for Orchestrator-dispatched child runs. The tool SHALL accept `status`, `summary`, optional `acceptanceResults`, and optional `blockers`, and SHALL not create artifacts or mutate workspace files.
+AChat MUST provide a `report_task_result` tool for Orchestrator-dispatched child runs. The tool SHALL accept `status`, `summary`, optional `acceptanceResults`, and optional `blockers`, and SHALL not create artifacts or mutate workspace files.
 
 #### Scenario: Child reports completion
 - **WHEN** a child run calls `report_task_result` with `status="complete"`

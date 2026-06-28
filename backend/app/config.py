@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # Workspace
     workspace_root: str = "../.agenthub-data/workspaces"
 
-    # AgentHub data dir (deployments live under <data_dir>/deployments). Mirrors
+    # AChat data dir (deployments live under <data_dir>/deployments). Mirrors
     # the TS AGENTHUB_DATA_DIR; defaults to the same dir the SQLite DB sits in.
     data_dir: str = "../.agenthub-data"
 
@@ -104,7 +104,7 @@ class Settings(BaseSettings):
 
     @property
     def data_path(self) -> Path:
-        """Get AgentHub data dir as a resolved Path object."""
+        """Get AChat data dir as a resolved Path object."""
         return Path(self.data_dir).resolve()
 
 

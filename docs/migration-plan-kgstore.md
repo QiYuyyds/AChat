@@ -1,12 +1,12 @@
 # KGStore 知识图谱迁移计划
 
-> 将 AGI-memory 的知识图谱模块（Extractor + KGStore）迁移到 AgentHub，补全 RAG 三路检索中的 Neo4j KG 路径。
+> 将 AGI-memory 的知识图谱模块（Extractor + KGStore）迁移到 AChat，补全 RAG 三路检索中的 Neo4j KG 路径。
 
 ## 1. 背景与目标
 
 ### 1.1 现状
 
-AgentHub 的 RAG 混合检索架构设计了三路融合：
+AChat 的 RAG 混合检索架构设计了三路融合：
 
 ```
 rag_search → HybridStore.search()
@@ -67,7 +67,7 @@ class KGStore:
 (:Entity {name, type, doc_hash, chunk_id, pg_id})
 
 // Relation 边（动态关系类型）
-(:Entity {name:"Harness"})-[:PART_OF {doc_hash, chunk_id, pg_id}]->(:Entity {name:"AgentHub"})
+(:Entity {name:"Harness"})-[:PART_OF {doc_hash, chunk_id, pg_id}]->(:Entity {name:"AChat"})
 ```
 
 实体类型：Person, Organization, Location, Concept, Event, Product, Unknown
@@ -126,7 +126,7 @@ backend/app/graph/
 self.neo4j.run_cypher(query, params)  # 同步调用，返回 list[dict]
 ```
 
-**AgentHub（async）**：
+**AChat（async）**：
 ```python
 # kgstore.py — 适配后
 async def _run_cypher(self, query: str, params: dict) -> list:
@@ -147,7 +147,7 @@ def index_document(self, doc_hash: str, chunks: List[ChunkRef]) -> None:
         ...
 ```
 
-**AgentHub（async）**：
+**AChat（async）**：
 ```python
 async def index_document(self, doc_hash: str, chunks: List[ChunkRef]) -> None:
     for c in chunks:
@@ -168,7 +168,7 @@ if self._kg_index_fn and self._kg_ok():
 
 **AGI-memory**：返回 `List[GraphSearchResult]`（dataclass 对象）
 
-**AgentHub hybrid.py 期望**：`List[dict]`（含 `pg_id` 键）
+**AChat hybrid.py 期望**：`List[dict]`（含 `pg_id` 键）
 
 ```python
 # kgstore.py — 适配后
@@ -197,7 +197,7 @@ hits = (await self._kg_search_fn(query, fetch_k)) or []  # async 调用
 #### 适配 5：LLM 回调注入
 
 AGI-memory 的 Extractor 接受 `llm_fn: Callable[[str, str], str]`（同步签名）。
-AgentHub 的 `_make_generate_fn` 已生成同步 `generate(system_prompt, user_msg) -> str`，可直接注入。
+AChat 的 `_make_generate_fn` 已生成同步 `generate(system_prompt, user_msg) -> str`，可直接注入。
 
 ```python
 # main.py _wire_kg_to_rag 中

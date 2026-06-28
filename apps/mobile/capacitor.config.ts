@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli'
 
 const config: CapacitorConfig = {
   appId: 'com.agenthub.mobile',
-  appName: 'AgentHub Mobile',
+  appName: 'AChat Mobile',
   webDir: 'dist',
   server: {
     androidScheme: 'https',

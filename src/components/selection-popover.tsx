@@ -110,7 +110,7 @@ export function SelectionPopover() {
         onClick={handlePick}
         className="flex flex-1 items-center gap-1 rounded px-1.5 py-0.5 text-left hover:bg-accent"
       >
-        <Sparkles className="size-3 text-[#3370FF]" />
+        <Sparkles className="size-3 text-primary" />
         <span className="font-medium">{state.kind === 'ask' ? '问 Agent 这段' : '让 Agent 改这段'}</span>
       </button>
       <button

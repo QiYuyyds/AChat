@@ -97,7 +97,7 @@ _PARAMETERS: dict[str, Any] = {
                                     "description": (
                                         "Expected artifact type. Use project for "
                                         "workspace code trees; project is created by "
-                                        "AgentHub from fs_write evidence, not by "
+                                        "AChat from fs_write evidence, not by "
                                         "write_artifact."
                                     ),
                                 },
@@ -180,7 +180,7 @@ _PARAMETERS: dict[str, Any] = {
                     "requiredCommands": {
                         "type": "array",
                         "description": (
-                            "Commands that AgentHub must run successfully before "
+                            "Commands that AChat must run successfully before "
                             "accepting this task as complete, such as pnpm test or mvn "
                             "compile. Use cwd instead of cd for subdirectories."
                         ),

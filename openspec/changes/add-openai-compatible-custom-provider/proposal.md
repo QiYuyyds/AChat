@@ -4,7 +4,7 @@
 
 CustomAgentAdapter currently supports OpenAI, DeepSeek, and Volcano Ark through hardcoded provider base URLs. Users cannot add MiniMax, Qwen, Zhipu, Moonshot, OpenRouter, SiliconFlow, or another OpenAI Chat Completions-compatible service without code changes.
 
-AgentHub should let a user configure a custom agent with its own Chat Completions base URL, API key, and model id.
+AChat should let a user configure a custom agent with its own Chat Completions base URL, API key, and model id.
 
 ## What Changes
 

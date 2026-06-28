@@ -129,7 +129,7 @@ export function ChatPanel() {
               {conv.workspaceMode === 'local' && conv.workspaceBoundPath && (
                 <span
                   title={`本地工作目录：${conv.workspaceBoundPath}`}
-                  className="inline-flex shrink-0 items-center gap-1 rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300"
+                  className="inline-flex shrink-0 items-center gap-1 rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning"
                 >
                   <AlertTriangle className="size-2.5" />
                   本地
@@ -179,7 +179,7 @@ export function ChatPanel() {
           <UsageBadge conversationId={conv.id} />
           <Badge variant={streamConnected ? 'default' : 'outline'} className="gap-1 px-1.5 text-[11px]">
             <span
-              className={`size-1.5 rounded-full ${streamConnected ? 'bg-green-500' : 'bg-zinc-400'}`}
+              className={`size-1.5 rounded-full ${streamConnected ? 'bg-success' : 'bg-muted-foreground'}`}
             />
             {streamConnected ? '已连接' : '断开'}
           </Badge>
@@ -188,7 +188,7 @@ export function ChatPanel() {
 
       {/* Tab bar：仅在有打开的文件 / diff 时显示（避免单 chat tab 时浪费空间） */}
       {openFiles.length > 0 && (
-        <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b bg-card/50 px-2 py-1 text-xs">
+        <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b bg-card/50 px-2 py-1 text-xs font-mono">
           <TabButton
             label="对话"
             active={activeTab === 'chat'}
@@ -203,7 +203,7 @@ export function ChatPanel() {
                   key={tabId}
                   label={`diff: ${name}`}
                   tooltip={pw?.path}
-                  icon={<FilePenLine className="size-3 text-[#3370FF]" />}
+                  icon={<FilePenLine className="size-3 text-primary" />}
                   active={activeTab === tabId}
                   onClick={() => setActiveTab(conv.id, tabId)}
                   onClose={() => closeFile(conv.id, tabId)}
@@ -324,8 +324,8 @@ function TabButton({
         'group flex shrink-0 items-center gap-1.5 rounded-md border px-2.5 py-1 transition',
         active
           ? highlight
-            ? 'border-[#3370FF]/40 bg-[#3370FF]/5 text-foreground shadow-sm'
-            : 'border-primary/30 bg-background shadow-sm'
+            ? 'border-transparent text-primary shadow-[inset_0_-2px_0_0_var(--color-primary)]'
+            : 'border-transparent text-primary shadow-[inset_0_-2px_0_0_var(--color-primary)]'
           : 'border-transparent text-muted-foreground hover:bg-accent hover:text-foreground',
       )}
     >

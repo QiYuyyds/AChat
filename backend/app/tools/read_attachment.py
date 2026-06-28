@@ -175,7 +175,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         {
             **meta,
             "note": (
-                f"This is a {row.mime_type} binary file. AgentHub does not yet extract "
+                f"This is a {row.mime_type} binary file. AChat does not yet extract "
                 "text from this format; only metadata is available. Ask the user for a "
                 "text version if you need to inspect content."
             ),

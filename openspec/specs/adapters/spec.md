@@ -8,12 +8,12 @@ Defines the AgentPlatformAdapter contract and provider-specific boundaries. Deta
 
 ### Requirement: Adapters SHALL translate provider output to StreamEvent
 
-Each adapter MUST expose `stream(input, signal)` and yield only AgentHub `StreamEvent` objects to the application layer.
+Each adapter MUST expose `stream(input, signal)` and yield only AChat `StreamEvent` objects to the application layer.
 
 #### Scenario: Custom model emits tool calls
 - **WHEN** Chat Completions streaming returns function tool call deltas
 - **THEN** CustomAgentAdapter accumulates arguments
-- **AND** emits AgentHub `tool.call` and `tool.result` events.
+- **AND** emits AChat `tool.call` and `tool.result` events.
 
 ### Requirement: CustomAgentAdapter SHALL use Chat Completions compatible providers
 
@@ -26,7 +26,7 @@ CustomAgentAdapter SHALL call OpenAI Chat Completions-compatible endpoints for D
 
 ### Requirement: ClaudeCodeAdapter SHALL bridge SDK tool approvals
 
-ClaudeCodeAdapter MUST use `@anthropic-ai/claude-agent-sdk` and route supported tool approvals through AgentHub path checks, pending writes, and command blacklist policy.
+ClaudeCodeAdapter MUST use `@anthropic-ai/claude-agent-sdk` and route supported tool approvals through AChat path checks, pending writes, and command blacklist policy.
 
 #### Scenario: Claude Code proposes a file write in review mode
 - **WHEN** the SDK asks to use a write/edit tool
@@ -42,17 +42,17 @@ CodexAdapter MUST use `@openai/codex-sdk` `runStreamed()` rather than treating C
 - **THEN** the adapter starts or resumes a Codex thread
 - **AND** translates thread, item, tool, and usage events into StreamEvent.
 
-### Requirement: SDK adapters SHALL expose allowlisted AgentHub tools through MCP
+### Requirement: SDK adapters SHALL expose allowlisted AChat tools through MCP
 
-Claude Code and Codex adapters MUST expose allowlisted AgentHub tools through adapter-owned MCP bridges rather than consuming per-agent `toolNames`.
+Claude Code and Codex adapters MUST expose allowlisted AChat tools through adapter-owned MCP bridges rather than consuming per-agent `toolNames`.
 
 #### Scenario: Codex creates and deploys an artifact or workspace build
-- **WHEN** Codex calls the AgentHub MCP `write_artifact`, `deploy_artifact`, or `deploy_workspace` tool
+- **WHEN** Codex calls the AChat MCP `write_artifact`, `deploy_artifact`, or `deploy_workspace` tool
 - **THEN** the adapter translates the MCP result into `artifact.create` or `deploy.status`.
 
 #### Scenario: SDK agent asks a structured user question
-- **WHEN** Claude Code or Codex calls the AgentHub MCP `ask_user` tool
-- **THEN** AgentHub routes it through the shared pending question flow.
+- **WHEN** Claude Code or Codex calls the AChat MCP `ask_user` tool
+- **THEN** AChat routes it through the shared pending question flow.
 
 ### Requirement: Codex Base URL SHALL be Responses compatible
 
@@ -65,9 +65,9 @@ CodexAdapter MUST only accept Codex/Responses-compatible endpoints for `apiBaseU
 
 ### Requirement: SDK runtime configuration SHALL be isolated
 
-CodexAdapter MUST set `CODEX_HOME` and `CODEX_SQLITE_HOME` to AgentHub-managed data paths and strip unrelated external `CODEX_*` variables except certificate configuration.
+CodexAdapter MUST set `CODEX_HOME` and `CODEX_SQLITE_HOME` to AChat-managed data paths and strip unrelated external `CODEX_*` variables except certificate configuration.
 
 #### Scenario: User has CC Switch configured locally
-- **WHEN** AgentHub starts Codex SDK
+- **WHEN** AChat starts Codex SDK
 - **THEN** the child runtime does not read the user's `~/.codex` config
-- **AND** AgentHub per-agent settings determine key and base URL.
+- **AND** AChat per-agent settings determine key and base URL.

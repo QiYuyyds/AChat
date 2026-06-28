@@ -194,10 +194,10 @@ function QuotedSelectionCard({ source, artifactId, filePath, text }: QuotedSegme
   const lines = text.split('\n')
   const collapsed = lines.length > 4
   return (
-    <div className="overflow-hidden rounded-md border border-[#3370FF]/30 bg-[#3370FF]/5 text-xs">
-      <div className="flex items-center gap-1.5 border-b border-[#3370FF]/20 bg-[#3370FF]/10 px-2.5 py-1 text-[11px]">
-        <Sparkles className="size-3 text-[#3370FF]" />
-        <span className="font-medium text-[#3370FF]">引用</span>
+    <div className="overflow-hidden rounded-md border border-primary/30 bg-primary/5 text-xs">
+      <div className="flex items-center gap-1.5 border-b border-primary/20 bg-primary/10 px-2.5 py-1 text-[11px]">
+        <Sparkles className="size-3 text-primary" />
+        <span className="font-medium text-primary">引用</span>
         {source && (
           <>
             <span className="text-muted-foreground">·</span>
@@ -295,15 +295,15 @@ function ToolUsePart({
       : 'success'
 
   const styles = {
-    running: 'border-amber-200 bg-amber-50/50 dark:border-amber-900/50 dark:bg-amber-950/20',
-    success: 'border-emerald-200 bg-emerald-50/50 dark:border-emerald-900/50 dark:bg-emerald-950/20',
-    error: 'border-red-200 bg-red-50/50 dark:border-red-900/50 dark:bg-red-950/20',
+    running: 'border-warning/30 bg-warning/10',
+    success: 'border-success/30 bg-success/10',
+    error: 'border-destructive/30 bg-destructive/10',
   }[state]
 
   const iconColor = {
-    running: 'text-amber-600 dark:text-amber-400',
-    success: 'text-emerald-600 dark:text-emerald-400',
-    error: 'text-red-600 dark:text-red-400',
+    running: 'text-warning',
+    success: 'text-success',
+    error: 'text-destructive',
   }[state]
 
   const label = {
@@ -466,7 +466,7 @@ function TerminalPreviewBlock({
       className={cn(
         'min-w-0 overflow-hidden rounded-md border bg-zinc-950 text-zinc-100 shadow-sm',
         tone === 'error'
-          ? 'border-red-700/70'
+          ? 'border-destructive/50'
           : 'border-zinc-200 dark:border-zinc-800',
       )}
     >
@@ -509,7 +509,7 @@ function ToolDetailBlock({
     <div
       className={cn(
         'min-w-0 overflow-hidden rounded-md border bg-background/70',
-        tone === 'error' && 'border-red-200 bg-red-50/60 dark:border-red-900/50 dark:bg-red-950/20',
+        tone === 'error' && 'border-destructive/30 bg-destructive/10',
       )}
     >
       <div className="border-b border-border/60 px-2.5 py-1 text-[10px] font-medium text-muted-foreground">
@@ -595,9 +595,9 @@ function ToolCluster({
     runningCount > 0 ? 'running' : errorCount > 0 ? 'error' : 'success'
 
   const styles = {
-    running: 'border-amber-200 bg-amber-50/40 dark:border-amber-900/40 dark:bg-amber-950/10',
-    success: 'border-emerald-200 bg-emerald-50/40 dark:border-emerald-900/40 dark:bg-emerald-950/10',
-    error: 'border-red-200 bg-red-50/40 dark:border-red-900/40 dark:bg-red-950/10',
+    running: 'border-warning/30 bg-warning/10',
+    success: 'border-success/30 bg-success/10',
+    error: 'border-destructive/30 bg-destructive/10',
   }[overallState]
 
   return (
@@ -612,20 +612,20 @@ function ToolCluster({
             className={cn('size-3.5 shrink-0 transition-transform', !expanded && '-rotate-90')}
           />
           {overallState === 'running' && (
-            <Loader2 className="size-3.5 shrink-0 animate-spin text-amber-600 dark:text-amber-400" />
+            <Loader2 className="size-3.5 shrink-0 animate-spin text-warning" />
           )}
           {overallState === 'success' && (
-            <Check className="size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+            <Check className="size-3.5 shrink-0 text-success" />
           )}
           {overallState === 'error' && (
-            <XCircle className="size-3.5 shrink-0 text-red-600 dark:text-red-400" />
+            <XCircle className="size-3.5 shrink-0 text-destructive" />
           )}
           <span className="font-medium">工具调用 × {tools.length}</span>
           <span className="text-muted-foreground">·</span>
           <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
             {successDistribution && (
               <>
-                <span className="font-medium text-emerald-700 dark:text-emerald-400">
+                <span className="font-medium text-success">
                   成功 {successCount}
                 </span>
                 <span className="font-mono">：{successDistribution}</span>
@@ -634,7 +634,7 @@ function ToolCluster({
             {errorDistribution && (
               <>
                 {successDistribution && <span> · </span>}
-                <span className="font-medium text-red-700 dark:text-red-400">
+                <span className="font-medium text-destructive">
                   失败 {errorCount}
                 </span>
                 <span className="font-mono">：{errorDistribution}</span>
@@ -643,7 +643,7 @@ function ToolCluster({
             {runningDistribution && (
               <>
                 {(successDistribution || errorDistribution) && <span> · </span>}
-                <span className="font-medium text-amber-700 dark:text-amber-400">
+                <span className="font-medium text-warning">
                   进行中 {runningCount}
                 </span>
                 <span className="font-mono">：{runningDistribution}</span>
@@ -651,12 +651,12 @@ function ToolCluster({
             )}
           </span>
           {runningCount > 0 && (
-            <span className="ml-auto shrink-0 text-[10px] text-amber-600 dark:text-amber-400">
+            <span className="ml-auto shrink-0 text-[10px] text-warning">
               {runningCount} 进行中
             </span>
           )}
           {errorCount > 0 && runningCount === 0 && (
-            <span className="ml-auto shrink-0 text-[10px] text-red-600 dark:text-red-400">
+            <span className="ml-auto shrink-0 text-[10px] text-destructive">
               {errorCount} 失败
             </span>
           )}
@@ -820,10 +820,10 @@ function DeployCandidatesPart({
   }
 
   return (
-    <Card className="border-sky-200 bg-sky-50/50 dark:border-sky-900/50 dark:bg-sky-950/20">
+    <Card className="border-primary/30 bg-primary/5">
       <CardContent className="space-y-2 px-3 py-2">
         <div className="flex items-center gap-2">
-          <Rocket className="size-4 shrink-0 text-sky-600 dark:text-sky-400" />
+          <Rocket className="size-4 shrink-0 text-primary" />
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-medium">选择要部署的产物</div>
             <div className="text-xs text-muted-foreground">
@@ -873,7 +873,7 @@ function DeployCandidatesPart({
         </div>
 
         {error && (
-          <div className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-300">
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1 text-xs text-destructive">
             {error}
           </div>
         )}
@@ -903,15 +903,15 @@ function DeployStatusPart({
     <Card
       className={cn(
         ready
-          ? 'border-sky-200 bg-sky-50/50 dark:border-sky-900/50 dark:bg-sky-950/20'
-          : 'border-red-200 bg-red-50/50 dark:border-red-900/50 dark:bg-red-950/20',
+          ? 'border-primary/30 bg-primary/5'
+          : 'border-destructive/30 bg-destructive/10',
       )}
     >
       <CardContent className="flex items-start gap-3 px-3 py-2">
         {ready ? (
-          <Rocket className="mt-0.5 size-4 shrink-0 text-sky-600 dark:text-sky-400" />
+          <Rocket className="mt-0.5 size-4 shrink-0 text-primary" />
         ) : (
-          <XCircle className="mt-0.5 size-4 shrink-0 text-red-600 dark:text-red-400" />
+          <XCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
         )}
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium">
@@ -931,7 +931,7 @@ function DeployStatusPart({
           </div>
           {ready ? (
             <div className="mt-1 space-y-0.5">
-              <div className="truncate font-mono text-[11px] text-sky-700 dark:text-sky-300">
+              <div className="truncate font-mono text-[11px] text-primary">
                 {previewUrl}
               </div>
               {fallbackPreviewUrl && fallbackPreviewUrl !== previewUrl && (
@@ -942,7 +942,7 @@ function DeployStatusPart({
             </div>
           ) : (
             <div className="mt-1 space-y-0.5">
-              <div className="text-xs text-red-700 dark:text-red-300">
+              <div className="text-xs text-destructive">
                 {deployment.error ?? 'Unknown deployment error'}
               </div>
               {fallbackPreviewUrl && (

@@ -4,7 +4,7 @@
 
 Group orchestration currently treats each sub-task mostly as free-form text plus `dependsOn`. That is enough for basic DAG scheduling, but it leaves artifact handoff implicit: downstream agents must infer which upstream artifacts to read, and the executor only knows that some artifact was created, not whether the task delivered the promised output.
 
-AgentHub should make multi-agent collaboration more reliable by turning each dispatch task into an explicit contract: required inputs, expected outputs, and acceptance criteria.
+AChat should make multi-agent collaboration more reliable by turning each dispatch task into an explicit contract: required inputs, expected outputs, and acceptance criteria.
 
 ## What Changes
 

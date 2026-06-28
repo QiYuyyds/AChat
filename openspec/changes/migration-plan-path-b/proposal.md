@@ -1,6 +1,6 @@
 ## Why
 
-AgentHub 当前使用 SQLite 作为唯一持久化层，缺乏向量检索、全文检索、知识图谱和结构化记忆能力。AGI-memory 项目已实现成熟的三层记忆系统（STM/LTM/Preference + Graph 增强）、三路 RRF 融合 RAG 检索（Milvus + ES + Neo4j）以及 Schema 驱动的 Prompt 装配器。将 AGI-memory 的核心能力融合进 AgentHub，可大幅提升 Agent 的上下文理解、知识检索和对话连贯性，同时保持单用户 local-first 架构的简洁性。
+AChat 当前使用 SQLite 作为唯一持久化层，缺乏向量检索、全文检索、知识图谱和结构化记忆能力。AGI-memory 项目已实现成熟的三层记忆系统（STM/LTM/Preference + Graph 增强）、三路 RRF 融合 RAG 检索（Milvus + ES + Neo4j）以及 Schema 驱动的 Prompt 装配器。将 AGI-memory 的核心能力融合进 AChat，可大幅提升 Agent 的上下文理解、知识检索和对话连贯性，同时保持单用户 local-first 架构的简洁性。
 
 ## What Changes
 

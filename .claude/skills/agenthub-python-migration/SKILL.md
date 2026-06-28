@@ -1,13 +1,13 @@
 ---
 name: agenthub-python-migration
-description: AgentHub TypeScript 后端迁移到 Python FastAPI 的完整指南
+description: AChat TypeScript 后端迁移到 Python FastAPI 的完整指南
 ---
 
-# AgentHub Python 后端迁移指南
+# AChat Python 后端迁移指南
 
 ## 项目概述
 
-AgentHub 是一个 local-first 多 Agent 协作工作空间，把 AI 协作做成 IM 群聊式的体验。当前正在将 TypeScript (Next.js) 后端迁移到 Python (FastAPI)。
+AChat 是一个 local-first 多 Agent 协作工作空间，把 AI 协作做成 IM 群聊式的体验。当前正在将 TypeScript (Next.js) 后端迁移到 Python (FastAPI)。
 
 ## 原项目架构
 

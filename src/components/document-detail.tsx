@@ -128,7 +128,7 @@ export function DocumentDetail({
           <Button
             variant="ghost"
             size="icon"
-            className="size-7 hover:text-red-600"
+            className="size-7 hover:text-destructive"
             onClick={() => setDeleteOpen(true)}
             title="删除文档"
           >
@@ -203,7 +203,7 @@ export function DocumentDetail({
               取消
             </Button>
             <Button
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-destructive hover:bg-destructive/90"
               onClick={() => void handleDelete()}
               disabled={deleting}
               size="sm"

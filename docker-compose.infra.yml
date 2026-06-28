@@ -1,4 +1,4 @@
-# AgentHub 基础设施服务 — 部署在远程服务器
+# AChat 基础设施服务 — 部署在远程服务器
 # 用法: docker compose -f docker-compose.infra.yml up -d
 #
 # 仅包含 PostgreSQL / Milvus / Elasticsearch / Neo4j 及其依赖。

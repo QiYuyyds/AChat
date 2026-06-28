@@ -60,7 +60,7 @@
 **OpenAI-compat 接入说明**：DeepSeek / 火山方舟都对外暴露 OpenAI-compatible Chat Completions API，所以共用 `openai` npm 包 + 改 `baseURL`。通义千问 compatible-mode、智谱、MiniMax、OpenRouter、SiliconFlow、Moonshot 等未内置 provider 应选择 `openai-compatible`，并填写该平台的 Chat Completions Base URL。详见 Spec 05 的「CustomAgentAdapter」一节。
 
 **SDK adapter 说明**：
-- `claude-code`：使用 `@anthropic-ai/claude-agent-sdk`，`toolNames=[]`，SDK 内置工具集；Review 模式通过 `canUseTool` 桥到 AgentHub 审批。
+- `claude-code`：使用 `@anthropic-ai/claude-agent-sdk`，`toolNames=[]`，SDK 内置工具集；Review 模式通过 `canUseTool` 桥到 AChat 审批。
 - `codex`：使用 `@openai/codex-sdk`，`toolNames=[]`，SDK 内置本地命令 / 文件变更 / MCP / 计划事件；Review 模式以 read-only sandbox 运行，Auto 模式以 workspace-write sandbox 运行；自定义 Base URL 必须支持 Codex/Responses，DeepSeek 没有 `/responses`，不能走 Codex adapter。
 
 **用户选 Anthropic 会发生什么**：创建 / 编辑成功（DB 行写入），但发消息时 Adapter throw → run 失败 → 错误消息显示在对话里。**TODO**：UI 应该在选 Anthropic 时给警告 banner，或者干脆暂时下掉这个选项。
@@ -80,7 +80,7 @@ agent.apiKey (per-agent 自定义)
             openai      → OPENAI_API_KEY
             openai-compatible → 无全局 fallback，必须填 agent.apiKey
             anthropic   → ANTHROPIC_API_KEY
-            codex       → CODEX_API_KEY / OPENAI_API_KEY（AgentHub 隔离 CODEX_HOME，不读 ~/.codex）
+            codex       → CODEX_API_KEY / OPENAI_API_KEY（AChat 隔离 CODEX_HOME，不读 ~/.codex）
 ```
 
 Custom provider 实现在 `custom-provider-client.ts` 的 `resolveCustomProviderClientConfig(provider, overrideKey, apiBaseUrl)`；SDK adapter 的 key 解析由 `agent-runner.ts:buildAdapterInput` 统一注入。

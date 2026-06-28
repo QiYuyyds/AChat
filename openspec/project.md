@@ -1,8 +1,8 @@
-# AgentHub OpenSpec Project
+# AChat OpenSpec Project
 
 ## Purpose
 
-AgentHub is a local multi-agent collaboration app that turns agent work into an IM-style workspace. Users create single-agent or group conversations, route messages to Claude Code, Codex, or custom OpenAI-compatible agents, preview generated artifacts, and approve file changes inside local workspaces.
+AChat is a local multi-agent collaboration app that turns agent work into an IM-style workspace. Users create single-agent or group conversations, route messages to Claude Code, Codex, or custom OpenAI-compatible agents, preview generated artifacts, and approve file changes inside local workspaces.
 
 ## Canonical Spec Layout
 

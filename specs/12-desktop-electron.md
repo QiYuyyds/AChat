@@ -1,6 +1,6 @@
 # Spec 12 — 桌面版（Electron）
 
-> AgentHub 以 Electron 打包成 macOS `.dmg` / Windows `.exe` 安装包，单文件双击即用，不要求用户预装 Node / pnpm。本 spec 定义打包方案、进程模型、路径迁移、native 依赖处理与故意不做的事。
+> AChat 以 Electron 打包成 macOS `.dmg` / Windows `.exe` 安装包，单文件双击即用，不要求用户预装 Node / pnpm。本 spec 定义打包方案、进程模型、路径迁移、native 依赖处理与故意不做的事。
 >
 > 源文件：`electron/`（main / preload / 类型）、`scripts/electron-*.ts`（打包辅助）、`package.json`（build 字段）、`next.config.ts`（standalone 输出）。
 
@@ -9,8 +9,8 @@
 ## 1. 目标与范围
 
 **做**：
-- 输出可分发的 `AgentHub-<ver>.dmg`（macOS arm64 + x64 双架构）
-- 输出可分发的 `AgentHub-<ver>-setup.exe`（Windows x64 NSIS 安装包）
+- 输出可分发的 `AChat-<ver>.dmg`（macOS arm64 + x64 双架构）
+- 输出可分发的 `AChat-<ver>-setup.exe`（Windows x64 NSIS 安装包）
 - 用户安装后双击图标启动，**不需要**装 Node、pnpm、Next.js
 - 应用进程内嵌完整 Next.js server（API routes + SSE + 工具执行 + Claude Code SDK 子进程）
 - DB 与 workspace 文件迁到 OS 用户数据目录（`app.getPath('userData')`），不污染应用安装目录
@@ -91,9 +91,9 @@ dist-electron/           # tsc 输出（gitignored）
 └── main.js
 
 release/                 # electron-builder 输出（gitignored）
-├── AgentHub-0.1.0-arm64.dmg
-├── AgentHub-0.1.0.dmg          # x64
-└── AgentHub-0.1.0-setup.exe
+├── AChat-0.1.0-arm64.dmg
+├── AChat-0.1.0.dmg          # x64
+└── AChat-0.1.0-setup.exe
 ```
 
 **约束**：
@@ -126,7 +126,7 @@ release/                 # electron-builder 输出（gitignored）
 new BrowserWindow({
   width: 1280, height: 800,
   minWidth: 980, minHeight: 600,
-  title: 'AgentHub',
+  title: 'AChat',
   backgroundColor: '#0a0a0a',     // 避免白屏闪烁
   webPreferences: {
     nodeIntegration: false,        // 强制：渲染端纯 web
@@ -182,7 +182,7 @@ async function startEmbeddedServer(): Promise<number> {
 |---|---|
 | dev (`pnpm dev`) | `<repo>/.agenthub-data`（不变） |
 | dev (`pnpm electron:dev`) | `<repo>/.agenthub-data`（连 dev server，复用） |
-| 打包后 prod | `app.getPath('userData') + '/data'`<br>macOS：`~/Library/Application Support/AgentHub/data`<br>Windows：`%APPDATA%\AgentHub\data` |
+| 打包后 prod | `app.getPath('userData') + '/data'`<br>macOS：`~/Library/Application Support/AChat/data`<br>Windows：`%APPDATA%\AChat\data` |
 
 ### 5.3 实现
 
@@ -212,9 +212,9 @@ const WORKSPACES_ROOT = path.join(
 
 **为什么走 env var 而不是改成 export const fn**：减少 src 侧改动；env var 一处设置，DB 与 workspace 自动跟随；测试期可 stub。
 
-**迁移现有 DB**：本地用户可手动把 `.agenthub-data/` 整个拷贝到 `~/Library/Application Support/AgentHub/data`。Phase 1 不做自动迁移（用户量小、迁移逻辑容易出 corner case；提供文档说明即可）。
+**迁移现有 DB**：本地用户可手动把 `.agenthub-data/` 整个拷贝到 `~/Library/Application Support/AChat/data`。Phase 1 不做自动迁移（用户量小、迁移逻辑容易出 corner case；提供文档说明即可）。
 
-**userData 路径还要 `app.setName('AgentHub')`**：Electron 默认用 `package.json#name`（`bytedance-agenthub`）算 userData 路径。`electron/main.ts` 在 `app.requestSingleInstanceLock()` 之前覆盖名字到 productName，让 userData 落在 `~/Library/Application Support/AgentHub/`（更友好；不显仓库代号）。
+**userData 路径还要 `app.setName('AChat')`**：Electron 默认用 `package.json#name`（`bytedance-agenthub`）算 userData 路径。`electron/main.ts` 在 `app.requestSingleInstanceLock()` 之前覆盖名字到 productName，让 userData 落在 `~/Library/Application Support/AChat/`（更友好；不显仓库代号）。
 
 ### 5.4 自动建表 + 自动 seed 内置 Agent
 
@@ -309,8 +309,8 @@ pnpm dev/test    → ensure-node-sqlite → node/vitest/playwright(纯 Node)
 - `next.config.ts` 必须把 `@openai/codex-sdk` / `@openai/codex` 放进 `serverExternalPackages`，避免被打包器内联后丢失 CLI binary 查找语义
 - `scripts/electron-prebuild.mjs` 的 standalone 依赖补齐逻辑以 Next 已 trace 的包 + 明确 server runtime allowlist 为种子，递归读取 dependencies / optionalDependencies，并把当前平台可用的 Codex runtime 一起带进 `.next/standalone/node_modules`；不要从 root `package.json` 全量补依赖，避免把纯前端库打进 Electron Node runtime
 - `scripts/electron-prebuild.mjs` 只保留顶层 npm alias 平台包（如 `@openai/codex-darwin-arm64`），删除 Next tracer 可能额外带入的 `.pnpm/@openai+codex@...-<platform>` 重复 runtime store，避免 Electron 安装体积多出约 190MB
-- Codex adapter 默认 `networkAccessEnabled=false`、`webSearchMode='disabled'`；Review 模式 read-only，Auto 模式 workspace-write；子进程 `CODEX_HOME` 指到 AgentHub dataDir 下，避免继承用户 `~/.codex` / CC Switch 配置
-- Codex adapter 的 AgentHub MCP bridge 由 `scripts/agenthub-codex-mcp.mjs` 启动；Next standalone 必须通过 `outputFileTracingIncludes` 把该脚本复制到 `.next/standalone/scripts/`，Electron embedded server 会设置 `AGENTHUB_INTERNAL_BASE_URL`
+- Codex adapter 默认 `networkAccessEnabled=false`、`webSearchMode='disabled'`；Review 模式 read-only，Auto 模式 workspace-write；子进程 `CODEX_HOME` 指到 AChat dataDir 下，避免继承用户 `~/.codex` / CC Switch 配置
+- Codex adapter 的 AChat MCP bridge 由 `scripts/agenthub-codex-mcp.mjs` 启动；Next standalone 必须通过 `outputFileTracingIncludes` 把该脚本复制到 `.next/standalone/scripts/`，Electron embedded server 会设置 `AGENTHUB_INTERNAL_BASE_URL`
 
 ### 6.4 electron-builder 配置（节选 package.json）
 
@@ -318,7 +318,7 @@ pnpm dev/test    → ensure-node-sqlite → node/vitest/playwright(纯 Node)
 {
   "build": {
     "appId": "com.agenthub.app",
-    "productName": "AgentHub",
+    "productName": "AChat",
     "directories": { "output": "release" },
     "asar": true,
     "asarUnpack": [
@@ -425,7 +425,7 @@ pnpm electron:build
 # 2. pnpm electron:prebuild — 拷 static/public + 补依赖 + 清 broken symlinks/重复 runtime
 # 3. pnpm electron:tsc      — 编 main 进程到 dist-electron/main.js
 # 4. electron-builder       — 打包；npmRebuild: false，直接复用现成的 ABI 130 .node
-# 输出 release/AgentHub-<ver>.dmg、release/AgentHub-<ver>-setup.exe
+# 输出 release/AChat-<ver>.dmg、release/AChat-<ver>-setup.exe
 ```
 
 打包链路 ABI 一致，且没有 afterPack hook。源码 `node_modules` 的 ABI 会按最后执行的 Node/Electron 命令自动切换；这是单 native binding 的预期行为。
@@ -437,7 +437,7 @@ pnpm electron:build
 - **Shell 选择 / 黑名单 / 路径校验**：完全复用 Spec 11 的实现，Electron 包装层不改这部分。`getEffectiveCwd` 仍走 workspace
 - **HOME env 兜底**：Spec 11 §「SDK 子进程的 HOME 兼容」依旧适用；Electron 在 Windows 上 `process.env.HOME` 同样可能缺失
 - **路径大小写**：Spec 11 的 `isPathWithin` 与 `isPathSafe` 不受 Electron 影响
-- **userData 是「敏感目录」吗**：`~/Library/Application Support/AgentHub` / `%APPDATA%\AgentHub` 本身是「应用自己的写区」，不在 Spec 11 §systemRoots / sensitiveSegments 列表内。但用户**绑定的 boundPath（local workspace）**仍受 `isPathSafe` 检查 —— 与 web 版语义一致
+- **userData 是「敏感目录」吗**：`~/Library/Application Support/AChat` / `%APPDATA%\AChat` 本身是「应用自己的写区」，不在 Spec 11 §systemRoots / sensitiveSegments 列表内。但用户**绑定的 boundPath（local workspace）**仍受 `isPathSafe` 检查 —— 与 web 版语义一致
 
 ---
 
@@ -448,8 +448,8 @@ pnpm electron:build
 - 不开 `webSecurity: false`、不开 `allowRunningInsecureContent`
 - iframe 渲染 LLM 产物：与 web 版完全一致（`sandbox="allow-scripts"`，详见 CLAUDE.md §5.1）
 - API key 存储：与 web 版完全一致（`app_settings` SQLite 单行表，详见 Spec 08 §8）。**不**引入 OS keychain / safeStorage：
-  - macOS：`~/Library/Application Support/AgentHub/data/agenthub.db` 默认只本用户可读（OS 文件权限），与浏览器 localStorage / IndexedDB 同级别
-  - Windows：`%APPDATA%\AgentHub` 同理
+  - macOS：`~/Library/Application Support/AChat/data/agenthub.db` 默认只本用户可读（OS 文件权限），与浏览器 localStorage / IndexedDB 同级别
+  - Windows：`%APPDATA%\AChat` 同理
   - 引入 keychain 会增加跨平台代码、密码提示、多账号语义复杂度，详见 CLAUDE.md §5.4
 
 ---
@@ -469,7 +469,7 @@ Renderer 加载 `http://127.0.0.1:<port>`，等价于一个本地 web 站点：
 如果 standalone in-process require 在某个 Next.js 版本下出问题（已知 16.x 仍在快速迭代），**回退方案**：
 
 1. 退到 `spawn('node', [path.join(__dirname, '../.next/standalone/server.js')])` 子进程模式
-2. main 监听子进程 stdout/stderr 并 forward 到日志文件 `~/Library/Logs/AgentHub/`
+2. main 监听子进程 stdout/stderr 并 forward 到日志文件 `~/Library/Logs/AChat/`
 3. `app.on('before-quit')` → 主动 SIGTERM 子进程；2s 未退升级 SIGKILL（Windows 用 `taskkill /F /T /PID`，沿用 Spec 11 §「进程清理」的 helper）
 
 Spec 12 把 in-process 作为首选；回退方案保留入口（同一份 main 代码用 env flag 切换）。
@@ -483,7 +483,7 @@ Spec 12 把 in-process 作为首选；回退方案保留入口（同一份 main 
 - [x] `pnpm test` 先跑 Node ABI preflight,即使上一条命令把 native binding 切到 Electron ABI,也会自动切回 Node ABI
 - [x] `pnpm build` / `pnpm db:*` 先跑 Electron ABI preflight,即使上一条命令把 native binding 切到 Node ABI,也会自动切回 Electron ABI
 - [x] `pnpm electron:build` 日志包含 `skipped dependencies rebuild reason=npmRebuild is set to false`（确认没有 npm rebuild 反复污染 source store）
-- [x] packaged `Contents/MacOS/AgentHub` 从终端启动无错误，`~/Library/Application Support/AgentHub/data/agenthub.db` 8 张表全建好，5 个内置 agent 已自动 seed
+- [x] packaged `Contents/MacOS/AChat` 从终端启动无错误，`~/Library/Application Support/AChat/data/agenthub.db` 8 张表全建好，5 个内置 agent 已自动 seed
 - [x] packaged app 内 `app.asar.unpacked/.next/standalone/.../better_sqlite3.node` 是 arm64（standalone 自带的那份就是 ABI 130，无需 afterPack 覆盖）
 
 **功能等价（macOS / Windows 都需通过）**：
@@ -496,7 +496,7 @@ Spec 12 把 in-process 作为首选；回退方案保留入口（同一份 main 
 - [ ] SSE：消息流式输出可见
 
 **打包与安装**：
-- [x] `pnpm electron:build` 输出 `release/AgentHub-<ver>-arm64.dmg`、`release/AgentHub-<ver>.dmg`、（Windows 待验）`release/AgentHub-<ver>-setup.exe`
+- [x] `pnpm electron:build` 输出 `release/AChat-<ver>-arm64.dmg`、`release/AChat-<ver>.dmg`、（Windows 待验）`release/AChat-<ver>-setup.exe`
 - [ ] DMG 拖进 Applications 后双击能启动（macOS 26+ 需在 System Settings → Privacy & Security 点 "Open Anyway" 绕过 Gatekeeper 未签名警告）
 - [ ] EXE 安装后开始菜单出现快捷方式，启动正常
 - [x] 安装包体积 < 300 MB（实测 arm64 = 179 MB，x64 = 185 MB）
@@ -505,7 +505,7 @@ Spec 12 把 in-process 作为首选；回退方案保留入口（同一份 main 
 - [ ] 进程列表里只有 1 个主进程 + 1 个 renderer + 必要的 chromium helper（无孤儿 Next server 子进程）
 - [ ] 关闭主窗口 → 全部进程退出
 - [ ] DevTools 在 prod 不可开（`Cmd+Option+I` 无反应）
-- [ ] `~/Library/Application Support/AgentHub/data/agenthub.db` 文件权限 `0600`-类（仅本用户可读）
+- [ ] `~/Library/Application Support/AChat/data/agenthub.db` 文件权限 `0600`-类（仅本用户可读）
 
 ---
 

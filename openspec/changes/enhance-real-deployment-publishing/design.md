@@ -10,7 +10,7 @@ deployment_publish_dir = C:\sites\agenthub
 deployment_public_base_url = https://agenthub.example.com/apps
 ```
 
-For deployment `dep_abc`, AgentHub writes public files to:
+For deployment `dep_abc`, AChat writes public files to:
 
 ```txt
 C:\sites\agenthub\dep_abc\
@@ -24,8 +24,8 @@ https://agenthub.example.com/apps/dep_abc/
 
 ## Safety
 
-- AgentHub writes only into a deployment-id subdirectory.
-- If that subdirectory already exists, AgentHub removes that subdirectory only after verifying it is inside the configured publish root.
+- AChat writes only into a deployment-id subdirectory.
+- If that subdirectory already exists, AChat removes that subdirectory only after verifying it is inside the configured publish root.
 - Private `.agenthub` deployment metadata is never copied to the publish target.
 - The publish root must be absolute and must not be the filesystem root.
 

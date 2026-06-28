@@ -1,6 +1,6 @@
 ## Why
 
-AgentHub 的 RAG 混合检索架构设计了三路 RRF 融合（Milvus 语义 + ES 关键词 + Neo4j 知识图谱），但 KG 路径从未被接入——`set_kg_backend` 从未被调用，`_kg_ok()` 永远返回 `False`，KG 搜索路径被跳过。Neo4j 中仅有 GraphMemory 写入的 `:Memory` 节点（对话记忆），缺少从文档中抽取的 `:Entity` 节点。补全 KG 路径可让 RAG 检索覆盖实体关系推理场景，提升知识库的关联召回能力。
+AChat 的 RAG 混合检索架构设计了三路 RRF 融合（Milvus 语义 + ES 关键词 + Neo4j 知识图谱），但 KG 路径从未被接入——`set_kg_backend` 从未被调用，`_kg_ok()` 永远返回 `False`，KG 搜索路径被跳过。Neo4j 中仅有 GraphMemory 写入的 `:Memory` 节点（对话记忆），缺少从文档中抽取的 `:Entity` 节点。补全 KG 路径可让 RAG 检索覆盖实体关系推理场景，提升知识库的关联召回能力。
 
 ## What Changes
 

@@ -1,6 +1,6 @@
 ## Why
 
-AgentHub 已融合 AGI-memory 的 RAG 三路融合检索主干，但 Document+Version 文档管理体系尚未迁移。当前知识库是"黑洞"：入库后无法列出、查看、删除；文档与 chunk 无关联导致检索结果无来源追溯；上传与 RAG 脱节（Attachment 存文件但不解析，`rag_ingest` 只接受纯文本）；无版本管理导致旧 chunks 残留；无文件解析管道导致 PDF/Word 无法直接入库。补上此体系是完成知识库闭环的最后一块拼图，详见 `specs/18-document-knowledge-base.md`。
+AChat 已融合 AGI-memory 的 RAG 三路融合检索主干，但 Document+Version 文档管理体系尚未迁移。当前知识库是"黑洞"：入库后无法列出、查看、删除；文档与 chunk 无关联导致检索结果无来源追溯；上传与 RAG 脱节（Attachment 存文件但不解析，`rag_ingest` 只接受纯文本）；无版本管理导致旧 chunks 残留；无文件解析管道导致 PDF/Word 无法直接入库。补上此体系是完成知识库闭环的最后一块拼图，详见 `specs/18-document-knowledge-base.md`。
 
 ## What Changes
 

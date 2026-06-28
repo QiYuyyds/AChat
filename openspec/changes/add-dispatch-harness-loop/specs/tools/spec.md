@@ -6,7 +6,7 @@
 
 #### Scenario: Bash runs in a subdirectory
 - **WHEN** `bash` receives `cwd: "frontend"`
-- **THEN** AgentHub resolves it under the workspace effective cwd
+- **THEN** AChat resolves it under the workspace effective cwd
 - **AND** runs the command from that directory.
 
 #### Scenario: Bash cwd escapes the workspace
@@ -15,8 +15,8 @@
 
 ### Requirement: Bash SHALL support bounded command timeouts
 
-The `bash` tool MUST accept an optional `timeoutMs` and clamp it to AgentHub's supported execution bounds.
+The `bash` tool MUST accept an optional `timeoutMs` and clamp it to AChat's supported execution bounds.
 
 #### Scenario: Dependency installation needs more time
 - **WHEN** `bash` receives `timeoutMs: 600000`
-- **THEN** AgentHub allows the command to run longer than the default timeout while still enforcing a maximum bound.
+- **THEN** AChat allows the command to run longer than the default timeout while still enforcing a maximum bound.

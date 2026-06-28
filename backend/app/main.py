@@ -146,7 +146,7 @@ def _log_startup_dashboard(settings) -> None:
     """Log a formatted status dashboard of all initialized services."""
     divider = "=" * 60
     logger.info("\n" + divider)
-    logger.info("AgentHub Backend - Startup Status")
+    logger.info("AChat Backend - Startup Status")
     logger.info(divider)
 
     # Database
@@ -413,7 +413,7 @@ def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(
-        title="AgentHub Backend",
+        title="AChat Backend",
         description="Multi-Agent Collaboration Workspace API",
         version="0.1.0",
         lifespan=lifespan,

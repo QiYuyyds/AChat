@@ -24,7 +24,7 @@ Packages that rely on native bindings or child runtime lookup MUST be listed in 
 
 ### Requirement: Desktop data SHALL live in userData
 
-Electron mode MUST store database and AgentHub-managed data under `app.getPath('userData')` rather than the source checkout.
+Electron mode MUST store database and AChat-managed data under `app.getPath('userData')` rather than the source checkout.
 
 #### Scenario: Desktop app starts in production
 - **WHEN** the server bootstraps

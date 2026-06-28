@@ -874,10 +874,10 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
 
       {/* 选区改写引用块 */}
       {pendingQuote && (
-        <div className="mb-2 flex items-start gap-2 rounded-md border border-[#3370FF]/30 bg-[#3370FF]/5 px-2 py-1.5 text-xs">
-          <Sparkles className="mt-0.5 size-3 shrink-0 text-[#3370FF]" />
+        <div className="mb-2 flex items-start gap-2 rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-xs">
+          <Sparkles className="mt-0.5 size-3 shrink-0 text-primary" />
           <div className="min-w-0 flex-1">
-            <div className="font-medium text-[#3370FF]">
+            <div className="font-medium text-primary">
               {pendingQuote.kind === 'ask' ? '提问' : '改写'} · {pendingQuote.sourceLabel}
             </div>
             <pre className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words font-mono text-[10px] text-muted-foreground">
@@ -1110,8 +1110,8 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
             }
             className={cn(
               approvalMode === 'review'
-                ? 'text-emerald-600 hover:text-emerald-700 dark:text-emerald-400'
-                : 'text-[#FE3B25] hover:text-[#FE3B25] dark:text-[#FE3B25]',
+                ? 'text-success hover:text-success'
+                : 'text-destructive hover:text-destructive',
             )}
           >
             {approvalMode === 'review' ? (
@@ -1134,7 +1134,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
             }
             className={cn(
               ragEnabled
-                ? 'text-blue-600 hover:text-blue-700 dark:text-blue-400'
+                ? 'text-primary hover:text-primary'
                 : 'text-muted-foreground hover:text-foreground',
             )}
           >

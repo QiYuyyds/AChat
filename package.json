@@ -86,7 +86,7 @@
   },
   "build": {
     "appId": "com.agenthub.app",
-    "productName": "AgentHub",
+    "productName": "AChat",
     "directories": {
       "output": "release",
       "buildResources": "build"

@@ -1,4 +1,4 @@
-"""AgentHub memory subsystem — three-layer memory + graph enhancement."""
+"""AChat memory subsystem — three-layer memory + graph enhancement."""
 
 from app.memory.short_term import ShortTerm
 from app.memory.consolidation import (

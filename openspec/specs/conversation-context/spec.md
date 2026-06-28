@@ -16,7 +16,7 @@ CustomAgentAdapter runs MUST receive serialized conversation history within a mo
 
 ### Requirement: SDK agents SHALL use session resume plus summaries
 
-Claude Code and Codex adapters SHALL rely on SDK session continuation and may receive AgentHub context summaries prefixed to new user prompts.
+Claude Code and Codex adapters SHALL rely on SDK session continuation and may receive AChat context summaries prefixed to new user prompts.
 
 #### Scenario: Codex session continues
 - **WHEN** a conversation already has a cached Codex thread id

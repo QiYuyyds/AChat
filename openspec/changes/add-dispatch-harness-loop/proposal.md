@@ -9,7 +9,7 @@ The result is not Claude Code-like execution: the system can identify gaps, but 
 ## Scope
 
 - Add a bounded child-task harness loop that retries/continues the same task when completion evidence is missing.
-- Let AgentHub run required verification commands after child attempts, including dependency-install/build commands.
+- Let AChat run required verification commands after child attempts, including dependency-install/build commands.
 - Extend `bash` with workspace-scoped `cwd` and configurable timeout support.
 - Extend dispatch task command contracts with `cwd` and `timeoutMs`.
 - Keep the loop bounded and abortable; do not create an infinite uninterruptible process.

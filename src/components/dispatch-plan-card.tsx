@@ -70,10 +70,10 @@ function DispatchPlanReviewCard({
   }
 
   return (
-    <Card className="overflow-hidden border-amber-300/70 bg-amber-50/50 animate-in fade-in slide-in-from-top-2 duration-300 dark:border-amber-900/50 dark:bg-amber-950/15">
+    <Card className="overflow-hidden border-warning/40 bg-warning/10 animate-in fade-in slide-in-from-top-2 duration-300">
       <div className="space-y-3 p-3">
         <div className="flex items-center gap-2">
-          <Network className="size-4 text-amber-600" />
+          <Network className="size-4 text-warning" />
           <div className="text-sm font-medium">计划待确认 · {dispatch.plan.length} 项</div>
           <div className="ml-auto flex items-center gap-1.5">
             <Button
@@ -81,7 +81,7 @@ function DispatchPlanReviewCard({
               variant="ghost"
               onClick={() => void handleReject()}
               disabled={!!busy}
-              className="h-7 px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-950/30"
+              className="h-7 px-2 text-destructive hover:bg-destructive/10"
             >
               {busy === 'reject' ? (
                 <Loader2 className="size-3.5 animate-spin" />
@@ -94,7 +94,7 @@ function DispatchPlanReviewCard({
               size="sm"
               onClick={() => void handleApprove()}
               disabled={!!busy}
-              className="h-7 bg-[#3370FF] px-2 text-white hover:bg-[#2860e5]"
+              className="h-7 bg-primary px-2 text-primary-foreground hover:bg-primary/90"
             >
               {busy === 'approve' ? (
                 <Loader2 className="size-3.5 animate-spin" />
@@ -147,9 +147,9 @@ function PlanTaskList({ dispatch }: { dispatch: DispatchState }) {
               'animate-in fade-in slide-in-from-left-2 fill-mode-both duration-300',
               'transition-[border-color,box-shadow,background-color] duration-300',
               status === 'running' &&
-                'border-amber-300 bg-amber-50/40 ring-2 ring-amber-200/60 dark:bg-amber-950/20',
+                'border-warning/40 bg-warning/10 ring-2 ring-warning/30',
               status === 'complete' && 'border-emerald-200 dark:border-emerald-900/40',
-              status === 'failed' && 'border-red-300',
+              status === 'failed' && 'border-destructive/40',
               status === 'aborted' && 'border-zinc-300 bg-zinc-50/50 dark:border-zinc-700',
               status === 'skipped' && 'border-zinc-200 bg-muted/40 dark:border-zinc-800',
             )}
@@ -282,9 +282,9 @@ function DispatchPlanReadOnlyCard({ dispatch }: { dispatch: DispatchState }) {
           <div
             className={cn(
               'h-full rounded-full transition-all duration-500 ease-out',
-              allDone && hasFailed && 'bg-red-500',
+              allDone && hasFailed && 'bg-destructive',
               allDone && !hasFailed && hasSkipped && 'bg-zinc-400',
-              allDone && !hasFailed && !hasSkipped && 'bg-emerald-500',
+              allDone && !hasFailed && !hasSkipped && 'bg-success',
               !allDone && !rejected && 'bg-primary',
               rejected && 'bg-zinc-400',
             )}
@@ -308,27 +308,27 @@ function StatusIcon({ status }: { status: DispatchTaskStatus }) {
     return <Circle className={cn(base, 'text-muted-foreground/40')} />
   }
   if (status === 'running') {
-    return <Loader2 className={cn(base, 'animate-spin text-amber-600')} />
+    return <Loader2 className={cn(base, 'animate-spin text-warning')} />
   }
   if (status === 'complete') {
     return (
       <CheckCircle2
-        className={cn(base, 'text-emerald-600 animate-in zoom-in-50 duration-300')}
+        className={cn(base, 'text-success animate-in zoom-in-50 duration-300')}
       />
     )
   }
   if (status === 'aborted' || status === 'skipped') {
     return <Ban className={cn(base, 'text-zinc-500 animate-in zoom-in-50 duration-300')} />
   }
-  return <XCircle className={cn(base, 'text-red-600 animate-in zoom-in-50 duration-300')} />
+  return <XCircle className={cn(base, 'text-destructive animate-in zoom-in-50 duration-300')} />
 }
 
 function TypingDots() {
   return (
     <span className="ml-0.5 inline-flex items-center gap-0.5">
-      <span className="size-1 animate-bounce rounded-full bg-amber-500 [animation-delay:-0.3s]" />
-      <span className="size-1 animate-bounce rounded-full bg-amber-500 [animation-delay:-0.15s]" />
-      <span className="size-1 animate-bounce rounded-full bg-amber-500" />
+      <span className="size-1 animate-bounce rounded-full bg-warning [animation-delay:-0.3s]" />
+      <span className="size-1 animate-bounce rounded-full bg-warning [animation-delay:-0.15s]" />
+      <span className="size-1 animate-bounce rounded-full bg-warning" />
     </span>
   )
 }

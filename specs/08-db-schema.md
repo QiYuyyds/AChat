@@ -261,10 +261,10 @@ app_settings {
 1. agents.api_key           — per-agent override（最高）
 2. app_settings.<provider>  — 用户在设置面板自填
 3. process.env.<PROVIDER>   — .env.local 兜底
-4. ~/.claude/.credentials.json — 仅 Claude Code adapter 的 OAuth fallback；Codex adapter 默认使用 AgentHub 隔离的 `<dataDir>/codex-home`，不读取用户本机 `~/.codex`
+4. ~/.claude/.credentials.json — 仅 Claude Code adapter 的 OAuth fallback；Codex adapter 默认使用 AChat 隔离的 `<dataDir>/codex-home`，不读取用户本机 `~/.codex`
 ```
 
-`anthropic_base_url` 的解析同链：`agents.api_base_url` → `app_settings.anthropic_base_url` → `process.env.ANTHROPIC_BASE_URL` → SDK 默认。Codex 不读全局 base URL，只接受 per-agent `agents.api_base_url` 或 SDK 默认 endpoint，避免 CC Switch / 本机 `~/.codex` 配置影响 AgentHub。Custom `openai-compatible` 也不读全局 base URL，必须由 agent 自己携带 `api_base_url`。
+`anthropic_base_url` 的解析同链：`agents.api_base_url` → `app_settings.anthropic_base_url` → `process.env.ANTHROPIC_BASE_URL` → SDK 默认。Codex 不读全局 base URL，只接受 per-agent `agents.api_base_url` 或 SDK 默认 endpoint，避免 CC Switch / 本机 `~/.codex` 配置影响 AChat。Custom `openai-compatible` 也不读全局 base URL，必须由 agent 自己携带 `api_base_url`。
 
 **索引**：无（单行查询不需要）。
 

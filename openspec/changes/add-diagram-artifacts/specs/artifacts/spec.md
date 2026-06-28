@@ -6,7 +6,7 @@ Diagram artifacts SHALL store bounded text source in a typed JSON payload and re
 
 #### Scenario: Agent creates a Mermaid diagram
 - **WHEN** `write_artifact` receives a diagram artifact with Mermaid source
-- **THEN** AgentHub stores a typed diagram artifact content payload
+- **THEN** AChat stores a typed diagram artifact content payload
 - **AND** normalizes common Mermaid flowchart label syntax before storage
 - **AND** the preview panel renders the Mermaid diagram
 - **AND** the preview panel allows zooming and scrolling large diagrams
@@ -14,9 +14,9 @@ Diagram artifacts SHALL store bounded text source in a typed JSON payload and re
 
 #### Scenario: Mermaid source has a preventable syntax issue
 - **WHEN** a diagram artifact contains invalid Mermaid source such as malformed style syntax or unsupported diagram declarations
-- **THEN** AgentHub rejects the content before storage
+- **THEN** AChat rejects the content before storage
 - **AND** returns a clear error that the agent or user can use to correct the source.
 
 #### Scenario: User exports a diagram
 - **WHEN** a user exports a diagram artifact
-- **THEN** AgentHub returns the Mermaid source as a `.mmd` file.
+- **THEN** AChat returns the Mermaid source as a `.mmd` file.

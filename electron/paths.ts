@@ -12,8 +12,8 @@ export function setupDataDir(): void {
   if (process.env.AGENTHUB_DATA_DIR) return
 
   if (app.isPackaged) {
-    // macOS: ~/Library/Application Support/AgentHub/data
-    // Windows: %APPDATA%\AgentHub\data
+    // macOS: ~/Library/Application Support/AChat/data
+    // Windows: %APPDATA%\AChat\data
     process.env.AGENTHUB_DATA_DIR = path.join(app.getPath('userData'), 'data')
   } else {
     // electron:dev 走仓库根的 .agenthub-data（与 web 模式共用 DB / workspace）

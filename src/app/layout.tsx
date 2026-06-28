@@ -18,8 +18,8 @@ const geistMono = Geist_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'AgentHub',
-  description: '多 Agent 协作平台',
+  title: 'AChat',
+  description: 'AChat',
 }
 
 export default function RootLayout({

@@ -247,7 +247,7 @@ export function SettingsDialog({
       <DialogContent className="grid max-h-[calc(100vh-2rem)] max-w-xl grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
         <DialogHeader>
           <DialogTitle>设置</DialogTitle>
-          <DialogDescription className="sr-only">AgentHub 设置</DialogDescription>
+          <DialogDescription className="sr-only">AChat 设置</DialogDescription>
         </DialogHeader>
 
         {loading ? (
@@ -441,7 +441,7 @@ function MobileConnectionHints({
       ) : (
         <div className="flex flex-col gap-2">
           {restartRequired && (
-            <div className="flex gap-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-2 text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/40 dark:text-amber-200">
+            <div className="flex gap-2 rounded-md border border-warning/30 bg-warning/10 px-2 py-2 text-warning">
               <AlertTriangle className="mt-0.5 size-4 flex-none" />
               <div className="min-w-0">
                 <p className="text-xs font-semibold">请重启桌面端 App</p>
@@ -575,7 +575,7 @@ function DeploymentPublishSettings({
             placeholder="D:\\sites\\agenthub"
           />
           <p className="text-[11px] leading-4 text-muted-foreground">
-            AgentHub 会写入该目录下的 dep_xxx 子目录。
+            AChat 会写入该目录下的 dep_xxx 子目录。
           </p>
         </div>
         <div className="grid gap-1.5">

@@ -11,4 +11,4 @@ The `write_artifact` tool schema and LLM-facing description MUST expose only nor
 
 - **WHEN** an agent creates a new version of an existing artifact
 - **THEN** it SHOULD use `parentArtifactId`
-- **AND** AgentHub's version compare UI produces the diff from stored versions.
+- **AND** AChat's version compare UI produces the diff from stored versions.

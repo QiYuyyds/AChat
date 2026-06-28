@@ -1352,7 +1352,7 @@ def _build_agent_hub_tool_guidance(
     if len(tools) > 0:
         add(
             [
-                "## AgentHub 工具调用规范",
+                "## AChat 工具调用规范",
                 "- 需要调用工具时，必须用工具调用通道提交结构化参数，不要把 JSON 示例写进普通回复里假装调用。",
                 "- 字段名必须严格使用工具 schema 里的 camelCase，例如 artifactId、attachmentId、"
                 "parentArtifactId、outputKey、dependsOn、expectedOutputs、acceptanceCriteria、acceptanceResults。",
@@ -1428,7 +1428,7 @@ def _build_agent_hub_tool_guidance(
                 "用途：创建用户需要预览、下载、交接或长期保存的产物；不要用它记录普通聊天结论。",
                 "硬性要求：调用前必须已经准备好完整参数；严禁 write_artifact({})，严禁先空调用工具再补参数。",
                 "调用前自检：type 必须是工具 schema 允许的枚举值，title 必须是非空字符串，content 必须是对应类型的原始对象。",
-                "project 产物不能用 write_artifact 创建；代码任务通过 fs_write / bash 写入 workspace 文件后由 AgentHub 自动生成 project。",
+                "project 产物不能用 write_artifact 创建；代码任务通过 fs_write / bash 写入 workspace 文件后由 AChat 自动生成 project。",
             ]
         )
 

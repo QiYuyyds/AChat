@@ -1,19 +1,19 @@
 ## ADDED Requirements
 
-### Requirement: AgentHub SHALL provide a Tavily-backed web_search tool
+### Requirement: AChat SHALL provide a Tavily-backed web_search tool
 
-AgentHub MUST register a `web_search` tool in `toolRegistry` that queries the Tavily Search API and returns results to the calling agent. The tool MUST accept a required string `query` parameter and return Tavily's synthesized answer (when present) plus a bounded list of search results, each containing at least title, URL, and a content snippet. The tool MUST consume the Tavily API key from configuration sourced from the `TAVILY_API_KEY` environment variable (env-fallback layer); the key MUST NOT be hardcoded.
+AChat MUST register a `web_search` tool in `toolRegistry` that queries the Tavily Search API and returns results to the calling agent. The tool MUST accept a required string `query` parameter and return Tavily's synthesized answer (when present) plus a bounded list of search results, each containing at least title, URL, and a content snippet. The tool MUST consume the Tavily API key from configuration sourced from the `TAVILY_API_KEY` environment variable (env-fallback layer); the key MUST NOT be hardcoded.
 
 #### Scenario: Custom agent enables and uses web search
 - **WHEN** a custom agent whose `toolNames` includes `web_search` calls it with a `query`
-- **THEN** AgentHub resolves the tool from `toolRegistry`
+- **THEN** AChat resolves the tool from `toolRegistry`
 - **AND** issues a Tavily search request authenticated with the configured key
 - **AND** returns the answer (if any) and at most 5 results to the agent.
 
 #### Scenario: Web search is opt-in and never auto-injected
 - **WHEN** a custom agent's `toolNames` does not include `web_search`
 - **THEN** the agent does NOT have access to `web_search`
-- **AND** AgentHub does NOT implicitly inject it (unlike `memory_recall` or RAG tools).
+- **AND** AChat does NOT implicitly inject it (unlike `memory_recall` or RAG tools).
 
 #### Scenario: SDK agents are out of scope
 - **WHEN** an agent uses an SDK adapter (`claude` or `codex`)

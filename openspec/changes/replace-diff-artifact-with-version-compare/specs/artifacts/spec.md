@@ -5,13 +5,13 @@ Artifact diffs MUST be derived from two stored artifact versions rather than aut
 #### Scenario: User compares two document versions
 
 - **WHEN** a user selects two versions of a document artifact
-- **THEN** AgentHub compares the stored markdown content from those versions
+- **THEN** AChat compares the stored markdown content from those versions
 - **AND** renders the diff without invoking an agent.
 
 #### Scenario: User compares two web app versions
 
 - **WHEN** a user selects two versions of a web app artifact
-- **THEN** AgentHub compares the union of stored source files
+- **THEN** AChat compares the union of stored source files
 - **AND** renders one deterministic diff section per file.
 
 ### Requirement: Legacy diff artifacts SHALL remain read-only compatible

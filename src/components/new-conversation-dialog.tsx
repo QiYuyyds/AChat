@@ -159,8 +159,8 @@ export function NewConversationDialog({
             className={cn(
               'rounded-md border px-3 py-2 text-xs',
               selectedOrchestrator
-                ? 'border-green-300 bg-green-50/50 text-green-700 dark:border-green-900/50 dark:bg-green-950/20 dark:text-green-300'
-                : 'border-amber-300 bg-amber-50/50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300',
+                ? 'border-success/40 bg-success/10 text-success'
+                : 'border-warning/40 bg-warning/10 text-warning',
             )}
           >
             {selectedOrchestrator ? (
@@ -194,7 +194,7 @@ export function NewConversationDialog({
           <label
             className={cn(
               'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
-              workspaceMode === 'local' && 'border-amber-300 bg-amber-50/40 dark:border-amber-900/50 dark:bg-amber-950/20',
+              workspaceMode === 'local' && 'border-warning/40 bg-warning/10',
             )}
           >
             <input
@@ -224,7 +224,7 @@ export function NewConversationDialog({
                       浏览
                     </Button>
                   </div>
-                  <div className="flex items-start gap-1.5 text-[10px] text-amber-700 dark:text-amber-300">
+                  <div className="flex items-start gap-1.5 text-[10px] text-warning">
                     <AlertTriangle className="mt-0.5 size-3 shrink-0" />
                     <span>Agent 将能读写此目录中的真实文件。请确保已 git 备份。</span>
                   </div>
@@ -235,7 +235,7 @@ export function NewConversationDialog({
         </div>
 
         {error && (
-          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-200">
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {error}
           </div>
         )}

@@ -8,7 +8,7 @@ Defines the planned Capacitor companion app and remote approval surface. Detaile
 
 ### Requirement: Mobile companion SHALL connect to a trusted local host
 
-The mobile app MUST connect to a desktop AgentHub host over trusted LAN or Tailscale-style private networking.
+The mobile app MUST connect to a desktop AChat host over trusted LAN or Tailscale-style private networking.
 
 #### Scenario: Mobile client pairs
 - **WHEN** a user enters or scans a pairing token
@@ -57,5 +57,5 @@ Mobile approval actions MUST call server APIs that resolve existing pending writ
 The desktop/web app MUST continue to function when no mobile companion is configured.
 
 #### Scenario: No mobile token exists
-- **WHEN** AgentHub starts
+- **WHEN** AChat starts
 - **THEN** core chat, adapters, tools, and artifacts remain available.

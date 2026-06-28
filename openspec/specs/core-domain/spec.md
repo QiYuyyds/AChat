@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Defines AgentHub's durable entities and ownership boundaries. Detailed field notes live in `specs/01-core-entities.md`.
+Defines AChat's durable entities and ownership boundaries. Detailed field notes live in `specs/01-core-entities.md`.
 
 ## Requirements
 
 ### Requirement: Core entities SHALL remain normalized
 
-AgentHub SHALL model Agent, Conversation, Message, Artifact, Workspace, Tool, and AgentRun as separate domain concepts with explicit references instead of embedding unrelated lifecycle data into a single record.
+AChat SHALL model Agent, Conversation, Message, Artifact, Workspace, Tool, and AgentRun as separate domain concepts with explicit references instead of embedding unrelated lifecycle data into a single record.
 
 #### Scenario: Message references an artifact
 - **WHEN** an agent creates an artifact during a run

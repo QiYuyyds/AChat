@@ -4,7 +4,7 @@
 
 The Orchestrator currently executes a generated dispatch plan as soon as it passes deterministic validation. That is fast, but it gives users no chance to correct a poor task split, fix agent assignment, adjust dependencies, or tighten artifact handoff contracts before child agents start doing work.
 
-AgentHub should let users review and edit the Orchestrator plan at the collaboration boundary: after planning, before DAG execution.
+AChat should let users review and edit the Orchestrator plan at the collaboration boundary: after planning, before DAG execution.
 
 ## What Changes
 

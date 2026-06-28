@@ -6,7 +6,7 @@
 
 ## What Changes
 
-- Materialize each deployed `web_app` artifact under AgentHub data storage as a local static deployment.
+- Materialize each deployed `web_app` artifact under AChat data storage as a local static deployment.
 - Serve deployments through stable `/deployments/{depId}` paths.
 - Extend deployment status records with local deployment metadata and source/container download paths.
 - Add source ZIP and container ZIP downloads for deployed web apps.
@@ -16,4 +16,4 @@
 
 - External hosting providers such as Vercel, Netlify, Docker registries, or cloud object storage.
 - Persistent deployment database rows. Deployment metadata is file-backed for this change.
-- Authenticated public sharing outside the local AgentHub process.
+- Authenticated public sharing outside the local AChat process.

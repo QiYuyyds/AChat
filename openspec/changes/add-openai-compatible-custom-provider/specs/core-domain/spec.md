@@ -1,6 +1,6 @@
 ### Requirement: Custom agents SHALL support a generic OpenAI-compatible provider
 
-AgentHub SHALL allow `modelProvider='openai-compatible'` for agents whose `adapterName='custom'`.
+AChat SHALL allow `modelProvider='openai-compatible'` for agents whose `adapterName='custom'`.
 
 #### Scenario: Generic provider agent is saved
 

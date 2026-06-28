@@ -1,7 +1,7 @@
 """Prompt Assembler — cognitive slot assembly for enriched system prompts.
 
 Ported from AGI-memory ``internal/promptctx/``.
-Adaptation: ThreadPoolExecutor → asyncio.gather; Sources connect to AgentHub services.
+Adaptation: ThreadPoolExecutor → asyncio.gather; Sources connect to AChat services.
 
 Contains (all inlined per Task 4.1):
   - SlotKind, SlotFilter, Slot, ContextItem, FilledSlot (Task 4.2)

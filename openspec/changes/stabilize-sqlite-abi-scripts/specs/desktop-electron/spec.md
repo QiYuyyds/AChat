@@ -1,6 +1,6 @@
 ### Requirement: SQLite ABI checks SHALL open the native binding
 
-AgentHub command preflight checks for `better-sqlite3` MUST instantiate an in-memory database and run a trivial query so native ABI mismatches are detected before application code imports the DB client.
+AChat command preflight checks for `better-sqlite3` MUST instantiate an in-memory database and run a trivial query so native ABI mismatches are detected before application code imports the DB client.
 
 #### Scenario: Node ABI is stale
 

@@ -45,7 +45,7 @@ export function PendingWritesPanel({ conversationId }: { conversationId: string 
   if (pending.length === 0) return null
 
   return (
-    <div className="shrink-0 space-y-2 border-t bg-amber-50/40 px-4 py-2.5 dark:bg-amber-950/10">
+    <div className="shrink-0 space-y-2 border-t bg-warning/10 px-4 py-2.5">
       {pending.map((p) => (
         <PendingWriteCard key={p.id} conversationId={conversationId} pending={p} />
       ))}
@@ -109,7 +109,7 @@ function PendingWriteCard({
     <div
       className={cn(
         'flex items-center gap-3 rounded-lg border bg-card px-3 py-2 text-xs shadow-sm transition',
-        isViewing && 'border-[#3370FF]/50 ring-1 ring-[#3370FF]/20',
+        isViewing && 'border-primary/50 ring-1 ring-primary/20',
       )}
     >
       <div className="flex shrink-0 items-center gap-2">
@@ -119,9 +119,9 @@ function PendingWriteCard({
           <div className="size-6 rounded-md bg-muted" />
         )}
         {isNew ? (
-          <FilePlus2 className="size-4 text-emerald-600" />
+          <FilePlus2 className="size-4 text-success" />
         ) : (
-          <FilePenLine className="size-4 text-[#3370FF]" />
+          <FilePenLine className="size-4 text-primary" />
         )}
       </div>
 
@@ -132,8 +132,8 @@ function PendingWriteCard({
           <code className="truncate font-mono text-[11px]">{pending.path}</code>
         </div>
         <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
-          {added > 0 && <span className="font-mono text-emerald-600">+{added}</span>}
-          {removed > 0 && <span className="font-mono text-rose-600">−{removed}</span>}
+          {added > 0 && <span className="font-mono text-success">+{added}</span>}
+          {removed > 0 && <span className="font-mono text-destructive">−{removed}</span>}
           {added === 0 && removed === 0 && <span>无内容变化</span>}
           <span>·</span>
           <span>等待审批</span>
@@ -155,7 +155,7 @@ function PendingWriteCard({
           variant="ghost"
           onClick={handleReject}
           disabled={!!busy}
-          className="h-7 px-2.5 text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-950/30"
+          className="h-7 px-2.5 text-destructive hover:bg-destructive/10"
           title="拒绝"
         >
           {busy === 'reject' ? (
@@ -169,7 +169,7 @@ function PendingWriteCard({
           size="sm"
           onClick={handleApprove}
           disabled={!!busy}
-          className="h-7 bg-[#3370FF] px-2.5 text-white hover:bg-[#2860e5]"
+          className="h-7 bg-primary px-2.5 text-primary-foreground hover:bg-primary/90"
           title="应用"
         >
           {busy === 'approve' ? (

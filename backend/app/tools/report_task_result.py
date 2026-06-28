@@ -122,7 +122,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
 report_task_result_tool = ToolDef(
     name=REPORT_TASK_RESULT_TOOL_NAME,
     description=(
-        "Report the final semantic outcome of the current AgentHub sub-task. Call "
+        "Report the final semantic outcome of the current AChat sub-task. Call "
         "exactly once at the end of a dispatched child task. Use complete only when "
         "the assigned task is fully accomplished and every acceptance criterion "
         "passed; never report complete for partial work, failing tests, unresolved "

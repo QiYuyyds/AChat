@@ -1,6 +1,6 @@
 ## Context
 
-AgentHub 后端已在 `tool_registry` 注册了 `memory_recall` 和 4 个 `rag_*` 工具（`rag_search`、`rag_ingest`、`rag_list_documents`、`rag_delete_document`），但前端 `AVAILABLE_AGENT_TOOLS` 白名单未包含它们。Agent 的 `tool_names` 字段由前端表单决定，因此这些工具从未被任何 Agent 使用过。
+AChat 后端已在 `tool_registry` 注册了 `memory_recall` 和 4 个 `rag_*` 工具（`rag_search`、`rag_ingest`、`rag_list_documents`、`rag_delete_document`），但前端 `AVAILABLE_AGENT_TOOLS` 白名单未包含它们。Agent 的 `tool_names` 字段由前端表单决定，因此这些工具从未被任何 Agent 使用过。
 
 当前 `agent_runner.py` 的工具解析逻辑：`base_tool_names = args.override_tool_names or agent.tool_names_list` → `tool_registry.resolve(tool_names)`。没有任何隐式注入或动态注入机制。
 

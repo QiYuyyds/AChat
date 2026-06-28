@@ -29,7 +29,7 @@ The fields are declarative. They let Orchestrator state what a task is expected 
 
 ## Evidence Capture
 
-AgentHub records tool outcomes per run for managed tools:
+AChat records tool outcomes per run for managed tools:
 
 - `fs_write`: relative path, absolute path, bytes, applied mode.
 - `bash`: command, cwd, exit code, timeout flag, whether the tool returned an error.
@@ -57,7 +57,7 @@ For tasks that declare evidence:
 - Each `requiredEvidence` string must be mentioned by an acceptance result or report summary.
 - Any actual managed `bash` command with non-zero exit or timeout blocks completion unless the report is non-complete or explicitly identifies the command as a blocker.
 
-These checks are deliberately conservative and focused on AgentHub-managed tools. SDK-native file edits remain a known limitation until worktree/shadow workspace isolation is added.
+These checks are deliberately conservative and focused on AChat-managed tools. SDK-native file edits remain a known limitation until worktree/shadow workspace isolation is added.
 
 ## Replan and Aggregate Semantics
 

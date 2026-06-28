@@ -1,6 +1,6 @@
 ## Context
 
-AgentHub 后端（Python/FastAPI/PostgreSQL）已融合 AGI-memory 的 RAG 三路 RRF 融合检索主干（Milvus 语义 + ES BM25 + Neo4j 知识图谱），`rag_ingest` 工具可将纯文本切分入库。但文档管理体系缺失：入库后无法列出/查看/删除，文档与 chunk 无关联，上传与 RAG 脱节，无版本管理，无文件解析管道。详见 `specs/18-document-knowledge-base.md` 的六个断裂点分析。
+AChat 后端（Python/FastAPI/PostgreSQL）已融合 AGI-memory 的 RAG 三路 RRF 融合检索主干（Milvus 语义 + ES BM25 + Neo4j 知识图谱），`rag_ingest` 工具可将纯文本切分入库。但文档管理体系缺失：入库后无法列出/查看/删除，文档与 chunk 无关联，上传与 RAG 脱节，无版本管理，无文件解析管道。详见 `specs/18-document-knowledge-base.md` 的六个断裂点分析。
 
 现有 Attachment 系统（会话级文件附件，存磁盘不解析）保持完全独立，不在本次改动范围。RAG 的 HybridStore/Rewriter/Reranker/Splitter 全部不动，Document 体系作为 RAG 的上游管理者接入。
 

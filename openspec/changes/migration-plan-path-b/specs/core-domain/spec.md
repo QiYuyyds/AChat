@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Core entities SHALL remain normalized
-AgentHub SHALL model Agent, Conversation, Message, Artifact, Workspace, Tool, and AgentRun as separate domain concepts with explicit references. The domain SHALL be extended with LongTermMemory, UserPreference, RagChunk, ChatHistory, MemoryNode, and MemoryEdge entities to support the memory and RAG subsystems.
+AChat SHALL model Agent, Conversation, Message, Artifact, Workspace, Tool, and AgentRun as separate domain concepts with explicit references. The domain SHALL be extended with LongTermMemory, UserPreference, RagChunk, ChatHistory, MemoryNode, and MemoryEdge entities to support the memory and RAG subsystems.
 
 #### Scenario: Message references an artifact
 - **WHEN** an agent creates an artifact during a run

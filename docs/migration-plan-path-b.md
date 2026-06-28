@@ -50,7 +50,7 @@ sqlite-vec 暴力搜索         → Milvus ANN（百万级文档向量检索）
 
 ## 1. 项目关键路径索引
 
-### 1.1 AgentHub 现有核心文件（改动目标）
+### 1.1 AChat 现有核心文件（改动目标）
 
 | 文件 | 行数 | 改动类型 | 说明 |
 |------|------|---------|------|
@@ -98,7 +98,7 @@ docker-compose.yml      ← 全套服务编排
 
 ### 1.3 AGI-memory 源文件映射表
 
-| 源文件 (AGI-memory) | 目标文件 (AgentHub) | 搬运方式 |
+| 源文件 (AGI-memory) | 目标文件 (AChat) | 搬运方式 |
 |---|---|---|
 | `internal/memory/memory.py` → `ShortTerm` 类 | `backend/app/memory/short_term.py` | A. 直接复用 |
 | `internal/memory/memory.py` → `_tokenize_zh()` | `backend/app/memory/consolidation.py` | A. 直接复用 |
@@ -124,7 +124,7 @@ docker-compose.yml      ← 全套服务编排
 - **A. 直接复用**：纯算法/纯内存代码，零改动或仅改 import 路径
 - **B. sync→async**：算法不变，DB 读写从 psycopg2 改为 asyncpg via SQLAlchemy async session
 - **C. 深度适配**：架构差异大，需要重写接口层（如 threading → asyncio.gather、数据源切换）
-- **不需要搬运**：`agent/agent.py`（AgentHub 有 agent_runner）、`agent/router.py`（用 Adapter 选择）、`handler/*`（FastAPI 路由）、`sandbox/*`（Workspace 沙箱）、`tools/*`（自有 tool_registry）、`platform/*`（SQLAlchemy 统一 DB 访问）
+- **不需要搬运**：`agent/agent.py`（AChat 有 agent_runner）、`agent/router.py`（用 Adapter 选择）、`handler/*`（FastAPI 路由）、`sandbox/*`（Workspace 沙箱）、`tools/*`（自有 tool_registry）、`platform/*`（SQLAlchemy 统一 DB 访问）
 
 ---
 
@@ -460,7 +460,7 @@ def load_from_storage(self):
     rows = self.inf.repo.ltm.load()
     self.items = [Item(...) for r in rows]
 
-# 改造后 (AgentHub, async SQLAlchemy):
+# 改造后 (AChat, async SQLAlchemy):
 async def load_from_storage(self):
     async with get_db() as session:
         stmt = select(LongTermMemory).order_by(LongTermMemory.id)
@@ -801,31 +801,31 @@ class ContextSource(ABC):
     async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
         ...
 
-# 6 种 Source 需要适配 AgentHub 数据源：
+# 6 种 Source 需要适配 AChat 数据源：
 
 # ProfileSource: 读 agents 表（Agent.system_prompt + Preference）
 #   - AGI-memory 从 PG preference 表读
-#   - AgentHub 从 agents.system_prompt + memory_service.preference 读
+#   - AChat 从 agents.system_prompt + memory_service.preference 读
 
 # PlannerSource: 读 Orchestrator DAG 状态
 #   - AGI-memory 从内存 PlannerSnapshot 读
-#   - AgentHub 从 orchestrator 的 dispatch_plan 读
+#   - AChat 从 orchestrator 的 dispatch_plan 读
 
 # TaskMemSource: 读当前子任务的步骤观察
 #   - AGI-memory 从内存 StepObservation 列表读
-#   - AgentHub 从 agent_runner 的 run context 读
+#   - AChat 从 agent_runner 的 run context 读
 
 # ToolStateSource: 读可用工具 + 最近调用结果
 #   - AGI-memory 从内存 ToolCallTrace 读
-#   - AgentHub 从 agent_runs 表 + tool_registry 读
+#   - AChat 从 agent_runs 表 + tool_registry 读
 
 # ConstraintsSource: 读 Workspace 沙箱策略
 #   - AGI-memory 从 Policy 对象读
-#   - AgentHub 从 workspace.fs_write_approval_mode 读
+#   - AChat 从 workspace.fs_write_approval_mode 读
 
 # RecallSource: 调 memory_service.recall
 #   - AGI-memory 直接调 LongTerm.recall_by_filter
-#   - AgentHub 调 memory_service.ltm.recall_by_filter
+#   - AChat 调 memory_service.ltm.recall_by_filter
 ```
 
 ### 5.3 Assembler — async 改造
@@ -1060,21 +1060,21 @@ async def build_infrastructure(settings: Settings) -> Infrastructure:
 kill milvus:
   ✅ 向量路关闭 → RRF 变为 ES 单路或 Neo4j 单路
   ✅ 记忆 recall 降级为 TF cosine
-  ✅ AgentHub 完全可用
+  ✅ AChat 完全可用
 
 kill elasticsearch:
   ✅ BM25 路关闭 → RRF 变为 Milvus 单路
-  ✅ AgentHub 完全可用
+  ✅ AChat 完全可用
 
 kill neo4j:
   ✅ 图路关闭 → RRF 变为 Milvus+ES 双路
   ✅ GraphMemory → no-op
   ✅ consolidate 不再做图中心度保护
-  ✅ AgentHub 完全可用
+  ✅ AChat 完全可用
 
 kill kafka:
   ✅ 事件只走 InProcess
-  ✅ AgentHub 完全可用
+  ✅ AChat 完全可用
 
 kill postgres:
   ❌ PG 是主存储，挂了系统不可用
@@ -1114,7 +1114,7 @@ consolidate (500 条记忆)        < 5s
 
 ```
 ══════════════════════════════════════════════════════
-  AgentHub Infrastructure Status
+  AChat Infrastructure Status
 ══════════════════════════════════════════════════════
   PostgreSQL:    ✅ connected (asyncpg, pool=10)
   Milvus:        ✅ connected (standalone, dim=1024)
@@ -1203,10 +1203,10 @@ LLM API           改写/精排          跳过 rewrite/rerank         检索精
 - ❌ API 鉴权中间件
 - ❌ 离线模式保留
 - ❌ 数据迁移（可选，非必须）
-- ❌ AGI-memory 的 agent/router.py（AgentHub 用 Adapter 选择替代）
-- ❌ AGI-memory 的 handler/handler.py（AgentHub 有 FastAPI 路由层）
-- ❌ AGI-memory 的 sandbox/*（AgentHub 有自己的 workspace 沙箱）
-- ❌ AGI-memory 的 tools/tools.py（AgentHub 有自己的 tool registry）
+- ❌ AGI-memory 的 agent/router.py（AChat 用 Adapter 选择替代）
+- ❌ AGI-memory 的 handler/handler.py（AChat 有 FastAPI 路由层）
+- ❌ AGI-memory 的 sandbox/*（AChat 有自己的 workspace 沙箱）
+- ❌ AGI-memory 的 tools/tools.py（AChat 有自己的 tool registry）
 - ❌ AGI-memory 的 platform/*（SQLAlchemy 统一了 DB 访问）
 
 ---
@@ -1283,7 +1283,7 @@ slot_budget_task_mem = 350
 
 ### Phase 3 ✅
 - [ ] 6 种 SlotKind + 4 种 Schema 搬运
-- [ ] 6 种 Source 适配 AgentHub 数据源
+- [ ] 6 种 Source 适配 AChat 数据源
 - [ ] ContextAssembler async 改造
 - [ ] 集成到 conversation_context.py
 - [ ] token 预算裁剪测试

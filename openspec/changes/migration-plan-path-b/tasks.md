@@ -42,7 +42,7 @@
 - [x] 4.1 创建 backend/app/services/prompt_assembler.py（Slot/Schema/Source/Assembler 全部内联）
 - [x] 4.2 实现 6 种 SlotKind 定义 + SlotFilter/Slot/ContextItem/FilledSlot 数据类
 - [x] 4.3 实现 4 种 Schema（CHAT/TOOL/REACT/RAG）+ slot_priority + DEFAULT_GLOBAL_TOKEN_BUDGET
-- [x] 4.4 实现 6 种 ContextSource（ProfileSource/PlannerSource/TaskMemSource/ToolStateSource/ConstraintsSource/RecallSource）对接 AgentHub 数据源
+- [x] 4.4 实现 6 种 ContextSource（ProfileSource/PlannerSource/TaskMemSource/ToolStateSource/ConstraintsSource/RecallSource）对接 AChat 数据源
 - [x] 4.5 实现 ContextAssembler.assemble()（asyncio.gather 并发填充 + 异常隔离 + token 预算裁剪）
 - [x] 4.6 实现 RuntimeContext.render_system_prompt() + render_history()（OpenAI chat 格式输出）
 - [x] 4.7 改造 backend/app/services/conversation_context.py：build_history_for() 委托 PromptAssembler

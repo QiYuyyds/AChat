@@ -4,7 +4,7 @@
 
 ### Requirement: Tool definitions SHALL be registered centrally
 
-AgentHub-managed tools MUST be registered through `toolRegistry` with name, description, JSON schema, and handler.
+AChat-managed tools MUST be registered through `toolRegistry` with name, description, JSON schema, and handler.
 
 #### Scenario: Agent binds an artifact to an expected output
 - **WHEN** `write_artifact` receives an `outputKey`

@@ -7,14 +7,14 @@ Each dispatched child task runs through bounded attempts:
 1. Build the original sub-agent prompt.
 2. Run the assigned child agent with `report_task_result` available.
 3. Evaluate the report and managed tool evidence.
-4. Run AgentHub-managed verification commands declared by `requiredCommands`.
+4. Run AChat-managed verification commands declared by `requiredCommands`.
 5. If the task is incomplete but recoverable, run the same agent again with a continuation prompt that includes the previous failure, missing evidence, and command output.
 
 The harness stops when the task passes, the child reports `blocked`, the parent is aborted, or the bounded attempt count is exhausted.
 
 ## Verification Commands
 
-`requiredCommands` become executable verification contracts, not only self-reported evidence hints. AgentHub runs them with the same command safety policy as `bash`.
+`requiredCommands` become executable verification contracts, not only self-reported evidence hints. AChat runs them with the same command safety policy as `bash`.
 
 Each command can declare:
 

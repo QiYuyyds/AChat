@@ -1,11 +1,11 @@
 [project]
 name = "agenthub-backend"
 version = "0.1.0"
-description = "AgentHub Python Backend - Multi-Agent Collaboration Workspace"
+description = "AChat Python Backend - Multi-Agent Collaboration Workspace"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "AGPL-3.0-only" }
-authors = [{ name = "AgentHub Team" }]
+authors = [{ name = "AChat Team" }]
 
 dependencies = [
     # Web Framework

@@ -159,7 +159,7 @@ export function DirPickerDialog({
         {error && (
           <div className={cn(
             'rounded-md border px-3 py-2 text-xs',
-            'border-red-200 bg-red-50 text-red-800 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-200',
+            'border-destructive/30 bg-destructive/10 text-destructive',
           )}>
             {error}
           </div>

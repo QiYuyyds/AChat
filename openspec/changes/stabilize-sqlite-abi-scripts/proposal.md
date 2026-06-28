@@ -2,7 +2,7 @@
 
 ## Why
 
-`better-sqlite3` is a native module tied to the active Node ABI. AgentHub intentionally alternates between system Node for dev/test and Electron's embedded Node for desktop build/db scripts. The current setup is easy to break because `ensure-node-sqlite.mjs` only imports `better-sqlite3`; the native binding is loaded later when a `Database` is opened, so ABI mismatches can slip through until Vitest or a route touches the database.
+`better-sqlite3` is a native module tied to the active Node ABI. AChat intentionally alternates between system Node for dev/test and Electron's embedded Node for desktop build/db scripts. The current setup is easy to break because `ensure-node-sqlite.mjs` only imports `better-sqlite3`; the native binding is loaded later when a `Database` is opened, so ABI mismatches can slip through until Vitest or a route touches the database.
 
 Developers should not need to remember when to run `pnpm rebuild better-sqlite3` or `pnpm electron:rebuild`.
 

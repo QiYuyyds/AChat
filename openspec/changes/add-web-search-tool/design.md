@@ -1,6 +1,6 @@
 ## Context
 
-AgentHub tools are `ToolDef`s (name / description / JSON-schema parameters / async handler) registered in a single global `tool_registry` (`backend/app/tools/registry.py`). At run time both `custom_adapter.py` and `claude_adapter.py` call `tool_registry.resolve(input.tool_names)` to expose the agent's tools to the model and `tool_registry.execute(name, args, ctx)` when the model calls one. `ToolContext` carries `conversation_id`, `workspace_path`, `agent_id`, `run_id`, and a `cancel_event` (`asyncio.Event`) set when the run is aborted.
+AChat tools are `ToolDef`s (name / description / JSON-schema parameters / async handler) registered in a single global `tool_registry` (`backend/app/tools/registry.py`). At run time both `custom_adapter.py` and `claude_adapter.py` call `tool_registry.resolve(input.tool_names)` to expose the agent's tools to the model and `tool_registry.execute(name, args, ctx)` when the model calls one. `ToolContext` carries `conversation_id`, `workspace_path`, `agent_id`, `run_id`, and a `cancel_event` (`asyncio.Event`) set when the run is aborted.
 
 Agent tool selection: `agents.py` persists `toolNames` only for `adapter_name == "custom"`; SDK adapters (`claude`, `codex`) are forced to `[]` and use their SDK's own tools. `agent_runner.py` additionally injects `memory_recall` (all custom agents) and the RAG tools (custom agents when `conv.rag_enabled`). This change deliberately does **not** add such an injection.
 

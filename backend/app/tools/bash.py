@@ -110,7 +110,7 @@ _PARAMETERS: dict[str, Any] = {
         "timeoutMs": {
             "type": "number",
             "description": (
-                "Optional timeout in milliseconds. Values are clamped to AgentHub "
+                "Optional timeout in milliseconds. Values are clamped to AChat "
                 "safety bounds."
             ),
         },

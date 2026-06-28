@@ -29,7 +29,7 @@ from app.utils.ids import new_deployment_id
 _EXTERNAL_SUMMARY_INSTRUCTION = (
     "User-facing summaries may quote the returned previewPath/publicUrl exactly. Do "
     "not invent or rewrite hostnames. If localPreviewPath is present, mention it only "
-    "as a local fallback inside AgentHub."
+    "as a local fallback inside AChat."
 )
 
 
@@ -165,7 +165,7 @@ deploy_artifact_tool = ToolDef(
     description=(
         "Create a local static deployment for a web_app artifact and return its "
         "stable previewPath plus downloadable packages. The previewPath is a relative "
-        "path for the current AgentHub instance; do not invent or print a public "
+        "path for the current AChat instance; do not invent or print a public "
         "hostname. In user-facing summaries, tell the user to use the deployment card "
         "buttons or quote previewPath exactly."
     ),

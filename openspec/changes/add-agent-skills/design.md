@@ -1,6 +1,6 @@
 ## Context
 
-后端已迁移至 Python FastAPI（`backend/app/`），前端仍为 Next.js/React（`src/`）。custom adapter（`backend/app/adapters/custom_adapter.py`）自跑 OpenAI 兼容 tool loop，AgentHub 对其工具调用完全可控；SDK adapter（claude-code / codex）的工具集与 context 管理由各自 SDK 接管，AgentHub 难以插入统一的渐进式披露。
+后端已迁移至 Python FastAPI（`backend/app/`），前端仍为 Next.js/React（`src/`）。custom adapter（`backend/app/adapters/custom_adapter.py`）自跑 OpenAI 兼容 tool loop，AChat 对其工具调用完全可控；SDK adapter（claude-code / codex）的工具集与 context 管理由各自 SDK 接管，AChat 难以插入统一的渐进式披露。
 
 项目已存在三套与本变更同构的成熟机制，本设计全程复用而非新造：
 

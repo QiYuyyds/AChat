@@ -1,6 +1,6 @@
 # Spec 06 — Orchestrator 工作流
 
-> 「主 Agent 协调器」是 AgentHub 的核心差异化能力。本文档定义其触发条件、工作流和数据流。
+> 「主 Agent 协调器」是 AChat 的核心差异化能力。本文档定义其触发条件、工作流和数据流。
 
 ---
 
@@ -167,7 +167,7 @@ const planTasksTool: ToolDef = {
 ## Orchestrator 的 system prompt 模板
 
 ```
-你是 AgentHub 的 Orchestrator，负责把用户请求拆解并分派给合适的 Agent。
+你是 AChat 的 Orchestrator，负责把用户请求拆解并分派给合适的 Agent。
 
 【你的工作流】
 1. 阅读群聊上下文与用户最新请求

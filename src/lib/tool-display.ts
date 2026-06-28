@@ -1,4 +1,4 @@
-const AGENTHUB_TOOL_LABELS = {
+const ACHAT_TOOL_LABELS = {
   write_artifact: '创建产物',
   read_artifact: '读取产物',
   deploy_artifact: '部署网页',
@@ -27,36 +27,36 @@ const EXTERNAL_TOOL_LABELS: Record<string, string> = {
   websearch: '搜索网页',
 }
 
-const AGENTHUB_TOOL_NAMES = Object.keys(AGENTHUB_TOOL_LABELS).sort(
+const ACHAT_TOOL_NAMES = Object.keys(ACHAT_TOOL_LABELS).sort(
   (a, b) => b.length - a.length,
 )
 
 export function getToolDisplayName(toolName: string): string {
   const normalized = toolName.trim()
   const lower = normalized.toLowerCase()
-  const agentHubName = findAgentHubToolName(lower)
+  const achatName = findAChatToolName(lower)
 
-  if (agentHubName) return AGENTHUB_TOOL_LABELS[agentHubName]
+  if (achatName) return ACHAT_TOOL_LABELS[achatName]
   return EXTERNAL_TOOL_LABELS[lower] ?? normalized
 }
 
 export function isBashToolName(toolName: string): boolean {
   const lower = toolName.trim().toLowerCase()
-  return findAgentHubToolName(lower) === 'bash' || lower === 'bash'
+  return findAChatToolName(lower) === 'bash' || lower === 'bash'
 }
 
-function findAgentHubToolName(toolName: string): keyof typeof AGENTHUB_TOOL_LABELS | null {
-  if (toolName in AGENTHUB_TOOL_LABELS) {
-    return toolName as keyof typeof AGENTHUB_TOOL_LABELS
+function findAChatToolName(toolName: string): keyof typeof ACHAT_TOOL_LABELS | null {
+  if (toolName in ACHAT_TOOL_LABELS) {
+    return toolName as keyof typeof ACHAT_TOOL_LABELS
   }
 
-  for (const name of AGENTHUB_TOOL_NAMES) {
+  for (const name of ACHAT_TOOL_NAMES) {
     if (
       toolName.endsWith(`__${name}`) ||
       toolName.endsWith(`_${name}`) ||
       toolName.endsWith(`.${name}`)
     ) {
-      return name as keyof typeof AGENTHUB_TOOL_LABELS
+      return name as keyof typeof ACHAT_TOOL_LABELS
     }
   }
 

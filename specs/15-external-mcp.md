@@ -32,7 +32,7 @@
 
 **非目标(首版)**
 - 不替换内置工具(`agenthub` server 仍是内部桥接,见 spec 05/07)。
-- 不做 MCP server 的**发布/托管**(AgentHub 仍只作为 MCP client)。
+- 不做 MCP server 的**发布/托管**(AChat 仍只作为 MCP client)。
 - 首版不做 OAuth-flow 鉴权的远程 MCP(只支持 stdio 命令 + 带静态 header 的 SSE)。
 
 ---
@@ -90,13 +90,13 @@ createdAt     integer
 
 - **命名空间**:外部 MCP 工具统一命名 `mcp__<serverName>__<toolName>`(对齐 claude-code/codex SDK 既有约定,如 `mcp__agenthub__write_artifact`),避免与内置工具冲突。
 - **事件**:MCP 工具调用复用现有 `tool.call` / `tool.result`(`specs/02`),`toolName` 用命名空间名。**不新增 StreamEvent,不破坏前端 reducer**。
-- **artifact**:外部 MCP 工具一般不产 AgentHub 产物;不触发 `artifact.create`(除非它显式返回 `artifactId` 并被约定识别——首版不做)。
+- **artifact**:外部 MCP 工具一般不产 AChat 产物;不触发 `artifact.create`(除非它显式返回 `artifactId` 并被约定识别——首版不做)。
 
 ---
 
 ## 6. 安全 / 信任模型（重点,§5 张力点）
 
-外部 MCP server **运行任意代码(stdio)或访问外部网络(sse)**,**绕过 AgentHub 的 workspace 沙箱 + Bash 黑名单**。这是本特性最大的安全口子,必须显式设计:
+外部 MCP server **运行任意代码(stdio)或访问外部网络(sse)**,**绕过 AChat 的 workspace 沙箱 + Bash 黑名单**。这是本特性最大的安全口子,必须显式设计:
 
 1. **显式 opt-in 两道**:server 由用户**手动登记**;Agent 由用户**手动勾选**。默认不启用任何外部 MCP。
 2. **trust 级别**:
@@ -105,7 +105,7 @@ createdAt     integer
 3. **stdio 收敛**:子进程 `cwd` 尽量限定到 workspace 的 effective cwd;`env` 走白名单(复用 `buildChildProcessEnv`);可执行命令做基本校验(不在本 spec 的 Bash 黑名单内,但应有独立的「危险命令」提示)。
 4. **失败隔离**:某 server 连接/调用失败 → 该 server 工具标记不可用 + 警告,**不崩整个 run**。
 5. **中止**:`AbortSignal` 触发时关闭所有 MCP 连接、杀 stdio 进程树。
-6. **明确告知**:文档与 UI 必须写明「**外部 MCP 不在 AgentHub 的沙箱保证范围内**」,这是用户授予的信任。
+6. **明确告知**:文档与 UI 必须写明「**外部 MCP 不在 AChat 的沙箱保证范围内**」,这是用户授予的信任。
 
 > 注:claude-code/codex 把沙箱委托给各自 SDK(canUseTool / Codex sandbox);custom 的 MCP 工具**不经我们的沙箱**——这是 custom 接 MCP 的固有代价,§6.2/§6.3 的审批门是主要缓解。
 

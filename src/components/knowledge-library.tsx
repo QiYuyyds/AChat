@@ -33,8 +33,8 @@ const SOURCE_LABELS: Record<string, string> = {
 const TYPE_COLORS: Record<string, string> = {
   note: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
   manual: 'bg-purple-500/10 text-purple-600 dark:text-purple-400',
-  spec: 'bg-green-500/10 text-green-600 dark:text-green-400',
-  reference: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  spec: 'bg-success/10 text-success',
+  reference: 'bg-warning/10 text-warning',
   report: 'bg-rose-500/10 text-rose-600 dark:text-rose-400',
   other: 'bg-gray-500/10 text-gray-600 dark:text-gray-400',
 }
@@ -177,7 +177,7 @@ export function KnowledgeLibrary() {
           {uploading ? '上传中...' : '拖入文档上传，或点「上传」选择'}
         </div>
         {uploadError && (
-          <div className="mt-1.5 rounded-md border border-red-500/30 bg-red-50/30 px-2 py-1.5 text-[10px] text-red-700 dark:bg-red-950/10 dark:text-red-400">
+          <div className="mt-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[10px] text-destructive">
             {uploadError}
           </div>
         )}
@@ -288,7 +288,7 @@ export function KnowledgeLibrary() {
                         setDeleteTargetId(doc.id)
                       }}
                       title="删除文档"
-                      className="shrink-0 self-center opacity-0 transition group-hover:opacity-100 hover:text-red-600"
+                      className="shrink-0 self-center opacity-0 transition group-hover:opacity-100 hover:text-destructive"
                     >
                       <Trash2 className="size-3.5" />
                     </button>
@@ -323,7 +323,7 @@ export function KnowledgeLibrary() {
                 取消
               </Button>
               <Button
-                className="bg-red-600 hover:bg-red-700"
+                className="bg-destructive hover:bg-destructive/90"
                 size="sm"
                 onClick={() => void handleDelete()}
                 disabled={deleting}

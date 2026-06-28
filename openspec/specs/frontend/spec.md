@@ -55,5 +55,5 @@ Create/edit agent UI MUST show provider, model, tool, key, and base URL fields a
 
 #### Scenario: User selects Codex adapter
 - **WHEN** `adapterKind='codex'`
-- **THEN** provider and AgentHub tool checkboxes are hidden
+- **THEN** provider and AChat tool checkboxes are hidden
 - **AND** Base URL copy says it must support Codex/Responses.

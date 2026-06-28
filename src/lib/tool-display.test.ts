@@ -3,12 +3,12 @@ import { describe, expect, it } from 'vitest'
 import { getToolDisplayName, isBashToolName } from './tool-display'
 
 describe('tool display helpers', () => {
-  it('formats AgentHub tool names', () => {
+  it('formats AChat tool names', () => {
     expect(getToolDisplayName('read_artifact')).toBe('读取产物')
     expect(getToolDisplayName('read_attachment')).toBe('读取附件')
   })
 
-  it('formats MCP-prefixed AgentHub tool names', () => {
+  it('formats MCP-prefixed AChat tool names', () => {
     expect(getToolDisplayName('mcp__agenthub__read_attachment')).toBe('读取附件')
     expect(getToolDisplayName('codex_mcp_agenthub_write_artifact')).toBe('创建产物')
   })

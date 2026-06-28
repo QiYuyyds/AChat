@@ -37,4 +37,4 @@ Artifact file names are untrusted because they come from LLM/tool output. Deploy
 
 The deployment route serves files from the materialized directory. HTML responses keep CSP sandboxing and `nosniff`, matching the existing artifact preview safety model.
 
-The source ZIP contains the artifact source files and a README. The container ZIP contains the static files plus `Dockerfile`, `nginx.conf`, and README so users can run the preview outside AgentHub.
+The source ZIP contains the artifact source files and a README. The container ZIP contains the static files plus `Dockerfile`, `nginx.conf`, and README so users can run the preview outside AChat.

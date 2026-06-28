@@ -1,4 +1,4 @@
-"""AgentHub RAG subsystem — retrieval-augmented generation with hybrid search."""
+"""AChat RAG subsystem — retrieval-augmented generation with hybrid search."""
 
 from app.rag.splitter import Chunk, RecursiveSplitter
 from app.rag.rewriter import HistoryMessage, LLMRewriter

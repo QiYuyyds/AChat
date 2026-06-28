@@ -4,7 +4,7 @@ Custom agents currently have no way to retrieve fresh, real-world information fr
 
 ## What Changes
 
-- Add a new AgentHub-managed tool `web_search` backed by the Tavily Search REST API (`POST https://api.tavily.com/search`).
+- Add a new AChat-managed tool `web_search` backed by the Tavily Search REST API (`POST https://api.tavily.com/search`).
 - Register `web_search` in `tool_registry` so it can be resolved/executed by the existing adapter tool loop (custom adapter).
 - The tool is **opt-in per agent** (strategy B): an agent gains web search only when `web_search` is present in its `toolNames`. **No change to `agent_runner` auto-injection** — unlike `memory_recall`/RAG tools, it is never injected implicitly.
 - Read the Tavily key from `.env` (`TAVILY_API_KEY`) via the existing `config.apply_env_overrides` env-fallback layer; add a `tavily_api_key` settings field.
@@ -12,7 +12,7 @@ Custom agents currently have no way to retrieve fresh, real-world information fr
 - No approval gate (parity with `rag_search`; it is a read-only external call).
 - No new Python dependency — uses the existing `httpx` client.
 
-Out of scope: SDK agents (`claude`, `codex`). Their `toolNames` are forced empty at creation (`agents.py`), so they use their own builtin tool sets and cannot resolve AgentHub-managed tools.
+Out of scope: SDK agents (`claude`, `codex`). Their `toolNames` are forced empty at creation (`agents.py`), so they use their own builtin tool sets and cannot resolve AChat-managed tools.
 
 ## Capabilities
 
@@ -20,7 +20,7 @@ Out of scope: SDK agents (`claude`, `codex`). Their `toolNames` are forced empty
 <!-- none -->
 
 ### Modified Capabilities
-- `tools`: Add a requirement that AgentHub SHALL provide a `web_search` tool with defined behavior (key source, cancellation, result bounding, opt-in availability, error handling). This is a spec-level addition to the existing tools capability.
+- `tools`: Add a requirement that AChat SHALL provide a `web_search` tool with defined behavior (key source, cancellation, result bounding, opt-in availability, error handling). This is a spec-level addition to the existing tools capability.
 
 ## Impact
 

@@ -37,7 +37,7 @@ export function PendingBashCommandsPanel({ conversationId }: { conversationId: s
   if (pending.length === 0) return null
 
   return (
-    <div className="shrink-0 space-y-2 border-t bg-orange-50/45 px-4 py-2.5 dark:bg-orange-950/10">
+    <div className="shrink-0 space-y-2 border-t bg-warning/10 px-4 py-2.5">
       {pending.map((command) => (
         <PendingBashCommandCard
           key={command.id}
@@ -85,13 +85,12 @@ function PendingBashCommandCard({
   return (
     <div
       className={cn(
-        'flex items-center gap-3 rounded-lg border border-orange-200 bg-card px-3 py-2 text-xs shadow-sm',
-        'dark:border-orange-900/50',
+        'flex items-center gap-3 rounded-lg border border-warning/30 bg-card px-3 py-2 text-xs shadow-sm',
       )}
     >
       <div className="flex shrink-0 items-center gap-2">
         {agent ? <AgentAvatar agent={agent} size="sm" /> : <div className="size-6 rounded-md bg-muted" />}
-        <Terminal className="size-4 text-orange-600" />
+        <Terminal className="size-4 text-warning" />
       </div>
 
       <div className="min-w-0 flex-1">
@@ -114,7 +113,7 @@ function PendingBashCommandCard({
           variant="ghost"
           onClick={handleReject}
           disabled={!!busy}
-          className="h-7 px-2.5 text-rose-600 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-950/30"
+          className="h-7 px-2.5 text-destructive hover:bg-destructive/10"
           title="拒绝"
         >
           {busy === 'reject' ? <Loader2 className="size-3.5 animate-spin" /> : <X className="size-3.5" />}
@@ -124,7 +123,7 @@ function PendingBashCommandCard({
           size="sm"
           onClick={handleApprove}
           disabled={!!busy}
-          className="h-7 bg-[#3370FF] px-2.5 text-white hover:bg-[#2860e5]"
+          className="h-7 bg-primary px-2.5 text-primary-foreground hover:bg-primary/90"
           title="执行"
         >
           {busy === 'approve' ? <Loader2 className="size-3.5 animate-spin" /> : <Check className="size-3.5" />}

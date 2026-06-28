@@ -15,16 +15,16 @@ AgentRunner MUST continue a dispatched child task when a child attempt ends with
 - **THEN** AgentRunner marks the dispatch task `failed`
 - **AND** downstream dependents are skipped or replanned according to the DAG outcome.
 
-### Requirement: Required Commands SHALL Be Executed By AgentHub
+### Requirement: Required Commands SHALL Be Executed By AChat
 
 AgentRunner MUST execute `requiredCommands` for a child task before accepting it as complete.
 
 #### Scenario: Required command succeeds
 - **WHEN** a child task declares a required command
-- **AND** AgentHub runs the command with exit code `0`
+- **AND** AChat runs the command with exit code `0`
 - **THEN** the command evidence is available to task result evaluation.
 
 #### Scenario: Required command fails
-- **WHEN** AgentHub runs a required command and it exits non-zero or times out
+- **WHEN** AChat runs a required command and it exits non-zero or times out
 - **THEN** the task attempt is incomplete
 - **AND** the next continuation prompt includes the failed command and output.

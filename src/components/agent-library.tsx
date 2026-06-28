@@ -161,7 +161,7 @@ export function AgentLibrary() {
               取消
             </Button>
             <Button
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-destructive hover:bg-destructive/90"
               onClick={() => void confirmDelete()}
               disabled={deleting}
             >

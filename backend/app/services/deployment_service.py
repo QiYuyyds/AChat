@@ -38,7 +38,7 @@ RUNTIME_ENTRY = "index.html"
 DEPLOYMENT_SUMMARY_INSTRUCTION = (
     "User-facing summaries must not invent a hostname or public URL for this "
     "deployment. The previewPath is a local relative path for the current "
-    "AgentHub instance; tell the user to use the deployment card buttons, or "
+    "AChat instance; tell the user to use the deployment card buttons, or "
     "quote previewPath exactly."
 )
 

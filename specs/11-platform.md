@@ -1,6 +1,6 @@
 # Spec 11 — 平台抽象（Platform）
 
-> AgentHub 在本地运行，宿主可能是 macOS / Linux / Windows。本 spec 定义跨平台差异的处理契约：shell 选择、命令黑名单、路径校验、子进程清理。
+> AChat 在本地运行，宿主可能是 macOS / Linux / Windows。本 spec 定义跨平台差异的处理契约：shell 选择、命令黑名单、路径校验、子进程清理。
 
 源文件：`src/server/platform.ts`（platform 检测与常量），`src/server/security.ts`（双平台黑名单），`src/server/tools/bash.ts`（shell 执行）。
 
@@ -252,7 +252,7 @@ Drives 列表通过 `statSync('A:\\')` … `statSync('Z:\\')` 探测可用盘符
 
 服务器平台通过 `GET /api/platform` 一次性获取（返回 `{ platform: 'posix' | 'windows' }`），前端 useEffect 缓存。
 
-**Why 不用 `navigator.userAgent`**：用户可能从 Mac 浏览器访问 Windows 上跑的 AgentHub，浏览器侧推断会与实际 host 不一致；服务器才是 bash 工具实际跑的地方。
+**Why 不用 `navigator.userAgent`**：用户可能从 Mac 浏览器访问 Windows 上跑的 AChat，浏览器侧推断会与实际 host 不一致；服务器才是 bash 工具实际跑的地方。
 
 ---
 

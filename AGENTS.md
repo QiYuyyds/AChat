@@ -6,7 +6,7 @@ This version (16.2.6) has breaking changes — APIs, conventions, and file struc
 
 ---
 
-# AgentHub — Agent 协作入口
+# AChat — Agent 协作入口
 
 任何 AI 协作工具进入本项目工作时，请：
 

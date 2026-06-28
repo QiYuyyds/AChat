@@ -8,5 +8,5 @@
 
 #### Scenario: User configures static publishing
 - **WHEN** the user enters a publish directory and public base URL
-- **THEN** AgentHub persists `deployment_publish_enabled`, `deployment_publish_dir`, and `deployment_public_base_url`
+- **THEN** AChat persists `deployment_publish_enabled`, `deployment_publish_dir`, and `deployment_public_base_url`
 - **AND** future `deploy_artifact` calls use that target.

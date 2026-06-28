@@ -1,8 +1,8 @@
 ## Context
 
-AgentHub 的 RAG 混合检索（`HybridStore`）设计了三路 RRF 融合：Milvus 语义向量、ES BM25 关键词、Neo4j 知识图谱。前两路已通过 `_wire_milvus_to_rag` 和 `_wire_es_to_rag` 接入，但 KG 路径从未 wire——`set_kg_backend` 从未被调用，`_fetch_kg` 中 `self._kg_search_fn` 为 `None`，`_kg_ok()` 永远返回 `False`。
+AChat 的 RAG 混合检索（`HybridStore`）设计了三路 RRF 融合：Milvus 语义向量、ES BM25 关键词、Neo4j 知识图谱。前两路已通过 `_wire_milvus_to_rag` 和 `_wire_es_to_rag` 接入，但 KG 路径从未 wire——`set_kg_backend` 从未被调用，`_fetch_kg` 中 `self._kg_search_fn` 为 `None`，`_kg_ok()` 永远返回 `False`。
 
-AGI-memory 项目已实现完整的知识图谱模块（`internal/graph/`），包含 LLM 实体关系抽取器（Extractor）和 Neo4j 存储层（KGStore），但使用同步 Neo4j 驱动。AgentHub 的 GraphMemory 已完成同步→async 适配（使用 `AsyncDriver` + `async with session`），KGStore 需沿用同一模式。
+AGI-memory 项目已实现完整的知识图谱模块（`internal/graph/`），包含 LLM 实体关系抽取器（Extractor）和 Neo4j 存储层（KGStore），但使用同步 Neo4j 驱动。AChat 的 GraphMemory 已完成同步→async 适配（使用 `AsyncDriver` + `async with session`），KGStore 需沿用同一模式。
 
 当前 `_fetch_kg` 中存在一个遗留 bug：`hits = self._kg_search_fn(query, fetch_k)` 是同步调用，但 ES 路径已修复为 `await`。KG 搜索函数将是 async 的，因此需要同步修复为 `await`。
 

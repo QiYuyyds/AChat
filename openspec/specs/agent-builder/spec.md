@@ -34,7 +34,7 @@ Custom agents MUST have `modelProvider` and a non-empty `modelId`; SDK agents SH
 
 ### Requirement: SDK agents SHALL use built-in tool sets
 
-Claude Code and Codex agents MUST persist `toolNames=[]` because their tools come from the SDK runtime rather than AgentHub `toolRegistry`.
+Claude Code and Codex agents MUST persist `toolNames=[]` because their tools come from the SDK runtime rather than AChat `toolRegistry`.
 
 #### Scenario: User switches from Custom to Codex
 - **WHEN** the form is submitted

@@ -1,8 +1,8 @@
 # Spec 14 -- 移动端伴随 App（Capacitor Companion）
 
-> 目标：做一个真正安装在手机上的 AgentHub 伴随 App，用来远程观察桌面端会话状态、任务完成情况，审批文件修改，并通过对话向 Agent 提出意见。
+> 目标：做一个真正安装在手机上的 AChat 伴随 App，用来远程观察桌面端会话状态、任务完成情况，审批文件修改，并通过对话向 Agent 提出意见。
 >
-> **关键决策（已定）**：移动端是 **Capacitor App**，不是手机浏览器页面 / PWA；桌面端 AgentHub 仍是唯一 host，负责 SQLite、workspace、Agent、工具执行；手机 App 只作为远程控制客户端。通信优先走 Tailscale / tailnet，也支持 LAN 直连。
+> **关键决策（已定）**：移动端是 **Capacitor App**，不是手机浏览器页面 / PWA；桌面端 AChat 仍是唯一 host，负责 SQLite、workspace、Agent、工具执行；手机 App 只作为远程控制客户端。通信优先走 Tailscale / tailnet，也支持 LAN 直连。
 
 涉及（预计新增 / 改动，**实现阶段才落地**）：`apps/mobile/`（Capacitor + React/Vite App）、`packages/shared/`（可选，共享类型 / API client / reducer）、`src/middleware.ts` 或 route-level auth（远程 API 鉴权）、`src/app/api/mobile/*`（移动端聚合 API）、`electron/server-bootstrap.ts`（companion mode 监听地址）、`src/server/device-sessions-service.ts`（设备会话令牌）、`device_sessions` 表（见 Spec 08 后续补充）。
 
@@ -15,7 +15,7 @@
 正确形态：
 
 ```txt
-Desktop AgentHub
+Desktop AChat
 - Next API / SSE
 - SQLite
 - workspace / tools / agents
@@ -106,16 +106,16 @@ P0 实现允许先使用「桌面端地址 + 设备 token」完成配对：
 
 ### 4.2 Tailscale / Tailnet
 
-Tailscale 不作为 AgentHub 的 npm 依赖，也不嵌入代码。它是用户在手机和电脑上安装的网络层软件：
+Tailscale 不作为 AChat 的 npm 依赖，也不嵌入代码。它是用户在手机和电脑上安装的网络层软件：
 
 ```txt
 手机 Tailscale App + 桌面 Tailscale
        -> 同一个 tailnet
        -> 桌面有固定 100.x.y.z IP / MagicDNS 名称
-       -> AgentHub mobile app 访问 http(s)://<desktop-tailnet-name>:<port>
+       -> AChat mobile app 访问 http(s)://<desktop-tailnet-name>:<port>
 ```
 
-AgentHub 只需要：
+AChat 只需要：
 
 - companion mode 监听非 loopback 地址；
 - 设置页展示当前可连接地址；
@@ -359,7 +359,7 @@ Tab 4: 设置
 - pending write / pending question 不允许离线提交；
 - 不缓存旧状态当成可操作状态。
 
-原因：AgentHub 是 local-first 桌面 host，移动 App 没有完整 DB 和 workspace。离线队列会引出顺序、去重、撤回、审批过期等复杂问题，当前阶段不做。
+原因：AChat 是 local-first 桌面 host，移动 App 没有完整 DB 和 workspace。离线队列会引出顺序、去重、撤回、审批过期等复杂问题，当前阶段不做。
 
 ---
 
@@ -391,7 +391,7 @@ Tab 4: 设置
 
 | 阶段 | 内容 | 产出 |
 |---|---|---|
-| P0 | Capacitor App 骨架；桌面 companion mode；Tailscale/LAN base URL 配对；device token；snapshot + events；会话查看；发送消息；审批 fs_write；回答 ask_user | 手机安装 App 后能连接桌面 AgentHub，观察状态并完成关键审批/反馈 |
+| P0 | Capacitor App 骨架；桌面 companion mode；Tailscale/LAN base URL 配对；device token；snapshot + events；会话查看；发送消息；审批 fs_write；回答 ask_user | 手机安装 App 后能连接桌面 AChat，观察状态并完成关键审批/反馈 |
 | P1 | Orchestrator 状态页增强；artifact 预览/版本/导出体验优化；QR 配对体验；iOS/Android 打包脚本；Tailnet HTTPS 文档 | 接近日常可用 |
 | P2 | 推送通知、本机通知 badge、更多文件浏览能力、Capacitor secure storage 插件 | 增强体验，按需求讨论 |
 
@@ -402,7 +402,7 @@ Tab 4: 设置
 | # | 问题 | 决定 |
 |---|---|---|
 | 1 | 移动端形态 | **Capacitor 手机 App**，不是手机浏览器页面 / PWA |
-| 2 | 服务端位置 | 桌面 AgentHub 是唯一 host；手机不跑 Next/SQLite/LLM/tools |
+| 2 | 服务端位置 | 桌面 AChat 是唯一 host；手机不跑 Next/SQLite/LLM/tools |
 | 3 | 网络 | 优先 Tailscale/tailnet；LAN 作为本地 fallback；不默认做公网中继 |
 | 4 | 鉴权 | 设备配对 + Bearer token；服务端存 token hash；可吊销 |
 | 5 | 事件流 | 优先 fetch streaming 带 Authorization；必要时短期 stream token + EventSource fallback |

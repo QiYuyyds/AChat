@@ -6,7 +6,7 @@ The chat composer MUST expose `/deploy` and route it to the same deterministic d
 
 - **WHEN** the user selects `/deploy` from the slash command menu
 - **THEN** the composer sends `/deploy` as a user message
-- **AND** AgentHub returns either a deployment status card, a no-candidate message, or a candidate chooser.
+- **AND** AChat returns either a deployment status card, a no-candidate message, or a candidate chooser.
 
 #### Scenario: Candidate chooser is rendered
 

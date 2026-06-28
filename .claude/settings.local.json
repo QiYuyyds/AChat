@@ -34,7 +34,15 @@
       "Bash(curl -s http://127.0.0.1:8000/api/skills)",
       "Bash(python -m json.tool)",
       "Bash(openspec validate *)",
-      "Bash(python -c \"import ast; [ast.parse\\(open\\(f, encoding='utf-8'\\).read\\(\\)\\) for f in ['app/services/document_service.py','app/schemas/document.py','app/api/documents.py']]; print\\('python syntax OK'\\)\")"
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f, encoding='utf-8'\\).read\\(\\)\\) for f in ['app/services/document_service.py','app/schemas/document.py','app/api/documents.py']]; print\\('python syntax OK'\\)\")",
+      "Bash(grep -q \"Ready\\\\|started server\\\\|Local:\" /tmp/agenthub-dev.log)",
+      "Bash(break)",
+      "Read(//tmp/**)",
+      "mcp__plugin_superpowers-chrome_chrome__use_browser",
+      "Bash(xargs -d '\\\\n' sed -i 's/AgentHub/AChat/g')",
+      "Bash(xargs -d '\\\\n' grep -c \"AgentHub\")",
+      "Bash(grep -v \":0$\")",
+      "Bash(pnpm vitest *)"
     ]
   }
 }

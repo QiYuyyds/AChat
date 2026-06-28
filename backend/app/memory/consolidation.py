@@ -85,7 +85,7 @@ class ConsolidationConfig:
 
     @classmethod
     def from_settings(cls, settings: Any) -> "ConsolidationConfig":
-        """Build config from AgentHub ``Settings`` object."""
+        """Build config from AChat ``Settings`` object."""
         if settings is None:
             return cls()
         return cls(

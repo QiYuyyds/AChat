@@ -7,9 +7,9 @@ const isDev = process.env.AGENTHUB_DEV === '1'
 const DEV_URL = 'http://localhost:3000'
 
 // Electron 默认用 package.json 的 `name` 字段（'bytedance-agenthub'）作为 app 名，
-// 用户数据会落在 ~/Library/Application Support/bytedance-agenthub/。覆盖成 productName 'AgentHub'，
+// 用户数据会落在 ~/Library/Application Support/bytedance-agenthub/。覆盖成 productName 'AChat'，
 // 让 userData 路径更友好；必须在任何 app.getPath('userData') 调用之前完成。
-app.setName('AgentHub')
+app.setName('AChat')
 
 // Single-instance lock：第二次启动 focus 已开的窗口，不开新进程
 const gotLock = app.requestSingleInstanceLock()
@@ -33,13 +33,13 @@ if (!gotLock) {
     // 导致 BrowserWindow 加载 dev URL 时被代理拦截。强制 direct（proxyRules 空）并显式 bypass 本地。
     await session.defaultSession
       .setProxy({ proxyRules: 'direct://', proxyBypassRules: '<local>' })
-      .catch((err) => console.error('[AgentHub] setProxy failed', err))
+      .catch((err) => console.error('[AChat] setProxy failed', err))
 
     let url: string
     try {
       url = isDev ? DEV_URL : `http://127.0.0.1:${await startEmbeddedServer()}`
     } catch (err) {
-      console.error('[AgentHub] failed to start server', err)
+      console.error('[AChat] failed to start server', err)
       app.quit()
       return
     }
@@ -49,7 +49,7 @@ if (!gotLock) {
       height: 800,
       minWidth: 980,
       minHeight: 600,
-      title: 'AgentHub',
+      title: 'AChat',
       backgroundColor: '#0a0a0a',
       webPreferences: {
         nodeIntegration: false,

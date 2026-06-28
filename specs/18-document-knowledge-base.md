@@ -10,9 +10,9 @@
 
 ### 1.1 现状
 
-AgentHub 已融合 AGI-memory 的 RAG 主干能力（三路 RRF 融合检索：Milvus 语义 + ES BM25 + Neo4j 知识图谱），但 **Document+Version 文档管理体系尚未迁移**。具体表现为：
+AChat 已融合 AGI-memory 的 RAG 主干能力（三路 RRF 融合检索：Milvus 语义 + ES BM25 + Neo4j 知识图谱），但 **Document+Version 文档管理体系尚未迁移**。具体表现为：
 
-| 能力 | AGI-memory 原版 | AgentHub 现状 |
+| 能力 | AGI-memory 原版 | AChat 现状 |
 |------|----------------|--------------|
 | 文档生命周期管理 | `documents` + `document_versions` 两张表，支持 CRUD | 无 |
 | 版本控制 | 每次更新创建新版本，保留历史 | 无 |

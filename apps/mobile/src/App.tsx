@@ -372,7 +372,7 @@ export function App() {
           <aside className="side-drawer" aria-label="侧边栏">
             <div className="drawer-header">
               <div>
-                <p className="eyebrow">AgentHub</p>
+                <p className="eyebrow">AChat</p>
                 <h2>Companion</h2>
               </div>
               <button type="button" className="chrome-button" aria-label="关闭侧边栏" onClick={() => setDrawerOpen(false)}>

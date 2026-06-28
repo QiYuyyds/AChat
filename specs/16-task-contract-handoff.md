@@ -30,7 +30,7 @@ This spec supplements Spec 06 (Orchestrator flow) and Spec 07 (tools) with struc
 ```
 
 `expectedOutputs.id` and `inputs.outputId` are symbolic keys within one dispatch plan. They are not database artifact ids.
-`project` expected outputs are reference artifacts created by AgentHub from workspace file-write evidence; child agents do not create them with `write_artifact`.
+`project` expected outputs are reference artifacts created by AChat from workspace file-write evidence; child agents do not create them with `write_artifact`.
 
 ## Plan Compilation
 
@@ -89,7 +89,7 @@ Child prompts include:
 </acceptance_criteria>
 ```
 
-The child agent must read required input artifacts before working, pass the declared `outputKey` when creating each non-project expected output, and call `report_task_result` at the end. For `project` expected outputs, the child agent must write workspace files; AgentHub creates and binds the project artifact automatically.
+The child agent must read required input artifacts before working, pass the declared `outputKey` when creating each non-project expected output, and call `report_task_result` at the end. For `project` expected outputs, the child agent must write workspace files; AChat creates and binds the project artifact automatically.
 
 When `acceptanceCriteria` is present, the child agent must copy each criterion into `report_task_result.acceptanceResults` with `passed` and `evidence`.
 

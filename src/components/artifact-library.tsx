@@ -254,7 +254,7 @@ export function ArtifactLibrary({
                         }}
                         title="删除最新版本"
                         className={cn(
-                          'shrink-0 opacity-0 transition group-hover:opacity-100 hover:text-red-600',
+                          'shrink-0 opacity-0 transition group-hover:opacity-100 hover:text-destructive',
                         )}
                       >
                         <Trash2 className="size-3.5" />
@@ -312,7 +312,7 @@ export function ArtifactLibrary({
               取消
             </Button>
             <Button
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-destructive hover:bg-destructive/90"
               onClick={() => void confirmDelete()}
               disabled={deleting}
             >
@@ -354,9 +354,9 @@ function IngestButton({
         'shrink-0 transition',
         settled ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
         status === 'done' || status === 'exists'
-          ? 'text-green-600'
+          ? 'text-success'
           : status === 'error'
-            ? 'text-red-600'
+            ? 'text-destructive'
             : 'hover:text-primary',
       )}
     >

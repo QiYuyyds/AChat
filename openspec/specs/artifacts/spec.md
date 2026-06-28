@@ -29,13 +29,13 @@ PPT artifact content SHALL accept a richer structured slide model in addition to
 
 #### Scenario: Agent creates a rich PPT deck
 - **WHEN** `write_artifact` receives a PPT artifact containing semantic slide blocks such as metrics, columns, timelines, quotes, callouts, or bullet groups
-- **THEN** AgentHub stores a typed PPT artifact content payload
+- **THEN** AChat stores a typed PPT artifact content payload
 - **AND** the preview panel renders the blocks using the deck theme and layout rules
 - **AND** the artifact remains editable as JSON in the artifact panel.
 
 #### Scenario: Legacy PPT deck is opened
 - **WHEN** an existing PPT artifact contains only legacy simple slides
-- **THEN** AgentHub renders and exports it without data migration
+- **THEN** AChat renders and exports it without data migration
 - **AND** normalizes the legacy fields to equivalent semantic blocks at render/export time.
 
 ### Requirement: PPT export SHALL expose editable and visual-priority modes
@@ -44,12 +44,12 @@ PPT artifacts SHALL export to a real `.pptx` file. Editable export MUST preserve
 
 #### Scenario: User downloads editable PPTX
 - **WHEN** a user exports a PPT artifact without selecting visual-priority mode
-- **THEN** AgentHub generates a `.pptx` using semantic slide blocks through the PowerPoint export pipeline
+- **THEN** AChat generates a `.pptx` using semantic slide blocks through the PowerPoint export pipeline
 - **AND** text and basic shapes remain editable in PowerPoint where supported by the block type.
 
 #### Scenario: Visual export renderer is unavailable
 - **WHEN** visual-priority export is requested but the configured renderer is unavailable
-- **THEN** AgentHub returns a clear export error
+- **THEN** AChat returns a clear export error
 - **AND** editable export remains available for the same PPT artifact.
 
 ### Requirement: PPT artifact assets SHALL avoid unbounded binary JSON

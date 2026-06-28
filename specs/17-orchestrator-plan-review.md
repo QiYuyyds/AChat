@@ -4,7 +4,7 @@ This spec supplements Spec 06 (Orchestrator flow), Spec 02 (StreamEvent), and Sp
 
 ## Goal
 
-AgentHub pauses an Orchestrator run after Stage 1 planning and before Stage 2 DAG execution so the user can review the dispatch plan and either approve it, reject it, or **revise it conversationally** — describing the desired changes in natural language and letting the Orchestrator re-plan. Review stays inside the IM/chat paradigm rather than a structured DAG-editing form.
+AChat pauses an Orchestrator run after Stage 1 planning and before Stage 2 DAG execution so the user can review the dispatch plan and either approve it, reject it, or **revise it conversationally** — describing the desired changes in natural language and letting the Orchestrator re-plan. Review stays inside the IM/chat paradigm rather than a structured DAG-editing form.
 
 ## Lifecycle
 
