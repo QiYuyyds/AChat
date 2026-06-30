@@ -144,7 +144,7 @@ async def init_rag_service():
 
     await rag_service.initialize()
     logger.info("RAGService initialized: mode=%s", rag_service.hybrid.mode())
-    return rag_service, settings
+    return rag_service, settings, infra
 
 
 def _make_embed_fn(settings):
@@ -599,7 +599,7 @@ async def main():
         logger.info("Sampled %d golden entries (seed=%d)", len(golden), RANDOM_SEED)
 
     # Initialize RAG service
-    rag_service, settings = await init_rag_service()
+    rag_service, settings, infra = await init_rag_service()
     if rag_service is None:
         logger.error("RAGService initialization failed. Exiting.")
         sys.exit(1)
@@ -680,12 +680,10 @@ async def main():
 
     # ─── Cleanup async clients ────────────────────────────────────────────────
     try:
-        from app.infra import status as infra_status
-        if infra_status.es_client:
-            await infra_status.es_client.close()
-            logger.info("Elasticsearch client closed")
+        from app.infra.factory import shutdown_infrastructure
+        await shutdown_infrastructure(infra)
     except Exception as e:
-        logger.warning("Failed to close ES client: %s", e)
+        logger.warning("Failed to cleanup infrastructure: %s", e)
 
 
 if __name__ == "__main__":
