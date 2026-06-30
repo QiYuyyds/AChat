@@ -1,29 +1,29 @@
 {
-  "mode": "hybrid",
+  "mode": "bm25",
   "total_entries": 200,
-  "generation_entries": 199,
+  "generation_entries": 200,
   "averages": {
-    "recall_at_k": 0.8492,
-    "precision_at_k": 0.5075,
-    "mrr": 0.8583,
-    "ndcg_at_k": 0.8268,
-    "faithfulness": 0.9714,
-    "answer_relevance": 0.9603,
-    "answer_quality": 0.7603
+    "recall_at_k": 0.8308,
+    "precision_at_k": 0.4753,
+    "mrr": 0.8392,
+    "ndcg_at_k": 0.8047,
+    "faithfulness": 0.979,
+    "answer_relevance": 0.9485,
+    "answer_quality": 0.764
   },
   "source_sums": {
-    "semantic": 20,
-    "keyword": 7,
-    "semantic+keyword": 657,
+    "semantic": 0,
+    "keyword": 714,
+    "semantic+keyword": 0,
     "other": 0
   },
   "source_averages": {
-    "semantic": 0.0292,
-    "keyword": 0.0102,
-    "semantic+keyword": 0.9605,
+    "semantic": 0.0,
+    "keyword": 1.0,
+    "semantic+keyword": 0.0,
     "other": 0.0
   },
-  "total_chunks_retrieved": 684,
+  "total_chunks_retrieved": 714,
   "per_entry": [
     {
       "query_id": "1doc_0456",
@@ -33,14 +33,14 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.25,
-      "mrr": 0.25,
-      "ndcg_at_k": 0.4307,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -50,15 +50,15 @@
       "query": "2021年上半年，中国游戏市场实际销售收入是多少亿元，同比和环比分别变化了多少百分比？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.2,
+      "precision_at_k": 0.25,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -73,8 +73,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -90,17 +90,17 @@
       "query": "莫斯科在7月份共遭受了多少次无人机袭击，而乌克兰在8月初的一次夜间至凌晨的防御中成功摧毁了多少架俄军的攻击无人机？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.5,
-      "precision_at_k": 0.25,
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.4,
       "mrr": 1.0,
-      "ndcg_at_k": 0.6131,
+      "ndcg_at_k": 0.8503,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -110,37 +110,37 @@
       "query": "在房山区受灾农户的保险理赔进展中，太平洋财险房山支公司和中国人民财产保险股份有限公司分别采取了哪些措施来加快理赔进度，并请举例说明？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "recall_at_k": 0.5,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
-      "ndcg_at_k": 0.8772,
+      "ndcg_at_k": 0.6131,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.9
+      "answer_quality": 0.8
     },
     {
       "query_id": "1doc_0571",
       "query": "波兰总统外交政策顾问普日达奇为何辩护波兰对乌克兰部分农产品实施禁令，并且这一表态引发了什么后果？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
-      "mrr": 0.5,
-      "ndcg_at_k": 1.0616,
+      "precision_at_k": 0.3333,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.5,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -153,8 +153,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -173,8 +173,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -183,7 +183,7 @@
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_quality": 0.5
     },
     {
       "query_id": "1doc_0356",
@@ -193,14 +193,14 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.25,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 1.4307,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -210,17 +210,17 @@
       "query": "在第7届中国—南亚博览会期间，缅甸华裔青年代表参与了哪些活动，并且艺术周都包括了哪些特色展演？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
-      "precision_at_k": 0.5,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.7654,
+      "precision_at_k": 0.6667,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.5307,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.5
@@ -230,15 +230,15 @@
       "query": "在2023年7月24日的浦江基础科学发展论坛中，清华大学讲席教授丘成桐提出了哪个领域的“基本原理”需要数学家来研究？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 2,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -253,8 +253,8 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -273,8 +273,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -293,8 +293,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -303,27 +303,27 @@
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 0.5,
-      "answer_quality": 0.7
+      "answer_quality": 0.5
     },
     {
       "query_id": "2doc_0152",
       "query": "在台风“杜苏芮”影响期间，泉州市和厦门市分别采取了哪些应急响应级别和措施，而漳州市又是如何应对的？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.6509,
+      "precision_at_k": 0.6,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.8078,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_quality": 0.5
     },
     {
       "query_id": "3doc_0472",
@@ -333,8 +333,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
@@ -342,7 +342,7 @@
       "mrr": 1.0,
       "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
-      "answer_relevance": 1.0,
+      "answer_relevance": 0.5,
       "answer_quality": 0.5
     },
     {
@@ -350,15 +350,15 @@
       "query": "抖音直播在2023年7月1日以来对多少个账号进行了处罚，并且无限期回收了多少个账号的直播权限？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.25,
+      "precision_at_k": 0.3333,
       "mrr": 0.5,
       "ndcg_at_k": 0.6309,
       "faithfulness": 1.0,
@@ -373,8 +373,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.3333,
@@ -390,55 +390,55 @@
       "query": "浙江省宁波市及其周边城市和西安市新城区的购房补贴政策中，分别是如何针对不同类别的人才提供补贴的？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.5,
-      "precision_at_k": 0.6667,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
-      "faithfulness": 0.5,
+      "faithfulness": 1.0,
       "answer_relevance": 0.5,
-      "answer_quality": 0.0
+      "answer_quality": 0.5
     },
     {
       "query_id": "3doc_0635",
       "query": "拉丁美洲的哥斯达黎加、巴西和阿根廷分别如何表彰华人对当地社会的贡献和文化融合？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 2,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.3333,
-      "precision_at_k": 1.0,
+      "precision_at_k": 0.6667,
       "mrr": 1.0,
       "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.0
+      "answer_quality": 0.5
     },
     {
       "query_id": "3doc_0121",
       "query": "在2023年上半年，福建省和广东省锂电池出口的增长百分比分别是多少，且全国锂电池产业的总产量和营收达到了什么水平？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 1.0,
+      "precision_at_k": 0.75,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -452,49 +452,9 @@
       "num_relevant_docs": 2,
       "num_retrieved": 4,
       "source_stats": {
-        "semantic": 1,
-        "keyword": 1,
-        "semantic+keyword": 2,
-        "other": 0
-      },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.8772,
-      "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 1.0
-    },
-    {
-      "query_id": "3doc_0242",
-      "query": "美国编剧工会和演员工会的罢工对洛杉矶地区的服务业产生了哪些具体影响，并且罢工分别在哪些日期开始？",
-      "task_type": "3doc",
-      "num_relevant_docs": 3,
-      "num_retrieved": 4,
-      "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
-        "other": 0
-      },
-      "recall_at_k": 0.6667,
-      "precision_at_k": 0.75,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
-      "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 0.5
-    },
-    {
-      "query_id": "2doc_0339",
-      "query": "公安部已经实施的措施中，有哪些是针对外籍人员在华活动的便利化，以及公安部未来在这方面有哪些计划？",
-      "task_type": "2doc",
-      "num_relevant_docs": 2,
-      "num_retrieved": 4,
-      "source_stats": {
-        "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.5,
@@ -506,19 +466,59 @@
       "answer_quality": 1.0
     },
     {
+      "query_id": "3doc_0242",
+      "query": "美国编剧工会和演员工会的罢工对洛杉矶地区的服务业产生了哪些具体影响，并且罢工分别在哪些日期开始？",
+      "task_type": "3doc",
+      "num_relevant_docs": 3,
+      "num_retrieved": 3,
+      "source_stats": {
+        "semantic": 0,
+        "keyword": 3,
+        "semantic+keyword": 0,
+        "other": 0
+      },
+      "recall_at_k": 0.6667,
+      "precision_at_k": 1.0,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
+      "faithfulness": 1.0,
+      "answer_relevance": 0.8,
+      "answer_quality": 0.5
+    },
+    {
+      "query_id": "2doc_0339",
+      "query": "公安部已经实施的措施中，有哪些是针对外籍人员在华活动的便利化，以及公安部未来在这方面有哪些计划？",
+      "task_type": "2doc",
+      "num_relevant_docs": 2,
+      "num_retrieved": 4,
+      "source_stats": {
+        "semantic": 0,
+        "keyword": 4,
+        "semantic+keyword": 0,
+        "other": 0
+      },
+      "recall_at_k": 0.5,
+      "precision_at_k": 0.25,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.3869,
+      "faithfulness": 1.0,
+      "answer_relevance": 0.5,
+      "answer_quality": 0.8
+    },
+    {
       "query_id": "1doc_0026",
       "query": "截至2023年8月11日，河北省植保植检总站在哪些城市发现了玉米南方锈病？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.25,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -533,8 +533,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -550,17 +550,17 @@
       "query": "黑河学院在其校庆期间举办的中俄教育合作论坛和第四届中俄博览会中的旅游合作发展会议共同促进了哪些方面的中俄合作？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.6667,
-      "precision_at_k": 0.3333,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.2961,
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.75,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.5
@@ -570,15 +570,15 @@
       "query": "在俄罗斯与非洲的经济和人道主义合作框架下，普京指出了哪些出口和制裁相关的具体数据，并且这些合作活动是在哪里举办的？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.4,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -593,14 +593,14 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.6667,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.6934,
+      "recall_at_k": 0.5,
+      "precision_at_k": 0.3333,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.3066,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.5
@@ -613,8 +613,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -630,20 +630,20 @@
       "query": "台风“杜苏芮”来临前，广东省和河南省分别实施了哪些防范措施，并概述了哪些总体的防汛防台工作要求？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.5,
-      "precision_at_k": 0.2,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.6131,
+      "recall_at_k": 0.0,
+      "precision_at_k": 0.0,
+      "mrr": 0.0,
+      "ndcg_at_k": 0.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_quality": 0.5
     },
     {
       "query_id": "2doc_0578",
@@ -653,8 +653,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -662,25 +662,25 @@
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_relevance": 0.5,
+      "answer_quality": 1.0
     },
     {
       "query_id": "1doc_0418",
       "query": "2023年第十二届“思源百万助学金”发放仪式在湖北宜昌的哪个集团举行，并且共为多少名家庭困难学生发放了多少金额的助学金？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.25,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "precision_at_k": 0.3333,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.6309,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -693,14 +693,14 @@
       "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.2,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.6309,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.5,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -710,17 +710,17 @@
       "query": "考虑到深圳和其他一线城市的房地产市场动态，业主和购房者对于哪些政策调整表现出了怎样的期待和反应？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "precision_at_k": 0.4,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 0.9197,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -730,11 +730,11 @@
       "query": "巴西华人文化交流协会在2023年7月30日举办的“推动中巴人文交流 助力国际传播建设”专题论坛中，有哪些人物发表了讲话，并且该论坛是由哪些机构主办的？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.0,
@@ -742,7 +742,7 @@
       "mrr": 0.0,
       "ndcg_at_k": 0.0,
       "faithfulness": 1.0,
-      "answer_relevance": 0.5,
+      "answer_relevance": 1.0,
       "answer_quality": 0.8
     },
     {
@@ -752,15 +752,15 @@
       "num_relevant_docs": 2,
       "num_retrieved": 5,
       "source_stats": {
-        "semantic": 1,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "semantic": 0,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.5,
-      "precision_at_k": 0.2,
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.4,
       "mrr": 1.0,
-      "ndcg_at_k": 0.6131,
+      "ndcg_at_k": 0.9197,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -770,40 +770,40 @@
       "query": "洪玛奈在接受哪些教育和担任哪些职务的过程中，为他即将成为柬埔寨新首相做了准备？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.75,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.9575,
+      "recall_at_k": 0.5,
+      "precision_at_k": 0.4,
+      "mrr": 1.0,
+      "ndcg_at_k": 0.8772,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.9
+      "answer_quality": 0.8
     },
     {
       "query_id": "2doc_0283",
       "query": "结合中国一季度和二季度的经济增长数据，以及各个经济领域的表现，描述中国上半年经济的整体趋势和特点。",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
-        "semantic": 2,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "semantic": 0,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "recall_at_k": 0.5,
+      "precision_at_k": 0.2,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 0.6131,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_quality": 0.5
     },
     {
       "query_id": "1doc_0177",
@@ -813,8 +813,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -823,7 +823,7 @@
       "ndcg_at_k": 1.6309,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 1.0
     },
     {
       "query_id": "3doc_0284",
@@ -833,16 +833,16 @@
       "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.6,
+      "recall_at_k": 0.6667,
+      "precision_at_k": 0.4,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 0.7039,
       "faithfulness": 1.0,
-      "answer_relevance": 1.0,
+      "answer_relevance": 0.8,
       "answer_quality": 0.5
     },
     {
@@ -850,20 +850,20 @@
       "query": "美国宣布的对台军援计划包括了哪些关键防御设备，总价值是多少，以及中国官方是如何回应的？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 0,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
+        "keyword": 3,
         "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.0,
-      "precision_at_k": 0.0,
-      "mrr": 0.0,
-      "ndcg_at_k": 0.0,
-      "faithfulness": 0.0,
-      "answer_relevance": 0.0,
-      "answer_quality": 0.0
+      "recall_at_k": 0.6667,
+      "precision_at_k": 0.6667,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.5307,
+      "faithfulness": 1.0,
+      "answer_relevance": 1.0,
+      "answer_quality": 0.9
     },
     {
       "query_id": "1doc_0511",
@@ -873,8 +873,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.0,
@@ -893,8 +893,8 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.5,
@@ -913,8 +913,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -933,14 +933,14 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
       "precision_at_k": 0.6667,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.5307,
+      "mrr": 1.0,
+      "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.9
@@ -950,15 +950,15 @@
       "query": "新墩村第十一届留守儿童夏令营的活动内容和志愿者组织有哪些，以及夏令营的持续时间是怎样的？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 1.0,
+      "precision_at_k": 0.75,
       "mrr": 1.0,
       "ndcg_at_k": 1.3066,
       "faithfulness": 1.0,
@@ -970,40 +970,40 @@
       "query": "上海市上半年的金融运行情况中，企业和居民贷款的特点是什么，包括中长期贷款的比例、房地产业融资需求的变化以及融资成本的趋势？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6667,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9197,
+      "ndcg_at_k": 0.8772,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.7
+      "answer_quality": 0.8
     },
     {
       "query_id": "3doc_0767",
       "query": "在台风“杜苏芮”影响下的涿州救援行动中，有哪些组织和企业提供了物资和服务支持，以及他们的具体贡献是什么？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
-        "semantic": 1,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "semantic": 0,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.6667,
-      "precision_at_k": 0.4,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.6508,
+      "recall_at_k": 0.0,
+      "precision_at_k": 0.0,
+      "mrr": 0.0,
+      "ndcg_at_k": 0.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.0
     },
     {
       "query_id": "1doc_0787",
@@ -1013,14 +1013,14 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.3333,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.6309,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -1033,8 +1033,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1053,8 +1053,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1073,14 +1073,14 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.6667,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 0.9197,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -1093,17 +1093,17 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.5,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.6934,
+      "mrr": 1.0,
+      "ndcg_at_k": 0.9197,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.7
+      "answer_quality": 0.8
     },
     {
       "query_id": "1doc_0326",
@@ -1113,15 +1113,15 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
-      "faithfulness": 1.0,
+      "faithfulness": 0.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
     },
@@ -1133,8 +1133,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1150,10 +1150,50 @@
       "query": "华中科技大学本科生和研究生的线上报到时间分别是什么时候？在线上报到过程中，学生需要完成哪些主要环节？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 2,
+      "num_retrieved": 4,
       "source_stats": {
-        "semantic": 1,
-        "keyword": 1,
+        "semantic": 0,
+        "keyword": 4,
+        "semantic+keyword": 0,
+        "other": 0
+      },
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.25,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
+      "faithfulness": 1.0,
+      "answer_relevance": 1.0,
+      "answer_quality": 1.0
+    },
+    {
+      "query_id": "3doc_0260",
+      "query": "2023年文化科技卫生“三下乡”活动是由哪些部门联合组织的，旨在推进什么目标，且在该活动中有哪位知名人士分享了经历？",
+      "task_type": "3doc",
+      "num_relevant_docs": 3,
+      "num_retrieved": 5,
+      "source_stats": {
+        "semantic": 0,
+        "keyword": 5,
+        "semantic+keyword": 0,
+        "other": 0
+      },
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.4,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.4162,
+      "faithfulness": 1.0,
+      "answer_relevance": 1.0,
+      "answer_quality": 0.5
+    },
+    {
+      "query_id": "2doc_0694",
+      "query": "苏宁易购818家博会的整体策略和预期目标是什么，以及在北京家博会上，消费者的购买偏好表现出了哪些特点？",
+      "task_type": "2doc",
+      "num_relevant_docs": 2,
+      "num_retrieved": 4,
+      "source_stats": {
+        "semantic": 0,
+        "keyword": 4,
         "semantic+keyword": 0,
         "other": 0
       },
@@ -1166,46 +1206,6 @@
       "answer_quality": 1.0
     },
     {
-      "query_id": "3doc_0260",
-      "query": "2023年文化科技卫生“三下乡”活动是由哪些部门联合组织的，旨在推进什么目标，且在该活动中有哪位知名人士分享了经历？",
-      "task_type": "3doc",
-      "num_relevant_docs": 3,
-      "num_retrieved": 4,
-      "source_stats": {
-        "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
-        "other": 0
-      },
-      "recall_at_k": 0.6667,
-      "precision_at_k": 0.5,
-      "mrr": 0.3333,
-      "ndcg_at_k": 0.4367,
-      "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 0.8
-    },
-    {
-      "query_id": "2doc_0694",
-      "query": "苏宁易购818家博会的整体策略和预期目标是什么，以及在北京家博会上，消费者的购买偏好表现出了哪些特点？",
-      "task_type": "2doc",
-      "num_relevant_docs": 2,
-      "num_retrieved": 3,
-      "source_stats": {
-        "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
-        "other": 0
-      },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.3333,
-      "mrr": 0.3333,
-      "ndcg_at_k": 0.3066,
-      "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 0.8
-    },
-    {
       "query_id": "1doc_0666",
       "query": "\"MSC NOA ARIEILA\"号16000TEU集装箱船是由哪两家公司建造的，并且该船最多可以运载多少个标准集装箱？",
       "task_type": "1doc",
@@ -1213,8 +1213,8 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1230,11 +1230,31 @@
       "query": "福州海警局在查处两艘运泥船违法倾废行为的同时，还加强了对哪些海洋活动的监管和检查？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
+      "num_retrieved": 4,
+      "source_stats": {
+        "semantic": 0,
+        "keyword": 4,
+        "semantic+keyword": 0,
+        "other": 0
+      },
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.5,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
+      "faithfulness": 1.0,
+      "answer_relevance": 1.0,
+      "answer_quality": 1.0
+    },
+    {
+      "query_id": "2doc_0655",
+      "query": "在今年的全国防范电信网络诈骗犯罪宣传月活动中，公安部和中宣部分别与哪些部门合作，并各自开展了哪些具体活动？",
+      "task_type": "2doc",
+      "num_relevant_docs": 2,
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1243,44 +1263,24 @@
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.9
-    },
-    {
-      "query_id": "2doc_0655",
-      "query": "在今年的全国防范电信网络诈骗犯罪宣传月活动中，公安部和中宣部分别与哪些部门合作，并各自开展了哪些具体活动？",
-      "task_type": "2doc",
-      "num_relevant_docs": 2,
-      "num_retrieved": 3,
-      "source_stats": {
-        "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
-        "other": 0
-      },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.6667,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
-      "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 0.7
+      "answer_quality": 0.5
     },
     {
       "query_id": "2doc_0058",
       "query": "习近平对全军党的建设会议提出了哪些总体目标，以及某基地在会议召开后采取了哪些具体行动来响应这些目标？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.6934,
+      "recall_at_k": 0.5,
+      "precision_at_k": 0.3333,
+      "mrr": 1.0,
+      "ndcg_at_k": 0.6131,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -1290,20 +1290,20 @@
       "query": "中国在国际事务中的立场和倡议是如何体现在其对也门问题的处理和对联合国的支持中？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "recall_at_k": 0.5,
+      "precision_at_k": 0.2,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 0.6131,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_quality": 0.5
     },
     {
       "query_id": "1doc_0292",
@@ -1313,14 +1313,14 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.3333,
-      "mrr": 0.3333,
-      "ndcg_at_k": 0.5,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -1330,15 +1330,15 @@
       "query": "广汽集团在2023年《财富》世界500强企业排行榜中排名第几位，相较于2022年上升了多少位？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.3333,
+      "precision_at_k": 0.25,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -1350,40 +1350,40 @@
       "query": "在俄罗斯与非洲国家就乌克兰危机的人道主义问题和粮食化肥出口障碍方面的会晤中，取得了哪些共识，并且美国对此有何反应？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.6667,
-      "precision_at_k": 0.75,
+      "recall_at_k": 0.3333,
+      "precision_at_k": 0.6667,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9675,
+      "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_relevance": 0.8,
+      "answer_quality": 0.5
     },
     {
       "query_id": "2doc_0202",
       "query": "在叙利亚上空美国无人机MQ-9“死神”与俄罗斯战斗机的冲突事件中，双方各自提出了哪些相互指责？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.5,
-      "precision_at_k": 0.4,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.6934,
+      "precision_at_k": 0.25,
+      "mrr": 0.25,
+      "ndcg_at_k": 0.2641,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.8
     },
     {
       "query_id": "1doc_0669",
@@ -1393,8 +1393,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1410,37 +1410,37 @@
       "query": "在中国与中亚国家的教育交流、西藏与尼泊尔的经贸合作以及“一带一路”倡议下的合作成果中，分别有哪些具体的实施措施或成果？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.0,
-      "precision_at_k": 0.0,
-      "mrr": 0.0,
-      "ndcg_at_k": 0.0,
+      "recall_at_k": 0.3333,
+      "precision_at_k": 0.2,
+      "mrr": 1.0,
+      "ndcg_at_k": 0.4693,
       "faithfulness": 0.5,
       "answer_relevance": 0.5,
-      "answer_quality": 0.5
+      "answer_quality": 0.0
     },
     {
       "query_id": "2doc_0754",
       "query": "《氢能产业标准体系建设指南（2023版）》包含哪些子体系，并且是哪些部门联合印发的？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6,
+      "precision_at_k": 0.5,
       "mrr": 0.5,
-      "ndcg_at_k": 0.9575,
+      "ndcg_at_k": 0.6934,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -1453,14 +1453,14 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.5,
-      "precision_at_k": 0.25,
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
-      "ndcg_at_k": 0.6131,
+      "ndcg_at_k": 0.9197,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.9
@@ -1470,17 +1470,17 @@
       "query": "北京市为新畢業大學生提供的保租房青年公寓项目在哪些区域实施了配租，并且都包含了哪些特殊服务？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6667,
+      "precision_at_k": 0.75,
       "mrr": 0.5,
-      "ndcg_at_k": 0.5307,
+      "ndcg_at_k": 0.7328,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -1493,17 +1493,17 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.6667,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.6934,
+      "mrr": 1.0,
+      "ndcg_at_k": 0.9197,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.8
     },
     {
       "query_id": "2doc_0528",
@@ -1513,14 +1513,14 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.5,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9197,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -1533,8 +1533,8 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1543,26 +1543,26 @@
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 1.0
     },
     {
       "query_id": "2doc_0138",
       "query": "厦门思明区侨联在推广侨批文化方面与哪些组织进行了互动，并在哪些场合获得了认可？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "precision_at_k": 0.6667,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9197,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
-      "answer_relevance": 0.8,
+      "answer_relevance": 1.0,
       "answer_quality": 0.8
     },
     {
@@ -1570,15 +1570,15 @@
       "query": "2023年度华裔杰出青年国情研修班暨“相约彩云南研习参访团”活动在云南省昆明市启动时，共有来自多少个国家的华裔青年参加？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.3333,
+      "precision_at_k": 0.25,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -1590,17 +1590,17 @@
       "query": "结合中巴文化旅游合作的未来展望和侨胞及巴西各界朋友对双边关系的贡献，描述中巴两国在文化旅游和双边关系方面的合作现状及未来的发展方向。",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 5,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.4,
+      "precision_at_k": 0.6667,
       "mrr": 1.0,
-      "ndcg_at_k": 0.8503,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -1613,8 +1613,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1623,7 +1623,7 @@
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.9
     },
     {
       "query_id": "2doc_0296",
@@ -1633,14 +1633,14 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.25,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.6131,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.3869,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -1650,17 +1650,17 @@
       "query": "中国驻美国大使谢锋在阿斯彭安全论坛上提出了哪三项要求，以此推动中美关系逐步回归正轨？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
-        "semantic": 1,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "semantic": 0,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.3333,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "precision_at_k": 0.25,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.5,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -1673,8 +1673,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1693,8 +1693,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
@@ -1702,8 +1702,8 @@
       "mrr": 1.0,
       "ndcg_at_k": 0.7039,
       "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_relevance": 0.8,
+      "answer_quality": 0.9
     },
     {
       "query_id": "2doc_0488",
@@ -1713,16 +1713,16 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
-      "faithfulness": 0.5,
-      "answer_relevance": 0.5,
+      "faithfulness": 1.0,
+      "answer_relevance": 1.0,
       "answer_quality": 0.5
     },
     {
@@ -1733,8 +1733,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1743,22 +1743,22 @@
       "ndcg_at_k": 0.6934,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_quality": 1.0
     },
     {
       "query_id": "3doc_0447",
       "query": "在奥兰多市警察局处理的凶杀案中，嫌疑人在逃亡过程中发生了哪些关键事件？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.3333,
+      "precision_at_k": 0.25,
       "mrr": 1.0,
       "ndcg_at_k": 0.4693,
       "faithfulness": 1.0,
@@ -1770,19 +1770,19 @@
       "query": "河北省在推动社会发展和改善民生方面都实施了哪些具体的项目和政策？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
-        "semantic": 2,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "semantic": 0,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.0,
       "precision_at_k": 0.0,
       "mrr": 0.0,
       "ndcg_at_k": 0.0,
-      "faithfulness": 1.0,
-      "answer_relevance": 1.0,
+      "faithfulness": 0.5,
+      "answer_relevance": 0.5,
       "answer_quality": 0.0
     },
     {
@@ -1790,11 +1790,11 @@
       "query": "中老铁路国际旅客列车自开行以来，旅客来源的多样性、列车运行时间的优化以及通关便利化措施体现了哪些运营特点和成效？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.0,
@@ -1803,22 +1803,22 @@
       "ndcg_at_k": 0.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.7
     },
     {
       "query_id": "1doc_0585",
       "query": "根据路透社在2023年8月3日的报道，哈萨克斯坦的互联网用户收到的俄罗斯军队广告中，加入俄军后承诺的一次性报酬和月薪分别是多少卢布？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 1,
+      "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 1,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 1.0,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -1833,14 +1833,14 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 1.0,
+      "precision_at_k": 0.6667,
       "mrr": 1.0,
-      "ndcg_at_k": 1.3066,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.5
@@ -1850,20 +1850,20 @@
       "query": "在中美经贸对话和美国公民在乌克兰被捕的事件中，分别体现了美国在这两个不同情境下的外交互动方式和态度是什么？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
-        "semantic": 1,
-        "keyword": 1,
-        "semantic+keyword": 3,
+        "semantic": 0,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.4,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 0.9197,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_quality": 0.8
     },
     {
       "query_id": "3doc_0702",
@@ -1873,14 +1873,14 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.3333,
       "precision_at_k": 0.25,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.2961,
+      "mrr": 1.0,
+      "ndcg_at_k": 0.4693,
       "faithfulness": 1.0,
       "answer_relevance": 0.5,
       "answer_quality": 0.5
@@ -1890,37 +1890,37 @@
       "query": "考虑到气候变化对水资源和基础设施的影响，未来全球水资源质量可能面临的挑战，以及对自然系统和社会系统的广泛影响，如何概述气候变化对全球社会和环境的综合影响？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
-      "precision_at_k": 0.6667,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.9
+      "answer_quality": 0.7
     },
     {
       "query_id": "2doc_0276",
       "query": "在中国与埃塞俄比亚的全面战略合作伙伴关系框架下，双方在国际事务中的合作态度以及中国对埃塞俄比亚提供的援助内容是什么？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.5,
-      "precision_at_k": 0.3333,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.3869,
+      "precision_at_k": 0.25,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.3066,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.7
@@ -1930,20 +1930,20 @@
       "query": "在涉及消防部门名义的诈骗案件中，诈骗者常用哪些手段进行诈骗，受害者和警方是如何识破和应对这些诈骗行为的？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.6667,
-      "precision_at_k": 0.5,
+      "recall_at_k": 0.3333,
+      "precision_at_k": 0.2,
       "mrr": 1.0,
-      "ndcg_at_k": 0.6714,
+      "ndcg_at_k": 0.4693,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_quality": 0.7
     },
     {
       "query_id": "3doc_0793",
@@ -1953,8 +1953,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -1972,15 +1972,15 @@
       "num_relevant_docs": 3,
       "num_retrieved": 4,
       "source_stats": {
-        "semantic": 2,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "semantic": 0,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.3333,
-      "precision_at_k": 0.25,
-      "mrr": 0.25,
-      "ndcg_at_k": 0.2021,
+      "recall_at_k": 0.6667,
+      "precision_at_k": 0.5,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.5307,
       "faithfulness": 0.5,
       "answer_relevance": 1.0,
       "answer_quality": 0.5
@@ -1993,8 +1993,8 @@
       "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.5,
@@ -2010,20 +2010,20 @@
       "query": "华住集团在2023年第二季度的整体平均可出租客房收入恢复至2019年的多少百分比，其中Steigenberger Hotels GmbH及其附属公司的恢复百分比是多少？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.4,
+      "precision_at_k": 0.25,
       "mrr": 1.0,
-      "ndcg_at_k": 0.8772,
+      "ndcg_at_k": 0.6131,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_quality": 0.5
     },
     {
       "query_id": "1doc_0566",
@@ -2033,8 +2033,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2053,8 +2053,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
@@ -2063,24 +2063,24 @@
       "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.6
+      "answer_quality": 0.8
     },
     {
       "query_id": "3doc_0424",
       "query": "阿提哈德航空的首航及其与顺丰航空的合作备忘录对鄂州花湖机场及中国内地城市的货运服务有何影响？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 1.0,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 1.2021,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -2093,14 +2093,14 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.25,
-      "mrr": 0.3333,
-      "ndcg_at_k": 0.5,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -2113,8 +2113,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2130,37 +2130,37 @@
       "query": "在2023年7月22日发生在美国马里兰州蒙哥马利郡Aspen Hill的持刀伤人案中，嫌犯是如何被警方制服的？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 2,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_quality": 0.5
     },
     {
       "query_id": "1doc_0626",
       "query": "瑞典“一带一路”研究所副所长侯赛因·阿斯卡里在采访中提到，人民幸福生活是最大的人权。他认为哪些权利是保障人权的关键？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 1,
+      "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 1,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 1.0,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 1.6309,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -2170,15 +2170,15 @@
       "query": "软通动力与百度在2021年7月18日签署的战略合作协议主要围绕哪个平台展开合作，并且双方计划在哪些领域开展深度合作？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 2,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -2193,8 +2193,8 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.3333,
@@ -2210,15 +2210,15 @@
       "query": "《习近平谈治国理政》第一卷斯瓦希里文版在肯尼亚首都内罗毕的首发式是在哪一天举行的？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 1,
-        "semantic+keyword": 3,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.25,
+      "precision_at_k": 0.2,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -2233,57 +2233,57 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.6667,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.6934,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_quality": 0.9
     },
     {
       "query_id": "2doc_0763",
       "query": "在中国汽车行业的国际化进程中，长安汽车和恒大汽车分别在哪些国家或地区有哪些具体的发展计划和战略投资？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 5,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.4,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "recall_at_k": 0.5,
+      "precision_at_k": 0.3333,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.3869,
       "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_relevance": 0.5,
+      "answer_quality": 0.0
     },
     {
       "query_id": "3doc_0320",
       "query": "全国大学生暑期训练营活动旨在让学生了解哪些方面的中国石化行业，并列举至少三个曾经举办过该活动的石化分公司。",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.6667,
-      "precision_at_k": 0.6667,
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.75,
       "mrr": 1.0,
-      "ndcg_at_k": 0.7654,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.8
     },
     {
       "query_id": "3doc_0570",
@@ -2293,17 +2293,17 @@
       "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6,
+      "precision_at_k": 0.4,
       "mrr": 1.0,
-      "ndcg_at_k": 0.8855,
+      "ndcg_at_k": 0.6714,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.6
     },
     {
       "query_id": "2doc_0229",
@@ -2313,8 +2313,8 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2333,28 +2333,28 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.75,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.906,
-      "faithfulness": 0.0,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.7328,
+      "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.0
     },
     {
       "query_id": "1doc_0047",
       "query": "2023年“红烛故乡行·海外华文学校骨干教师线上培训班”暨教材教具捐赠仪式是由哪个机构主办的，并且在哪个城市设立了线上主会场？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.0,
@@ -2370,15 +2370,15 @@
       "query": "西非国家经济共同体（ECOWAS）要求尼日尔新任军事领导人在多长时间内恢复被推翻的民选总统穆罕默德·巴祖姆的职务，否则将采取什么措施？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.25,
+      "precision_at_k": 0.2,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -2390,17 +2390,17 @@
       "query": "在“一带一路”倡议框架下，中国企业参与了柬埔寨哪些重大建设项目，并且这些项目如何影响了当地青年的职业发展？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 1.0,
+      "precision_at_k": 0.75,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 0.906,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -2410,37 +2410,37 @@
       "query": "在中国人民解放军建军96周年庆祝活动中，国际社会有哪些具体的祝贺表态，以及中国在哪些国家的大使馆举办了庆祝活动？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "recall_at_k": 0.0,
+      "precision_at_k": 0.0,
+      "mrr": 0.0,
+      "ndcg_at_k": 0.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.0
     },
     {
       "query_id": "2doc_0402",
       "query": "广东省文化和旅游厅在推广粤港澳大湾区“一程多站”精品旅游线路时，计划采取哪些市场推出措施，并期望与哪个省份的文旅业界建立合作关系？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6667,
+      "precision_at_k": 0.75,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 1.1838,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -2453,17 +2453,17 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.75,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9675,
+      "ndcg_at_k": 0.6714,
       "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_relevance": 0.5,
+      "answer_quality": 0.5
     },
     {
       "query_id": "1doc_0647",
@@ -2473,8 +2473,8 @@
       "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2490,15 +2490,15 @@
       "query": "全国生态日的设立背景及其意义是什么，以及香港特区政府为推进生态文明建设采取了哪些措施？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 1.0,
+      "precision_at_k": 0.75,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -2513,8 +2513,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2533,8 +2533,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2553,8 +2553,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2570,15 +2570,15 @@
       "query": "根据彭博社的报道，哪三个欧盟国家在2022年消防员人数的同比降幅最大？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 3,
+      "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.3333,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -2590,40 +2590,40 @@
       "query": "考虑到最近的极端天气事件，意大利及其他欧洲国家的经济状况如何，特别是在GDP增长和债务比率方面？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.75,
+      "recall_at_k": 0.3333,
+      "precision_at_k": 0.2,
       "mrr": 1.0,
-      "ndcg_at_k": 0.906,
+      "ndcg_at_k": 0.4693,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.6
     },
     {
       "query_id": "1doc_0435",
       "query": "视觉中国因何种维权行为在2023年08月17日再次成为舆论焦点，并且这些行为为何受到公众质疑？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
-        "semantic": 1,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "semantic": 0,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.3333,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "precision_at_k": 0.25,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.5,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_quality": 0.9
     },
     {
       "query_id": "2doc_0422",
@@ -2633,8 +2633,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2650,17 +2650,17 @@
       "query": "在俄罗斯莫斯科东北部烟花工厂爆炸事件中，受伤和下落不明的人数分别是多少，官方采取了哪些措施来应对这一事件？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 2,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.5,
+      "recall_at_k": 1.0,
       "precision_at_k": 1.0,
       "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "ndcg_at_k": 1.3066,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.5
@@ -2673,8 +2673,8 @@
       "num_retrieved": 1,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 1,
+        "keyword": 1,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2693,32 +2693,32 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.75,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9675,
+      "ndcg_at_k": 0.906,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_quality": 0.5
     },
     {
       "query_id": "3doc_0575",
       "query": "土耳其在反恐方面向法国提供了哪些信息，同时法国对土耳其的哪些政策表达了批评？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.3333,
-      "precision_at_k": 0.3333,
+      "precision_at_k": 0.25,
       "mrr": 1.0,
       "ndcg_at_k": 0.4693,
       "faithfulness": 1.0,
@@ -2733,8 +2733,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2743,7 +2743,7 @@
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 1.0
     },
     {
       "query_id": "2doc_0527",
@@ -2753,8 +2753,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.5,
@@ -2770,20 +2770,20 @@
       "query": "2023年“中国寻根之旅”夏令营中，北京语言大学营和湖北一营提供了哪些不同的文化体验活动？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6,
+      "precision_at_k": 0.75,
       "mrr": 1.0,
       "ndcg_at_k": 0.906,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.0
+      "answer_quality": 0.5
     },
     {
       "query_id": "1doc_0079",
@@ -2793,8 +2793,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2813,8 +2813,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2833,8 +2833,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2850,19 +2850,19 @@
       "query": "在芝加哥10岁男孩对警察开枪的事件中，结合美国今年枪击事件的统计背景，警方在现场如何应对男孩的行为？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 3,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6667,
+      "precision_at_k": 0.4,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9197,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
-      "answer_relevance": 0.5,
+      "answer_relevance": 1.0,
       "answer_quality": 0.5
     },
     {
@@ -2870,17 +2870,17 @@
       "query": "韩国超导和低温学会对“LK-99”材料的超导特性有何评判，研究团队对此有何回应？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 1,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.5,
-      "precision_at_k": 0.25,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.6131,
+      "precision_at_k": 0.3333,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.3066,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.7
@@ -2893,8 +2893,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2903,7 +2903,7 @@
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 1.0
     },
     {
       "query_id": "2doc_0186",
@@ -2913,8 +2913,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2923,22 +2923,22 @@
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.7
+      "answer_quality": 0.8
     },
     {
       "query_id": "1doc_0350",
       "query": "印度政府发布限制个人电脑进口的公告后，哪家印度本土的电子企业的股价在公告发布当天上涨了大约8%？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 2,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -2953,17 +2953,17 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
       "precision_at_k": 0.6667,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.7039,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.5307,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_quality": 0.8
     },
     {
       "query_id": "1doc_0283",
@@ -2973,8 +2973,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -2993,17 +2993,17 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
       "precision_at_k": 0.5,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.7039,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.4367,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.7
     },
     {
       "query_id": "1doc_0515",
@@ -3013,8 +3013,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3033,8 +3033,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3053,8 +3053,8 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3072,9 +3072,9 @@
       "num_relevant_docs": 3,
       "num_retrieved": 5,
       "source_stats": {
-        "semantic": 2,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "semantic": 0,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.0,
@@ -3093,17 +3093,17 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.3333,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.6309,
+      "mrr": 0.3333,
+      "ndcg_at_k": 0.5,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.0
+      "answer_quality": 1.0
     },
     {
       "query_id": "2doc_0285",
@@ -3113,14 +3113,14 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.5,
-      "precision_at_k": 0.5,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.8772,
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.75,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.9575,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.5
@@ -3133,8 +3133,8 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
@@ -3143,27 +3143,27 @@
       "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.8
     },
     {
       "query_id": "3doc_0136",
       "query": "RCEP协议生效后，福建省在“一带一路”建设中与成员国的经贸合作有哪些具体成效和发展趋势？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.75,
+      "precision_at_k": 1.0,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9675,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.7
     },
     {
       "query_id": "2doc_0067",
@@ -3173,17 +3173,17 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 0.8772,
-      "faithfulness": 0.5,
+      "faithfulness": 1.0,
       "answer_relevance": 0.5,
-      "answer_quality": 0.7
+      "answer_quality": 0.5
     },
     {
       "query_id": "3doc_0611",
@@ -3193,8 +3193,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
@@ -3210,35 +3210,35 @@
       "query": "河北省和湖北省都在推进哪些政策领域的发展，并各自实施了哪些具体措施？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.8772,
+      "recall_at_k": 0.0,
+      "precision_at_k": 0.0,
+      "mrr": 0.0,
+      "ndcg_at_k": 0.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 0.0
     },
     {
       "query_id": "2doc_0476",
       "query": "结合印第安纳州曼西市和芝加哥市近期的枪击事件，分别说明这两个城市的伤亡情况。",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "precision_at_k": 0.4,
       "mrr": 0.5,
       "ndcg_at_k": 0.6509,
       "faithfulness": 1.0,
@@ -3250,17 +3250,17 @@
       "query": "中国国际中文教育基金会和中国教育部是如何支持东南亚孔子学院的发展，并且印尼最近有哪些新的孔子学院建设项目？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.6667,
-      "precision_at_k": 0.6667,
-      "mrr": 0.5,
-      "ndcg_at_k": 0.5307,
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.75,
+      "mrr": 1.0,
+      "ndcg_at_k": 0.906,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -3273,15 +3273,15 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 1.0,
+      "recall_at_k": 0.5,
+      "precision_at_k": 0.6667,
       "mrr": 1.0,
-      "ndcg_at_k": 1.3066,
-      "faithfulness": 0.5,
+      "ndcg_at_k": 1.0,
+      "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.5
     },
@@ -3293,8 +3293,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3303,7 +3303,7 @@
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.9
+      "answer_quality": 0.8
     },
     {
       "query_id": "3doc_0522",
@@ -3313,8 +3313,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
@@ -3323,7 +3323,7 @@
       "ndcg_at_k": 0.7039,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.6
+      "answer_quality": 0.5
     },
     {
       "query_id": "3doc_0252",
@@ -3333,17 +3333,17 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
       "precision_at_k": 0.5,
       "mrr": 1.0,
-      "ndcg_at_k": 0.7654,
+      "ndcg_at_k": 0.7039,
       "faithfulness": 1.0,
-      "answer_relevance": 0.8,
-      "answer_quality": 0.5
+      "answer_relevance": 1.0,
+      "answer_quality": 0.8
     },
     {
       "query_id": "1doc_0495",
@@ -3353,14 +3353,14 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
-      "mrr": 0.5,
-      "ndcg_at_k": 1.1309,
+      "precision_at_k": 0.25,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -3370,35 +3370,35 @@
       "query": "乌克兰提交给美国的集束弹药使用报告中包括了哪些关键信息，以及这一行为引发了哪些国家的反对？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6667,
+      "precision_at_k": 0.75,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9197,
+      "ndcg_at_k": 1.2641,
       "faithfulness": 1.0,
-      "answer_relevance": 0.5,
-      "answer_quality": 0.5
+      "answer_relevance": 1.0,
+      "answer_quality": 0.8
     },
     {
       "query_id": "2doc_0120",
       "query": "结合行业专家的观点和报道声明，描述2023年上半年我国锂电池产业的出口增长情况及其对外贸的影响。",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6667,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -3410,37 +3410,37 @@
       "query": "中国首个全国生态日是在哪一年设立的，孟加拉国沙贾拉尔科技大学的哪位教授对中国的生态文明建设给予了高度评价？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
-        "semantic": 2,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "semantic": 0,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.0,
-      "precision_at_k": 0.0,
-      "mrr": 0.0,
-      "ndcg_at_k": 0.0,
+      "recall_at_k": 1.0,
+      "precision_at_k": 0.25,
+      "mrr": 1.0,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 1.0
     },
     {
       "query_id": "2doc_0584",
       "query": "波兰官员布瓦什恰克宣布的边境增兵计划包括多少人，他们将如何分配，以及这一决策与波兰即将发生的哪一政治事件有关？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 3,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6667,
+      "precision_at_k": 0.4,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9197,
+      "ndcg_at_k": 0.8503,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -3450,15 +3450,15 @@
       "query": "在广东省政务服务数据管理局对全省标杆政务服务中心进行实地复查复审工作中，魏文涛带队走访了哪个区的政务服务中心，并就哪些服务相关问题进行了沟通交流？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 2,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -3470,18 +3470,18 @@
       "query": "在上半年业绩预告中，旅游行业的复苏对哪些公司的业绩产生了积极影响，并且哪些公司已经披露了他们的半年报？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
-      "precision_at_k": 0.2,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
-      "ndcg_at_k": 0.4693,
-      "faithfulness": 0.5,
+      "ndcg_at_k": 0.7654,
+      "faithfulness": 1.0,
       "answer_relevance": 0.5,
       "answer_quality": 0.5
     },
@@ -3493,32 +3493,32 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
       "precision_at_k": 0.6667,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9197,
+      "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 1.0
+      "answer_quality": 0.8
     },
     {
       "query_id": "1doc_0029",
       "query": "全加促进中国和平统一委员会(卡尔加里区)在其声明中谴责了民进党2024年台湾地区领导人选举参选人赖清德，请问具体谴责的是哪一论调，并指出这种论调的本质是什么？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
-        "semantic": 1,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "semantic": 0,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.25,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -3532,36 +3532,36 @@
       "num_relevant_docs": 1,
       "num_retrieved": 5,
       "source_stats": {
-        "semantic": 1,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "semantic": 0,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.4,
+      "precision_at_k": 0.2,
       "mrr": 0.5,
-      "ndcg_at_k": 1.1309,
-      "faithfulness": 0.5,
+      "ndcg_at_k": 0.6309,
+      "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_quality": 0.5
     },
     {
       "query_id": "1doc_0241",
       "query": "在2021年7月28日举行的第二届俄罗斯-非洲峰会上，俄罗斯和非洲多国决定建立什么机制？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.25,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
-      "faithfulness": 1.0,
+      "faithfulness": 0.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.5
     },
@@ -3573,17 +3573,17 @@
       "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 1,
-        "semantic+keyword": 4,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.4,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "recall_at_k": 0.5,
+      "precision_at_k": 0.2,
+      "mrr": 0.25,
+      "ndcg_at_k": 0.2641,
       "faithfulness": 1.0,
-      "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_relevance": 0.5,
+      "answer_quality": 0.5
     },
     {
       "query_id": "1doc_0276",
@@ -3593,8 +3593,8 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3603,7 +3603,7 @@
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 1.0
     },
     {
       "query_id": "1doc_0128",
@@ -3613,8 +3613,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3633,8 +3633,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3650,19 +3650,19 @@
       "query": "在叙利亚上空发生的美国F-35与俄罗斯苏-35的危险接近事件中，俄罗斯方面指控美国战机违反了哪些协议，并采取了哪些监控措施来应对？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6667,
+      "precision_at_k": 0.75,
       "mrr": 1.0,
-      "ndcg_at_k": 0.7039,
+      "ndcg_at_k": 0.9675,
       "faithfulness": 1.0,
-      "answer_relevance": 1.0,
+      "answer_relevance": 0.5,
       "answer_quality": 1.0
     },
     {
@@ -3673,8 +3673,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3690,20 +3690,20 @@
       "query": "在海河流域上游河道水位回落的过程中，海委会同哪些省市精准调度了哪些水库以确保洪水平稳下泄？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.6,
+      "precision_at_k": 0.75,
       "mrr": 1.0,
-      "ndcg_at_k": 1.3066,
+      "ndcg_at_k": 1.2641,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 1.0
     },
     {
       "query_id": "3doc_0391",
@@ -3713,8 +3713,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
@@ -3733,8 +3733,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3753,8 +3753,8 @@
       "num_retrieved": 2,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 2,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3773,37 +3773,37 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.3333,
       "precision_at_k": 0.25,
-      "mrr": 0.3333,
-      "ndcg_at_k": 0.2346,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.2961,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.7
+      "answer_quality": 0.5
     },
     {
       "query_id": "3doc_0763",
       "query": "恒大汽车的最新股权变动和长安汽车在泰国的投资计划反映了中国汽车行业在全球市场中的哪些发展趋势？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 5,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 5,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
-      "precision_at_k": 0.6667,
-      "mrr": 1.0,
-      "ndcg_at_k": 0.7654,
+      "precision_at_k": 0.4,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.5307,
       "faithfulness": 0.8,
       "answer_relevance": 1.0,
-      "answer_quality": 0.9
+      "answer_quality": 1.0
     },
     {
       "query_id": "3doc_0339",
@@ -3813,8 +3813,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
@@ -3823,24 +3823,24 @@
       "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 1.0
     },
     {
       "query_id": "2doc_0195",
       "query": "武汉市交通运输局征求公众意见活动与南通如东县和常州市应急救援演练在交通管理和安全方面有什么共同目的？",
       "task_type": "2doc",
       "num_relevant_docs": 2,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
-        "semantic": 1,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "semantic": 0,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
-      "ndcg_at_k": 0.9197,
+      "ndcg_at_k": 0.6131,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -3850,15 +3850,15 @@
       "query": "公安部实施的哪些措施已经对群众生活产生了积极影响，并且未来将如何继续推进这些措施？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 1,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.4,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
       "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
@@ -3870,35 +3870,35 @@
       "query": "在中国人民解放军建军96周年庆祝活动中，哪些举措体现了中国军队对国际和平的贡献？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 5,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 5,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 1.0,
-      "precision_at_k": 0.6,
+      "recall_at_k": 0.6667,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
-      "ndcg_at_k": 0.8529,
+      "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.8
+      "answer_quality": 0.7
     },
     {
       "query_id": "1doc_0779",
       "query": "北汽蓝谷与华为终端有限公司宣布开展的智选合作，旨在打造哪一类车型，并且这款车型的生产将由哪个工厂负责？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 4,
+      "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.25,
+      "precision_at_k": 0.3333,
       "mrr": 1.0,
       "ndcg_at_k": 1.0,
       "faithfulness": 1.0,
@@ -3913,8 +3913,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3930,17 +3930,17 @@
       "query": "南非开普敦华侨华人文化交流中心的启动暨剪彩仪式是由哪位中国官员主持的，并且该中心占地多少平方米？",
       "task_type": "1doc",
       "num_relevant_docs": 1,
-      "num_retrieved": 2,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 2,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
-      "precision_at_k": 0.5,
-      "mrr": 1.0,
-      "ndcg_at_k": 1.0,
+      "precision_at_k": 0.25,
+      "mrr": 0.5,
+      "ndcg_at_k": 0.6309,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 1.0
@@ -3953,8 +3953,8 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 1.0,
@@ -3963,7 +3963,7 @@
       "ndcg_at_k": 0.5307,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
-      "answer_quality": 0.5
+      "answer_quality": 1.0
     },
     {
       "query_id": "2doc_0651",
@@ -3973,14 +3973,14 @@
       "num_retrieved": 3,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 3,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.5,
       "precision_at_k": 0.3333,
-      "mrr": 0.3333,
-      "ndcg_at_k": 0.3066,
+      "mrr": 1.0,
+      "ndcg_at_k": 0.6131,
       "faithfulness": 1.0,
       "answer_relevance": 1.0,
       "answer_quality": 0.8
@@ -3993,8 +3993,8 @@
       "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 4,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
       "recall_at_k": 0.6667,
@@ -4010,20 +4010,20 @@
       "query": "在政府部门提升服务质量和效率的背景下，万松街道政务服务中心、荔湾区政府网站和广东法院分别采取了哪些具体措施？",
       "task_type": "3doc",
       "num_relevant_docs": 3,
-      "num_retrieved": 3,
+      "num_retrieved": 4,
       "source_stats": {
         "semantic": 0,
-        "keyword": 0,
-        "semantic+keyword": 3,
+        "keyword": 4,
+        "semantic+keyword": 0,
         "other": 0
       },
-      "recall_at_k": 0.3333,
-      "precision_at_k": 0.3333,
+      "recall_at_k": 0.6667,
+      "precision_at_k": 0.5,
       "mrr": 1.0,
-      "ndcg_at_k": 0.4693,
+      "ndcg_at_k": 0.7654,
       "faithfulness": 1.0,
       "answer_relevance": 0.5,
-      "answer_quality": 0.5
+      "answer_quality": 0.7
     }
   ]
 }

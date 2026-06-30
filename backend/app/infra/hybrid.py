@@ -279,22 +279,43 @@ class HybridStore:
         if not es_path.ok:
             return await self._search_semantic(query, top_k)
 
-        sem_w = max(0.0, float(self.settings.rag_semantic_weight))
-        kw_w = max(0.0, 1.0 - sem_w - self.settings.kg_weight)
-        kg_w = max(0.0, self.settings.kg_weight)
+        # ── Weight normalisation: renormalise to 1.0 across AVAILABLE paths ──
+        raw_sem = max(0.0, float(self.settings.rag_semantic_weight))
+        raw_kw = max(0.0, 1.0 - raw_sem - self.settings.kg_weight)
+        raw_kg = max(0.0, self.settings.kg_weight)
+
+        available = 0.0
+        available += raw_sem if milvus_path.ok else 0.0
+        available += raw_kw if es_path.ok else 0.0
+        available += raw_kg if kg_path.ok else 0.0
+
+        if available <= 0.0:
+            logger.warning("All paths unavailable after weight check")
+            return []
+
+        sem_w = raw_sem / available if milvus_path.ok else 0.0
+        kw_w = raw_kw / available if es_path.ok else 0.0
+        kg_w = raw_kg / available if kg_path.ok else 0.0
+
         k = self.settings.rag_rrf_constant_k or 60
         rrf_scores: Dict[int, float] = {}
+
+        # ── Track path membership for source attribution ──
+        milvus_ids: set[int] = set()
+        es_ids: set[int] = set()
 
         for rank, hit in enumerate(milvus_path.hits):
             pg_id = hit.get("pg_id")
             if pg_id is None:
                 continue
+            milvus_ids.add(pg_id)
             rrf_scores[pg_id] = rrf_scores.get(pg_id, 0.0) + sem_w / (k + rank + 1)
 
         for rank, hit in enumerate(es_path.hits):
             pg_id = hit.get("pg_id")
             if pg_id is None:
                 continue
+            es_ids.add(pg_id)
             rrf_scores[pg_id] = rrf_scores.get(pg_id, 0.0) + kw_w / (k + rank + 1)
 
         if kg_path.ok:
@@ -318,11 +339,22 @@ class HybridStore:
             row = row_map.get(pid)
             if row is None:
                 continue
+            # ── Set source based on which path(s) contributed ──
+            in_m = pid in milvus_ids
+            in_e = pid in es_ids
+            if in_m and in_e:
+                source = "semantic+keyword"
+            elif in_m:
+                source = "semantic"
+            elif in_e:
+                source = "keyword"
+            else:
+                source = "hybrid"  # kg-only (rare)
             results.append(HybridResult(
                 pg_id=pid,
                 content=row.get("content", ""),
                 score=score,
-                source="hybrid",
+                source=source,
                 parent=row.get("parent_content", "") or "",
             ))
         return results

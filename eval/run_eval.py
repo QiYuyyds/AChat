@@ -332,6 +332,7 @@ async def evaluate_mode(
         "recall_at_k", "precision_at_k", "mrr", "ndcg_at_k",
         "faithfulness", "answer_relevance", "answer_quality",
     ]}
+    source_sums = {"semantic": 0, "keyword": 0, "semantic+keyword": 0, "other": 0}
     count = 0
     gen_count = 0  # Entries where generation metrics were computed
 
@@ -353,6 +354,17 @@ async def evaluate_mode(
 
         # Extract retrieved chunk contents
         retrieved = [c.get("content", "") for c in chunks if c.get("content")]
+
+        # ── Source distribution (strip +rerank suffix from reranker) ──
+        source_stats = {"semantic": 0, "keyword": 0, "semantic+keyword": 0, "other": 0}
+        for c in chunks:
+            raw_source = c.get("source", "")
+            # Strip "+rerank" suffix appended by LLMReranker
+            clean = raw_source.replace("+rerank", "")
+            if clean in source_stats:
+                source_stats[clean] += 1
+            else:
+                source_stats["other"] += 1
 
         # Retrieval metrics
         r_recall = recall_at_k(retrieved, relevant_docs, TOP_K)
@@ -380,6 +392,7 @@ async def evaluate_mode(
             "task_type": entry.get("task_type", ""),
             "num_relevant_docs": entry.get("num_relevant_docs", 0),
             "num_retrieved": len(retrieved),
+            "source_stats": source_stats,
             "recall_at_k": round(r_recall, 4),
             "precision_at_k": round(r_precision, 4),
             "mrr": round(r_mrr, 4),
@@ -400,6 +413,10 @@ async def evaluate_mode(
         metric_sums["answer_quality"] += g_quality
         count += 1
 
+        # Accumulate source stats
+        for k in source_sums:
+            source_sums[k] += source_stats[k]
+
         # Progress logging every PROGRESS_INTERVAL entries
         if i % PROGRESS_INTERVAL == 0 or i == total:
             avg_recall = metric_sums["recall_at_k"] / count if count else 0
@@ -419,11 +436,20 @@ async def evaluate_mode(
         else:
             averages[metric] = round(total_val / count, 4) if count else 0.0
 
+    # Compute mode-level source averages
+    total_chunks = sum(source_sums.values())
+    source_averages = {
+        k: round(v / max(total_chunks, 1), 4) for k, v in source_sums.items()
+    }
+
     return {
         "mode": mode,
         "total_entries": count,
         "generation_entries": gen_count,
         "averages": averages,
+        "source_sums": source_sums,
+        "source_averages": source_averages,
+        "total_chunks_retrieved": total_chunks,
         "per_entry": per_entry_results,
     }
 
@@ -492,8 +518,12 @@ def generate_comparison_report(
     lines.append(f"- **Total Entries**: {entry_count}")
     lines.append(f"- **Limit**: {limit if limit else 'None (full run)'}")
     lines.append(f"- **Top-K**: {TOP_K}")
+    lines.append(f"- **RAG Top-K (config)**: {getattr(settings, 'rag_top_k', 'N/A')}")
     lines.append(f"- **Chunk Size**: {getattr(settings, 'rag_chunk_size', 'N/A')}")
     lines.append(f"- **Chunk Overlap**: {getattr(settings, 'rag_chunk_overlap', 'N/A')}")
+    lines.append(f"- **Semantic Weight**: {getattr(settings, 'rag_semantic_weight', 'N/A')}")
+    lines.append(f"- **KG Weight**: {getattr(settings, 'kg_weight', 'N/A')}")
+    lines.append(f"- **RRF k**: {getattr(settings, 'rag_rrf_constant_k', 'N/A')}")
     lines.append(f"- **Rewrite Enabled**: {getattr(settings, 'rag_rewrite_enabled', 'N/A')}")
     lines.append(f"- **Rerank Enabled**: {getattr(settings, 'rag_rerank_enabled', 'N/A')}")
     lines.append("")
@@ -531,10 +561,37 @@ def generate_comparison_report(
     # Per-mode details
     lines.append("## Per-Mode Details")
     lines.append("")
+    # Source distribution summary
+    lines.append("## Source Distribution (Path Origin)")
+    lines.append("")
+    lines.append("Chunk source breakdown per mode (pre-reranker path attribution):")
+    lines.append("")
+    lines.append("| Mode | semantic | keyword | semantic+keyword | other | total |")
+    lines.append("|------|----------|---------|------------------|-------|-------|")
+    for mr in mode_results:
+        ss = mr.get("source_sums", {})
+        total = mr.get("total_chunks_retrieved", 0) or 1
+        lines.append(
+            f"| {mr['mode']} | {ss.get('semantic', 0)} ({ss.get('semantic', 0)/max(total,1)*100:.1f}%) | "
+            f"{ss.get('keyword', 0)} ({ss.get('keyword', 0)/max(total,1)*100:.1f}%) | "
+            f"{ss.get('semantic+keyword', 0)} ({ss.get('semantic+keyword', 0)/max(total,1)*100:.1f}%) | "
+            f"{ss.get('other', 0)} ({ss.get('other', 0)/max(total,1)*100:.1f}%) | "
+            f"{total} |"
+        )
+    lines.append("")
+    lines.append("> **semantic**: chunk appeared only in Milvus (dense) results  ")
+    lines.append("> **keyword**: chunk appeared only in ES (BM25) results  ")
+    lines.append("> **semantic+keyword**: chunk appeared in BOTH paths — boosted by RRF fusion  ")
+    lines.append("")
+
     for mr in mode_results:
         lines.append(f"### {mr['mode']}")
         lines.append(f"- Total entries: {mr['total_entries']}")
         lines.append(f"- Generation-evaluated entries: {mr['generation_entries']}")
+        ss = mr.get("source_sums", {})
+        total = mr.get("total_chunks_retrieved", 0)
+        if total:
+            lines.append(f"- Chunks retrieved: {total} (semantic={ss.get('semantic',0)}, keyword={ss.get('keyword',0)}, both={ss.get('semantic+keyword',0)})")
         lines.append(f"- Averages:")
         for metric in metrics_list:
             val = mr["averages"].get(metric, 0.0)
