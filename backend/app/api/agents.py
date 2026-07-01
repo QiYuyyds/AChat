@@ -73,6 +73,10 @@ def _serialize(row: Agent) -> dict[str, Any]:
         "isOrchestrator": row.is_orchestrator,
         "supportsVision": row.supports_vision,
         "createdAt": row.created_at,
+        # CLI fields
+        "executablePath": row.executable_path,
+        "protocolFamily": row.protocol_family,
+        "customArgs": row.custom_args_list,
     }
 
 
@@ -173,7 +177,8 @@ async def _create_custom_agent(body: CreateAgentRequest) -> dict[str, Any]:
         created_at=now_ms(),
     )
     agent.capabilities_list = body.capabilities or []
-    # SDK adapters use their own builtin tool set; force empty toolNames/skillNames.
+    # Non-custom (CLI) adapters use their own built-in tool set;
+    # force empty toolNames/skillNames.
     tool_names = (body.tool_names or []) if adapter_name == "custom" else []
     # Orchestrator agents require plan_tasks + ask_user tools.
     if body.is_orchestrator and adapter_name == "custom":
@@ -182,6 +187,17 @@ async def _create_custom_agent(body: CreateAgentRequest) -> dict[str, Any]:
                 tool_names.append(required_tool)
     agent.tool_names_list = tool_names
     agent.skill_names_list = (body.skill_names or []) if adapter_name == "custom" else []
+
+    # CLI fields: only set for CLI-based adapters
+    agent.executable_path = (
+        _trim_or_none(body.executable_path) if adapter_name in ("claude-code", "codex") else None
+    )
+    agent.protocol_family = (
+        adapter_name if adapter_name in ("claude-code", "codex") else None
+    )
+    agent.custom_args_list = (
+        body.custom_args if adapter_name in ("claude-code", "codex") and body.custom_args else []
+    )
 
     async with get_db() as db:
         db.add(agent)
@@ -204,6 +220,10 @@ _PATCH_ALIASES: set[str] = {
     "isOrchestrator",
     "apiKey",
     "apiBaseUrl",
+    # CLI fields
+    "executablePath",
+    "protocolFamily",
+    "customArgs",
 }
 
 
@@ -279,6 +299,9 @@ async def _update_custom_agent(
     has_tool_names = "tool_names" in provided
     has_skill_names = "skill_names" in provided
     has_is_orchestrator = "is_orchestrator" in provided
+    has_executable_path = "executable_path" in provided
+    has_protocol_family = "protocol_family" in provided
+    has_custom_args = "custom_args" in provided
 
     async with get_db() as db:
         agent = await db.get(Agent, agent_id)
@@ -344,6 +367,17 @@ async def _update_custom_agent(
         if has_api_base_url:
             agent.api_base_url = _trim_or_none(body.api_base_url)
             updated = True
+        # CLI fields
+        is_cli = next_adapter_name in ("claude-code", "codex")
+        if has_executable_path:
+            agent.executable_path = _trim_or_none(body.executable_path) if is_cli else None
+            updated = True
+        if has_protocol_family:
+            agent.protocol_family = body.protocol_family if is_cli else None
+            updated = True
+        if has_custom_args and body.custom_args is not None:
+            agent.custom_args_list = body.custom_args if is_cli else []
+            updated = True
 
         if next_adapter_name == "custom":
             if has_model_provider:
@@ -356,10 +390,8 @@ async def _update_custom_agent(
                 agent.skill_names_list = body.skill_names
                 updated = True
         else:
-            # SDK adapter: drop modelProvider/toolNames/skillNames; clear modelId on switch.
-            if has_adapter_name and not has_model_id:
-                agent.model_id = None
-                updated = True
+            # Non-custom (CLI) adapter: drop modelProvider/toolNames/skillNames.
+            # modelId is still relevant (CLI agents pass --model <id>).
             if has_adapter_name or has_model_provider or has_tool_names or has_skill_names:
                 agent.model_provider = None
                 agent.tool_names_list = []

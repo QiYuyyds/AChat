@@ -1,9 +1,17 @@
 """FastAPI application entry point."""
 
+import asyncio
 import logging
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Optional
+
+# On Windows the default ProactorEventLoop is required for subprocess support.
+# Some libraries / env configs may switch to SelectorEventLoop which does not
+# implement _make_subprocess_transport on Windows and raises NotImplementedError.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

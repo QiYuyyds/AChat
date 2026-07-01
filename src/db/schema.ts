@@ -39,6 +39,14 @@ export const agents = sqliteTable('agents', {
 
   skillNames: text('skill_names', { mode: 'json' }).$type<string[]>().notNull().default(sql`'[]'`),
 
+  // ── CLI agent fields ──────────────────────────────────────
+  /** CLI 二进制路径；NULL 则从 PATH 查找。仅 claude-code / codex 使用。 */
+  executablePath: text('executable_path'),
+  /** 协议族：'claude' | 'codex'。NULL 表示非 CLI agent。 */
+  protocolFamily: text('protocol_family'),
+  /** CLI 自定义参数；blocked 的协议关键 flag 在运行时会被过滤。仅 CLI agent 使用。 */
+  customArgs: text('custom_args', { mode: 'json' }).$type<string[]>().notNull().default(sql`'[]'`),
+
   isBuiltin: integer('is_builtin', { mode: 'boolean' }).notNull().default(false),
   isOrchestrator: integer('is_orchestrator', { mode: 'boolean' }).notNull().default(false),
   supportsVision: integer('supports_vision', { mode: 'boolean' }).notNull().default(false),

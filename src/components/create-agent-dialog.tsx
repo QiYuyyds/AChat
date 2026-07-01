@@ -93,6 +93,8 @@ export function CreateAgentDialog({
   const [apiBaseUrl, setApiBaseUrl] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
   const [isOrchestrator, setIsOrchestrator] = useState(false)
+  const [executablePath, setExecutablePath] = useState('')
+  const [customArgsText, setCustomArgsText] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<AgentTab>('basic')
@@ -129,6 +131,8 @@ export function CreateAgentDialog({
       setIsOrchestrator(agent.isOrchestrator)
       setApiKey(agent.apiKey ?? '')
       setApiBaseUrl(agent.apiBaseUrl ?? '')
+      setExecutablePath((agent as any).executablePath ?? '')
+      setCustomArgsText(((agent as any).customArgs ?? []).join('\n'))
     } else {
       setAdapterKind('custom')
       setName('')
@@ -143,6 +147,8 @@ export function CreateAgentDialog({
       setIsOrchestrator(false)
       setApiKey('')
       setApiBaseUrl('')
+      setExecutablePath('')
+      setCustomArgsText('')
       setCreateStep('choose')
     }
     if (agent) setCreateStep('detail')
@@ -269,6 +275,9 @@ export function CreateAgentDialog({
         skillNames: [],
         supportsVision: draft.supportsVision,
         isOrchestrator: isOrchestrator || undefined,
+        executablePath: undefined,
+        protocolFamily: isSdkAgent ? draft.adapterName : undefined,
+        customArgs: undefined,
       }
       const created = await createAgent(body)
       upsertAgent(created)
@@ -333,6 +342,9 @@ export function CreateAgentDialog({
           isOrchestrator,
           apiKey: trimmedApiKey || null,
           apiBaseUrl: trimmedApiBaseUrl || null,
+          executablePath: isSdkAgent ? (executablePath.trim() || null) : null,
+          protocolFamily: isSdkAgent ? adapterKind : null,
+          customArgs: isSdkAgent ? (customArgsText.trim() ? customArgsText.split('\n').map(s => s.trim()).filter(Boolean) : []) : [],
         }
         const updated = await updateAgent(agent.id, patch)
         upsertAgent(updated)
@@ -352,6 +364,9 @@ export function CreateAgentDialog({
           isOrchestrator: isOrchestrator || undefined,
           apiKey: trimmedApiKey || undefined,
           apiBaseUrl: trimmedApiBaseUrl || undefined,
+          executablePath: isSdkAgent ? (executablePath.trim() || undefined) : undefined,
+          protocolFamily: isSdkAgent ? adapterKind : undefined,
+          customArgs: isSdkAgent ? (customArgsText.trim() ? customArgsText.split('\n').map(s => s.trim()).filter(Boolean) : []) : undefined,
         }
         const created = await createAgent(body)
         upsertAgent(created)
@@ -595,6 +610,40 @@ export function CreateAgentDialog({
                             Codex 模型 id，例 <code className="font-mono">gpt-5-codex</code>。留空走 SDK 默认。
                           </>
                         )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {(adapterKind === 'claude-code' || adapterKind === 'codex') && (
+                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                    <Label>CLI 路径</Label>
+                    <div>
+                      <Input
+                        value={executablePath}
+                        onChange={(e) => setExecutablePath(e.target.value)}
+                        placeholder={adapterKind === 'claude-code' ? 'claude（留空从 PATH 查找）' : 'codex（留空从 PATH 查找）'}
+                        className="font-mono text-xs"
+                      />
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        本机 {adapterKind === 'claude-code' ? 'Claude Code' : 'Codex'} CLI 的路径。留空则自动 PATH 查找。仅在非标准安装时需要填写。
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {(adapterKind === 'claude-code' || adapterKind === 'codex') && (
+                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                    <Label>CLI 参数</Label>
+                    <div>
+                      <Textarea
+                        value={customArgsText}
+                        onChange={(e) => setCustomArgsText(e.target.value)}
+                        placeholder={'每行一个参数，例：\n--verbose\n--max-turns\n20'}
+                        className="min-h-[60px] font-mono text-xs"
+                      />
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        传给 {adapterKind === 'claude-code' ? 'claude' : 'codex'} CLI 的额外参数，每行一个。协议关键 flag（如 --output-format）会被自动过滤。
                       </div>
                     </div>
                   </div>

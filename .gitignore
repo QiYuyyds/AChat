@@ -78,3 +78,5 @@ next-env.d.ts
 /待融合项目/
 /eval/CRUD_RAG-main/
 /eval_memory/
+
+/.claude

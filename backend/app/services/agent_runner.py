@@ -286,6 +286,13 @@ def _empty_run_execution_result() -> RunExecutionResult:
     return RunExecutionResult(artifact_ids=[], output_message_ids=[], output_artifacts={})
 
 
+# ─── Adapter classification ─────────────────────────────────────────────────
+# CLI agents use vendor CLI subprocesses with their own tool sets and auth.
+CLI_ADAPTERS = frozenset({"claude-code", "codex"})
+# SDK agents call LLM APIs via SDKs; AChat manages tools, auth, and history.
+SDK_ADAPTERS = frozenset({"custom"})
+# mock is neither CLI nor SDK; it is test-only and ignored by tool injection.
+
 # ─── Constants (port of agent-runner.ts:212) ─────────────────────────────────
 SUB_AGENT_CONTEXT_RECENT_LIMIT = 5
 MAX_CONCURRENT_SUB_AGENT_RUNS = 4
@@ -563,6 +570,7 @@ async def execute_run(
     except asyncio.CancelledError:
         return await finalize(run_id, args, "aborted", _empty_run_execution_result())
     except Exception as err:  # noqa: BLE001 - faithful catch-all; surfaced via finalize
+        logger.exception("[AgentRunner] run failed: %s", err)
         if cancel_event.is_set():
             return await finalize(run_id, args, "aborted", _empty_run_execution_result())
         return await finalize(
@@ -600,23 +608,23 @@ async def execute_simple_run(
         except Exception as e:
             logger.warning("TaskMemBuffer reset failed: %s", e)
 
-    # Task 1.1: Implicitly inject memory_recall for custom agents
-    if agent.adapter_name == "custom":
+    # Task 1.1: Implicitly inject memory_recall for SDK agents only.
+    # CLI agents bring their own tools; memory/RAG/skill injection is skipped.
+    if agent.adapter_name in SDK_ADAPTERS:
         if "memory_recall" not in base_tool_names:
             base_tool_names = ["memory_recall"] + list(base_tool_names)
             logger.info(
-                "[AgentRunner] Implicitly injected memory_recall tool for custom agent %s",
+                "[AgentRunner] Implicitly injected memory_recall tool for SDK agent %s",
                 args.agent_id,
             )
-
-    # Inject load_skill when a custom agent has equipped (and still-present) skills.
-    if agent.adapter_name == "custom" and agent.skill_names_list:
+    # Inject load_skill when an SDK agent has equipped (and still-present) skills.
+    if agent.adapter_name in SDK_ADAPTERS and agent.skill_names_list:
         from app.services.skill_service import list_skills
         available = {m.slug for m in list_skills()}
         if any(s in available for s in agent.skill_names_list) and "load_skill" not in base_tool_names:
             base_tool_names = list(base_tool_names) + ["load_skill"]
             logger.info(
-                "[AgentRunner] Injected load_skill for custom agent %s (equipped skills)",
+                "[AgentRunner] Injected load_skill for SDK agent %s (equipped skills)",
                 args.agent_id,
             )
 
@@ -628,8 +636,7 @@ async def execute_simple_run(
             await db.execute(select(Conversation).where(Conversation.id == args.conversation_id))
         ).scalar_one_or_none()
         if conv and conv.rag_enabled:
-            # Only inject for custom agents (exclude SDK agents)
-            if agent.adapter_name == "custom":
+            if agent.adapter_name in SDK_ADAPTERS:
                 existing = set(base_tool_names)
                 new_tools = [t for t in RAG_TOOLS if t not in existing]
                 if new_tools:
@@ -1289,34 +1296,61 @@ async def build_adapter_input(
     attachments: list[AdapterAttachment],
 ) -> AdapterInput:
     effective_cwd = get_effective_cwd(workspace)
+    is_cli = agent.adapter_name in CLI_ADAPTERS
+    is_sdk = agent.adapter_name in SDK_ADAPTERS
+
+    # ── system prompt (shared by both paths) ──────────────────────────
     base_system_prompt = system_prompt_override or agent.system_prompt
     system_prompt_with_workspace = (
         _build_workspace_context_block(workspace) + "\n\n" + base_system_prompt
     )
-    tool_guidance = _build_agent_hub_tool_guidance(agent, tool_names, workspace)
-    if tool_guidance:
-        system_prompt_with_workspace += "\n\n" + tool_guidance
 
-    skill_block = _build_skill_metadata_block(agent)
-    if skill_block:
-        system_prompt_with_workspace += "\n\n" + skill_block
+    # ── tool guidance: SDK only (CLI agents bring their own tools) ────
+    if is_sdk:
+        tool_guidance = _build_agent_hub_tool_guidance(agent, tool_names, workspace)
+        if tool_guidance:
+            system_prompt_with_workspace += "\n\n" + tool_guidance
 
-    # key precedence: agent.api_key > app_settings.* > adapter env fallback.
-    # only inject global settings when the per-agent field is empty.
-    effective_api_key = agent.api_key
-    effective_api_base_url = agent.api_base_url
-    if not effective_api_key or (
-        not effective_api_base_url and agent.adapter_name == "claude-code"
-    ):
-        settings = await get_app_settings()
-        if not effective_api_key:
-            effective_api_key = _pick_settings_key(settings, agent)
-        if not effective_api_base_url and agent.adapter_name == "claude-code":
-            effective_api_base_url = settings.anthropic_base_url
+    # ── skill metadata: SDK only (CLI agents skip AChat skill injection) ─
+    if is_sdk:
+        skill_block = _build_skill_metadata_block(agent)
+        if skill_block:
+            system_prompt_with_workspace += "\n\n" + skill_block
 
-    # cross-run history (only CustomAdapter consumes it; SDK adapters resume sessions).
+    # ── API key ─────────────────────────────────────────────────────
+    if is_cli:
+        # CLI agents use their own authentication (claude login / codex login).
+        # Only inject per-agent API key override via extra_env when explicitly set.
+        effective_api_key: str | None = None
+        effective_api_base_url: str | None = None
+        cli_extra_env: dict[str, str] = {}
+        if agent.api_key:
+            if agent.adapter_name == "claude-code":
+                cli_extra_env["ANTHROPIC_API_KEY"] = agent.api_key
+            elif agent.adapter_name == "codex":
+                cli_extra_env["OPENAI_API_KEY"] = agent.api_key
+        if agent.api_base_url:
+            if agent.adapter_name == "claude-code":
+                cli_extra_env["ANTHROPIC_BASE_URL"] = agent.api_base_url
+            elif agent.adapter_name == "codex":
+                cli_extra_env["OPENAI_BASE_URL"] = agent.api_base_url
+    else:
+        # SDK path: full four-layer key chain (agent > app_settings > env > OAuth).
+        effective_api_key = agent.api_key
+        effective_api_base_url = agent.api_base_url
+        cli_extra_env = {}
+        if not effective_api_key or (
+            not effective_api_base_url and agent.adapter_name == "claude-code"
+        ):
+            settings = await get_app_settings()
+            if not effective_api_key:
+                effective_api_key = _pick_settings_key(settings, agent)
+            if not effective_api_base_url and agent.adapter_name == "claude-code":
+                effective_api_base_url = settings.anthropic_base_url
+
+    # ── cross-run history: SDK only (CLI agents use session resume) ──
     history: list[dict] = []
-    if agent.adapter_name == "custom" and not args.override_prompt:
+    if is_sdk and not args.override_prompt:
         async with get_db() as db:
             conv = (
                 await db.execute(
@@ -1348,22 +1382,24 @@ async def build_adapter_input(
             )
             history = []
 
-    # ─── PromptAssembler enrichment (Task 5.3) ───
-    assembler = _get_prompt_assembler()
-    if assembler and not args.override_prompt:
-        try:
-            from app.services.prompt_assembler import Query
-            mode = "react" if "plan_tasks" in (tool_names or []) else "chat"
-            q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id)
-            ctx = await assembler.assemble(q)
-            enriched = ctx.render_system_prompt()
-            if enriched:
-                system_prompt_with_workspace += "\n\n" + enriched
-        except Exception as err:  # noqa: BLE001 - assembler is best-effort
-            logger.warning("[agent-runner] PromptAssembler enrichment failed: %s", err)
+    # ── PromptAssembler enrichment (SDK only; CLI agents self-manage context) ─
+    if is_sdk:
+        assembler = _get_prompt_assembler()
+        if assembler and not args.override_prompt:
+            try:
+                from app.services.prompt_assembler import Query
+                mode = "react" if "plan_tasks" in (tool_names or []) else "chat"
+                q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id)
+                ctx = await assembler.assemble(q)
+                enriched = ctx.render_system_prompt()
+                if enriched:
+                    system_prompt_with_workspace += "\n\n" + enriched
+            except Exception as err:  # noqa: BLE001 - assembler is best-effort
+                logger.warning("[agent-runner] PromptAssembler enrichment failed: %s", err)
 
+    # ── prompt: CLI agents may get a context-summary prefix ──────────
     effective_prompt = prompt
-    if agent.adapter_name in ("claude-code", "codex") and not args.override_prompt:
+    if is_cli and not args.override_prompt:
         try:
             effective_prompt = await prefix_prompt_with_context_summary(
                 args.conversation_id, prompt
@@ -1376,14 +1412,21 @@ async def build_adapter_input(
             )
             effective_prompt = prompt
 
+    # ── custom_config: SDK only ──────────────────────────────────────
     custom_config = (
         CustomConfig(
             model_provider=agent.model_provider,
             supports_vision=agent.supports_vision,
         )
-        if agent.adapter_name == "custom" and agent.model_provider and agent.model_id
+        if is_sdk and agent.model_provider and agent.model_id
         else None
     )
+
+    # ── CLI-specific fields ──────────────────────────────────────────
+    cli_exec_path = agent.executable_path if is_cli else None
+    cli_custom_args = agent.custom_args_list if is_cli else None
+    # Session resume: deferred until AgentRun gets a session_id column.
+    cli_resume_session_id: str | None = None
 
     return AdapterInput(
         agent_id=agent.id,
@@ -1399,6 +1442,12 @@ async def build_adapter_input(
         attachments=attachments if len(attachments) > 0 else None,
         history=history if len(history) > 0 else None,
         custom_config=custom_config,
+        # CLI fields
+        executable_path=cli_exec_path,
+        extra_env=cli_extra_env if cli_extra_env else None,
+        custom_args=cli_custom_args,
+        resume_session_id=cli_resume_session_id,
+        mcp_config=None,  # MCP bridge deferred
     )
 
 

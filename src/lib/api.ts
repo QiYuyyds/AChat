@@ -74,6 +74,13 @@ export interface CreateAgentBody {
   apiBaseUrl?: string
   /** 设为协调者（Orchestrator） */
   isOrchestrator?: boolean
+  // ── CLI agent fields ──────────────────────────────────────
+  /** CLI 二进制路径；空则 PATH 查找。仅 claude-code / codex 有效。 */
+  executablePath?: string | null
+  /** 协议族。仅 claude-code / codex 有效。 */
+  protocolFamily?: string | null
+  /** CLI 自定义参数。仅 claude-code / codex 有效。 */
+  customArgs?: string[] | null
 }
 
 export async function createAgent(body: CreateAgentBody): Promise<AgentRow> {

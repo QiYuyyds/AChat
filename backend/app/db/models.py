@@ -103,6 +103,20 @@ class Agent(Base):
 
     tool_names: Mapped[list] = mapped_column(JSONB, name="tool_names", nullable=False, default=list)
 
+    # ── CLI agent fields ──────────────────────────────────────
+    # Path to the CLI binary; None → adapter looks it up on PATH.
+    executable_path: Mapped[str | None] = mapped_column(
+        String, name="executable_path", nullable=True
+    )
+    # Protocol family for CLI agents: 'claude' | 'codex'. None for SDK agents.
+    protocol_family: Mapped[str | None] = mapped_column(
+        String, name="protocol_family", nullable=True
+    )
+    # Per-agent CLI custom args. Blocked protocol flags are stripped at runtime.
+    custom_args: Mapped[list] = mapped_column(
+        JSONB, name="custom_args", nullable=False, default=list
+    )
+
     # Skills the agent has equipped (slugs under <data_dir>/skills/). custom adapter only.
     skill_names: Mapped[list] = mapped_column(JSONB, name="skill_names", nullable=False, default=list)
 
@@ -149,6 +163,15 @@ class Agent(Base):
     @skill_names_list.setter
     def skill_names_list(self, value: list[str]) -> None:
         self.skill_names = value
+
+    @property
+    def custom_args_list(self) -> list[str]:
+        """Get custom_args as Python list (JSONB already returns list)."""
+        return list(self.custom_args) if self.custom_args else []
+
+    @custom_args_list.setter
+    def custom_args_list(self, value: list[str]) -> None:
+        self.custom_args = value
 
 
 class Conversation(Base):
