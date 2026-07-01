@@ -86,6 +86,75 @@ def _get_memory_service():
         return None
 
 
+def _get_task_mem_buffer():
+    """Retrieve the TaskMemBuffer from app.state, or None."""
+    try:
+        from app.main import _app_ref
+        if _app_ref is None:
+            return None
+        return getattr(_app_ref.state, "task_mem_buffer", None)
+    except Exception:
+        return None
+
+
+def _get_tool_state_tracker():
+    """Retrieve the ToolStateTracker from app.state, or None."""
+    try:
+        from app.main import _app_ref
+        if _app_ref is None:
+            return None
+        return getattr(_app_ref.state, "tool_state_tracker", None)
+    except Exception:
+        return None
+
+
+async def _push_tool_observation(
+    call_id: str,
+    tool_name: str,
+    result: Any,
+    is_error: bool,
+) -> None:
+    """Push StepObservation and ToolCallTrace after a tool execution.
+
+    Best-effort: silently skips if buffers are not available.
+    """
+    buf = _get_task_mem_buffer()
+    tracker = _get_tool_state_tracker()
+
+    # Build summary string from result
+    summary = ""
+    if isinstance(result, str):
+        summary = result
+    elif isinstance(result, dict):
+        summary = str(result.get("error") or result.get("value") or result)
+    else:
+        summary = str(result)
+
+    if buf is not None:
+        try:
+            from app.services.prompt_assembler import StepObservation
+            await buf.push(StepObservation(
+                step_id=call_id,
+                tool_name=tool_name,
+                result=summary if not is_error else "",
+                error=summary if is_error else "",
+                success=not is_error,
+            ))
+        except Exception as e:
+            logger.warning("TaskMemBuffer push failed: %s", e)
+
+    if tracker is not None:
+        try:
+            from app.services.prompt_assembler import ToolCallTrace
+            await tracker.record(ToolCallTrace(
+                tool_name=tool_name,
+                success=not is_error,
+                summary=summary,
+            ))
+        except Exception as e:
+            logger.warning("ToolStateTracker record failed: %s", e)
+
+
 async def _post_run_memory_hook(
     prompt: str,
     result: RunExecutionResult,
@@ -523,6 +592,14 @@ async def execute_simple_run(
 
     base_tool_names = args.override_tool_names or agent.tool_names_list
 
+    # Reset task memory buffer at the start of a new task (clears previous observations)
+    buf = _get_task_mem_buffer()
+    if buf is not None:
+        try:
+            await buf.reset()
+        except Exception as e:
+            logger.warning("TaskMemBuffer reset failed: %s", e)
+
     # Task 1.1: Implicitly inject memory_recall for custom agents
     if agent.adapter_name == "custom":
         if "memory_recall" not in base_tool_names:
@@ -757,6 +834,11 @@ async def consume_stream(
             handoff = _read_artifact_handoff_result(event.result)
             if handoff:
                 output_key_by_artifact_id[handoff[0]] = handoff[1]
+            # Push StepObservation + ToolCallTrace to shared buffers
+            if tool_name:
+                await _push_tool_observation(
+                    event.call_id, tool_name, event.result, event.is_error,
+                )
         if event.type == "tool.call":
             control = on_tool_call(event) if on_tool_call else None
             if control and control.get("stop"):

@@ -59,6 +59,70 @@ def classify_memory_content(key: str, value: str) -> Tuple[str, List[str], str]:
     return "", [], ""
 
 
+# ── LLM classification prompt ─────────────────────────────────────────────────
+
+_CLASSIFY_SYSTEM_PROMPT = (
+    "你是一个记忆分类助手。请将给定的内容分类到以下 7 个类别之一，并给出标签和槽位提示。\n"
+    "类别（category）：identity（身份信息）、preference（偏好）、fact（事实）、"
+    "episodic（事件）、tool_failure（工具失败）、policy（策略约束）、general（通用）。\n"
+    "槽位提示（slot_hint）：profile、planner、task_memory、tool_state、constraints、recall_memory。\n"
+    '输出 JSON：{"category":"...","tags":["tag1"],"slot_hint":"..."}\n'
+    "只输出 JSON，不要有其他内容。"
+)
+
+
+async def llm_classify_memory(
+    generate_fn: Callable,
+    content: str,
+) -> Tuple[str, List[str], str]:
+    """Classify memory content using LLM fallback.
+
+    Requests JSON output with category, tags, slot_hint.
+    Strips code fences; falls back to ("general", [], "") on parse failure.
+    """
+    if not generate_fn or not content:
+        return "general", [], ""
+    try:
+        raw = generate_fn(_CLASSIFY_SYSTEM_PROMPT, content)
+    except Exception as e:
+        logger.warning("llm_classify_memory LLM call failed: %s", e)
+        return "general", [], ""
+
+    raw = _strip_code_fence(raw)
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        logger.debug("llm_classify_memory: LLM output is not valid JSON: %s", raw[:100])
+        return "general", [], ""
+
+    if not isinstance(parsed, dict):
+        return "general", [], ""
+
+    valid_categories = {
+        "identity", "preference", "fact", "episodic",
+        "tool_failure", "policy", "general",
+    }
+    valid_slots = {
+        "profile", "planner", "task_memory",
+        "tool_state", "constraints", "recall_memory",
+    }
+
+    category = str(parsed.get("category", "general")).strip()
+    category_invalid = category not in valid_categories
+    if category_invalid:
+        category = "general"
+
+    tags_raw = parsed.get("tags", [])
+    tags = [str(t) for t in tags_raw if t] if isinstance(tags_raw, list) else []
+
+    slot_hint = str(parsed.get("slot_hint", "")).strip()
+    # If category was invalid, don't trust the slot_hint either
+    if slot_hint not in valid_slots or category_invalid:
+        slot_hint = ""
+
+    return category, tags, slot_hint
+
+
 # ── LLM extraction prompt ──────────────────────────────────────────────────
 
 _EXTRACTION_SYSTEM_PROMPT = (
@@ -121,9 +185,10 @@ async def extract_memory_from_reply(
         fact_content = f"用户{k}: {v}"
         category, tags, slot_hint = classify_memory_content(str(k), str(v))
         if not category:
-            category = "general"
-            tags = []
-            slot_hint = "general_knowledge"
+            # Rule classification missed — try LLM fallback
+            category, tags, slot_hint = await llm_classify_memory(
+                generate_fn, fact_content,
+            )
 
         # Compute embedding
         emb = None

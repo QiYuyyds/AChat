@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
@@ -154,6 +155,105 @@ def slot_priority(kind: SlotKind) -> int:
     return priorities.get(kind, 99)
 
 
+# ─── Task 2-4: Buffer / Tracker / Snapshot data classes ──────────────────────
+
+
+@dataclass
+class StepObservation:
+    """A single tool-execution observation pushed to TaskMemBuffer."""
+
+    step_id: str = ""
+    tool_name: str = ""
+    result: str = ""
+    error: str = ""
+    success: bool = True
+    created_at: float = field(default_factory=time.time)
+
+
+class TaskMemBuffer:
+    """Async ring buffer for step observations (max_size, LIFO-friendly).
+
+    Uses ``asyncio.Lock`` to stay safe in async contexts. When the buffer
+    exceeds *max_size* the oldest entry is discarded.
+    """
+
+    def __init__(self, max_size: int = 20) -> None:
+        self._max_size = max_size
+        self._buf: List[StepObservation] = []
+        self._lock = asyncio.Lock()
+
+    async def push(self, obs: StepObservation) -> None:
+        async with self._lock:
+            self._buf.append(obs)
+            if len(self._buf) > self._max_size:
+                self._buf = self._buf[-self._max_size :]
+
+    async def reset(self) -> None:
+        async with self._lock:
+            self._buf.clear()
+
+    async def snapshot(self) -> List[StepObservation]:
+        async with self._lock:
+            return list(self._buf)
+
+
+@dataclass
+class ToolCallTrace:
+    """A single tool-call trace recorded in ToolStateTracker."""
+
+    tool_name: str = ""
+    success: bool = True
+    summary: str = ""
+    created_at: float = field(default_factory=time.time)
+
+
+class ToolStateTracker:
+    """Async ring buffer for tool-call traces.
+
+    Summaries are truncated to 120 characters on record. Max size defaults
+    to 10; the oldest entry is discarded when exceeded.
+    """
+
+    _SUMMARY_LIMIT = 120
+
+    def __init__(self, max_size: int = 10) -> None:
+        self._max_size = max_size
+        self._buf: List[ToolCallTrace] = []
+        self._lock = asyncio.Lock()
+
+    async def record(self, trace: ToolCallTrace) -> None:
+        async with self._lock:
+            if len(trace.summary) > self._SUMMARY_LIMIT:
+                trace.summary = trace.summary[: self._SUMMARY_LIMIT] + "…"
+            self._buf.append(trace)
+            if len(self._buf) > self._max_size:
+                self._buf = self._buf[-self._max_size :]
+
+    async def snapshot(self) -> List[ToolCallTrace]:
+        async with self._lock:
+            return list(self._buf)
+
+
+@dataclass
+class PlannerSnapshot:
+    """Snapshot of the current dispatch plan state for prompt injection."""
+
+    task_id: str = ""
+    query: str = ""
+    status: str = ""          # running | completed | interrupted | idle
+    phase: str = ""           # planning | executing | aggregating
+    total_steps: int = 0
+    current_step: int = 0
+    interrupted_at: str = ""
+    next_step_name: str = ""
+    next_step_tool: str = ""
+
+
+# Provider callbacks — return None when no data is available (safe degrade).
+PlannerProvider = Callable[[], Optional[PlannerSnapshot]]
+ToolRegistryProvider = Callable[[], Dict[str, Any]]
+
+
 # ─── Task 4.4: Sources ───────────────────────────────────────────────────────
 
 @dataclass
@@ -177,10 +277,11 @@ class ContextSource(ABC):
 
 
 class ProfileSource(ContextSource):
-    """Fills profile slot from user preferences."""
+    """Fills profile slot from user preferences AND LTM identity/preference items."""
 
-    def __init__(self, preference_provider: Any = None):
+    def __init__(self, preference_provider: Any = None, ltm: Any = None):
         self._pref = preference_provider
+        self._ltm = ltm  # Optional[LongTerm] with filter_by_category()
 
     def id(self) -> str:
         return "profile"
@@ -189,21 +290,48 @@ class ProfileSource(ContextSource):
         return kind in (SlotProfile, SlotRecall)
 
     async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
-        if self._pref is None:
-            return []
-        try:
-            prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
-            items = []
-            for k, v in prefs.items():
-                items.append(ContextItem(text=f"{k}: {v}", source="profile"))
-            return items[:slot.filter.top_k] if slot.filter.top_k > 0 else items
-        except Exception as e:
-            logger.warning("ProfileSource fetch failed: %s", e)
-            return []
+        items: List[ContextItem] = []
+        top_k = slot.filter.top_k or 0
+
+        # 1. Preference key-value pairs (score=1.0)
+        if self._pref is not None:
+            try:
+                prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
+                for k, v in prefs.items():
+                    items.append(
+                        ContextItem(text=f"{k}: {v}", score=1.0, source="profile")
+                    )
+            except Exception as e:
+                logger.warning("ProfileSource preference fetch failed: %s", e)
+
+        # 2. LTM items filtered by category (score=importance)
+        if self._ltm is not None:
+            try:
+                categories = slot.filter.categories or ["identity", "preference"]
+                ltm_limit = top_k if top_k > 0 else 10
+                ltm_items = await self._ltm.filter_by_category(categories, ltm_limit)
+                for it in ltm_items:
+                    items.append(
+                        ContextItem(
+                            text=it.content,
+                            score=it.importance,
+                            source="profile",
+                            meta={"category": it.category or "general"},
+                        )
+                    )
+            except Exception as e:
+                logger.warning("ProfileSource LTM fetch failed: %s", e)
+
+        if top_k > 0 and len(items) > top_k:
+            items = items[:top_k]
+        return items
 
 
 class PlannerSource(ContextSource):
-    """Fills planner slot from orchestrator state (stub for now)."""
+    """Fills planner slot from dispatch plan state via PlannerProvider."""
+
+    def __init__(self, provider: Optional[PlannerProvider] = None):
+        self._provider = provider
 
     def id(self) -> str:
         return "planner"
@@ -212,12 +340,57 @@ class PlannerSource(ContextSource):
         return kind == SlotPlanner
 
     async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
-        # Planner state is not yet wired; return empty
-        return []
+        if self._provider is None:
+            return []
+        try:
+            snap = self._provider()
+        except Exception as e:
+            logger.warning("PlannerSource provider error: %s", e)
+            return []
+        if snap is None:
+            return []
+
+        items: List[ContextItem] = []
+        # Task status line
+        items.append(
+            ContextItem(
+                text=f"任务 {snap.task_id} 状态={snap.status} 阶段={snap.phase}",
+                source="planner",
+            )
+        )
+        # Progress line
+        if snap.total_steps > 0:
+            items.append(
+                ContextItem(
+                    text=f"进度：第 {snap.current_step + 1}/{snap.total_steps} 步",
+                    source="planner",
+                )
+            )
+        # Next step hint
+        if snap.next_step_name:
+            tool_info = f" [{snap.next_step_tool}]" if snap.next_step_tool else ""
+            items.append(
+                ContextItem(
+                    text=f"下一步：{snap.next_step_name}{tool_info}",
+                    source="planner",
+                )
+            )
+        # Interruption recovery
+        if snap.interrupted_at:
+            items.append(
+                ContextItem(
+                    text=f"中断恢复：{snap.interrupted_at}",
+                    source="planner",
+                )
+            )
+        return items
 
 
 class TaskMemSource(ContextSource):
-    """Fills task memory slot from task observations."""
+    """Fills task memory slot from TaskMemBuffer step observations."""
+
+    def __init__(self, buffer: Optional[TaskMemBuffer] = None):
+        self._buffer = buffer
 
     def id(self) -> str:
         return "task_memory"
@@ -226,11 +399,40 @@ class TaskMemSource(ContextSource):
         return kind == SlotTaskMem
 
     async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
-        return []
+        if self._buffer is None:
+            return []
+        try:
+            observations = await self._buffer.snapshot()
+        except Exception as e:
+            logger.warning("TaskMemSource snapshot error: %s", e)
+            return []
+        if not observations:
+            return []
+
+        top_k = slot.filter.top_k or 0
+        if top_k > 0 and len(observations) > top_k:
+            observations = observations[-top_k:]  # keep most recent
+
+        items: List[ContextItem] = []
+        for obs in observations:
+            if obs.success:
+                text = f"步骤{obs.step_id} [{obs.tool_name}]→{obs.result}"
+            else:
+                text = f"步骤{obs.step_id} [{obs.tool_name}] 失败: {obs.error}"
+            items.append(ContextItem(text=text, source="task_memory"))
+        return items
 
 
 class ToolStateSource(ContextSource):
-    """Fills tool state slot from tool registry / recent results."""
+    """Fills tool state slot from tool registry + recent call traces."""
+
+    def __init__(
+        self,
+        registry_provider: Optional[ToolRegistryProvider] = None,
+        tracker: Optional[ToolStateTracker] = None,
+    ):
+        self._registry_provider = registry_provider
+        self._tracker = tracker
 
     def id(self) -> str:
         return "tool_state"
@@ -239,7 +441,47 @@ class ToolStateSource(ContextSource):
         return kind == SlotToolState
 
     async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
-        return []
+        items: List[ContextItem] = []
+        top_k = slot.filter.top_k or 0
+
+        # 1. Available tool list
+        if self._registry_provider is not None:
+            try:
+                tools = self._registry_provider() or {}
+                for name, tool in tools.items():
+                    desc = ""
+                    if hasattr(tool, "description"):
+                        desc = tool.description
+                    elif isinstance(tool, dict):
+                        desc = tool.get("description", "")
+                    items.append(
+                        ContextItem(
+                            text=f"{name} — {desc}",
+                            source="tool_state",
+                        )
+                    )
+            except Exception as e:
+                logger.warning("ToolStateSource registry error: %s", e)
+
+        # 2. Recent call traces
+        if self._tracker is not None:
+            try:
+                traces = await self._tracker.snapshot()
+            except Exception as e:
+                logger.warning("ToolStateSource tracker error: %s", e)
+                traces = []
+            for t in traces:
+                status = "成功" if t.success else "失败"
+                items.append(
+                    ContextItem(
+                        text=f"近期调用 {t.tool_name} [{status}]: {t.summary}",
+                        source="tool_state",
+                    )
+                )
+
+        if top_k > 0 and len(items) > top_k:
+            items = items[:top_k]
+        return items
 
 
 class ConstraintsSource(ContextSource):

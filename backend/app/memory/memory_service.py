@@ -14,7 +14,7 @@ from typing import Any, Callable, List, Optional
 from app.config import Settings
 from app.db.engine import get_db
 from app.db.models import ChatHistory
-from app.memory.consolidation import ConsolidationConfig, Item
+from app.memory.consolidation import ConsolidationConfig, ConsolidationResult, Item
 from app.memory.long_term import LongTerm
 from app.memory.preference import Preference
 from app.memory.short_term import ShortTerm
@@ -211,8 +211,66 @@ class MemoryService:
                     "Consolidation: deduped=%d merged=%d expired=%d",
                     result.deduped, result.merged, result.expired,
                 )
+                await self._sync_consolidation_to_db(result)
         except Exception as e:
             logger.warning("Consolidation failed: %s", e)
+
+    async def _sync_consolidation_to_db(self, result: ConsolidationResult) -> None:
+        """Sync consolidation delete/update results to PostgreSQL.
+
+        - ``delete_from_db``: batch DELETE using parameterised SQL.
+        - ``update_in_db``: per-row UPDATE for each merged Item.
+        Empty result → no SQL executed. Exceptions are logged, not raised.
+        """
+        if not result.delete_from_db and not result.update_in_db:
+            return
+
+        # Batch DELETE
+        if result.delete_from_db:
+            try:
+                from sqlalchemy import delete as sa_delete
+                from app.db.models import LongTermMemory
+                async with get_db() as session:
+                    stmt = sa_delete(LongTermMemory).where(
+                        LongTermMemory.id.in_(result.delete_from_db)
+                    )
+                    await session.execute(stmt)
+                logger.info(
+                    "Consolidation DB sync: deleted %d rows",
+                    len(result.delete_from_db),
+                )
+            except Exception as e:
+                logger.warning("Consolidation DB delete failed: %s", e)
+
+        # Per-row UPDATE for merged items
+        if result.update_in_db:
+            try:
+                from sqlalchemy import update as sa_update
+                from app.db.models import LongTermMemory
+                for item in result.update_in_db:
+                    if item.id is None:
+                        continue
+                    async with get_db() as session:
+                        stmt = (
+                            sa_update(LongTermMemory)
+                            .where(LongTermMemory.id == item.id)
+                            .values(
+                                content=item.content,
+                                importance=item.importance,
+                                embedding=list(item.embedding) if item.embedding else None,
+                                tags=list(item.tags) if item.tags else [],
+                                category=item.category,
+                                slot_hint=item.slot_hint,
+                                last_accessed=item.last_accessed,
+                            )
+                        )
+                        await session.execute(stmt)
+                logger.info(
+                    "Consolidation DB sync: updated %d rows",
+                    len(result.update_in_db),
+                )
+            except Exception as e:
+                logger.warning("Consolidation DB update failed: %s", e)
 
     async def _safe_extract_memory(self, content: str) -> None:
         """Extract memory facts from assistant reply using LLM (background task)."""

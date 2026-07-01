@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Optional
 
 from app.schemas.dispatch import DispatchPlanItem, PendingDispatchPlan
 from app.schemas.events import DispatchPlanPendingEvent, DispatchPlanResolvedEvent
@@ -174,3 +174,29 @@ class PendingDispatchPlansStore:
 
 # Module-level singleton (mirrors the TS globalThis singleton).
 pending_dispatch_plans = PendingDispatchPlansStore()
+
+
+def get_planner_snapshot() -> Optional["PlannerSnapshot"]:
+    """Build a PlannerSnapshot from the most recent pending dispatch plan.
+
+    Returns ``None`` when no plan is pending. Used as the default
+    ``PlannerProvider`` callback for ``PlannerSource``.
+    """
+    entries = list(pending_dispatch_plans._map.values())
+    if not entries:
+        return None
+    # Most recent first
+    entries.sort(key=lambda e: e.pending_plan.created_at, reverse=True)
+    pp = entries[0].pending_plan
+    # Lazy import to avoid circular dependency (prompt_assembler ← pending_dispatch_plans)
+    from app.services.prompt_assembler import PlannerSnapshot
+
+    total = len(pp.plan)
+    return PlannerSnapshot(
+        task_id=pp.id,
+        query="",
+        status="running",
+        phase="planning",
+        total_steps=total,
+        current_step=0,
+    )

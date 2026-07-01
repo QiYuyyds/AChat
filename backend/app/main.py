@@ -110,14 +110,42 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     try:
         from app.services.prompt_assembler import (
             ContextAssembler, SourceRegistry,
-            ProfileSource, RecallSource, ConstraintsSource,
+            PlannerSource, ProfileSource, RecallSource,
+            TaskMemBuffer, TaskMemSource, ToolStateSource, ToolStateTracker,
+            ConstraintsSource,
         )
+        from app.services.pending_dispatch_plans import get_planner_snapshot
+        from app.tools.registry import tool_registry as _tool_reg
+
+        # Create shared buffers and mount to app.state
+        task_mem_buffer = TaskMemBuffer()
+        tool_state_tracker = ToolStateTracker()
+        app_instance.state.task_mem_buffer = task_mem_buffer
+        app_instance.state.tool_state_tracker = tool_state_tracker
+
         registry = SourceRegistry()
         if _memory_service:
-            registry.register(ProfileSource(_memory_service.preference))
+            # ProfileSource now reads from both Preference AND LTM
+            registry.register(ProfileSource(
+                preference_provider=_memory_service.preference,
+                ltm=_memory_service.ltm,
+            ))
             registry.register(RecallSource(_memory_service))
+        # PlannerSource — reads dispatch plan state
+        registry.register(PlannerSource(provider=get_planner_snapshot))
+        # TaskMemSource — reads step observations from shared buffer
+        registry.register(TaskMemSource(buffer=task_mem_buffer))
+        # ToolStateSource — reads tool registry + recent call traces
+        registry.register(ToolStateSource(
+            registry_provider=lambda: _tool_reg._tools,
+            tracker=tool_state_tracker,
+        ))
         registry.register(ConstraintsSource())
         app_instance.state.prompt_assembler = ContextAssembler(registry=registry)
+        logger.info(
+            "PromptAssembler initialized: 6 Sources registered "
+            "(Profile+LTM, Recall, Planner, TaskMem, ToolState, Constraints)"
+        )
     except Exception as e:
         logger.warning("PromptAssembler init failed: %s", e)
 

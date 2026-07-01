@@ -613,3 +613,23 @@ class LongTerm:
             )
             for it in self.items
         ]
+
+    async def filter_by_category(
+        self, categories: List[str], limit: int
+    ) -> List[Item]:
+        """Return in-memory items whose category matches any of *categories*.
+
+        Results are ordered by importance descending and limited to *limit*.
+        This mirrors the AGI-memory ``LongTermCategoryFilter`` Protocol.
+        """
+        if not categories or not self.items:
+            return []
+        cat_set = set(categories)
+        matched = [
+            it for it in self.items
+            if (it.category or "general") in cat_set
+        ]
+        matched.sort(key=lambda x: x.importance, reverse=True)
+        if limit > 0 and len(matched) > limit:
+            matched = matched[:limit]
+        return matched
