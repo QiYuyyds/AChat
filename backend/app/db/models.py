@@ -39,7 +39,7 @@ class Base(DeclarativeBase):
 
 
 # Type aliases matching TypeScript types
-AdapterName = Literal["claude-code", "codex", "custom", "mock"]
+AdapterName = Literal["codex", "custom", "mock"]
 ModelProvider = Literal["anthropic", "openai", "deepseek", "volcano-ark", "openai-compatible"]
 ConversationMode = Literal["single", "group"]
 MessageRole = Literal["user", "agent", "system"]
@@ -99,6 +99,12 @@ class Agent(Base):
     )
     api_base_url: Mapped[str | None] = mapped_column(
         String, name="api_base_url", nullable=True
+    )
+
+    # Codex CLI adapter: optional override for the codex binary path.
+    # When None, the adapter falls back to CODEX_EXECUTABLE env or PATH search.
+    executable_path: Mapped[str | None] = mapped_column(
+        String, name="executable_path", nullable=True
     )
 
     tool_names: Mapped[list] = mapped_column(JSONB, name="tool_names", nullable=False, default=list)

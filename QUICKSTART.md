@@ -9,6 +9,7 @@
 - **Python 3.11+**
 - **PostgreSQL 16**（或通过 Docker Compose 启动）
 - **Docker**（用于启动基础设施服务，可选但推荐）
+- **Codex CLI**（可选，用于 Codex CLI adapter agent）：`npm install -g @openai/codex`，安装后运行 `codex auth` 完成认证
 
 ---
 

@@ -296,15 +296,16 @@ pnpm dev/test    → ensure-node-sqlite → node/vitest/playwright(纯 Node)
 
 **asarUnpack: `[".next/standalone/**"]`** 仍然必要（chdir 跨不进 asar 归档，详见 §6.5）。
 
-### 6.2 @anthropic-ai/claude-agent-sdk
+### 6.2 Codex CLI
 
-- SDK 内部 `spawn('claude-code')` 调用 Claude Code CLI 二进制
-- 需求：用户机器上**已**装过 Claude Code CLI（与现状一致；不打包进 app）。打不到时由 SDK 在第一次 `query()` 时抛错，UI 走错误路径展示
-- SDK 自带的 JS 入口需要能被 require：放在 standalone 的 node_modules 里，electron-builder 默认会带
+- Codex CLI adapter 通过 `asyncio.create_subprocess_exec` 启动 `codex app-server --listen stdio://` 子进程
+- 需求：用户机器上需安装 Codex CLI（`npm install -g @openai/codex`）。找不到时由 adapter 在第一次 `stream()` 时抛错，UI 走错误路径展示
+- 不打包进 app；`executable_path` 字段允许用户指定自定义路径
 
-### 6.3 @openai/codex-sdk
+### 6.3 MCP bridge
 
-- SDK 使用 npm 依赖里的 `@openai/codex` runtime，通过 `runStreamed()` 输出结构化 JSONL 事件；不要求用户额外全局安装 Codex CLI
+- `scripts/agenthub-codex-mcp.mjs` 作为 Codex 的 MCP server 运行
+- 脚本放在 standalone 的 `scripts/` 目录里，electron-builder 默认会带
 - `@openai/codex` 通过 optionalDependencies 携带平台二进制包（darwin / linux / win32 × x64 / arm64）
 - `next.config.ts` 必须把 `@openai/codex-sdk` / `@openai/codex` 放进 `serverExternalPackages`，避免被打包器内联后丢失 CLI binary 查找语义
 - `scripts/electron-prebuild.mjs` 的 standalone 依赖补齐逻辑以 Next 已 trace 的包 + 明确 server runtime allowlist 为种子，递归读取 dependencies / optionalDependencies，并把当前平台可用的 Codex runtime 一起带进 `.next/standalone/node_modules`；不要从 root `package.json` 全量补依赖，避免把纯前端库打进 Electron Node runtime

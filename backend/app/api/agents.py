@@ -67,6 +67,7 @@ def _serialize(row: Agent) -> dict[str, Any]:
         "modelId": row.model_id,
         "apiKey": row.api_key,
         "apiBaseUrl": row.api_base_url,
+        "executablePath": row.executable_path,
         "toolNames": row.tool_names_list,
         "skillNames": row.skill_names_list,
         "isBuiltin": row.is_builtin,
@@ -156,6 +157,8 @@ async def _create_custom_agent(body: CreateAgentRequest) -> dict[str, Any]:
     api_key = (body.api_key.strip() if body.api_key else "") or None
     api_base_url = (body.api_base_url.strip() if body.api_base_url else "") or None
 
+    executable_path = (body.executable_path.strip() if body.executable_path else "") or None
+
     agent = Agent(
         id=new_agent_id(),
         name=body.name.strip(),
@@ -167,6 +170,7 @@ async def _create_custom_agent(body: CreateAgentRequest) -> dict[str, Any]:
         model_id=body.model_id,
         api_key=api_key,
         api_base_url=api_base_url,
+        executable_path=executable_path if adapter_name == "codex" else None,
         is_builtin=False,
         is_orchestrator=body.is_orchestrator or False,
         supports_vision=body.supports_vision or False,
@@ -204,6 +208,7 @@ _PATCH_ALIASES: set[str] = {
     "isOrchestrator",
     "apiKey",
     "apiBaseUrl",
+    "executablePath",
 }
 
 
@@ -343,6 +348,9 @@ async def _update_custom_agent(
             updated = True
         if has_api_base_url:
             agent.api_base_url = _trim_or_none(body.api_base_url)
+            updated = True
+        if "executable_path" in provided:
+            agent.executable_path = _trim_or_none(body.executable_path)
             updated = True
 
         if next_adapter_name == "custom":

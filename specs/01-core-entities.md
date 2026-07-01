@@ -17,13 +17,14 @@ interface Agent {
   capabilities: string[]        // 能力标签，如 ['react', 'testing']，用于 Orchestrator 选派
 
   systemPrompt: string          // 决定 Agent 行为的核心
-  adapterName: AdapterName      // 'claude-code' | 'codex' | 'custom' | 'mock'
+  adapterName: AdapterName      // 'codex' | 'custom' | 'mock'
 
   // 仅 adapterName === 'custom' 时使用
   modelProvider?: ModelProvider
   modelId?: string              // 厂商内部 model id
-  apiKey?: string               // per-agent 自定义 key；NULL 走 app_settings → env var；Claude Code 还可走 OAuth（详见 Spec 05 §API key 解析、Spec 08 §8）
-  apiBaseUrl?: string           // per-agent 自定义 API endpoint；openai-compatible 必填；NULL 时 Claude Code 可走 app_settings.anthropicBaseUrl，Codex 走隔离 CODEX_HOME + SDK 默认 endpoint
+  apiKey?: string               // per-agent 自定义 key（仅 custom adapter）；NULL 走 app_settings → env var（详见 Spec 05 §API key 解析、Spec 08 §8）
+  apiBaseUrl?: string           // per-agent 自定义 API endpoint（仅 custom adapter）；openai-compatible 必填
+  executablePath?: string       // codex CLI 可执行文件路径（仅 codex adapter）；NULL 时从 PATH 搜索 'codex'
 
   toolNames: string[]           // 该 Agent 可调用的工具，引用 Spec 07
   skillNames: string[]          // 该 Agent 装备的 skill slug（仅 custom adapter；内容存 <data_dir>/skills/，不入库）。详见 openspec/changes/add-agent-skills
@@ -35,7 +36,7 @@ interface Agent {
   createdAt: number             // unix ms
 }
 
-type AdapterName = 'claude-code' | 'codex' | 'custom' | 'mock'
+type AdapterName = 'codex' | 'custom' | 'mock'
 type ModelProvider = 'anthropic' | 'openai' | 'deepseek' | 'volcano-ark' | 'openai-compatible'
 ```
 
@@ -43,10 +44,9 @@ type ModelProvider = 'anthropic' | 'openai' | 'deepseek' | 'volcano-ark' | 'open
 - `isOrchestrator: true` 的 Agent 必须 `toolNames.includes('plan_tasks')`（早期 spec 用过 `dispatch_to_agent` 命名，已统一为 `plan_tasks`，详见 Spec 07）
 - `adapterName === 'custom'` 时 `modelProvider` 和 `modelId` 必填
 - `modelProvider === 'openai-compatible'` 时 `apiKey` 与 `apiBaseUrl` 必填；`apiBaseUrl` 必须是 OpenAI Chat Completions 兼容 endpoint（例如通义千问 compatible-mode、智谱、MiniMax、OpenRouter、SiliconFlow 等兼容地址）
-- `skillNames` 仅 `adapterName === 'custom'` 时消费；SDK adapter（claude-code / codex）强制 `[]`（与 `toolNames` 同处理）。运行时只注入 skill 的 name+description，正文经 `load_skill` 按需读回（渐进式披露）
-- `adapterName === 'claude-code'` 时 `modelProvider` 忽略；`modelId` 可选（默认走 SDK 默认模型 `claude-opus-4-7`）；`toolNames` 强制 `[]`（Claude Code 用 SDK 内置工具集，详见 Spec 07）
-- `adapterName === 'codex'` 时 `modelProvider` 忽略；`modelId` 可选（默认 `gpt-5-codex`）；`toolNames` 强制 `[]`（Codex 用 SDK 内置工具集，详见 Spec 05）；`apiBaseUrl` 必须是 Codex/Responses 兼容 endpoint
-- `apiKey` / `apiBaseUrl` 是 per-agent 凭据：`apiBaseUrl` 非空时，`apiKey` 作为对应 SDK / endpoint 的 token；Claude Code、Codex、Custom openai-compatible 的 Base URL 协议不相同，Chat Completions-only provider 走 Custom adapter
+- `skillNames` 仅 `adapterName === 'custom'` 时消费；codex adapter 强制 `[]`（与 `toolNames` 同处理）。运行时只注入 skill 的 name+description，正文经 `load_skill` 按需读回（渐进式披露）
+- `adapterName === 'codex'` 时 `modelProvider` 忽略；`modelId` 可选；`toolNames` 强制 `[]`（通过 MCP bridge 获取 AgentHub 工具，详见 Spec 05）；不使用 `apiKey` / `apiBaseUrl`（认证通过 CODEX_HOME 下的 auth.json 管理）；`executablePath` 可选
+- `apiKey` / `apiBaseUrl` 仅 `adapterName === 'custom'` 时使用；Chat Completions-only provider 走 Custom adapter
 - `isBuiltin: true` 的 Agent 不可删除但可修改配置（详见 Spec 10）
 - 删除 Agent 不级联删除使用它的 Conversation；前端应展示「已停用 Agent」灰态
 

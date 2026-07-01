@@ -13,12 +13,11 @@
 | Adapter | 工具机制 | 是不是 MCP client | 能接外部 MCP 吗 |
 |---|---|---|---|
 | `custom` | OpenAI function-calling + 内部 `toolRegistry` | ❌ 无 MCP | ❌ |
-| `claude-code` | SDK 预置工具 + 进程内 `createSdkMcpServer`(只挂 `agenthub`) | ✅(SDK 自带) | ❌(没接线) |
-| `codex` | Codex 内置 + 外部 stdio MCP(只挂 `agenthub`) | ✅(SDK 自带) | ❌(没接线) |
+| `codex` | Codex CLI 内置 + 外部 stdio MCP(只挂 `agenthub`) | ✅(Codex 自带) | ❌(没接线) |
 
-**问题**:三者目前都**只挂了内部 `agenthub` 一个 MCP server**,没有「让用户接第三方 MCP server(filesystem / github / postgres / 自建…)」的路径;`custom` 连 MCP client 底子都没有。
+**问题**:两者目前都**只挂了内部 `agenthub` 一个 MCP server**,没有「让用户接第三方 MCP server(filesystem / github / postgres / 自建…)」的路径;`custom` 连 MCP client 底子都没有。
 
-**动机**:① 接入 MCP 生态 → 工具扩展不再靠手写;② 统一三个 adapter 的扩展入口;③ 复用现有 `tool.call`/`tool.result` 事件,不破坏契约。
+**动机**:① 接入 MCP 生态 → 工具扩展不再靠手写;② 统一两个 adapter 的扩展入口;③ 复用现有 `tool.call`/`tool.result` 事件,不破坏契约。
 
 ---
 
@@ -26,7 +25,7 @@
 
 **目标**
 - 用户可在「设置」里登记外部 MCP server(stdio / SSE),并在 Agent 上勾选启用(像勾 `toolNames`)。
-- **三个 adapter 统一支持**:claude-code / codex 主要是「接线」(SDK 本就是 MCP client),custom 需新建一个 MCP 客户端层。
+- **两个 adapter 统一支持**:codex 主要是「接线」(Codex 本就是 MCP client),custom 需新建一个 MCP 客户端层。
 - MCP 工具调用复用现有 StreamEvent,无新事件类型。
 - 有明确的**信任/沙箱**模型(外部 MCP 会绕过现有沙箱,见 §6)。
 
@@ -70,14 +69,13 @@ createdAt     integer
                                      │
         ┌────────────────────────────┼────────────────────────────┐
         ▼                            ▼                            ▼
-  claude-code:接线              codex:接线                custom:造客户端
-  query() 的 mcpServers        config.mcp_servers          新建 MCP client 层
-  里追加这些 server            里追加这些 server           (见下)
-  (SDK 自管连接+工具暴露)      (Codex 自管)               
+  codex:接线                    custom:造客户端
+  config.toml 的               新建 MCP client 层
+  mcp_servers 里追加           (见下)
+  (Codex 自管)                 
 ```
 
-- **claude-code**:把启用的 server 转成 SDK 的 `mcpServers` 配置项,与现有 `agenthub`(进程内)并列传入 `query()`。stdio server 由 SDK 自管子进程。**主要是格式转换 + 接线**。
-- **codex**:把启用的 server 加进 `config.mcp_servers`(与现有 `agenthub` 并列)。Codex runtime 自管。**接线**。
+- **codex**:把启用的 server 加进 `config.toml` 的 `mcp_servers`(与现有 `agenthub` 并列)。Codex CLI runtime 自管。**接线**。
 - **custom**:**新建 MCP 客户端层**(`@modelcontextprotocol/sdk` 已是依赖):
   1. run 开始:对每个启用的 server 建 `Client` + transport(`StdioClientTransport` / `SSEClientTransport`)并 `connect`。
   2. `listTools()` → 转成 OpenAI function-calling tool(名字加命名空间前缀,见 §5),**合并进**现有 `apiTools`。
@@ -88,7 +86,7 @@ createdAt     integer
 
 ## 5. 工具命名与事件(契约影响:最小)
 
-- **命名空间**:外部 MCP 工具统一命名 `mcp__<serverName>__<toolName>`(对齐 claude-code/codex SDK 既有约定,如 `mcp__agenthub__write_artifact`),避免与内置工具冲突。
+- **命名空间**:外部 MCP 工具统一命名 `mcp__<serverName>__<toolName>`(对齐 Codex 既有约定,如 `mcp__agenthub__write_artifact`),避免与内置工具冲突。
 - **事件**:MCP 工具调用复用现有 `tool.call` / `tool.result`(`specs/02`),`toolName` 用命名空间名。**不新增 StreamEvent,不破坏前端 reducer**。
 - **artifact**:外部 MCP 工具一般不产 AChat 产物;不触发 `artifact.create`(除非它显式返回 `artifactId` 并被约定识别——首版不做)。
 
@@ -107,14 +105,14 @@ createdAt     integer
 5. **中止**:`AbortSignal` 触发时关闭所有 MCP 连接、杀 stdio 进程树。
 6. **明确告知**:文档与 UI 必须写明「**外部 MCP 不在 AChat 的沙箱保证范围内**」,这是用户授予的信任。
 
-> 注:claude-code/codex 把沙箱委托给各自 SDK(canUseTool / Codex sandbox);custom 的 MCP 工具**不经我们的沙箱**——这是 custom 接 MCP 的固有代价,§6.2/§6.3 的审批门是主要缓解。
+> 注:codex 把沙箱委托给 Codex CLI 的 sandbox;custom 的 MCP 工具**不经我们的沙箱**——这是 custom 接 MCP 的固有代价,§6.2/§6.3 的审批门是主要缓解。
 
 ---
 
 ## 7. 生命周期 / 并发
 
 - **custom**:首版 **per-run 连接 + 结束 teardown**(干净、无跨 run 状态,符合 adapter「不持久状态」原则);连接池化(per-conversation)作为 P2 优化。
-- **claude-code / codex**:连接由 SDK 自管(随 query / thread)。
+- **codex**:连接由 Codex CLI 自管(随 thread)。
 - stdio server 是子进程 → 必须保证 run 结束/中止时清理(否则泄漏进程),复用 spec 11 的子进程清理。
 
 ---
@@ -142,11 +140,11 @@ createdAt     integer
 
 | 阶段 | 内容 | 成本 |
 |---|---|---|
-| **P0** | 数据模型(`mcp_servers` + `agents.mcpServerIds`)+ **claude-code/codex 接线** + 全局 server 配置 + agent 选用 | 中(SDK 已支持,主要接线 + UI) |
+| **P0** | 数据模型(`mcp_servers` + `agents.mcpServerIds`)+ **codex 接线** + 全局 server 配置 + agent 选用 | 中(Codex 已支持,主要接线 + UI) |
 | **P1** | **custom 的 MCP 客户端层**(连接 / listTools / 名字空间 / loop 路由 / 清理) | 高(新子系统) |
 | **P2** | `ask` 审批门、SSE/OAuth、连接池、危险命令提示 | 中 |
 
-> 即「先让真 agent 平台(claude-code/codex)接上外部 MCP(便宜),再补 custom(贵)」。
+> 即「先让 codex adapter 接上外部 MCP(便宜),再补 custom(贵)」。
 
 ---
 
@@ -154,6 +152,6 @@ createdAt     integer
 
 1. **配置模型** → 全局 `mcp_servers` 表 + `agents.mcpServerIds` 引用。define-once-reuse、密钥集中、与 `toolNames` 一致;不用 per-agent 内联。
 2. **`ask` 审批粒度** → **per-tool-per-conversation**(见 §6.2):首次调用某工具弹审批,本会话内记住。兼顾安全与可用(每次问太吵、整 server 批太粗)。
-3. **custom 是否首版做** → **否**。首版只上 **P0(claude-code/codex 接线 + 数据模型 + UI)**;custom 的 MCP 客户端(P1)等 P0 跑通、安全模型经实践验证后再投入——它成本高、且最受「沙箱被绕过」影响。
+3. **custom 是否首版做** → **否**。首版只上 **P0(codex 接线 + 数据模型 + UI)**;custom 的 MCP 客户端(P1)等 P0 跑通、安全模型经实践验证后再投入——它成本高、且最受「沙箱被绕过」影响。
 4. **stdio 命令白名单** → **不做硬白名单**(MCP server 命令五花八门,枚举不现实)。改为登记时**完整展示 command/args/env** + 要求显式「我信任此 server」确认 + 明确警告「它在沙箱外、以 app 权限运行」。本地单用户场景下「用户登记 = 知情同意」(等价于自己在终端跑),符合 §5.4 不过度加固的取向。
 5. **密钥脱敏** → headers/env 密钥**存 DB**(同 `app_settings`,不引 keychain,§5.4);UI **脱敏显示**(只露后几位,列表接口不回明文);并支持值里写 `${ENV_NAME}` 占位以引用 `.env.local`(免在 DB 存明文)。MCP 密钥是 per-server 维度,**不**套用 LLM 的三层 key 优先级。

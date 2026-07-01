@@ -60,7 +60,7 @@ export interface CreateAgentBody {
   capabilities: string[]
   systemPrompt: string
   /** 默认 'custom'。SDK adapter 使用各自内置工具集 */
-  adapterName?: 'custom' | 'claude-code' | 'codex'
+  adapterName?: 'custom' | 'codex'
   /** custom: required；SDK adapter: 忽略 */
   modelProvider?: 'anthropic' | 'openai' | 'deepseek' | 'volcano-ark' | 'openai-compatible'
   /** custom: required；SDK adapter: 可选，默认 SDK 默认模型 */
@@ -70,8 +70,10 @@ export interface CreateAgentBody {
   skillNames: string[]
   supportsVision?: boolean
   apiKey?: string
-  /** 自定义 API base URL。Claude/Codex 对 endpoint 协议兼容性要求不同；空走默认 */
+  /** 自定义 API base URL。Custom adapter 用；codex 不使用 */
   apiBaseUrl?: string
+  /** Codex CLI adapter: 可选的 codex 二进制路径 */
+  executablePath?: string
   /** 设为协调者（Orchestrator） */
   isOrchestrator?: boolean
 }
@@ -99,7 +101,7 @@ export async function createAgentDraft(body: AgentDraftRequest): Promise<AgentCo
 }
 
 export type UpdateAgentBody = Partial<
-  Omit<CreateAgentBody, 'avatar' | 'apiKey' | 'apiBaseUrl' | 'modelId'>
+  Omit<CreateAgentBody, 'avatar' | 'apiKey' | 'apiBaseUrl' | 'executablePath' | 'modelId'>
 > & {
   // SDK adapter 可用 null 清空，表示走 SDK 默认模型；custom 仍必须有非空 modelId
   modelId?: string | null
@@ -107,6 +109,8 @@ export type UpdateAgentBody = Partial<
   apiKey?: string | null
   // 同上
   apiBaseUrl?: string | null
+  // 同上：codex 二进制路径
+  executablePath?: string | null
   /** 设为协调者（Orchestrator） */
   isOrchestrator?: boolean
 }

@@ -611,7 +611,7 @@ export const useAppStore = create<AppState>()(
               s.messageIdsByConv[event.conversationId].push(event.messageId)
             }
             attachDispatchToMessageForRun(s.dispatchesByRunId, event.runId, event.messageId)
-            // 未读 +1 不在 message.start 触发：claude-code-adapter 整个 run 只发一次 message.start
+            // 未读 +1 不在 message.start 触发：codex-cli-adapter 整个 run 只发一次 message.start
             // 且发生时用户通常仍在该会话（被 activeConversationId === conv 抑制），导致后续切走再也不计未读。
             // 改在 message.end 触发，两个 adapter 都能可靠 +1，且每个 msg 仅 +1 一次。
             return

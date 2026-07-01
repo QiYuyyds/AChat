@@ -17,7 +17,7 @@
 ### 核心能力
 
 - IM 范式的会话管理（单聊 / 群聊 / 多会话并行）
-- 统一适配器层接入 Claude、Custom(OpenAI 兼容) Agent + 自建 Agent
+- 统一适配器层接入 Codex CLI、Custom(OpenAI 兼容) Agent + 自建 Agent
 - Orchestrator 自动拆任务、并行调度、聚合结果
 - 产物（代码、网页、文档、PPT）内联预览与二次编辑
 - 每个会话独立 workspace，Agent 可读写文件、跑命令
@@ -53,7 +53,7 @@
 | ORM | SQLAlchemy 2.0 async | 不用 Tortoise / Peewee |
 | 驱动 | asyncpg（PostgreSQL） | 已从 SQLite 迁移到 PostgreSQL |
 | 验证 | Pydantic v2 + pydantic-settings | — |
-| AI SDK | `anthropic` · `openai`（Python SDK） | 通过适配器层屏蔽差异 |
+| AI SDK | `openai`（Python SDK）· Codex CLI（子进程 JSON-RPC） | 通过适配器层屏蔽差异 |
 | 包管理 | pip + venv（`pyproject.toml`） | 不用 poetry/uv（保持简单） |
 | Lint | ruff | 不用 flake8/black（ruff 集成） |
 | 测试 | pytest + pytest-asyncio | `asyncio_mode = "auto"` |
@@ -81,7 +81,7 @@ L5 UI 组件                     src/components/
 L4 State + Transport           src/stores/ + src/lib/ (Zustand store + SSE 客户端)
 ─── HTTP (REST + SSE) ─── 跨进程边界 ───
 L3 Application Services        backend/app/services/ (AgentRunner · Orchestrator · ConversationService · EventBus · ToolExecutor · RAGService · ...)
-L2 Agent Platform Adapters     backend/app/adapters/ (Claude / Custom / Mock)
+L2 Agent Platform Adapters     backend/app/adapters/ (Codex CLI / Custom / Mock)
 L1 Persistence                 backend/app/db/ (SQLAlchemy + PostgreSQL + workspace 文件系统)
 ─── 基础设施层 (可选, 独立降级) ───
    Milvus · Elasticsearch · Neo4j · Kafka   backend/app/infra/ + rag/ + memory/ + graph/

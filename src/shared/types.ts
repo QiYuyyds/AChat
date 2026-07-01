@@ -185,7 +185,7 @@ export interface DiffHunk {
 }
 
 // ─── Adapter 名称 ──────────────────────────────────────────
-export type AdapterName = 'claude-code' | 'codex' | 'custom' | 'mock'
+export type AdapterName = 'codex' | 'custom' | 'mock'
 
 export type ModelProvider =
   | 'anthropic'
@@ -303,7 +303,7 @@ export interface PendingWrite {
  * Agent 调 ask_user 工具想结构化问用户问题；前端弹 dialog 让用户选项，
  * 选完后通过 attachResolver 唤醒 await，工具 handler 返回 answers。
  * Schema 对齐 Anthropic SDK 的 AskUserQuestion（1-4 questions × 2-4 options），
- * 让 CustomAgent / ClaudeCodeAdapter 共用同一 UI。
+ * 让 CustomAgent / CodexCLIAdapter 共用同一 UI。
  */
 export interface AskUserOption {
   label: string

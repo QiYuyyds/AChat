@@ -6,7 +6,7 @@ Port of src/server/adapters/registry.ts. See specs/05-adapter-interface.md.
 from __future__ import annotations
 
 from app.adapters.base import AdapterName, AgentPlatformAdapter
-from app.adapters.claude_adapter import ClaudeAdapter
+from app.adapters.codex_cli_adapter import CodexCLIAdapter
 from app.adapters.custom_adapter import CustomAdapter
 from app.adapters.mock_adapter import MockAdapter
 from app.db.models import Agent
@@ -33,8 +33,7 @@ def _build_registry() -> AgentRegistry:
     reg = AgentRegistry()
     reg.register(MockAdapter())
     reg.register(CustomAdapter())
-    reg.register(ClaudeAdapter())
-    # Codex adapter deferred — @openai/codex-sdk port pending.
+    reg.register(CodexCLIAdapter())
     return reg
 
 

@@ -4,9 +4,8 @@ Ports the standalone Next.js routes that don't belong to a larger resource
 group: run abort, message search, usage summary, host platform, companion
 connection hints, and deployment zip downloads.
 
-The internal Codex tool-bridge route (POST /api/internal/agenthub-tools) is
-intentionally NOT ported here — see the agent's deferral report (no Codex
-adapter / internal-tool-auth module exists in the Python backend yet).
+The internal Codex tool-bridge route (POST /api/internal/agenthub-tools) lives
+in ``app/api/internal.py`` — it was ported alongside the CodexCLIAdapter.
 """
 
 import os

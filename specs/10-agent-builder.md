@@ -8,13 +8,13 @@
 
 ## 定位
 
-自建 Agent 默认 `adapterName='custom'`，也可以选择 `claude-code` 或 `codex` SDK adapter（详见 Spec 05）。新建入口统一为 Agent 列表顶部的「创建 Agent」按钮；点击后第一步选择「对话创建」或「详细配置」，编辑已有 Agent 时直接进入详细配置。用户配置：
+自建 Agent 默认 `adapterName='custom'`，也可以选择 `codex` CLI adapter（详见 Spec 05）。新建入口统一为 Agent 列表顶部的「创建 Agent」按钮；点击后第一步选择「对话创建」或「详细配置」，编辑已有 Agent 时直接进入详细配置。用户配置：
 
 - 身份：name / avatar / description / capabilities
 - 行为：systemPrompt
-- 模型：custom 走 modelProvider + modelId；SDK adapter 走 modelId
-- 凭据：可选 apiKey / apiBaseUrl（per-agent override）
-- 能力：custom 走 toolNames（勾选）+ supportsVision；SDK adapter 使用各自内置工具集
+- 模型：custom 走 modelProvider + modelId；codex adapter 走 modelId（可选）
+- 凭据：custom 走 apiKey / apiBaseUrl（per-agent override）；codex 走 executablePath（可选）
+- 能力：custom 走 toolNames（勾选）+ supportsVision；codex 通过 MCP bridge 获取工具
 
 **自建不可成为 Orchestrator**：当前 service 把 `isOrchestrator` 写死为 `false`（`agent-service.ts:44`）。Orchestrator 只能通过 seed 数据预置（`src/db/seed.ts`）。UI 没有创建 Orchestrator 的入口。**TODO**：未来如要支持「自建 Orchestrator」，需要：
 1. CreateAgentDialog 加 `isOrchestrator` toggle
@@ -36,7 +36,7 @@
 | `modelProvider` | enum | — | `'deepseek'` | 见下方 Provider 矩阵 |
 | `modelId` | string | — | provider 默认 | 切换 provider 时自动重置 |
 | `apiKey` | string | — | `''` | 命名 provider 留空走 env var；`openai-compatible` 必填 per-agent key |
-| `apiBaseUrl` | string | — | `''` | Claude Code 可填 Anthropic 兼容 endpoint；Codex 仅可填 Codex/Responses 兼容 endpoint；Custom `openai-compatible` 必填 Chat Completions 兼容 endpoint |
+| `apiBaseUrl` | string | — | `''` | 仅 Custom `openai-compatible` 必填 Chat Completions 兼容 endpoint |
 | `toolNames` | string[] | — | 全栈通用预设 | 当前可勾选：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `read_attachment` / `ask_user` / `fs_read` / `fs_write` / `bash` |
 | `supportsVision` | boolean | — | `true` | 决定是否把图片 base64 注入 messages |
 | `avatar` | string | — | `'🤖'` | service 层默认（UI 当前不暴露） |
@@ -59,9 +59,8 @@
 
 **OpenAI-compat 接入说明**：DeepSeek / 火山方舟都对外暴露 OpenAI-compatible Chat Completions API，所以共用 `openai` npm 包 + 改 `baseURL`。通义千问 compatible-mode、智谱、MiniMax、OpenRouter、SiliconFlow、Moonshot 等未内置 provider 应选择 `openai-compatible`，并填写该平台的 Chat Completions Base URL。详见 Spec 05 的「CustomAgentAdapter」一节。
 
-**SDK adapter 说明**：
-- `claude-code`：使用 `@anthropic-ai/claude-agent-sdk`，`toolNames=[]`，SDK 内置工具集；Review 模式通过 `canUseTool` 桥到 AChat 审批。
-- `codex`：使用 `@openai/codex-sdk`，`toolNames=[]`，SDK 内置本地命令 / 文件变更 / MCP / 计划事件；Review 模式以 read-only sandbox 运行，Auto 模式以 workspace-write sandbox 运行；自定义 Base URL 必须支持 Codex/Responses，DeepSeek 没有 `/responses`，不能走 Codex adapter。
+**Codex CLI adapter 说明**：
+- `codex`：使用 `codex app-server --listen stdio://` 子进程 + JSON-RPC 2.0，`toolNames=[]`（通过 MCP bridge 获取 AgentHub 工具）；`executablePath` 可选（NULL 时从 PATH 搜索 `codex`）；认证通过 `CODEX_HOME` 下的 `auth.json` 管理，不需 `apiKey` / `apiBaseUrl`。
 
 **用户选 Anthropic 会发生什么**：创建 / 编辑成功（DB 行写入），但发消息时 Adapter throw → run 失败 → 错误消息显示在对话里。**TODO**：UI 应该在选 Anthropic 时给警告 banner，或者干脆暂时下掉这个选项。
 
@@ -80,12 +79,11 @@ agent.apiKey (per-agent 自定义)
             openai      → OPENAI_API_KEY
             openai-compatible → 无全局 fallback，必须填 agent.apiKey
             anthropic   → ANTHROPIC_API_KEY
-            codex       → CODEX_API_KEY / OPENAI_API_KEY（AChat 隔离 CODEX_HOME，不读 ~/.codex）
 ```
 
-Custom provider 实现在 `custom-provider-client.ts` 的 `resolveCustomProviderClientConfig(provider, overrideKey, apiBaseUrl)`；SDK adapter 的 key 解析由 `agent-runner.ts:buildAdapterInput` 统一注入。
+Custom provider 实现在 `custom-provider-client.ts` 的 `resolveCustomProviderClientConfig(provider, overrideKey, apiBaseUrl)`；codex adapter 不需要 apiKey / apiBaseUrl，认证通过 `CODEX_HOME` 下的 `auth.json` 管理。
 
-`apiBaseUrl` 不是跨 adapter 通用的“OpenAI 兼容”开关。Claude Code 的 Base URL 走 Anthropic 兼容协议；Codex 的 Base URL 走 Codex/Responses runtime；Custom `openai-compatible` 的 Base URL 才走 OpenAI Chat Completions 兼容协议。
+`apiBaseUrl` 仅 Custom `openai-compatible` 使用，走 OpenAI Chat Completions 兼容协议。
 
 **UI 行为**：
 - 输入框默认 password 类型，旁边有「显示 / 隐藏」按钮（`create-agent-dialog.tsx:267-302`）

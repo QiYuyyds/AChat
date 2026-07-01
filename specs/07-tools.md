@@ -599,7 +599,7 @@ AgentRunner 在构造 `AdapterInput.systemPrompt` 时会追加按可用工具生
 - **bash 命令前匹配双平台黑名单**（详见 Spec 11；POSIX：rm -rf /、sudo、fork bomb、curl pipe shell 等；Windows：Remove-Item -Recurse -Force、format、shutdown、iex(iwr ...)、reg delete 等）
 - **不引入新依赖而不在 PR 中说明**（CLAUDE.md §4.3）
 
-**`getBannedPatterns(platform)` 跨 adapter / 工具共享**：定义在 `src/server/security.ts`，由 `findBannedPattern(command, platform?)` 暴露（platform 省略时取 `currentPlatform()`）。`bash` 工具和 `ClaudeCodeAdapter`（用 SDK Bash 工具时）都走同一份名单，新增模式同步 Spec 11 「命令黑名单」节并只改 `security.ts` 这一处。
+**`getBannedPatterns(platform)` 跨 adapter / 工具共享**：定义在 `src/server/security.ts`，由 `findBannedPattern(command, platform?)` 暴露（platform 省略时取 `currentPlatform()`）。`bash` 工具走这份名单，新增模式同步 Spec 11 「命令黑名单」节并只改 `security.ts` 这一处。
 
 **TODO 工具（CLAUDE.md 提到但仍未实装）**：
 
@@ -611,41 +611,20 @@ AgentRunner 在构造 `AdapterInput.systemPrompt` 时会追加按可用工具生
 
 ---
 
-## Claude Code agent 的工具集（不走 AChat 工具表）
+## Codex CLI agent 的工具集（不走 AChat 工具表）
 
-`adapterName === 'claude-code'` 的 agent 不消费上面的「内置工具清单」。它通过 Claude Agent SDK 直接使用 SDK preset 工具集：`Bash` / `Read` / `Write` / `Edit` / `Grep` / `Glob` / `WebFetch` / `WebSearch` / `Task` / `TodoWrite` / `NotebookEdit` / `Mcp` 等（命名为 PascalCase，与 AChat 的 snake_case 区分）。
+`adapterName === 'codex'` 的 agent 不消费上面的「内置工具清单」。它通过 Codex CLI 内置工具集执行命令和文件操作。AgentHub 工具通过 MCP bridge（`scripts/agenthub-codex-mcp.mjs`）暴露给 Codex，由 `AGENTHUB_ALLOWED_TOOLS` 环境变量控制可用工具列表。
 
-**审批 / 沙箱 / 黑名单仍由 AChat 接管**，但接缝在 adapter 的 `canUseTool` 钩子（详见 Spec 05 「ClaudeCodeAdapter / canUseTool 桥」一节）：
+**审批 / 沙箱 / 黑名单**：Codex CLI adapter 没有 `canUseTool` 等价 hook。Codex 的命令执行和文件变更由 Codex 自己的 sandbox 限制边界。AgentHub 工具（如 `write_artifact` / `deploy_artifact`）通过 MCP bridge 调用后端 `toolRegistry`，走正常的工具执行路径。
 
-- 路径检查走 `assertPathWithinWorkspace`（共享）
-- Bash 黑名单走 `findBannedPattern`（共享）
-- `fs_write` 审批走同一个 `pendingWrites` store —— 但 `register` 传 `skipWrite: true`，approve 后由 SDK 自己写盘（不调 `writeFileInWorkspace`）。前端 UI（`PendingWritesPanel` / `PendingWriteDiffTab`）对这两条路径完全无感
+**副作用**：sandbox 模式 quota（`SANDBOX_TOTAL_BYTES` / `SANDBOX_TOTAL_FILES`）对 Codex agent 的内置写盘失效（Codex 自己写盘绕过 quota 检查）。Codex agent 实际场景都是 `workspace.mode === 'local'`（绑真实项目），quota 不适用，可接受。
 
-**副作用**：sandbox 模式 quota（`SANDBOX_TOTAL_BYTES` / `SANDBOX_TOTAL_FILES`）对 Claude Code agent 失效（SDK 自己写盘绕过 quota 检查）。Claude Code agent 实际场景都是 `workspace.mode === 'local'`（绑真实项目），quota 不适用，可接受。
-
-**AChat MCP 工具**：Claude Code adapter 通过 SDK in-process MCP server 暴露 `write_artifact` / `read_artifact` / `deploy_artifact` / `deploy_workspace` / `ask_user` / `report_task_result`。其中 `write_artifact` 的结果会被 adapter 翻译为 `artifact.create`，`deploy_artifact` / `deploy_workspace` 的结果会被翻译为 `deploy.status`。
-
----
-
-## Codex agent 的工具集（不走 AChat 工具表）
-
-`adapterName === 'codex'` 的 agent 不消费上面的「内置工具清单」。它通过 `@openai/codex-sdk` 暴露 Codex 自身的本地命令、文件变更、MCP、web search、todo/plan 等事件。
-
-AChat 额外给 Codex 注入一个 stdio MCP bridge，只暴露 allowlist：`write_artifact` / `read_artifact` / `deploy_artifact` / `deploy_workspace` / `ask_user` / `report_task_result`。bridge 通过受保护的内部 API 调用 `toolRegistry`，不会把 `bash` / `fs_write` 等 AChat 工具开放给 Codex。
-
-**审批策略**：当前 Codex TypeScript SDK 没有 Claude `canUseTool` 等价 hook。AChat 因此不在 Review 模式下开放自动写盘：
-
-- Review 模式：`sandboxMode='read-only'`
-- Auto 模式：`sandboxMode='workspace-write'`
-- 所有模式：`approvalPolicy='never'`、`networkAccessEnabled=false`、`webSearchMode='disabled'`
-- 运行时：使用 AChat 隔离的 `CODEX_HOME=<dataDir>/codex-home`，不读取用户本机 `~/.codex` 配置 / 登录态
-
-后续若 SDK 暴露 patch / exec approval hook，再桥到 `pendingWrites`、`assertPathWithinWorkspace` 和 `findBannedPattern`。
+**AChat MCP 工具**：Codex CLI adapter 通过 MCP bridge（`scripts/agenthub-codex-mcp.mjs`）暴露 `write_artifact` / `read_artifact` / `deploy_artifact` / `deploy_workspace` / `ask_user` / `report_task_result`。其中 `write_artifact` 的结果会被 adapter 翻译为 `artifact.create`，`deploy_artifact` / `deploy_workspace` 的结果会被翻译为 `deploy.status`。
 
 ---
 
 ## 与 Spec 01 / 05 / 06 的关系
 
-- Spec 01：定义了 `Agent.toolNames`（引用本 spec 的工具名；Claude Code / Codex agent 强制 `[]`）
-- Spec 05：定义了 `AdapterInput.toolNames`（同上）；说明 Custom / Claude Code / Codex 路径如何分别使用工具
+- Spec 01：定义了 `Agent.toolNames`（引用本 spec 的工具名；Codex agent 强制 `[]`）
+- Spec 05：定义了 `AdapterInput.toolNames`（同上）；说明 Custom / Codex 路径如何分别使用工具
 - Spec 06：`plan_tasks` 工具是 Orchestrator 三阶段工作流的核心

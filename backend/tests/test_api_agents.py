@@ -101,16 +101,16 @@ async def test_create_sdk_adapter_clears_tools_and_provider(api_client, db):
     resp = await api_client.post(
         "/api/agents",
         json={
-            "name": "Claude",
+            "name": "Codex Agent",
             "description": "sdk agent",
             "systemPrompt": "p",
-            "adapterName": "claude-code",
+            "adapterName": "codex",
             "toolNames": ["bash"],
         },
     )
     assert resp.status_code == 201
     agent = resp.json()["agent"]
-    assert agent["adapterName"] == "claude-code"
+    assert agent["adapterName"] == "codex"
     assert agent["modelProvider"] is None
     assert agent["toolNames"] == []
 

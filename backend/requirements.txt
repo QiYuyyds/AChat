@@ -14,7 +14,6 @@ pydantic>=2.10.0
 pydantic-settings>=2.6.0
 
 # AI SDKs
-anthropic>=0.40.0
 openai>=1.57.0
 
 # Milvus (vector search)

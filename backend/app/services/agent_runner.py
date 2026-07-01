@@ -1303,16 +1303,16 @@ async def build_adapter_input(
 
     # key precedence: agent.api_key > app_settings.* > adapter env fallback.
     # only inject global settings when the per-agent field is empty.
+    # codex CLI adapter does not consume api_key / api_base_url — it manages
+    # its own auth via ~/.codex/auth.json symlinked into per-task CODEX_HOME.
     effective_api_key = agent.api_key
     effective_api_base_url = agent.api_base_url
-    if not effective_api_key or (
-        not effective_api_base_url and agent.adapter_name == "claude-code"
-    ):
+    if agent.adapter_name == "codex":
+        effective_api_key = None
+        effective_api_base_url = None
+    elif not effective_api_key:
         settings = await get_app_settings()
-        if not effective_api_key:
-            effective_api_key = _pick_settings_key(settings, agent)
-        if not effective_api_base_url and agent.adapter_name == "claude-code":
-            effective_api_base_url = settings.anthropic_base_url
+        effective_api_key = _pick_settings_key(settings, agent)
 
     # cross-run history (only CustomAdapter consumes it; SDK adapters resume sessions).
     history: list[dict] = []
@@ -1363,7 +1363,7 @@ async def build_adapter_input(
             logger.warning("[agent-runner] PromptAssembler enrichment failed: %s", err)
 
     effective_prompt = prompt
-    if agent.adapter_name in ("claude-code", "codex") and not args.override_prompt:
+    if agent.adapter_name == "codex" and not args.override_prompt:
         try:
             effective_prompt = await prefix_prompt_with_context_summary(
                 args.conversation_id, prompt
@@ -1399,25 +1399,18 @@ async def build_adapter_input(
         attachments=attachments if len(attachments) > 0 else None,
         history=history if len(history) > 0 else None,
         custom_config=custom_config,
+        executable_path=agent.executable_path,
     )
 
 
 def _pick_settings_key(settings: Any, agent: Agent) -> str | None:
-    """Pick the global settings key matching the agent's adapter / provider."""
+    """Pick the global settings key matching the agent's adapter / provider.
+
+    codex CLI adapter is excluded — it authenticates via ~/.codex/auth.json
+    and does not consume api_key from agent or app settings.
+    """
     import os
 
-    if agent.adapter_name == "claude-code":
-        return (
-            settings.anthropic_api_key
-            or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-            or os.environ.get("ANTHROPIC_API_KEY")
-        )
-    if agent.adapter_name == "codex":
-        return (
-            settings.openai_api_key
-            or os.environ.get("CODEX_API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-        )
     provider = agent.model_provider
     if provider == "anthropic":
         return settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
@@ -1465,8 +1458,8 @@ def _build_agent_hub_tool_guidance(
 ) -> str:
     """Build the per-tool usage guidance appended to the system prompt."""
     tools = set(tool_names)
-    is_sdk_agent = agent.adapter_name in ("claude-code", "codex")
-    if is_sdk_agent:
+    is_codex_agent = agent.adapter_name == "codex"
+    if is_codex_agent:
         sdk_agent_hub_tools = (
             ["read_artifact", "read_attachment", "fs_list", ASK_USER_TOOL_NAME]
             if "plan_tasks" in tools
@@ -1488,7 +1481,7 @@ def _build_agent_hub_tool_guidance(
         sections.append("\n".join(lines))
 
     has_workspace_file_tools = not is_plan_stage and (
-        "fs_read" in tools or "fs_write" in tools or "bash" in tools or is_sdk_agent
+        "fs_read" in tools or "fs_write" in tools or "bash" in tools or is_codex_agent
     )
 
     if len(tools) > 0:
@@ -1509,8 +1502,8 @@ def _build_agent_hub_tool_guidance(
                 "## 本地项目模式",
                 "当前 workspace 是用户绑定的真实本地文件夹。用户要求创建、修改、初始化、调试、构建前后端项目或源码文件时，必须优先直接操作 workspace 文件。",
                 (
-                    "- 使用 SDK 自带的 Read / Write / Edit / Bash / shell 工具读写文件、安装依赖、运行构建与测试。"
-                    if is_sdk_agent
+                    "- 使用 Codex CLI 自带的 Read / Write / Edit / Bash / shell 工具读写文件、安装依赖、运行构建与测试。"
+                    if is_codex_agent
                     else "- 使用 fs_read / fs_write / bash 读写文件、安装依赖、运行构建与测试。"
                 ),
                 "- 不要用 write_artifact 保存应该落盘到本地项目的源码、package.json、tsconfig、server/client 文件或构建配置。",

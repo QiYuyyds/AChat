@@ -29,11 +29,12 @@ agents {
   description     text NOT NULL
   capabilities    text JSON         // string[]
   system_prompt   text NOT NULL
-  adapter_name    text NOT NULL     // 'claude-code'|'codex'|'custom'|'mock'
+  adapter_name    text NOT NULL     // 'codex'|'custom'|'mock'
   model_provider  text              // 仅 adapter_name='custom' 时填
   model_id        text              // 同上
-  api_key         text              // 该 agent 单独的 key；NULL 走 env
-  api_base_url    text              // 该 agent 单独的 endpoint；NULL 走 SDK 默认
+  api_key         text              // 该 agent 单独的 key；NULL 走 env（仅 custom adapter 使用）
+  api_base_url    text              // 该 agent 单独的 endpoint；NULL 走 SDK 默认（仅 custom adapter 使用）
+  executable_path text              // codex CLI 可执行文件路径；NULL 时从 PATH 搜索 'codex'
   tool_names      text JSON         // string[]，引用 Spec 07
   skill_names     jsonb default '[]' // string[] skill slug；仅 custom adapter；内容存 <data_dir>/skills/ 不入库（add-agent-skills）
   is_builtin      int  bool default 0
@@ -44,11 +45,11 @@ agents {
 ```
 
 **约束**：
-- `adapter_name='custom'` 时 `model_provider` + `model_id` 必填；`adapter_name='claude-code' | 'codex'` 时 `model_provider=NULL`，`model_id` 可选
+- `adapter_name='custom'` 时 `model_provider` + `model_id` 必填；`adapter_name='codex'` 时 `model_provider=NULL`，`model_id` 可选
 - `is_builtin=1` 的 agent 可修改、不可删除（service 层 enforce）
 - `api_key` 优先级高于 env var；按 provider / adapter 路由：`deepseek→DEEPSEEK_API_KEY` / `openai→OPENAI_API_KEY` / `volcano-ark→ARK_API_KEY` / `anthropic→ANTHROPIC_API_KEY` / `codex→CODEX_API_KEY 或 OPENAI_API_KEY` / `openai-compatible→per-agent only`
-- `api_base_url` 非空时（Claude Code adapter），`api_key` 作为 `ANTHROPIC_AUTH_TOKEN` 传 SDK；`ANTHROPIC_BASE_URL` 设为 `api_base_url`；同时清空 `ANTHROPIC_API_KEY` 防覆盖（详见 Spec 05 ClaudeCodeAdapter）
-- `api_base_url` 非空时（Codex adapter），作为 `@openai/codex-sdk` 的 `baseUrl` 传入；`api_key` 作为 SDK `apiKey`（内部 `CODEX_API_KEY`）传入；endpoint 必须支持 Codex/Responses，DeepSeek 等 Chat Completions-only endpoint 走 Custom adapter
+- `api_key` / `api_base_url` 仅 `adapter_name='custom'` 时使用；`adapter_name='codex'` 时不使用（codex CLI 通过 `CODEX_HOME` 下的 `auth.json` 管理认证）
+- `executable_path` 仅 `adapter_name='codex'` 时使用；NULL 时从 PATH 搜索 `codex`
 - `model_provider='openai-compatible'` 时（Custom adapter），`api_key` 与 `api_base_url` 必填；`api_base_url` 作为 OpenAI SDK `baseURL` 传入，endpoint 必须支持 Chat Completions
 
 **索引**：无（agent 数量小，全表扫描可接受）
@@ -261,10 +262,9 @@ app_settings {
 1. agents.api_key           — per-agent override（最高）
 2. app_settings.<provider>  — 用户在设置面板自填
 3. process.env.<PROVIDER>   — .env.local 兜底
-4. ~/.claude/.credentials.json — 仅 Claude Code adapter 的 OAuth fallback；Codex adapter 默认使用 AChat 隔离的 `<dataDir>/codex-home`，不读取用户本机 `~/.codex`
 ```
 
-`anthropic_base_url` 的解析同链：`agents.api_base_url` → `app_settings.anthropic_base_url` → `process.env.ANTHROPIC_BASE_URL` → SDK 默认。Codex 不读全局 base URL，只接受 per-agent `agents.api_base_url` 或 SDK 默认 endpoint，避免 CC Switch / 本机 `~/.codex` 配置影响 AChat。Custom `openai-compatible` 也不读全局 base URL，必须由 agent 自己携带 `api_base_url`。
+Codex CLI 不使用 `api_key` / `api_base_url`，认证通过 `CODEX_HOME` 下的 `auth.json` 管理（从 `~/.codex/auth.json` symlink 共享）。Custom `openai-compatible` 不读全局 base URL，必须由 agent 自己携带 `api_base_url`。
 
 **索引**：无（单行查询不需要）。
 

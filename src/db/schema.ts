@@ -29,11 +29,18 @@ export const agents = sqliteTable('agents', {
 
   /**
    * 该 agent 单独的 API base URL。
-   * NULL 表示走 adapter 默认 endpoint；Claude Code 还可走 app_settings.anthropicBaseUrl。
+   * NULL 表示走 adapter 默认 endpoint。
    * 配合 apiKey 一起用：base URL 非空时，SDK adapter 会把 apiKey 作为对应 token 传入。
-   * Codex 只支持 Codex/Responses 兼容 endpoint，Chat Completions-only provider 需走 custom。
+   * Codex CLI adapter 不使用此字段（通过 ~/.codex/auth.json 管理认证）。
    */
   apiBaseUrl: text('api_base_url'),
+
+  /**
+   * Codex CLI adapter: 可选的 codex 二进制路径覆盖。
+   * NULL 时 adapter 回退到 CODEX_EXECUTABLE 环境变量或 PATH 搜索。
+   * 仅 codex adapter 使用；custom / mock 忽略。
+   */
+  executablePath: text('executable_path'),
 
   toolNames: text('tool_names', { mode: 'json' }).$type<string[]>().notNull(),
 

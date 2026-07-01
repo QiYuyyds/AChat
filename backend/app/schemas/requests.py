@@ -98,7 +98,7 @@ class CreateAgentRequest(BaseModel):
     description: str = Field(min_length=1, max_length=280)
     capabilities: list[str] | None = None
     system_prompt: str = Field(alias="systemPrompt")
-    adapter_name: Literal["custom", "claude-code", "codex"] = Field(alias="adapterName")
+    adapter_name: Literal["custom", "codex"] = Field(alias="adapterName")
 
     model_provider: Literal[
         "anthropic", "openai", "deepseek", "volcano-ark", "openai-compatible"
@@ -106,6 +106,7 @@ class CreateAgentRequest(BaseModel):
     model_id: str | None = Field(default=None, alias="modelId")
     api_key: str | None = Field(default=None, alias="apiKey")
     api_base_url: str | None = Field(default=None, alias="apiBaseUrl")
+    executable_path: str | None = Field(default=None, alias="executablePath")
 
     tool_names: list[str] | None = Field(default=None, alias="toolNames")
     skill_names: list[str] | None = Field(default=None, alias="skillNames")
@@ -130,6 +131,7 @@ class UpdateAgentRequest(BaseModel):
     model_id: str | None = Field(default=None, alias="modelId")
     api_key: str | None = Field(default=None, alias="apiKey")
     api_base_url: str | None = Field(default=None, alias="apiBaseUrl")
+    executable_path: str | None = Field(default=None, alias="executablePath")
 
     tool_names: list[str] | None = Field(default=None, alias="toolNames")
     skill_names: list[str] | None = Field(default=None, alias="skillNames")
@@ -152,6 +154,7 @@ class AgentResponse(BaseModel):
     model_provider: str | None = Field(alias="modelProvider")
     model_id: str | None = Field(alias="modelId")
     api_base_url: str | None = Field(alias="apiBaseUrl")
+    executable_path: str | None = Field(alias="executablePath")
     tool_names: list[str] = Field(alias="toolNames")
     is_builtin: bool = Field(alias="isBuiltin")
     is_orchestrator: bool = Field(alias="isOrchestrator")

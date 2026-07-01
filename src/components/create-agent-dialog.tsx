@@ -32,7 +32,6 @@ import {
   AGENT_TOOL_META as TOOL_META,
   AGENT_TOOL_PRESETS as TOOL_PRESETS,
   AVAILABLE_AGENT_TOOLS,
-  CLAUDE_CODE_DEFAULT_MODEL,
   CODEX_DEFAULT_MODEL,
   DEFAULT_CUSTOM_AGENT_TOOLS,
   type AgentBuilderAdapter as AdapterKind,
@@ -40,7 +39,6 @@ import {
   type AgentConfigDraft,
   type AgentToolName as ToolName,
 } from '@/shared/agent-builder-config'
-import { validateCodexBaseUrl } from '@/shared/codex-compat'
 import {
   validateOpenAICompatibleApiKey,
   validateOpenAICompatibleBaseUrl,
@@ -91,6 +89,7 @@ export function CreateAgentDialog({
   const [supportsVision, setSupportsVision] = useState(true)
   const [apiKey, setApiKey] = useState('')
   const [apiBaseUrl, setApiBaseUrl] = useState('')
+  const [executablePath, setExecutablePath] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
   const [isOrchestrator, setIsOrchestrator] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -103,11 +102,9 @@ export function CreateAgentDialog({
     if (!open) return
     if (agent) {
       const kind: AdapterKind =
-        agent.adapterName === 'claude-code'
-          ? 'claude-code'
-          : agent.adapterName === 'codex'
-            ? 'codex'
-            : 'custom'
+        agent.adapterName === 'codex'
+          ? 'codex'
+          : 'custom'
       setAdapterKind(kind)
       setName(agent.name)
       setDescription(agent.description)
@@ -117,11 +114,9 @@ export function CreateAgentDialog({
       setProvider(p)
       setModelId(
         agent.modelId ??
-          (kind === 'claude-code'
-            ? CLAUDE_CODE_DEFAULT_MODEL
-            : kind === 'codex'
-              ? CODEX_DEFAULT_MODEL
-              : PROVIDER_DEFAULTS[p].defaultModel),
+          (kind === 'codex'
+            ? CODEX_DEFAULT_MODEL
+            : PROVIDER_DEFAULTS[p].defaultModel),
       )
       setToolNames(new Set(agent.toolNames))
       setSkillNames(new Set(agent.skillNames))
@@ -129,6 +124,7 @@ export function CreateAgentDialog({
       setIsOrchestrator(agent.isOrchestrator)
       setApiKey(agent.apiKey ?? '')
       setApiBaseUrl(agent.apiBaseUrl ?? '')
+      setExecutablePath(agent.executablePath ?? '')
     } else {
       setAdapterKind('custom')
       setName('')
@@ -143,6 +139,7 @@ export function CreateAgentDialog({
       setIsOrchestrator(false)
       setApiKey('')
       setApiBaseUrl('')
+      setExecutablePath('')
       setCreateStep('choose')
     }
     if (agent) setCreateStep('detail')
@@ -175,9 +172,7 @@ export function CreateAgentDialog({
 
   const handleAdapterKindChange = (kind: AdapterKind) => {
     setAdapterKind(kind)
-    if (kind === 'claude-code') {
-      setModelId(CLAUDE_CODE_DEFAULT_MODEL)
-    } else if (kind === 'codex') {
+    if (kind === 'codex') {
       setModelId(CODEX_DEFAULT_MODEL)
     } else {
       setModelId(PROVIDER_DEFAULTS[provider].defaultModel)
@@ -228,11 +223,9 @@ export function CreateAgentDialog({
     setProvider(p)
     setModelId(
       draft.modelId ??
-        (kind === 'claude-code'
-          ? CLAUDE_CODE_DEFAULT_MODEL
-          : kind === 'codex'
-            ? CODEX_DEFAULT_MODEL
-            : PROVIDER_DEFAULTS[p].defaultModel),
+        (kind === 'codex'
+          ? CODEX_DEFAULT_MODEL
+          : PROVIDER_DEFAULTS[p].defaultModel),
     )
     setToolNames(new Set(draft.toolNames))
     setSkillNames(new Set())
@@ -240,6 +233,7 @@ export function CreateAgentDialog({
     setIsOrchestrator(false)
     setApiKey('')
     setApiBaseUrl('')
+    setExecutablePath('')
     setShowApiKey(false)
     setError(null)
     setActiveTab('basic')
@@ -255,7 +249,7 @@ export function CreateAgentDialog({
     setSubmitting(true)
     setError(null)
     try {
-      const isSdkAgent = draft.adapterName === 'claude-code' || draft.adapterName === 'codex'
+      const isSdkAgent = draft.adapterName === 'codex'
       const body: CreateAgentBody = {
         name: draft.name.trim(),
         avatar: pickRandomAgentIcon(),
@@ -297,10 +291,6 @@ export function CreateAgentDialog({
     if (adapterKind === 'custom' && !modelId.trim()) return fail('model', 'Custom adapter 必须填写 Model ID')
     const trimmedApiBaseUrl = apiBaseUrl.trim()
     const trimmedApiKey = apiKey.trim()
-    if (adapterKind === 'codex') {
-      const baseUrlError = validateCodexBaseUrl(trimmedApiBaseUrl || null)
-      if (baseUrlError) return fail('model', baseUrlError)
-    }
     if (adapterKind === 'custom') {
       const baseUrlError = validateOpenAICompatibleBaseUrl(provider, trimmedApiBaseUrl || null)
       if (baseUrlError) return fail('model', baseUrlError)
@@ -315,9 +305,8 @@ export function CreateAgentDialog({
 
     setSubmitting(true)
     try {
-      const isClaudeCode = adapterKind === 'claude-code'
       const isCodex = adapterKind === 'codex'
-      const isSdkAgent = isClaudeCode || isCodex
+      const isSdkAgent = isCodex
       if (isEdit && agent) {
         const patch: UpdateAgentBody = {
           name: trimmed,
@@ -331,8 +320,9 @@ export function CreateAgentDialog({
           skillNames: isSdkAgent ? [] : Array.from(skillNames),
           supportsVision,
           isOrchestrator,
-          apiKey: trimmedApiKey || null,
-          apiBaseUrl: trimmedApiBaseUrl || null,
+          apiKey: isSdkAgent ? null : (trimmedApiKey || null),
+          apiBaseUrl: isSdkAgent ? null : (trimmedApiBaseUrl || null),
+          executablePath: isSdkAgent ? (executablePath.trim() || null) : null,
         }
         const updated = await updateAgent(agent.id, patch)
         upsertAgent(updated)
@@ -350,8 +340,9 @@ export function CreateAgentDialog({
           skillNames: isSdkAgent ? [] : Array.from(skillNames),
           supportsVision,
           isOrchestrator: isOrchestrator || undefined,
-          apiKey: trimmedApiKey || undefined,
-          apiBaseUrl: trimmedApiBaseUrl || undefined,
+          apiKey: isSdkAgent ? undefined : (trimmedApiKey || undefined),
+          apiBaseUrl: isSdkAgent ? undefined : (trimmedApiBaseUrl || undefined),
+          executablePath: isSdkAgent ? (executablePath.trim() || undefined) : undefined,
         }
         const created = await createAgent(body)
         upsertAgent(created)
@@ -509,26 +500,6 @@ export function CreateAgentDialog({
                     <label
                       className={cn(
                         'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
-                        adapterKind === 'claude-code' && 'border-primary bg-primary/5',
-                      )}
-                    >
-                      <input
-                        type="radio"
-                        name="adapterKind"
-                        checked={adapterKind === 'claude-code'}
-                        onChange={() => handleAdapterKindChange('claude-code')}
-                        className="mt-0.5 accent-primary"
-                      />
-                      <div className="min-w-0">
-                        <div className="text-xs font-medium">Claude Code SDK</div>
-                        <div className="mt-0.5 text-[10px] text-muted-foreground">
-                          用 @anthropic-ai/claude-agent-sdk，自带 Bash / Read / Write / Edit / Grep / Glob / WebFetch / Task 子 agent 等一整套工具。
-                        </div>
-                      </div>
-                    </label>
-                    <label
-                      className={cn(
-                        'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
                         adapterKind === 'codex' && 'border-primary bg-primary/5',
                       )}
                     >
@@ -540,9 +511,9 @@ export function CreateAgentDialog({
                         className="mt-0.5 accent-primary"
                       />
                       <div className="min-w-0">
-                        <div className="text-xs font-medium">Codex SDK</div>
+                        <div className="text-xs font-medium">Codex CLI</div>
                         <div className="mt-0.5 text-[10px] text-muted-foreground">
-                          用 @openai/codex-sdk，支持本地仓库读写、命令执行、线程续接和结构化事件流；需要 Codex/Responses 兼容后端。
+                          通过 spawn codex app-server 与 Codex CLI 通信，支持本地仓库读写、命令执行、MCP 工具调用和结构化事件流；认证通过 ~/.codex/auth.json 管理。
                         </div>
                       </div>
                     </label>
@@ -579,111 +550,88 @@ export function CreateAgentDialog({
                       <Input
                         value={modelId}
                         onChange={(e) => setModelId(e.target.value)}
-                        placeholder={
-                          adapterKind === 'claude-code' ? CLAUDE_CODE_DEFAULT_MODEL : CODEX_DEFAULT_MODEL
-                        }
+                        placeholder={CODEX_DEFAULT_MODEL}
                         className="font-mono text-xs"
                       />
                       <div className="mt-1 text-[10px] text-muted-foreground">
-                        {adapterKind === 'claude-code' ? (
-                          <>
-                            Claude 模型 id，例 <code className="font-mono">claude-opus-4-7</code> /{' '}
-                            <code className="font-mono">claude-sonnet-4-6</code>。留空走 SDK 默认。
-                          </>
-                        ) : (
-                          <>
-                            Codex 模型 id，例 <code className="font-mono">gpt-5-codex</code>。留空走 SDK 默认。
-                          </>
-                        )}
+                        Codex 模型 id，例 <code className="font-mono">gpt-5-codex</code>。留空走 CLI 默认。
                       </div>
                     </div>
                   </div>
                 )}
 
-                {(adapterKind === 'claude-code' ||
-                  adapterKind === 'codex' ||
-                  (adapterKind === 'custom' && provider === 'openai-compatible')) && (
+                {adapterKind === 'custom' && provider === 'openai-compatible' && (
                   <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                    <Label required={adapterKind === 'custom' && provider === 'openai-compatible'}>Base URL</Label>
+                    <Label required>Base URL</Label>
                     <div>
                       <Input
                         value={apiBaseUrl}
                         onChange={(e) => setApiBaseUrl(e.target.value)}
-                        placeholder={
-                          adapterKind === 'claude-code'
-                            ? 'https://api.anthropic.com（默认）'
-                            : adapterKind === 'codex'
-                              ? 'https://api.openai.com/v1（默认，需支持 /responses）'
-                              : 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-                        }
+                        placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
                         className="font-mono text-xs"
                       />
                       <div className="mt-1 text-[10px] text-muted-foreground">
-                        {adapterKind === 'claude-code' ? (
-                          <>
-                            指向第三方 Claude API 兼容网关（如 <code className="font-mono">https://anyrouter.top</code>）；留空走 Anthropic 官方 endpoint。配此项时下方 API Key 自动作为 <code className="font-mono">ANTHROPIC_AUTH_TOKEN</code> 传给 SDK。
-                          </>
-                        ) : adapterKind === 'codex' ? (
-                          <>
-                            必须指向 Codex/Responses 兼容 endpoint；DeepSeek / 火山方舟等 Chat Completions 兼容接口请用 Custom adapter。留空走 Codex SDK 默认 endpoint。
-                          </>
-                        ) : (
-                          <>
-                            必须指向 OpenAI Chat Completions 兼容 endpoint，例如通义千问 compatible-mode、智谱 / MiniMax / OpenRouter / SiliconFlow 的 OpenAI 兼容地址。
-                          </>
-                        )}
+                        必须指向 OpenAI Chat Completions 兼容 endpoint，例如通义千问 compatible-mode、智谱 / MiniMax / OpenRouter / SiliconFlow 的 OpenAI 兼容地址。
                       </div>
                     </div>
                   </div>
                 )}
 
-                <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                  <Label>
-                    {adapterKind === 'claude-code' && apiBaseUrl.trim() ? 'Auth Token' : 'API Key'}
-                  </Label>
-                  <div>
-                    <div className="flex gap-2">
+                {adapterKind === 'codex' && (
+                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                    <Label>可执行路径</Label>
+                    <div>
                       <Input
-                        type={showApiKey ? 'text' : 'password'}
-                        value={apiKey}
-                        onChange={(e) => setApiKey(e.target.value)}
-                        placeholder={
-                          adapterKind === 'claude-code' && apiBaseUrl.trim()
-                            ? '第三方网关的 token'
-                            : adapterKind === 'codex' && apiBaseUrl.trim()
-                              ? 'Codex/Responses endpoint token'
-                              : adapterKind === 'custom' && provider === 'openai-compatible'
-                                ? 'OpenAI-compatible endpoint token'
-                              : '留空则使用环境变量'
-                        }
-                        className="flex-1 font-mono text-xs"
-                        autoComplete="off"
+                        value={executablePath}
+                        onChange={(e) => setExecutablePath(e.target.value)}
+                        placeholder="codex（从 PATH 搜索）"
+                        className="font-mono text-xs"
                       />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setShowApiKey((v) => !v)}
-                      >
-                        {showApiKey ? '隐藏' : '显示'}
-                      </Button>
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        可选的 codex CLI 二进制路径覆盖。留空时按优先级查找：
+                        <code className="font-mono">CODEX_EXECUTABLE</code> 环境变量 →
+                        PATH 上的 <code className="font-mono">codex</code>。
+                        需先安装：<code className="font-mono">npm install -g @openai/codex</code>。
+                        认证通过 <code className="font-mono">~/.codex/auth.json</code> 管理。
+                      </div>
                     </div>
-                    <div className="mt-1 text-[10px] text-muted-foreground">
-                      {adapterKind === 'claude-code' && apiBaseUrl.trim() ? (
-                        <>填写后作为 <code className="font-mono">ANTHROPIC_AUTH_TOKEN</code> 传给 SDK，路由到自定义 Base URL；留空则透传空 token（第三方网关可能拒绝）</>
-                      ) : adapterKind === 'codex' && apiBaseUrl.trim() ? (
-                        <>填写后作为 <code className="font-mono">CODEX_API_KEY</code> 传给 SDK，路由到自定义 Codex/Responses Base URL；留空则走 AChat 设置或环境变量</>
-                      ) : adapterKind === 'custom' && provider === 'openai-compatible' ? (
-                        <>OpenAI-compatible provider 需要为该 agent 单独填写 API Key；不会使用全局 OpenAI / DeepSeek / 火山方舟 key。</>
-                      ) : (
-                        <>
-                          填写后该 agent 优先用此 key；留空则 fallback 到{' '}
-                          <code className="font-mono">
-                            {adapterKind === 'claude-code'
-                              ? 'ANTHROPIC_API_KEY 环境变量 / 本机 ~/.claude OAuth 登录态'
-                              : adapterKind === 'codex'
-                                ? 'OPENAI_API_KEY / CODEX_API_KEY 环境变量'
-                              : provider === 'deepseek'
+                  </div>
+                )}
+
+                {adapterKind === 'custom' && (
+                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                    <Label>API Key</Label>
+                    <div>
+                      <div className="flex gap-2">
+                        <Input
+                          type={showApiKey ? 'text' : 'password'}
+                          value={apiKey}
+                          onChange={(e) => setApiKey(e.target.value)}
+                          placeholder={
+                            provider === 'openai-compatible'
+                              ? 'OpenAI-compatible endpoint token'
+                              : '留空则使用环境变量'
+                          }
+                          className="flex-1 font-mono text-xs"
+                          autoComplete="off"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setShowApiKey((v) => !v)}
+                        >
+                          {showApiKey ? '隐藏' : '显示'}
+                        </Button>
+                      </div>
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        {provider === 'openai-compatible' ? (
+                          <>OpenAI-compatible provider 需要为该 agent 单独填写 API Key；不会使用全局 OpenAI / DeepSeek / 火山方舟 key。</>
+                        ) : (
+                          <>
+                            填写后该 agent 优先用此 key；留空则 fallback 到{' '}
+                            <code className="font-mono">
+                              {provider === 'deepseek'
                                 ? 'DEEPSEEK_API_KEY'
                                 : provider === 'volcano-ark'
                                   ? 'ARK_API_KEY'
@@ -692,13 +640,14 @@ export function CreateAgentDialog({
                                     : provider === 'anthropic'
                                       ? 'ANTHROPIC_API_KEY'
                                       : '该 agent 的 API Key'}
-                          </code>
-                          {adapterKind === 'claude-code' || adapterKind === 'codex' ? '' : ' 环境变量'}
-                        </>
-                      )}
+                            </code>
+                            {' '}环境变量
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
 
                 <div className="grid grid-cols-[80px_1fr] items-start gap-3">
                   <Label>视觉</Label>
@@ -784,17 +733,9 @@ export function CreateAgentDialog({
                   <div className="grid grid-cols-[80px_1fr] items-start gap-3">
                     <Label>工具集</Label>
                     <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-                      {adapterKind === 'claude-code' ? (
-                        <>
-                          Claude Code agent 使用 SDK 内置工具集：Bash / Read / Write / Edit / Grep / Glob /
-                          WebFetch / WebSearch / Task / TodoWrite 等。审批 / 沙箱 / 黑名单仍由 AChat 接管。
-                        </>
-                      ) : (
-                        <>
-                          Codex agent 使用 Codex SDK 内置的本地命令、文件修改、MCP 调用和计划事件。
-                          Review 模式下以只读沙箱运行；Auto 模式下允许 workspace-write。运行时使用 AChat 隔离配置，不读取本机 ~/.codex。
-                        </>
-                      )}
+                      Codex agent 使用 CLI 内置的本地命令、文件修改和 MCP 工具调用。
+                      通过 MCP bridge 暴露的 AgentHub 工具（write_artifact、deploy 等）可在运行时按需启用。
+                      认证和配置由 AChat 隔离管理，共享 ~/.codex/auth.json。
                     </div>
                   </div>
                 )}
@@ -850,7 +791,7 @@ export function CreateAgentDialog({
                   <div className="grid grid-cols-[80px_1fr] items-start gap-3">
                     <Label>技能</Label>
                     <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-                      仅自建（custom）Agent 支持技能。SDK Agent（Claude Code / Codex）使用各自内置能力。
+                      仅自建（custom）Agent 支持技能。Codex agent 使用 CLI 内置能力。
                     </div>
                   </div>
                 )}

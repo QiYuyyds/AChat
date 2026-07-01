@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import delete, select
 
-from app.adapters.session_store import clear_claude_code_session, clear_codex_session
+from app.adapters.session_store import clear_codex_session
 from app.config import get_settings
 from app.db.engine import get_db
 from app.db.models import (
@@ -603,7 +603,6 @@ async def delete_conversation(conversation_id: str) -> None:
                 err,
             )
 
-    clear_claude_code_session(conversation_id)
     clear_codex_session(conversation_id)
 
 
@@ -669,7 +668,6 @@ async def clear_conversation_history(
         mode, bound_path = await _ws_meta(db, conversation_id)
         response = _conversation_response(conv, mode, bound_path)
 
-    clear_claude_code_session(conversation_id)
     clear_codex_session(conversation_id)
 
     return ClearConversationHistoryResult(
@@ -972,7 +970,6 @@ async def withdraw_latest_user_message(
         await asyncio.sleep(0.5)
 
     # Withdrawing diverges DB from the SDK's cached "user→reply" pair; reset it.
-    clear_claude_code_session(conversation_id)
     clear_codex_session(conversation_id)
 
     deleted_message_ids, deleted_artifact_ids = await _delete_from_timewindow(
@@ -1024,7 +1021,6 @@ async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
             runner.abort(rid)
         await asyncio.sleep(0.5)
 
-    clear_claude_code_session(conversation_id)
     clear_codex_session(conversation_id)
 
     deleted_message_ids, deleted_artifact_ids = await _delete_from_timewindow(

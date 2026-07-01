@@ -1,6 +1,6 @@
 import type { ModelProvider } from './types'
 
-export type AgentBuilderAdapter = 'custom' | 'claude-code' | 'codex'
+export type AgentBuilderAdapter = 'custom' | 'codex'
 export type AgentBuilderProvider = ModelProvider
 
 export const AGENT_BUILDER_PROVIDER_DEFAULTS: Record<
@@ -14,7 +14,6 @@ export const AGENT_BUILDER_PROVIDER_DEFAULTS: Record<
   'openai-compatible': { label: 'OpenAI-compatible', defaultModel: '' },
 }
 
-export const CLAUDE_CODE_DEFAULT_MODEL = 'claude-opus-4-7'
 export const CODEX_DEFAULT_MODEL = 'gpt-5-codex'
 
 export const AVAILABLE_AGENT_TOOLS = [

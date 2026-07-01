@@ -16,7 +16,7 @@ from typing import Literal
 
 from app.schemas.events import StreamEvent
 
-AdapterName = Literal["mock", "custom", "claude-code", "codex"]
+AdapterName = Literal["mock", "custom", "codex"]
 
 
 @dataclass
@@ -60,6 +60,8 @@ class AdapterInput:
     # cross-run history as OpenAI chat-message dicts (excludes current trigger)
     history: list[dict] | None = None
     custom_config: CustomConfig | None = None
+    # per-agent executable path override (Codex CLI adapter only)
+    executable_path: str | None = None
 
 
 class AgentPlatformAdapter(ABC):

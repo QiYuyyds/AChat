@@ -81,7 +81,7 @@ def get_model_limits(
             context_window=PROVIDER_FALLBACK_CONTEXT[provider],
             output_reserve=DEFAULT_OUTPUT_RESERVE,
         )
-    # Final fallback (also used by ClaudeCode adapter — it has no modelProvider field).
+    # Final fallback (also used by Codex CLI adapter — it has no modelProvider field).
     return ModelLimits(context_window=200_000, output_reserve=DEFAULT_OUTPUT_RESERVE)
 
 

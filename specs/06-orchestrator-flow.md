@@ -446,7 +446,7 @@ PLAN → EXECUTE → (有失败/冲突 且未达上限?) → REPLAN(补救) → 
 
 **已知盲区**（当前不检测，按设计取舍）：
 - `bash` 工具写文件（`echo >`、构建脚本等）不经过 `fs_write`，不被记录。
-- SDK adapter（`ClaudeCodeAdapter` / `CodexAdapter`）子 Agent 用各自 SDK 的写盘工具，绕过我们的 `fs_write`（同「sandbox 配额对 CC SDK 失效」的根因）。
+- Codex CLI adapter 子 Agent 用 Codex 内置的写盘工具，绕过我们的 `fs_write`（同「sandbox 配额对 Codex sandbox 失效」的根因）。
 - 跨波次（有 `dependsOn`）的覆盖不算冲突——依赖即顺序，是预期的串行覆盖。
 
 全覆盖需要波次前后对 workspace 做文件快照 diff，但快照无法把变更归属到并发的具体子 run，当前不做。

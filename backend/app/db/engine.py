@@ -76,6 +76,7 @@ async def _migrate_columns(conn) -> None:  # type: ignore[no-untyped-def]
         "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS content_hash VARCHAR(16)",
         "CREATE INDEX IF NOT EXISTS idx_rag_content_hash ON rag_chunks (content_hash)",
         "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary TEXT",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS executable_path VARCHAR",
     ]
     for stmt in statements:
         # dialects without IF NOT EXISTS (sqlite) / pre-existing column → no-op

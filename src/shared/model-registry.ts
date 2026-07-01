@@ -83,7 +83,7 @@ export function getModelLimits(
       outputReserve: DEFAULT_OUTPUT_RESERVE,
     }
   }
-  // 最终兜底（也是 ClaudeCode adapter 用的，因为它没有 modelProvider 字段）
+  // 最终兜底（也是 Codex CLI adapter 用的，因为它没有 modelProvider 字段）
   return { contextWindow: 200_000, outputReserve: DEFAULT_OUTPUT_RESERVE }
 }
 
