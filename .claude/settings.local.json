@@ -42,7 +42,13 @@
       "Bash(xargs -d '\\\\n' sed -i 's/AgentHub/AChat/g')",
       "Bash(xargs -d '\\\\n' grep -c \"AgentHub\")",
       "Bash(grep -v \":0$\")",
-      "Bash(pnpm vitest *)"
+      "Bash(pnpm vitest *)",
+      "WebSearch",
+      "Bash(pip install *)",
+      "Bash(.venv/Scripts/pip install *)",
+      "Bash(.venv/Scripts/python -c ' *)",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(taskkill /F /FI \"WINDOWTITLE eq python*\")"
     ]
   }
 }

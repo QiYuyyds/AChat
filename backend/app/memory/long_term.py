@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from app.observability import traced
+
 
 class LongTerm:
     """Long-term semantic memory backed by PostgreSQL + in-memory item list.
@@ -280,7 +282,10 @@ class LongTerm:
 
     # ─── Recall ───────────────────────────────────────────────────────────────
 
+    @traced("memory.ltm_recall", kind="RETRIEVER")
     async def recall(self, query: str, top_k: int = 3) -> List[Item]:
+        from opentelemetry import trace as otel_trace
+        span = otel_trace.get_current_span()
         async with self._lock:
             if not self.items:
                 return []
@@ -293,6 +298,8 @@ class LongTerm:
                     logger.warning("Query embedding failed: %s", e)
 
             if not query_emb:
+                span.set_attribute("memory.total_items", len(self.items))
+                span.set_attribute("memory.recalled", min(top_k, len(self.items)))
                 return self.items[:top_k]
 
             scored = []
@@ -304,7 +311,12 @@ class LongTerm:
 
             scored.sort(key=lambda x: x[1], reverse=True)
             seed_items = [item for item, score in scored[:top_k] if score >= 0.4]
-            return await self._graph_expand(seed_items, top_k)
+            span.set_attribute("memory.total_items", len(self.items))
+            span.set_attribute("memory.seed_items", len(seed_items))
+            span.set_attribute("memory.top_k", top_k)
+            result = await self._graph_expand(seed_items, top_k)
+            span.set_attribute("memory.recalled", len(result))
+            return result
 
     async def recall_by_filter(
         self,
@@ -379,6 +391,7 @@ class LongTerm:
 
     # ─── Graph expansion ───────────────────────────────────────────────────
 
+    @traced("memory.graph_expand", kind="CHAIN")
     async def _graph_expand(
         self,
         seed_items: List[Item],
@@ -397,6 +410,8 @@ class LongTerm:
 
         On any failure the method logs a warning and returns only the seeds.
         """
+        from opentelemetry import trace as otel_trace
+        span = otel_trace.get_current_span()
         if not self.graph_memory or not seed_items:
             return seed_items
 
@@ -437,6 +452,8 @@ class LongTerm:
         all_items.sort(key=lambda x: x.score, reverse=True)
         if top_k > 0 and len(all_items) > top_k:
             all_items = all_items[:top_k]
+        span.set_attribute("memory.graph_enabled", self.graph_memory is not None)
+        span.set_attribute("memory.graph_expanded", len(extras))
         return all_items
 
     # ─── Consolidation ────────────────────────────────────────────────────────

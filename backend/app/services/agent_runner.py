@@ -64,6 +64,9 @@ from app.utils.workspace_utils import get_effective_cwd
 
 logger = logging.getLogger(__name__)
 
+# ─── Observability instrumentation ─────────────────────────────────────────
+from app.observability import traced, trace_context, get_tracer
+
 
 # ─── PromptAssembler integration (lazy, degrades gracefully) ─────────────────
 def _get_prompt_assembler():
@@ -463,6 +466,7 @@ def run_with_args(args: RunArgs) -> tuple[str, asyncio.Task[RunResult], asyncio.
 
 
 # ─── Main entry ──────────────────────────────────────────────────────────────
+@traced("agent.run", kind="AGENT")
 async def execute_run(
     run_id: str, cancel_event: asyncio.Event, args: RunArgs
 ) -> RunResult:
@@ -571,6 +575,7 @@ async def execute_run(
 
 
 # ─── Simple agent ────────────────────────────────────────────────────────────
+@traced("agent.simple_run", kind="CHAIN")
 async def execute_simple_run(
     run_id: str,
     cancel_event: asyncio.Event,
@@ -650,9 +655,14 @@ async def execute_simple_run(
     adapter_input = await build_adapter_input(
         args, agent, run_id, prompt, workspace, tool_names, args.override_system_prompt, attachments
     )
-    stream = adapter.stream(adapter_input, cancel_event)
-
-    result = await consume_stream(stream, args.agent_id, run_id)
+    async with trace_context(
+        "adapter.stream", kind="CHAIN",
+        adapter_name=agent.adapter_name,
+        model_id=agent.model_id,
+        model_provider=agent.model_provider,
+    ):
+        stream = adapter.stream(adapter_input, cancel_event)
+        result = await consume_stream(stream, args.agent_id, run_id)
     if args.parent_run_id:
         return result
 
@@ -754,6 +764,7 @@ async def maybe_create_project_artifact(
 ToolCallControl = dict[str, Any] | None
 
 
+@traced("agent.consume_stream", kind="CHAIN")
 async def consume_stream(
     stream: AsyncIterable[StreamEvent],
     agent_id: str,
@@ -1278,6 +1289,7 @@ def _build_skill_metadata_block(agent: Agent) -> str:
     return "\n".join(lines)
 
 
+@traced("agent.build_input", kind="CHAIN")
 async def build_adapter_input(
     args: RunArgs,
     agent: Agent,

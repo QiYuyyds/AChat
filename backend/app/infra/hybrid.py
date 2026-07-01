@@ -25,6 +25,8 @@ from app.graph.types import ChunkRef
 
 logger = logging.getLogger(__name__)
 
+from app.observability import traced, trace_context
+
 EmbedFn = Callable[[str], List[float]]
 
 
@@ -256,7 +258,10 @@ class HybridStore:
 
     # ─── Internal: hybrid 3-way RRF ──────────────────────────────────────
 
+    @traced("rag.hybrid_search", kind="CHAIN")
     async def _search_hybrid(self, query: str, top_k: int) -> List[HybridResult]:
+        from opentelemetry import trace as otel_trace
+        span = otel_trace.get_current_span()
         fetch_k = max(top_k * 2, 10)
 
         # Concurrent fetch from all 3 paths
@@ -266,6 +271,9 @@ class HybridStore:
         milvus_path, es_path, kg_path = await asyncio.gather(
             milvus_task, es_task, kg_task,
         )
+        span.set_attribute("retrieval.milvus_ok", milvus_path.ok)
+        span.set_attribute("retrieval.es_ok", es_path.ok)
+        span.set_attribute("retrieval.kg_ok", kg_path.ok)
 
         if not milvus_path.ok and not es_path.ok and not kg_path.ok:
             logger.warning("All 3 search paths failed")
@@ -405,11 +413,16 @@ class HybridStore:
 
     # ─── 3-way fetch (each returns _PathHits) ────────────────────────────
 
+    @traced("rag.milvus_search", kind="RETRIEVER")
     async def _fetch_milvus(self, query: str, fetch_k: int) -> _PathHits:
+        from opentelemetry import trace as otel_trace
+        span = otel_trace.get_current_span()
         if not self._milvus_ok():
+            span.set_attribute("retrieval.skipped", True)
             return _PathHits(ok=False)
         if self._embed_fn is None:
             logger.warning("embed_fn not injected, skipping Milvus path")
+            span.set_attribute("retrieval.skipped", True)
             return _PathHits(ok=False)
         try:
             query_emb = self._embed_fn(query)
@@ -424,29 +437,49 @@ class HybridStore:
             return _PathHits(ok=False)
         try:
             hits = self._milvus_search_fn(query_emb, fetch_k) or []
+            span.set_attribute("retrieval.hits", len(hits))
+            span.set_attribute("retrieval.empty", len(hits) == 0)
+            span.set_attribute("retrieval.top_k", fetch_k)
             return _PathHits(hits=hits, ok=True)
         except Exception as e:
             logger.warning("Milvus search failed: %s", e)
+            span.set_attribute("error", True)
             return _PathHits(ok=False)
 
+    @traced("rag.es_search", kind="RETRIEVER")
     async def _fetch_es(self, query: str, fetch_k: int) -> _PathHits:
+        from opentelemetry import trace as otel_trace
+        span = otel_trace.get_current_span()
         if not self._es_ok():
+            span.set_attribute("retrieval.skipped", True)
             return _PathHits(ok=False)
         try:
             hits = (await self._es_search_fn(query, fetch_k)) or []
+            span.set_attribute("retrieval.hits", len(hits))
+            span.set_attribute("retrieval.empty", len(hits) == 0)
+            span.set_attribute("retrieval.top_k", fetch_k)
             return _PathHits(hits=hits, ok=True)
         except Exception as e:
             logger.warning("ES search failed: %s", e)
+            span.set_attribute("error", True)
             return _PathHits(ok=False)
 
+    @traced("rag.kg_search", kind="RETRIEVER")
     async def _fetch_kg(self, query: str, fetch_k: int) -> _PathHits:
+        from opentelemetry import trace as otel_trace
+        span = otel_trace.get_current_span()
         if not self._kg_ok():
+            span.set_attribute("retrieval.skipped", True)
             return _PathHits(ok=False)
         try:
             hits = (await self._kg_search_fn(query, fetch_k)) or []
+            span.set_attribute("retrieval.hits", len(hits))
+            span.set_attribute("retrieval.empty", len(hits) == 0)
+            span.set_attribute("retrieval.top_k", fetch_k)
             return _PathHits(hits=hits, ok=True)
         except Exception as e:
             logger.warning("KG search failed: %s", e)
+            span.set_attribute("error", True)
             return _PathHits(ok=False)
 
     # ─── Helpers ──────────────────────────────────────────────────────────

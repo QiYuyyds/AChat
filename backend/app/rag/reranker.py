@@ -8,6 +8,8 @@ import logging
 import re
 from typing import Callable, List, Optional
 
+from app.observability import traced
+
 logger = logging.getLogger(__name__)
 
 GenerateFn = Callable[[str, str], str]
@@ -20,6 +22,7 @@ class LLMReranker:
         self.generate_fn = generate_fn
         self.preview_len = preview_len if preview_len > 0 else 200
 
+    @traced("rag.rerank", kind="RERANKER")
     def rerank(self, query: str, results: List, top_k: int) -> List:
         if not results:
             return []

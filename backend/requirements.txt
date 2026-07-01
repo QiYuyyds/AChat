@@ -38,3 +38,12 @@ pypdf>=5.1.0  # read_attachment PDF text extraction (replaces TS pdf-parse)
 # Document Parser pipeline (ported from AGI-memory)
 pdfplumber>=0.9.0    # PDF parsing - first-choice extractor
 PyPDF2>=3.0.0        # PDF parsing - pure-Python fallback
+
+# Observability — OpenTelemetry + Arize Phoenix
+opentelemetry-api>=1.28.0
+opentelemetry-sdk>=1.28.0
+opentelemetry-instrumentation-fastapi>=0.49b0
+opentelemetry-instrumentation-httpx>=0.49b0
+opentelemetry-exporter-otlp>=1.28.0
+arize-phoenix>=4.0.0
+openinference-semantic-conventions>=0.1.0

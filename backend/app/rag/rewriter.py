@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
+from app.observability import traced
+
 logger = logging.getLogger(__name__)
 
 GenerateFn = Callable[[str, str], str]
@@ -27,6 +29,7 @@ class LLMRewriter:
         self.generate_fn = generate_fn
         self.num_queries = num_queries if num_queries > 0 else 3
 
+    @traced("rag.rewrite", kind="LLM")
     def rewrite(self, query: str, history: List[HistoryMessage]) -> List[str]:
         query = (query or "").strip()
         if not query:

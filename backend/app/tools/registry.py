@@ -43,6 +43,8 @@ from app.tools.skills import load_skill_tool, write_skill_tool
 from app.tools.web_search import web_search_tool
 from app.tools.write_artifact import write_artifact_tool
 
+from app.observability import traced
+
 
 class ToolRegistry:
     def __init__(self) -> None:
@@ -65,13 +67,22 @@ class ToolRegistry:
             resolved.append(tool)
         return resolved
 
+    @traced("tool.execute", kind="TOOL")
     async def execute(self, tool_name: str, args: Any, ctx: ToolContext) -> ToolResult:
+        from opentelemetry import trace as otel_trace
+        span = otel_trace.get_current_span()
+        span.set_attribute("tool.name", tool_name)
         tool = self._tools.get(tool_name)
         if tool is None:
+            span.set_attribute("tool.found", False)
             return err(f"Unknown tool: {tool_name}")
         try:
-            return await tool.handler(args, ctx)
+            result = await tool.handler(args, ctx)
+            span.set_attribute("tool.success", result.success)
+            return result
         except Exception as e:  # noqa: BLE001 - tool failures surface to the LLM
+            span.set_attribute("tool.success", False)
+            span.set_attribute("tool.error", str(e)[:256])
             return err(str(e))
 
 

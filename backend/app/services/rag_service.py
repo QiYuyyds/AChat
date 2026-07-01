@@ -15,6 +15,8 @@ from app.rag.reranker import LLMReranker
 
 logger = logging.getLogger(__name__)
 
+from app.observability import traced
+
 
 class RAGService:
     """Facade for RAG operations: ingest documents and search knowledge base."""
@@ -107,6 +109,7 @@ class RAGService:
         """Ingest a document: split → embed → index to PG/Milvus/ES."""
         return await self._engine.ingest(doc)
 
+    @traced("rag.search", kind="RETRIEVER")
     async def search(
         self,
         query: str,

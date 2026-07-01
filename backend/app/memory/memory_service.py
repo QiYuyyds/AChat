@@ -22,6 +22,8 @@ from app.memory.graph_memory import GraphMemory
 
 logger = logging.getLogger(__name__)
 
+from app.observability import traced
+
 
 class MemoryService:
     """Facade that owns and wires all memory components.
@@ -150,6 +152,7 @@ class MemoryService:
         if self.ltm.need_consolidation():
             asyncio.create_task(self._safe_consolidate())
 
+    @traced("memory.recall", kind="RETRIEVER")
     async def recall(self, query: str, top_k: Optional[int] = None) -> List[Item]:
         """Semantic recall from LTM."""
         k = top_k or self.settings.memory_long_term_top_k

@@ -79,6 +79,7 @@ from app.services.project_artifact import build_project_files  # noqa: E402
 from app.services.task_result_report import evaluate_task_result_report
 from app.tools.base import ToolContext
 from app.tools.bash import BashExecutionArgs, execute_bash_command
+from app.observability import traced
 from app.utils.clock import now_ms
 from app.utils.dispatch_file_writes import (
     FileWriteConflict,
@@ -143,6 +144,7 @@ class DagContext:
 
 
 # ─── Stage entry: PLAN → EXECUTE (with replan) → AGGREGATE ────────────────────
+@traced("orchestrator.run", kind="AGENT")
 async def execute_orchestrator_run(
     run_id: str,
     cancel_event: asyncio.Event,
@@ -370,6 +372,7 @@ async def execute_orchestrator_run(
 
 
 # ─── PLAN stage (shared by first + remediation rounds) ────────────────────────
+@traced("orchestrator.plan_stage", kind="CHAIN")
 async def _run_plan_stage(
     args: RunArgs,
     agent: Agent,
@@ -529,6 +532,7 @@ async def _wait_for_dispatch_plan_review(
 
 
 # ─── DAG execution (topological waves; per-wave conflict detection) ───────────
+@traced("orchestrator.execute_dag", kind="CHAIN")
 async def _execute_dag(
     plan: list[DispatchPlanItem],
     ctx: DagContext,

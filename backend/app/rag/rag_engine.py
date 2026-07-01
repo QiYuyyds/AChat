@@ -16,6 +16,8 @@ from app.rag.splitter import Chunk, RecursiveSplitter
 
 logger = logging.getLogger(__name__)
 
+from app.observability import traced, trace_context
+
 
 class RAGEngine:
     """RAG engine: split → index (PG/Milvus/ES) → search (RRF fusion) → LLM compose."""
@@ -172,6 +174,7 @@ class RAGEngine:
     async def query(self, question: str) -> Tuple[str, List[dict]]:
         return await self.query_with_history(question, [])
 
+    @traced("rag.query_with_history", kind="CHAIN")
     async def query_with_history(
         self,
         question: str,

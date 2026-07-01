@@ -46,6 +46,13 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     settings = get_settings()
 
+    # ─── Observability — OTel + Arize Phoenix ───
+    try:
+        from app.observability import init_observability
+        init_observability(app_instance, settings)
+    except Exception as e:
+        logger.warning("Observability init skipped: %s", e)
+
     # ─── Infrastructure factory ───
     try:
         from app.infra.factory import build_infrastructure, close_infrastructure
@@ -175,6 +182,15 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             await close_infrastructure(_infrastructure)
         except Exception:
             pass
+    # Shut down Phoenix subprocess
+    try:
+        from app.observability.tracer import _phoenix_process
+        if _phoenix_process and _phoenix_process.poll() is None:
+            _phoenix_process.terminate()
+            _phoenix_process.wait(timeout=5)
+            logger.info("Phoenix subprocess terminated")
+    except Exception:
+        pass
     await close_db()
 
 
@@ -246,6 +262,10 @@ def _log_startup_dashboard(settings) -> None:
     # Server config
     logger.info("Server:          http://%s:%s", settings.host, settings.port)
     logger.info("Debug Mode:      %s", "ON" if settings.debug else "OFF")
+    # Observability
+    from app.observability.tracer import _phoenix_process, _phoenix_port
+    if _phoenix_process and _phoenix_process.poll() is None:
+        logger.info("Trace Monitor:   http://127.0.0.1:%s", _phoenix_port)
     logger.info(divider)
 
 
