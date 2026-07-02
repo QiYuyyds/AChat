@@ -420,6 +420,14 @@ export type StreamEvent = BaseEvent &
         status: DispatchTaskEndStatus
         error?: string
       }
+    | {
+        type: 'dispatch.retry'
+        parentRunId: string
+        taskId: string
+        attempt: number
+        maxAttempts: number
+        error?: string
+      }
     | { type: 'fs_write.pending'; pendingWrite: PendingWrite }
     | { type: 'fs_write.resolved'; pendingId: string; applied: boolean }
     | { type: 'bash_command.pending'; pendingCommand: PendingBashCommand }

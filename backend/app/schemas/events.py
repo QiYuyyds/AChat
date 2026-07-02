@@ -277,6 +277,19 @@ class DispatchEndEvent(BaseEvent):
     model_config = {"populate_by_name": True}
 
 
+class DispatchRetryEvent(BaseEvent):
+    """Event when a dispatch task is retried by the harness loop."""
+
+    type: Literal["dispatch.retry"] = "dispatch.retry"
+    parent_run_id: str = Field(alias="parentRunId")
+    task_id: str = Field(alias="taskId")
+    attempt: int
+    max_attempts: int = Field(alias="maxAttempts")
+    error: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Approval Events ─────────────────────────────────────
 class FsWritePendingEvent(BaseEvent):
     """Event when a file write is pending approval."""
@@ -381,6 +394,7 @@ StreamEvent = Annotated[
         DispatchPlanEvent,
         DispatchStartEvent,
         DispatchEndEvent,
+        DispatchRetryEvent,
         # Approval events
         FsWritePendingEvent,
         FsWriteResolvedEvent,

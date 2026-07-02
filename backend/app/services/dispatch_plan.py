@@ -48,10 +48,15 @@ _DISPATCH_TASK_KINDS: set[str] = {"code", "test", "review", "design", "doc", "an
 
 CODE_TASK_PROJECT_OUTPUT_ID = "project"
 CODE_TASK_PROJECT_OUTPUT_DESCRIPTION = "Workspace project files written by this code task"
-CODE_TASK_RUNNABLE_ACCEPTANCE_CRITERION = (
+# Deprecated: no longer auto-appended to code task contracts. The Orchestrator
+# LLM decides whether build verification is needed and writes it into the task
+# description. Kept for backward compatibility with existing task data.
+CODE_TASK_RUNNABLE_ACCEPTANCE_CRITERION = (  # deprecated
     "项目构建/编译验证通过（至少一条非准备验证命令 exitCode=0）"
 )
-CODE_TASK_RUNNABLE_REQUIRED_EVIDENCE = "至少一条构建/编译/测试/类型检查命令 exitCode=0"
+CODE_TASK_RUNNABLE_REQUIRED_EVIDENCE = (  # deprecated
+    "至少一条构建/编译/测试/类型检查命令 exitCode=0"
+)
 PLAN_TASKS_TOOL_NAME = "plan_tasks"
 
 # Code-implementation heuristic (distinguishes real code work from review/analysis):
@@ -353,8 +358,16 @@ def validate_dispatch_plan(
 
 
 # ─── compilation ──────────────────────
-def compile_dispatch_plan(plan: list[DispatchPlanItem]) -> CompileDispatchPlanResult:
-    """Infer extra deps from task text + normalize code-task contracts."""
+def compile_dispatch_plan(
+    plan: list[DispatchPlanItem],
+    has_build_toolchain: bool = True,
+) -> CompileDispatchPlanResult:
+    """Infer extra deps from task text + normalize code-task contracts.
+
+    *has_build_toolchain* is kept for signature compatibility but no longer
+    affects contract normalization — the Orchestrator LLM decides whether
+    build verification is needed.
+    """
     inferred_dependencies: list[InferredDependency] = []
     compiled: list[DispatchPlanItem] = []
 
@@ -386,7 +399,7 @@ def compile_dispatch_plan(plan: list[DispatchPlanItem]) -> CompileDispatchPlanRe
                 )
             )
 
-        compiled.append(normalize_task_contract(item))
+        compiled.append(normalize_task_contract(item, has_build_toolchain))
 
     return CompileDispatchPlanResult(plan=compiled, inferred_dependencies=inferred_dependencies)
 
@@ -396,27 +409,35 @@ def compile_and_validate_dispatch_plan(
     available_agents: list,
     orchestrator_agent_id: str,
     resolved_external_tasks: list[DispatchPlanItem] | None = None,
+    has_build_toolchain: bool = True,
 ) -> CompileDispatchPlanResult:
-    """Validate the raw plan, then compile (infer deps + normalize contracts)."""
+    """Validate the raw plan, then compile (infer deps + normalize contracts).
+
+    *has_build_toolchain* is kept for signature compatibility but no longer
+    affects contract normalization.
+    """
     validate_dispatch_plan(plan, available_agents, orchestrator_agent_id, resolved_external_tasks)
-    return compile_dispatch_plan(plan)
+    return compile_dispatch_plan(plan, has_build_toolchain)
 
 
-def normalize_task_contract(task: DispatchPlanItem) -> DispatchPlanItem:
-    """For code tasks: ensure a project output + runnable acceptance/evidence."""
+def normalize_task_contract(
+    task: DispatchPlanItem,
+    has_build_toolchain: bool = True,
+) -> DispatchPlanItem:
+    """For code tasks: ensure a project output.
+
+    No longer auto-appends ``CODE_TASK_RUNNABLE_ACCEPTANCE_CRITERION`` or
+    ``CODE_TASK_RUNNABLE_REQUIRED_EVIDENCE`` — the Orchestrator LLM decides
+    whether build verification is needed based on workspace context and writes
+    it into the task description.
+    """
     if not is_code_implementation_task(task):
         return task
-    return task.model_copy(
-        update={
-            "expected_outputs": _ensure_code_project_output(task.expected_outputs or []),
-            "acceptance_criteria": _append_unique(
-                task.acceptance_criteria or [], CODE_TASK_RUNNABLE_ACCEPTANCE_CRITERION
-            ),
-            "required_evidence": _append_unique(
-                task.required_evidence or [], CODE_TASK_RUNNABLE_REQUIRED_EVIDENCE
-            ),
-        }
-    )
+
+    update: dict = {
+        "expected_outputs": _ensure_code_project_output(task.expected_outputs or []),
+    }
+    return task.model_copy(update=update)
 
 
 def is_code_implementation_task(task: DispatchPlanItem) -> bool:
@@ -773,6 +794,7 @@ class ReplanTaskView:
     agent_id: str
     status: str  # 'complete' | 'failed' | 'skipped' | 'aborted'
     error: str | None = None
+    task_report: dict | None = None  # review feedback for replan context
 
 
 @dataclass
@@ -782,8 +804,21 @@ class ReplanConflictView:
 
 
 def should_replan(views: list[ReplanTaskView], conflicts: list[ReplanConflictView]) -> bool:
-    """A remediation round is needed if any task is not complete, or there are conflicts."""
-    return any(v.status != "complete" for v in views) or len(conflicts) > 0
+    """A remediation round is needed if any task is not complete, has blockers, or there are conflicts.
+
+    A task that reports ``status="complete"`` but also includes non-empty
+    ``blockers`` in its task_report is treated as needing replan — this covers
+    review / inspection tasks that completed the review action but found
+    critical issues that require the implementation task to be fixed.
+    """
+    has_incomplete = any(v.status != "complete" for v in views)
+    has_blockers = any(
+        v.status == "complete"
+        and v.task_report
+        and (v.task_report.get("blockers") or [])
+        for v in views
+    )
+    return has_incomplete or has_blockers or len(conflicts) > 0
 
 
 def _json_str(value: object) -> str:
@@ -793,19 +828,61 @@ def _json_str(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _escape_xml(s: str) -> str:
+    """Escape XML special characters in a string."""
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def build_replan_context(
     views: list[ReplanTaskView],
     conflicts: list[ReplanConflictView],
 ) -> str:
-    """Summarise the previous round (done / failed / conflicts) as a plan-stage prefix."""
+    """Summarise the previous round (done / failed / conflicts) as a plan-stage prefix.
+
+    For failed tasks that have a ``task_report`` (e.g. review agents), the
+    report's summary and blockers are included so the Orchestrator LLM can
+    create a remediation plan targeting the implementation task.
+
+    A task that is ``complete`` but has non-empty ``blockers`` in its report
+    (e.g. a review task that found critical issues) is also expanded with
+    its report details so the replan context carries the review feedback.
+    """
     done = [v for v in views if v.status == "complete"]
     failed = [v for v in views if v.status != "complete"]
     lines: list[str] = ["<previous_round_results>"]
     for v in done:
-        lines.append(f'  <task id="{v.task_id}" agent="{v.agent_id}" status="complete" />')
+        # A complete task with blockers (e.g. review found critical issues)
+        # needs to be expanded so the replan context includes the feedback.
+        has_blockers = v.task_report and (v.task_report.get("blockers") or [])
+        if has_blockers:
+            lines.append(f'  <task id="{v.task_id}" agent="{v.agent_id}" status="complete" has_review_blockers="true">')
+            report = v.task_report
+            summary = report.get("summary", "")
+            if summary:
+                lines.append(f"    <report_summary>{_escape_xml(summary)}</report_summary>")
+            for blocker in report.get("blockers") or []:
+                lines.append(f"    <blocker>{_escape_xml(blocker)}</blocker>")
+            lines.append("  </task>")
+        else:
+            lines.append(f'  <task id="{v.task_id}" agent="{v.agent_id}" status="complete" />')
     for v in failed:
         err = f" error={_json_str(v.error)}" if v.error else ""
-        lines.append(f'  <task id="{v.task_id}" agent="{v.agent_id}" status="{v.status}"{err} />')
+        lines.append(f'  <task id="{v.task_id}" agent="{v.agent_id}" status="{v.status}"{err}>')
+        if v.task_report:
+            report = v.task_report
+            summary = report.get("summary", "")
+            if summary:
+                lines.append(f"    <report_summary>{_escape_xml(summary)}</report_summary>")
+            blockers = report.get("blockers") or []
+            for blocker in blockers:
+                lines.append(f"    <blocker>{_escape_xml(blocker)}</blocker>")
+            acceptance = report.get("acceptanceResults") or []
+            for r in acceptance:
+                if not r.get("passed"):
+                    lines.append(
+                        f"    <failed_criterion>{_escape_xml(r.get('criterion', ''))}</failed_criterion>"
+                    )
+        lines.append("  </task>")
     lines.append("</previous_round_results>")
     if conflicts:
         lines.append("<file_conflicts>")
@@ -818,6 +895,7 @@ def build_replan_context(
         [
             "",
             "上一轮存在未完成任务或写冲突。请围绕 original_request 的原始目标输出补救 plan_tasks，只修复未完成 / 冲突 / 缺失证据的部分：可换更合适的 agent、把写同一文件的任务用 dependsOn 串行化、或把任务拆得更细。不要把实现任务缩小成静态审查、总结或解释；除非用户明确同意缩小范围，否则补救计划必须继续追踪原始目标的未完成验收。已 complete 的任务不要重做；补救任务需要基于已 complete 任务时，可以在 dependsOn / inputs 中引用上一轮的 task id，系统会把它当作已解析的外部依赖。若判断无需或无法补救，就不要调用 plan_tasks（直接进入总结）。",
+            "如果上一轮有审查任务（review task）报告 failed 或带有 blockers，其反馈已包含在上方 <report_summary>/<blocker>/<failed_criterion> 中。请在补救计划中针对被审查的实现任务创建重试任务，并在任务描述中包含审查反馈的具体内容，驱动实现 Agent 修复审查发现的问题。",
         ]
     )
     return "\n".join(lines)

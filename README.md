@@ -77,11 +77,14 @@ AChat 正是为这套工作流而生。它默认本地运行，使用 PostgreSQL
 
 ### 多 Agent 支持
 
-| 适配器 | 适用场景 |
-| --- | --- |
-| Claude | 使用 Anthropic Messages API，带全套工具与会话续接。 |
-| Custom Agent | 兼容 OpenAI Chat Completions 的 provider，如 OpenAI、DeepSeek、火山方舟、OpenRouter、SiliconFlow 等。 |
-| Mock | 本地开发用，不消耗 token。 |
+| 适配器 | 路线 | 适用场景 |
+| --- | --- | --- |
+| Claude Code | CLI 子进程 | 拉起本机 `claude` CLI（stream-json 协议），CLI 自带工具、沙箱与审批；AChat 通过 MCP bridge 补充平台工具。 |
+| Codex | CLI 子进程 | 拉起本机 `codex app-server`（JSON-RPC 2.0），代码就绪，端到端联调中。 |
+| Custom Agent | SDK | 兼容 OpenAI Chat Completions 的 provider，如 OpenAI、DeepSeek、火山方舟、OpenRouter、SiliconFlow 等。 |
+| Mock | 脚本 | 本地开发用，不消耗 token。 |
+
+> Claude Code 与 Codex 走 **CLI 子进程路线**：工具执行、沙箱、审批由 CLI 自管，AChat 只翻译事件流。后续还规划接入 Hermes、OpenClaw、OpenCode 等 CLI agent。迁移方案见 `openspec/changes/migrate-claude-codex-to-cli/`。
 
 你可以在 UI 里创建自定义 Agent，自带模型、provider、system prompt、base URL、API key、工具集和 Skills。
 
@@ -165,7 +168,7 @@ Agent 可以创建并引用结构化产物：
 - SQLAlchemy 2.0 async + asyncpg
 - PostgreSQL 16
 - Pydantic v2 数据验证
-- AI SDKs: `anthropic` · `openai`（Python）
+- AI 适配器: Claude Code / Codex 走 **CLI 子进程路线**（stream-json / JSON-RPC 2.0）；Custom 走 `openai` Python SDK（Chat Completions + 自驱 tool loop）；AChat MCP bridge 暴露平台工具给 CLI agent
 
 ### 基础设施（Docker Compose，可降级）
 - PostgreSQL 16 — 关系型主库
@@ -476,7 +479,8 @@ AChat 假定 LLM 的输出是不可信输入。
 
 - 桌面版尚待改造：内嵌 Next 已无后端 API 路由，需改为启动独立 Python 后端。
 - 带原生模块的跨平台 Electron 构建，应该通过目标平台机器或 CI 处理。
-- Claude / Custom Adapter 可以通过它自己的工具层写文件；sandbox 配额只对 AChat 托管的文件工具生效。
+- Claude / Codex CLI 自带工具层可直接写文件；sandbox 配额只对 AChat 托管的文件工具生效。
+- Codex CLI 适配器代码就绪，端到端联调与测试待补；Hermes / OpenClaw / OpenCode 适配器待接入。
 - 移动端是伴随客户端，不是独立的 Agent 运行时。
 - 基础设施服务（Milvus / ES / Neo4j）不配时功能降级，但不影响核心对话。
 

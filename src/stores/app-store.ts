@@ -26,6 +26,7 @@ export interface DispatchState {
   childRunIds: Record<string, string>              // taskId → childRunId
   reviewStatus?: 'pending' | 'approved' | 'rejected'
   pendingPlanId?: string
+  retryInfo?: Record<string, { attempt: number; maxAttempts: number; error?: string }>
 }
 
 interface AppState {
@@ -800,11 +801,24 @@ export const useAppStore = create<AppState>()(
             return
           }
 
+          case 'dispatch.retry': {
+            const d = s.dispatchesByRunId[event.parentRunId]
+            if (!d) return
+            d.retryInfo ??= {}
+            d.retryInfo[event.taskId] = {
+              attempt: event.attempt,
+              maxAttempts: event.maxAttempts,
+              error: event.error,
+            }
+            return
+          }
+
           case 'dispatch.end': {
             const direct = s.dispatchesByRunId[event.parentRunId]
             if (direct) {
               direct.taskStatus[event.taskId] = event.status
               if (event.childRunId) direct.childRunIds[event.taskId] = event.childRunId
+              if (direct.retryInfo) delete direct.retryInfo[event.taskId]
               return
             }
 

@@ -53,7 +53,7 @@
 | ORM | SQLAlchemy 2.0 async | 不用 Tortoise / Peewee |
 | 驱动 | asyncpg（PostgreSQL） | 已从 SQLite 迁移到 PostgreSQL |
 | 验证 | Pydantic v2 + pydantic-settings | — |
-| AI SDK | `anthropic` · `openai`（Python SDK） | 通过适配器层屏蔽差异 |
+| AI 适配器 | Claude Code / Codex 走 **CLI 子进程**（stream-json / JSON-RPC 2.0）；Custom 走 `openai` Python SDK | CLI 路线：工具/沙箱/审批由 CLI 自管，AChat 仅翻译事件流 |
 | 包管理 | pip + venv（`pyproject.toml`） | 不用 poetry/uv（保持简单） |
 | Lint | ruff | 不用 flake8/black（ruff 集成） |
 | 测试 | pytest + pytest-asyncio | `asyncio_mode = "auto"` |
@@ -81,7 +81,7 @@ L5 UI 组件                     src/components/
 L4 State + Transport           src/stores/ + src/lib/ (Zustand store + SSE 客户端)
 ─── HTTP (REST + SSE) ─── 跨进程边界 ───
 L3 Application Services        backend/app/services/ (AgentRunner · Orchestrator · ConversationService · EventBus · ToolExecutor · RAGService · ...)
-L2 Agent Platform Adapters     backend/app/adapters/ (Claude / Custom / Mock)
+L2 Agent Platform Adapters     backend/app/adapters/ (ClaudeCLI / CodexCLI / Custom / Mock) + mcp_bridge.py
 L1 Persistence                 backend/app/db/ (SQLAlchemy + PostgreSQL + workspace 文件系统)
 ─── 基础设施层 (可选, 独立降级) ───
    Milvus · Elasticsearch · Neo4j · Kafka   backend/app/infra/ + rag/ + memory/ + graph/
@@ -224,6 +224,7 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - **绝不**在代码中硬编码 key
 - **不引入** keychain / safeStorage / 第三方加密存储 —— 本地单用户场景，DB 文件系统权限已经够
 - 缺失 key 时，由 adapter 在 SDK 内抛错（不要在启动时拒绝服务，因为用户可能只用其中某些 provider）
+- **CLI 适配器**（Claude Code / Codex）走 CLI 自带认证（OAuth / 环境变量），`build_adapter_input` 对 CLI agent 跳过 API key 解析与工具注入；仅当 agent 显式设了 `api_key` 时才注入 `extra_env`
 - RAG / 记忆系统另有 `EMBEDDING_API_KEY` 和 `LLM_API_KEY` 配置（见 `backend/.env.example`）
 
 ---
@@ -355,7 +356,7 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 
 几类「会反复做」的扩展任务，各一份步骤化指南，目录说明见 `skills/README.md`。
 
-- `add-adapter.md` — 新增一个 Adapter（接入新 agent 平台）
+- `add-adapter.md` — 新增一个 Adapter（接入新 agent 平台；CLI 路线参考 `cli_base.py` + `claude_adapter.py`）
 - `add-tool.md` — 新增一个工具（LLM 可调用的 function）
 - `add-message-part.md` — 新增一种 MessagePart 类型
 - `add-artifact-type.md` — 新增一种 Artifact 类型

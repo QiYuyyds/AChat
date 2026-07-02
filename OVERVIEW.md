@@ -37,7 +37,8 @@ L3 Application Services                  backend/app/services/
    └ PromptAssembler（上下文组装）       backend/app/services/prompt_assembler.py
    ↑↓
 L2 Agent Platform Adapters              backend/app/adapters/
-   ├ ClaudeAdapter / CustomAdapter / MockAdapter
+   ├ ClaudeCLIAdapter / CodexCLIAdapter (CLI 子进程路线)
+   ├ CustomAdapter (SDK 路线) / MockAdapter
    ↑↓
 L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQL） + workspace 文件系统
    ↑↓
@@ -61,8 +62,9 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 |---|---|---|
 | IM 会话（多会话/搜索/置顶/归档/书签） | ✅ | 单聊 + 群聊（@mention） |
 | 消息操作（引用/撤回/编辑重发/重新生成/收藏/Pin） | ✅ | Pin 注入 LLM 长期上下文 |
-| ClaudeAdapter | ✅ | Anthropic Messages API + 全套工具 |
-| CustomAgentAdapter | ✅ | OpenAI 兼容（DeepSeek/OpenAI/火山方舟）+ 自驱 tool loop |
+| ClaudeCLIAdapter | ✅ | `spawn claude -p --output-format stream-json`，CLI 自带工具与审批；接入中修 bug |
+| CodexCLIAdapter | 🔧 | `spawn codex app-server --listen stdio://`，JSON-RPC 2.0；代码就绪，端到端验证待完成 |
+| CustomAgentAdapter | ✅ | OpenAI 兼容（DeepSeek/OpenAI/火山方舟）+ 自驱 tool loop（SDK 路线） |
 | MockAdapter | ✅ | 开发期不烧 token |
 | 自建 Agent | ✅ | 表单/对话式创建，自定义 prompt + 工具集 + Skills |
 | Orchestrator 编排 | ✅ | 三阶段规划 + DAG 调度 + 级联中止 + 同波次代码冲突检测 |
@@ -170,12 +172,16 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 ### L2 适配器（`backend/app/adapters/`）
 | 文件 | 说明 |
 |---|---|
-| `base.py` | `AdapterInput` + ABC（事件流契约，`specs/05`） |
-| `registry.py` | adapter 注册/选择 |
-| `claude_adapter.py` | Anthropic Messages API stream |
-| `custom_adapter.py` | OpenAI 协议 stream + 自驱 tool loop（MAX_TURNS=8） |
+| `base.py` | `AdapterInput` + ABC + `AdapterName`（事件流契约，`specs/05`） |
+| `registry.py` | adapter 注册/选择（注册 Mock / Custom / ClaudeCLI / CodexCLI） |
+| `cli_base.py` | ★ CLI 适配器公共基类：子进程生命周期、stdin/stdout 管道、超时/取消、参数过滤、环境变量合并 |
+| `conpty.py` | Windows ConPTY 支持（隐藏子进程窗口、伪终端） |
+| `claude_adapter.py` | ★ ClaudeCLIAdapter：`spawn claude` stream-json 协议，CLI 自带工具 |
+| `codex_adapter.py` | ★ CodexCLIAdapter：`spawn codex app-server` JSON-RPC 2.0 通信 |
+| `custom_adapter.py` | OpenAI 协议 stream + 自驱 tool loop（MAX_TURNS=8，SDK 路线） |
 | `custom_provider_client.py` / `session_store.py` | provider 客户端 / 会话存储 |
 | `mock_adapter.py` | 假事件流，开发用 |
+> MCP Bridge：`backend/app/mcp_bridge.py` — stdio MCP Server，把 `report_task_result`/`write_artifact`/`ask_user` 等 AChat 平台工具暴露给 CLI agent（Claude/Codex CLI 通过 `--mcp-config` 拉起）。
 
 ### 工具系统（`backend/app/tools/`）
 `base.py`（ToolContext + ToolDef） · `registry.py`（注册 20 个工具） · `write_artifact.py` · `read_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_list.py` · `bash.py` · `plan_tasks.py` · `ask_user.py` · `report_task_result.py` · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `skills.py`（load_skill/write_skill）。详见 `specs/07`。
@@ -248,11 +254,25 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 - **Orchestrator 同波次代码冲突检测**
 - **PPT 产物**：ppt 类型 + 真 .pptx 导出 + 完整 theme token
 
+### 🔧 适配器接入路线图
+
+| 适配器 | 路线 | 接入状态 | 说明 |
+|---|---|---|---|
+| Claude CLI | CLI 子进程 | ✅ 已接入，修 bug 中 | stream-json 协议；MCP bridge 打通平台工具；Windows 环境变量/MCP 工具名前缀已修 |
+| Codex CLI | CLI 子进程 | 🔧 代码就绪，验证待完成 | JSON-RPC 2.0；`codex_adapter.py` 已实现，端到端测试与联调待补（tasks T3.2/T4.2） |
+| Custom | SDK | ✅ 已实现 | OpenAI 兼容 API + 自驱 tool loop |
+| Hermes | CLI 子进程 | ⏳ 待接入 | 规划中 |
+| OpenClaw | CLI 子进程 | ⏳ 待接入 | 规划中 |
+| OpenCode | CLI 子进程 | ⏳ 待接入 | 规划中 |
+
+> 迁移方案见 `openspec/changes/migrate-claude-codex-to-cli/`。CLI 路线将厂商 CLI 作为子进程拉起，工具执行/沙箱/审批由 CLI 自管，AChat 仅翻译事件流。
+
 ### 📋 待办
 - Electron 桌面版改为启动 Python 后端（当前内嵌 Next 已无后端）
 - 移动端伴随 App 配对通信打通
 - E2E 测试补充（产物预览/导出 + 群聊调度，需测试假 adapter）
-- Codex 适配器（后端 Python 侧）
+- Codex CLI 适配器端到端联调与测试（代码已就绪）
+- Hermes / OpenClaw / OpenCode 适配器接入
 - 外部 MCP 接入（spec 15）
 - RAG 会话级开关细化（`conversations.rag_enabled` 字段已就位）
 
@@ -265,4 +285,4 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 
 ---
 
-*最后更新：2026-06-27 · 同步 Python 后端迁移 + RAG/记忆/知识图谱/Document 知识库体系集成后的全貌到功能矩阵、代码地图、当前现状三节。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*
+*最后更新：2026-07-02 · 同步 CLI 适配器迁移（Claude/Codex 从 SDK 路线切到 CLI 子进程路线）后的适配器矩阵、代码地图、接入路线图与待办。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*

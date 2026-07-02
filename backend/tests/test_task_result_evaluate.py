@@ -1,9 +1,10 @@
-"""Tests for evaluate_task_result_report (port of evaluateTaskResultReport)."""
+"""Tests for evaluate_task_result_report (advisory evidence collector)."""
 
 from __future__ import annotations
 
 from app.schemas.dispatch import DispatchPlanItem
 from app.services.task_result_report import (
+    TaskEvidenceSummary,
     evaluate_task_result_report,
     is_verification_command,
 )
@@ -26,21 +27,38 @@ def _ok_command(command: str) -> RunCommandEvidence:
     )
 
 
-def test_missing_report_fails():
-    result = evaluate_task_result_report(_task(), None)
-    assert not result.ok
-    assert "without report_task_result" in result.error
+# ─── hard-rule fails (② ④) ──────────────────────
+def test_missing_report_signals_has_report_false():
+    summary = evaluate_task_result_report(_task(), None)
+    assert not summary.has_report
+    assert summary.report_status is None
+    assert summary.advisory_issues == []
 
 
-def test_non_complete_status_fails():
+def test_non_complete_status_signals_report_status():
     report = {"status": "failed", "summary": "broke", "blockers": ["db down"]}
-    result = evaluate_task_result_report(_task(), report)
-    assert not result.ok
-    assert "reported failed" in result.error
-    assert "db down" in result.error
+    summary = evaluate_task_result_report(_task(), report)
+    assert summary.has_report
+    assert summary.report_status == "failed"
+    assert summary.advisory_issues == []
 
 
-def test_failed_command_evidence_fails():
+def test_failed_acceptance_result_signals_report_status_failed():
+    report = {
+        "status": "complete",
+        "summary": "ok",
+        "acceptanceResults": [
+            {"criterion": "tests pass", "passed": False, "evidence": "they did not"}
+        ],
+    }
+    summary = evaluate_task_result_report(_task(), report)
+    assert summary.has_report
+    assert summary.report_status == "failed"
+    assert summary.advisory_issues == []
+
+
+# ─── advisory issues (③⑤⑥⑦⑧⑨) ──────────────────────
+def test_failed_command_collected_as_advisory():
     report = {"status": "complete", "summary": "ok"}
     evidence = RunToolEvidence(
         commands=[
@@ -49,9 +67,9 @@ def test_failed_command_evidence_fails():
             )
         ]
     )
-    result = evaluate_task_result_report(_task(), report, evidence)
-    assert not result.ok
-    assert "failed command evidence" in result.error
+    summary = evaluate_task_result_report(_task(), report, evidence)
+    assert summary.report_status == "complete"
+    assert any("Failed command" in i for i in summary.advisory_issues)
 
 
 def test_failed_command_excused_by_later_success():
@@ -64,24 +82,12 @@ def test_failed_command_excused_by_later_success():
             _ok_command("pytest"),
         ]
     )
-    result = evaluate_task_result_report(_task(), report, evidence)
-    assert result.ok
+    summary = evaluate_task_result_report(_task(), report, evidence)
+    assert summary.report_status == "complete"
+    assert not any("Failed command" in i for i in summary.advisory_issues)
 
 
-def test_failed_acceptance_result_fails():
-    report = {
-        "status": "complete",
-        "summary": "ok",
-        "acceptanceResults": [
-            {"criterion": "tests pass", "passed": False, "evidence": "they did not"}
-        ],
-    }
-    result = evaluate_task_result_report(_task(), report)
-    assert not result.ok
-    assert "did not satisfy acceptance criteria" in result.error
-
-
-def test_missing_acceptance_criteria_result_fails():
+def test_missing_acceptance_criteria_collected_as_advisory():
     task = _task(acceptanceCriteria=["build passes", "lint clean"])
     report = {
         "status": "complete",
@@ -90,89 +96,94 @@ def test_missing_acceptance_criteria_result_fails():
             {"criterion": "build passes", "passed": True, "evidence": "exit 0"}
         ],
     }
-    result = evaluate_task_result_report(task, report)
-    assert not result.ok
-    assert "missing acceptance criteria" in result.error
-    assert "lint clean" in result.error
+    summary = evaluate_task_result_report(task, report)
+    assert summary.report_status == "complete"
+    assert any("Acceptance criteria" in i for i in summary.advisory_issues)
+    assert any("lint clean" in i for i in summary.advisory_issues)
 
 
-def test_missing_target_path_evidence_fails():
+def test_missing_target_path_collected_as_advisory():
     task = _task(targetPaths=["src/foo.py"])
     report = {"status": "complete", "summary": "ok"}
-    result = evaluate_task_result_report(task, report)
-    assert not result.ok
-    assert "missing target path evidence" in result.error
+    summary = evaluate_task_result_report(task, report)
+    assert summary.report_status == "complete"
+    assert any("Target path" in i for i in summary.advisory_issues)
 
 
-def test_target_path_satisfied_by_file_write():
+def test_target_path_satisfied_no_advisory():
     task = _task(targetPaths=["src/foo.py"])
     report = {"status": "complete", "summary": "ok"}
     evidence = RunToolEvidence(
         file_writes=[RunFileEvidence(path="src/foo.py", absolute_path="/ws/src/foo.py")]
     )
-    result = evaluate_task_result_report(task, report, evidence)
-    assert result.ok
+    summary = evaluate_task_result_report(task, report, evidence)
+    assert summary.report_status == "complete"
+    assert not any("Target path" in i for i in summary.advisory_issues)
 
 
-def test_missing_required_command_evidence_fails():
+def test_missing_required_command_collected_as_advisory():
     task = _task(requiredCommands=[{"command": "pytest"}])
     report = {"status": "complete", "summary": "ok"}
-    result = evaluate_task_result_report(task, report)
-    assert not result.ok
-    assert "missing successful command evidence" in result.error
+    summary = evaluate_task_result_report(task, report)
+    assert summary.report_status == "complete"
+    assert any("Required command" in i for i in summary.advisory_issues)
 
 
-def test_required_command_satisfied_by_report():
+def test_required_command_satisfied_no_advisory():
     task = _task(requiredCommands=[{"command": "pytest"}])
     report = {
         "status": "complete",
         "summary": "ok",
         "commandsRun": [{"command": "pytest -q", "exitCode": 0}],
     }
-    result = evaluate_task_result_report(task, report)
-    assert result.ok
+    summary = evaluate_task_result_report(task, report)
+    assert summary.report_status == "complete"
+    assert not any("Required command" in i for i in summary.advisory_issues)
 
 
-def test_code_task_verification_gate_fails_without_verification():
-    task = _task(taskKind="code")
+def test_code_task_verification_gate_collected_as_advisory():
+    task = _task(taskKind="code", expectedOutputs=[{"id": "out1", "type": "project"}])
     report = {"status": "complete", "summary": "ok"}
-    result = evaluate_task_result_report(task, report)
-    assert not result.ok
-    assert "runnable verification command evidence" in result.error
+    summary = evaluate_task_result_report(task, report)
+    assert summary.report_status == "complete"
+    assert any("verification command" in i for i in summary.advisory_issues)
 
 
 def test_code_task_verification_gate_passes_with_evidence():
     task = _task(taskKind="code")
     report = {"status": "complete", "summary": "ok"}
     evidence = RunToolEvidence(commands=[_ok_command("pnpm run build")])
-    result = evaluate_task_result_report(task, report, evidence)
-    assert result.ok
+    summary = evaluate_task_result_report(task, report, evidence)
+    assert summary.report_status == "complete"
+    assert not any("verification command" in i for i in summary.advisory_issues)
 
 
 def test_install_only_does_not_satisfy_verification():
-    task = _task(taskKind="code")
+    task = _task(taskKind="code", expectedOutputs=[{"id": "out1", "type": "project"}])
     report = {"status": "complete", "summary": "ok"}
     evidence = RunToolEvidence(commands=[_ok_command("pnpm install")])
-    result = evaluate_task_result_report(task, report, evidence)
-    assert not result.ok
+    summary = evaluate_task_result_report(task, report, evidence)
+    assert summary.report_status == "complete"
+    assert any("verification command" in i for i in summary.advisory_issues)
 
 
-def test_required_evidence_missing_fails():
+def test_required_evidence_missing_collected_as_advisory():
     task = _task(requiredEvidence=["screenshot attached"])
     report = {"status": "complete", "summary": "ok"}
-    result = evaluate_task_result_report(task, report)
-    assert not result.ok
-    assert "missing required evidence" in result.error
+    summary = evaluate_task_result_report(task, report)
+    assert summary.report_status == "complete"
+    assert any("Required evidence" in i for i in summary.advisory_issues)
 
 
-def test_required_evidence_satisfied_by_mention():
+def test_required_evidence_satisfied_no_advisory():
     task = _task(requiredEvidence=["screenshot attached"])
     report = {"status": "complete", "summary": "screenshot attached to PR"}
-    result = evaluate_task_result_report(task, report)
-    assert result.ok
+    summary = evaluate_task_result_report(task, report)
+    assert summary.report_status == "complete"
+    assert not any("Required evidence" in i for i in summary.advisory_issues)
 
 
-def test_full_success():
+def test_full_success_no_advisory_issues():
     task = _task(
         taskKind="code",
         acceptanceCriteria=["builds"],
@@ -187,9 +198,9 @@ def test_full_success():
         "commandsRun": [{"command": "pytest", "exitCode": 0}],
     }
     evidence = RunToolEvidence(commands=[_ok_command("pytest")])
-    result = evaluate_task_result_report(task, report, evidence)
-    assert result.ok
-    assert result.error is None
+    summary = evaluate_task_result_report(task, report, evidence)
+    assert summary.report_status == "complete"
+    assert summary.advisory_issues == []
 
 
 def test_is_verification_command_detection():
@@ -199,3 +210,62 @@ def test_is_verification_command_detection():
     assert is_verification_command("python -m pytest")
     assert not is_verification_command("pnpm install")
     assert not is_verification_command("echo hello")
+
+
+# ─── workspace-aware grading ──────────────────────
+def test_code_task_without_toolchain_skips_verification_gate():
+    task = _task(taskKind="code")
+    report = {"status": "complete", "summary": "ok"}
+    summary = evaluate_task_result_report(task, report, has_build_toolchain=False)
+    assert summary.report_status == "complete"
+    assert not any("verification command" in i for i in summary.advisory_issues)
+
+
+def test_code_task_without_toolchain_skips_required_evidence():
+    from app.services.dispatch_plan import CODE_TASK_RUNNABLE_REQUIRED_EVIDENCE
+    task = _task(taskKind="code", requiredEvidence=[CODE_TASK_RUNNABLE_REQUIRED_EVIDENCE])
+    report = {"status": "complete", "summary": "ok"}
+    summary = evaluate_task_result_report(task, report, has_build_toolchain=False)
+    assert summary.report_status == "complete"
+    assert not any("Required evidence" in i for i in summary.advisory_issues)
+
+
+def test_code_task_with_toolchain_still_requires_verification():
+    task = _task(taskKind="code", expectedOutputs=[{"id": "out1", "type": "project"}])
+    report = {"status": "complete", "summary": "ok"}
+    summary = evaluate_task_result_report(task, report, has_build_toolchain=True)
+    assert summary.report_status == "complete"
+    assert any("verification command" in i for i in summary.advisory_issues)
+
+
+# ─── prefix recovery tests ─────────────────────────
+def test_failed_python_prefix_recovered_by_later_python_success():
+    """Failed `python -c "bad"` recovered by later `python -c "good"` → no advisory."""
+    report = {"status": "complete", "summary": "ok"}
+    evidence = RunToolEvidence(
+        commands=[
+            RunCommandEvidence(
+                command='python -c "bad"', cwd="/ws", exit_code=1, timed_out=False, is_error=False
+            ),
+            _ok_command('python -c "good"'),
+        ]
+    )
+    summary = evaluate_task_result_report(_task(), report, evidence)
+    assert summary.report_status == "complete"
+    assert not any("Failed command" in i for i in summary.advisory_issues)
+
+
+def test_failed_pytest_not_recovered_by_later_pnpm_build():
+    """Failed `pytest` not recovered by later `pnpm build` → advisory issue."""
+    report = {"status": "complete", "summary": "ok"}
+    evidence = RunToolEvidence(
+        commands=[
+            RunCommandEvidence(
+                command="pytest", cwd="/ws", exit_code=1, timed_out=False, is_error=False
+            ),
+            _ok_command("pnpm build"),
+        ]
+    )
+    summary = evaluate_task_result_report(_task(), report, evidence)
+    assert summary.report_status == "complete"
+    assert any("Failed command" in i for i in summary.advisory_issues)

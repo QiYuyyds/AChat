@@ -659,7 +659,10 @@ async def execute_simple_run(
     )
     stream = adapter.stream(adapter_input, cancel_event)
 
-    result = await consume_stream(stream, args.agent_id, run_id)
+    result = await consume_stream(
+        stream, args.agent_id, run_id,
+        require_task_report=args.require_task_report,
+    )
     if args.parent_run_id:
         return result
 
@@ -766,6 +769,7 @@ async def consume_stream(
     agent_id: str,
     run_id: str,
     on_tool_call: Callable[[StreamEvent], ToolCallControl] | None = None,
+    require_task_report: bool = False,
 ) -> RunExecutionResult:
     parts_buffer: dict[str, list[dict]] = {}
     artifact_ids: list[str] = []
@@ -776,136 +780,195 @@ async def consume_stream(
     task_report: dict[str, Any] | None = None
     current_message_id: str | None = None
 
-    async for event in stream:
-        if event.type == "message.start":
-            current_message_id = event.message_id
-        if event.type == "tool.call":
-            tool_name_by_call_id[event.call_id] = event.tool_name
+    # When require_task_report=True, construct an internal on_tool_call callback
+    # that treats report_task_result as a stream-terminal event (same pattern
+    # as plan_tasks).  The report is parsed from the tool.call args and stored
+    # in report_ref so it survives the early break.
+    report_ref: dict[str, Any | None] = {"value": None}
 
-        await persist_event(
-            event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
+    def _report_terminal_callback(event: StreamEvent) -> ToolCallControl:
+        if event.type != "tool.call":
+            return None
+        tool_name = event.tool_name
+        is_report = (
+            tool_name == REPORT_TASK_RESULT_TOOL_NAME
+            or tool_name.endswith(f"__{REPORT_TASK_RESULT_TOOL_NAME}")
         )
-        publish(event)
+        if not is_report:
+            return None
+        report, _err = parse_and_normalize(event.args)
+        if report:
+            report_ref["value"] = report
+        return {"stop": True, "result": {"acknowledged": True}}
 
-        if event.type == "artifact.create":
-            output_key = output_key_by_artifact_id.get(event.artifact.id)
-            if output_key:
-                output_artifacts[output_key] = event.artifact.id
+    # Combine external + internal callbacks: external takes precedence.
+    if require_task_report and on_tool_call is not None:
+        _external = on_tool_call
 
-        # tool-produced artifact: append an artifact_ref part to the live message
-        if event.type == "artifact.create" and current_message_id:
-            parts = parts_buffer.get(current_message_id, [])
-            part_index = len(parts)
-            ref_part = {"type": "artifact_ref", "artifactId": event.artifact.id}
-            parts.append(ref_part)
-            parts_buffer[current_message_id] = parts
-            await _update_message_parts(current_message_id, parts)
-            publish(
-                PartStartEvent(
-                    conversation_id=event.conversation_id,
-                    timestamp=now_ms(),
-                    message_id=current_message_id,
-                    part_index=part_index,
-                    part=ref_part,
-                )
+        def _combined(event: StreamEvent) -> ToolCallControl:
+            ext = _external(event)
+            if ext and ext.get("stop"):
+                return ext
+            return _report_terminal_callback(event)
+
+        _effective_on_tool_call = _combined
+    elif require_task_report:
+        _effective_on_tool_call = _report_terminal_callback
+    else:
+        _effective_on_tool_call = on_tool_call
+
+    # Wrap the stream iteration in a try/finally so that the underlying async
+    # generator is always properly closed — even when we break early on a
+    # terminal tool call (report_task_result / plan_tasks).  Without this,
+    # CLI adapter subprocesses (Claude CLI, Codex) are left running after
+    # the stream consumer stops reading, because the generator's `finally`
+    # block (which calls cli.shutdown()) never executes.
+    try:
+        async for event in stream:
+            if event.type == "message.start":
+                current_message_id = event.message_id
+            if event.type == "tool.call":
+                tool_name_by_call_id[event.call_id] = event.tool_name
+
+            await persist_event(
+                event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
             )
+            publish(event)
 
-        if event.type == "deploy.status":
-            parts = parts_buffer.get(event.message_id, [])
-            part_index = len(parts)
-            deploy_part = {
-                "type": "deploy_status",
-                "deployment": event.deployment.model_dump(by_alias=True),
-            }
-            parts.append(deploy_part)
-            parts_buffer[event.message_id] = parts
-            await _update_message_parts(event.message_id, parts)
-            publish(
-                PartStartEvent(
-                    conversation_id=event.conversation_id,
-                    timestamp=now_ms(),
-                    message_id=event.message_id,
-                    part_index=part_index,
-                    part=deploy_part,
-                )
-            )
+            if event.type == "artifact.create":
+                output_key = output_key_by_artifact_id.get(event.artifact.id)
+                if output_key:
+                    output_artifacts[output_key] = event.artifact.id
 
-        if event.type == "message.end":
-            current_message_id = None
-        if event.type == "tool.result":
-            tool_name = tool_name_by_call_id.get(event.call_id)
-            # Accept both bare AChat tool names (SDK agents) and
-            # MCP-prefixed names from CLI agents (e.g.
-            # "mcp__achat-tools__report_task_result").
-            is_report = (
-                tool_name
-                and not event.is_error
-                and (
-                    tool_name == REPORT_TASK_RESULT_TOOL_NAME
-                    or tool_name.endswith(f"__{REPORT_TASK_RESULT_TOOL_NAME}")
-                )
-            )
-            if is_report:
-                logger.info(
-                    "[consume_stream] report_task_result detected: "
-                    "tool_name=%s, call_id=%s, result_type=%s, result_preview=%s",
-                    tool_name,
-                    event.call_id,
-                    type(event.result).__name__,
-                    str(event.result)[:200],
-                )
-                report, _err = parse_and_normalize(event.result)
-                if report:
-                    logger.info(
-                        "[consume_stream] report_task_result parsed OK: "
-                        "status=%s, summary=%s",
-                        report.get("status"),
-                        report.get("summary", "")[:100],
+            # tool-produced artifact: append an artifact_ref part to the live message
+            if event.type == "artifact.create" and current_message_id:
+                parts = parts_buffer.get(current_message_id, [])
+                part_index = len(parts)
+                ref_part = {"type": "artifact_ref", "artifactId": event.artifact.id}
+                parts.append(ref_part)
+                parts_buffer[current_message_id] = parts
+                await _update_message_parts(current_message_id, parts)
+                publish(
+                    PartStartEvent(
+                        conversation_id=event.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=current_message_id,
+                        part_index=part_index,
+                        part=ref_part,
                     )
-                    task_report = report
-                else:
-                    logger.warning(
-                        "[consume_stream] report_task_result parse FAILED: "
-                        "error=%s, raw=%s",
-                        _err,
-                        str(event.result)[:200],
-                    )
-            handoff = _read_artifact_handoff_result(event.result)
-            if handoff:
-                output_key_by_artifact_id[handoff[0]] = handoff[1]
-            # Push StepObservation + ToolCallTrace to shared buffers
-            if tool_name:
-                await _push_tool_observation(
-                    event.call_id, tool_name, event.result, event.is_error,
                 )
-        if event.type == "tool.call":
-            control = on_tool_call(event) if on_tool_call else None
-            if control and control.get("stop"):
-                if "result" in control:
-                    result_event = ToolResultEvent(
+
+            if event.type == "deploy.status":
+                parts = parts_buffer.get(event.message_id, [])
+                part_index = len(parts)
+                deploy_part = {
+                    "type": "deploy_status",
+                    "deployment": event.deployment.model_dump(by_alias=True),
+                }
+                parts.append(deploy_part)
+                parts_buffer[event.message_id] = parts
+                await _update_message_parts(event.message_id, parts)
+                publish(
+                    PartStartEvent(
                         conversation_id=event.conversation_id,
                         timestamp=now_ms(),
                         message_id=event.message_id,
-                        call_id=event.call_id,
-                        result=control["result"],
-                        is_error=bool(control.get("isError", False)),
+                        part_index=part_index,
+                        part=deploy_part,
+                    )
+                )
+
+            if event.type == "message.end":
+                current_message_id = None
+            if event.type == "tool.result":
+                tool_name = tool_name_by_call_id.get(event.call_id)
+                # Accept both bare AChat tool names (SDK agents) and
+                # MCP-prefixed names from CLI agents (e.g.
+                # "mcp__achat-tools__report_task_result").
+                is_report = (
+                    tool_name
+                    and not event.is_error
+                    and (
+                        tool_name == REPORT_TASK_RESULT_TOOL_NAME
+                        or tool_name.endswith(f"__{REPORT_TASK_RESULT_TOOL_NAME}")
+                    )
+                )
+                if is_report:
+                    logger.info(
+                        "[consume_stream] report_task_result detected: "
+                        "tool_name=%s, call_id=%s, result_type=%s, result_preview=%s",
+                        tool_name,
+                        event.call_id,
+                        type(event.result).__name__,
+                        str(event.result)[:200],
+                    )
+                    report, _err = parse_and_normalize(event.result)
+                    if report:
+                        logger.info(
+                            "[consume_stream] report_task_result parsed OK: "
+                            "status=%s, summary=%s",
+                            report.get("status"),
+                            report.get("summary", "")[:100],
+                        )
+                        task_report = report
+                    else:
+                        logger.warning(
+                            "[consume_stream] report_task_result parse FAILED: "
+                            "error=%s, raw=%s",
+                            _err,
+                            str(event.result)[:200],
+                        )
+                handoff = _read_artifact_handoff_result(event.result)
+                if handoff:
+                    output_key_by_artifact_id[handoff[0]] = handoff[1]
+                # Push StepObservation + ToolCallTrace to shared buffers
+                if tool_name:
+                    await _push_tool_observation(
+                        event.call_id, tool_name, event.result, event.is_error,
+                    )
+            if event.type == "tool.call":
+                control = _effective_on_tool_call(event) if _effective_on_tool_call else None
+                if control and control.get("stop"):
+                    if "result" in control:
+                        result_event = ToolResultEvent(
+                            conversation_id=event.conversation_id,
+                            timestamp=now_ms(),
+                            message_id=event.message_id,
+                            call_id=event.call_id,
+                            result=control["result"],
+                            is_error=bool(control.get("isError", False)),
+                        )
+                        await persist_event(
+                            result_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
+                        )
+                        publish(result_event)
+
+                    end_event = MessageEndEvent(
+                        conversation_id=event.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=event.message_id,
                     )
                     await persist_event(
-                        result_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
+                        end_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
                     )
-                    publish(result_event)
+                    publish(end_event)
+                    current_message_id = None
+                    break
+    finally:
+        # Ensure the underlying stream's async generator is closed so that
+        # adapter cleanup (subprocess shutdown, connection close) runs.
+        # aclose() is a no-op on an already-exhausted generator.
+        _aclose = getattr(stream, "aclose", None)
+        if _aclose is not None:
+            try:
+                await _aclose()
+            except Exception:
+                logger.debug("[consume_stream] stream.aclose() failed", exc_info=True)
 
-                end_event = MessageEndEvent(
-                    conversation_id=event.conversation_id,
-                    timestamp=now_ms(),
-                    message_id=event.message_id,
-                )
-                await persist_event(
-                    end_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
-                )
-                publish(end_event)
-                current_message_id = None
-                break
+    # If the report was captured via the terminal callback (from tool.call
+    # args) and not via the tool.result handler, use it.
+    if task_report is None and report_ref["value"] is not None:
+        task_report = report_ref["value"]
 
     return RunExecutionResult(
         artifact_ids=artifact_ids,

@@ -22,6 +22,7 @@ from app.schemas.dispatch import (
     DispatchPlanItem,
     DispatchTaskInput,
 )
+from app.utils.dispatch_run_evidence import RunToolEvidence
 from app.services.context_compaction_service import (
     get_latest_context_summary,
     render_conversation_summary_block,
@@ -85,10 +86,12 @@ def build_orchestrator_plan_prompt(
             base_system_prompt,
             "",
             "## 你的工作流",
+            "你是编排者（Orchestrator），你的核心职责是规划任务并分派给其他 Agent 执行，而不是自己直接实现。",
             "1. 阅读用户最新请求与上下文。",
             "2. 如果存在会阻塞正确规划的关键歧义，且能归纳为 2-4 个清晰选项，先调用 ask_user 让用户选择；拿到答案后继续。",
-            "3. 调用 plan_tasks 工具，输出结构化 plan。",
-            "4. 系统会自动执行 plan 并把子任务结果回传给你，由你做最终总结。",
+            "3. 对于任何需要创建、修改、生成、调试、分析内容的用户请求，你【必须】调用 plan_tasks 进行任务规划和分派。不要自己直接写代码、生成文件或产出内容。",
+            "4. 只有纯信息查询、闲聊、或你已经在 aggregate 阶段给出的总结才不需要 plan_tasks。",
+            "5. 系统会自动执行 plan 并把子任务结果回传给你，由你做最终总结。",
             "",
             "## 可用 Agent",
             agent_list if len(agent_list) > 0 else "（无）",
@@ -99,22 +102,37 @@ def build_orchestrator_plan_prompt(
             "- 计划阶段只能调用 ask_user、plan_tasks 和只读侦察工具（fs_list/fs_read/read_artifact/read_attachment）；不要写文件或执行命令。",
             "- 若用户需求已足够明确，不要为了形式感提问，直接 plan_tasks。",
             "",
+            "## Agent 选择策略",
+            "选择 Agent 时按以下优先级判断（可靠性从高到低）：",
+            "1. 【tools 工具集】— 最可靠的结构化信号。任务需要写文件 → 必须有 fs_write/bash；需要创建 artifact → 必须有 write_artifact；需要运行命令 → 必须有 bash。没有对应工具的 Agent 一定不能派。",
+            "2. 【capabilities 能力标签】— 结构化标签，如 'ui-design'、'backend'、'code-review'。优先匹配能力标签。",
+            "3. 【description 描述】— 自由文本，用户可能写得模糊。靠语义理解辅助判断，但不能仅凭描述拍板。",
+            "4. 【name 名称】— 参考价值最低，可能随意命名。",
+            "",
+            "如果所有可用 Agent 都不具备完成某个任务所需的工具或能力，【必须】先调用 ask_user 向用户说明情况，列出可用 Agent 及其能力，让用户指定或建议如何处理。不要把任务强派给明显不合适的 Agent。",
+            "如果可用 Agent 列表为空（你是唯一的 Agent），直接向用户说明当前没有可分派的其他 Agent，建议用户先创建所需 Agent。",
+            "",
             "## 依赖关系（执行顺序的唯一来源，务必读完）",
             "- 系统【只】按每个任务的 dependsOn 决定顺序：dependsOn 为空的任务会【同时并发】启动。",
             "- 若任务 B 需要任务 A 的产物 / 结论 / 输出，你【必须】在 B 的 dependsOn 里写上 A 的 id。",
             "- 在 task 文本里写「先做 A」「基于上一步」之类【没有任何效果】——执行顺序只认 dependsOn 字段。",
             "- 只有彼此真正无关、可同时进行的任务才留空 dependsOn；拿不准时倾向加依赖（串行更安全）。",
             '- Code implementation tasks MUST set taskKind="code", declare expectedOutputs:[{ id:"project", type:"project", required:true }], and include an acceptanceCriteria item requiring build/compile/test/typecheck to pass.',
-            "- project expectedOutputs are system-created from workspace file writes; do not ask the child agent to call write_artifact for project.",
+            "- project expectedOutputs are system-created from workspace files; if the agent writes files via fs_write/bash the system records them automatically, and if targetPaths are declared the system also checks for pre-existing files. Do not ask the child agent to call write_artifact for project.",
             "- Only declare non-project expectedOutputs when the assigned agent must create a real artifact via write_artifact for downstream handoff or user inspection.",
             "- Do NOT declare expectedOutputs for text-only tasks such as review, validation, diagnosis, status check, explanation, or summary; put their completion checks in acceptanceCriteria.",
             "- If a task needs an upstream artifact, declare inputs with fromTaskId and outputId; the system will compile these into dependencies.",
             "- For tasks with quality requirements, add concise acceptanceCriteria that the assigned agent can verify.",
+            "- 审查 / 验证 / 检验任务（review task）的 acceptanceCriteria 【必须】包含明确的通过条件，例如 '审查通过：未发现严重问题'、'代码质量检查通过'。",
+            "- 审查任务的 task 描述中【必须】明确指示：当发现严重（critical / blocker 级别）问题时，report_task_result 的 status 必须为 'blocked'，并将问题详情列入 blockers 字段；无严重问题时才报告 status='complete'。",
+            "- 审查任务发现的问题如需修复，系统会自动触发 replan，将审查反馈传递给实现 Agent 进行修复。",
             *local_workspace_rules,
             "- For code or test tasks, set taskKind and declare targetPaths, expectedWorkspaceChanges, requiredCommands, and requiredEvidence whenever possible.",
             "- Frontend and backend implementation tasks usually both depend on PRD/API contracts, not on each other; plan them as parallel siblings unless one truly consumes the other output.",
             '- Prefer requiredCommands with cwd, for example { command: "pnpm build", cwd: "frontend", timeoutMs: 300000 }; avoid encoding directory changes as "cd frontend && ...".',
             "- A retry/remediation plan must preserve the original user goal. Do not replace implementation work with a narrower review-only task unless the user explicitly approved that scope change.",
+            *local_workspace_rules,
+            "- For each task, include explicit constraints in the task description that the sub-agent must follow (e.g., cite specific sources, add code comments, limit output format). These constraints are advisory — the sub-agent retains autonomous decision-making.",
             *local_workspace_rules,
             "",
             "示例（设计 → 前端 → 审查，逐级依赖；agentId 用上面可用列表里的真实 id）：",
@@ -123,6 +141,11 @@ def build_orchestrator_plan_prompt(
             '  { "id": "t2", "agentId": "<前端 id>", "task": "按设计稿实现页面", "dependsOn": ["t1"] },',
             '  { "id": "t3", "agentId": "<Reviewer id>", "task": "审查 t2 的实现", "dependsOn": ["t2"] }',
             "]",
+            "",
+            "## 约束示例",
+            "任务描述中应包含明确约束，例如：",
+            '- "实现贪吃蛇游戏。约束：代码需包含关键逻辑注释，HTML文件需可直接在浏览器打开运行。"',
+            '- "撰写 API 设计文档。约束：需引用具体的 RFC 规范条目，输出 Markdown 格式。"',
         ]
     )
 
@@ -569,3 +592,91 @@ def format_size(num_bytes: int) -> str:
 
 def ensure_includes(arr: list[str], v: str) -> list[str]:
     return arr if v in arr else [*arr, v]
+
+
+# ─── LLM evaluation prompt (advisory evidence → pass/fail judgment) ─────────────
+def render_evaluation_prompt(
+    task: DispatchPlanItem,
+    report: dict[str, Any] | None,
+    advisory_issues: list[str],
+    evidence: RunToolEvidence | None = None,
+) -> str:
+    """Build a single-turn prompt for the Orchestrator LLM to judge task completion.
+
+    The LLM receives the task contract, the agent's report summary, and the
+    advisory issues collected by the evidence collector. It must return JSON:
+    ``{"pass": bool, "feedback": str}``.
+    """
+    lines: list[str] = [
+        "<evaluation_context>",
+        f"  <task_id>{escape_xml(task.id)}</task_id>",
+        f"  <task_description>{escape_xml(task.task)}</task_description>",
+    ]
+
+    if task.acceptance_criteria:
+        lines.append("  <acceptance_criteria>")
+        for c in task.acceptance_criteria:
+            lines.append(f"    <item>{escape_xml(c)}</item>")
+        lines.append("  </acceptance_criteria>")
+
+    if report:
+        lines.append(f"  <report_status>{escape_xml(report.get('status', ''))}</report_status>")
+        lines.append(f"  <report_summary>{escape_xml(report.get('summary', ''))}</report_summary>")
+        acceptance = report.get("acceptanceResults") or []
+        if acceptance:
+            lines.append("  <acceptance_results>")
+            for r in acceptance:
+                passed = str(r.get("passed", "")).lower()
+                lines.append(
+                    f"    <result criterion={xml_attr(r.get('criterion', ''))} "
+                    f"passed={xml_attr(passed)}>"
+                    f"{escape_xml(r.get('evidence', ''))}</result>"
+                )
+            lines.append("  </acceptance_results>")
+        files_changed = report.get("filesChanged") or []
+        if files_changed:
+            lines.append("  <files_changed>")
+            for f in files_changed:
+                lines.append(f"    <file path={xml_attr(f.get('path', ''))} />")
+            lines.append("  </files_changed>")
+        commands_run = report.get("commandsRun") or []
+        if commands_run:
+            lines.append("  <commands_run>")
+            for c in commands_run:
+                exit_code = c.get("exitCode", "")
+                lines.append(
+                    f"    <command cmd={xml_attr(c.get('command', ''))} "
+                    f"exitCode={xml_attr(str(exit_code))} />"
+                )
+            lines.append("  </commands_run>")
+
+    if advisory_issues:
+        lines.append("  <advisory_issues>")
+        for issue in advisory_issues:
+            lines.append(f"    <issue>{escape_xml(issue)}</issue>")
+        lines.append("  </advisory_issues>")
+    else:
+        lines.append("  <advisory_issues>(none)</advisory_issues>")
+
+    if evidence and evidence.file_writes:
+        lines.append("  <file_writes>")
+        for fw in evidence.file_writes:
+            lines.append(f"    <file path={xml_attr(fw.path)} />")
+        lines.append("  </file_writes>")
+
+    lines.extend([
+        "</evaluation_context>",
+        "",
+        "You are the Orchestrator. A child agent has completed a dispatched task and reported success.",
+        "Judge whether the task is ESSENTIALLY complete based on the task contract and the agent's report.",
+        "Advisory issues are context for your judgment, NOT automatic failures — they flag potential",
+        "problems that you should consider semantically (e.g., a missing verification command might be",
+        "fine for a single-file HTML task; an unmatched criterion might be semantically equivalent).",
+        "",
+        "If the task is essentially complete, return pass=true. If there are real problems that need",
+        "remediation, return pass=false with specific feedback describing what needs to be fixed.",
+        "",
+        'Respond with ONLY a JSON object: {"pass": true, "feedback": "..."} or {"pass": false, "feedback": "..."}',
+        "Do not include any other text, markdown, or explanation outside the JSON.",
+    ])
+    return "\n".join(lines)
