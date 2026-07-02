@@ -276,10 +276,35 @@ async def regenerate(conversation_id: str) -> JSONResponse:
 # ─── /conversations/{id}/compact ─────────────────────────────────────────────
 @router.post("/conversations/{conversation_id}/compact")
 async def compact(conversation_id: str) -> JSONResponse:
-    # The full compactConversation flow (LLM summary) is DEFERRED in the Python
-    # context_compaction_service port; no callable exists yet. Fail with the same
-    # 400 error shape the TS route uses for service errors.
-    return _err("Context compaction is not yet implemented", 400)
+    import logging
+
+    from app.services import context_compaction_service
+
+    _log = logging.getLogger(__name__)
+    try:
+        result = await context_compaction_service.compact_conversation(conversation_id)
+    except context_compaction_service.CompactionSkipped as skip:
+        return JSONResponse(
+            content={
+                "skipped": True,
+                "reason": skip.reason,
+                "message": skip.message.model_dump(by_alias=True),
+            }
+        )
+    except ValueError as err:
+        _log.warning("[compact] 400 for conv=%s: %s", conversation_id, err)
+        return _err(str(err), 400)
+    except Exception as err:  # noqa: BLE001 - surface unexpected failures clearly
+        _log.exception("[compact] unexpected error for conv=%s", conversation_id)
+        return _err(f"压缩失败：{err}", 500)
+    return JSONResponse(
+        content={
+            "summary": result.summary.model_dump(by_alias=True),
+            "message": result.message.model_dump(by_alias=True),
+            "ctxBefore": result.ctx_before,
+            "ctxAfter": result.ctx_after,
+        }
+    )
 
 
 # ─── /conversations/{id}/deploy ──────────────────────────────────────────────

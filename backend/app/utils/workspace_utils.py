@@ -20,6 +20,37 @@ from typing import Protocol
 from app.utils.platform import IS_WINDOWS
 
 
+# ─── Build toolchain manifest files ─────────────────────────────────────────
+# Known build-system manifests whose presence in a workspace root indicates
+# a "real" project that should be subject to build/compile/test evidence gates.
+_BUILD_TOOLCHAIN_MANIFESTS = frozenset({
+    "package.json",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "Cargo.toml",
+    "go.mod",
+    "pyproject.toml",
+    "setup.py",
+    "Makefile",
+    "CMakeLists.txt",
+})
+
+
+def workspace_has_build_toolchain(workspace_path: str) -> bool:
+    """Check whether *workspace_path* contains a known build toolchain manifest.
+
+    Returns True if any of ``package.json``, ``pom.xml``, ``build.gradle``,
+    ``build.gradle.kts``, ``Cargo.toml``, ``go.mod``, ``pyproject.toml``,
+    ``setup.py``, ``Makefile``, or ``CMakeLists.txt`` exists in the workspace
+    root directory.
+    """
+    return any(
+        os.path.isfile(os.path.join(workspace_path, name))
+        for name in _BUILD_TOOLCHAIN_MANIFESTS
+    )
+
+
 class _WorkspaceLike(Protocol):
     """Minimal shape needed from a Workspace row."""
 

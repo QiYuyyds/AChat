@@ -83,7 +83,8 @@ def test_build_replan_context_lists_done_and_failed():
     ]
     ctx = dp.build_replan_context(views, [])
     assert '<task id="t1" agent="a" status="complete" />' in ctx
-    assert '<task id="t2" agent="b" status="failed" error="boom" />' in ctx
+    # failed tasks now have opening+closing tags (to hold task_report content)
+    assert '<task id="t2" agent="b" status="failed" error="boom">' in ctx
     assert "<original_request>" not in ctx  # the prefix wraps it; replan ctx itself doesn't
 
 
@@ -231,9 +232,10 @@ def test_evaluate_child_task_result_fails_without_report():
 
     task = DispatchPlanItem(id="t1", agent_id="a", task="do")
     result = orch.DispatchTaskResult(run_id="r1", status="complete", task_report=None)
-    evaluated = orch._evaluate_child_task_result(task, result, RunToolEvidence())
+    evaluated, summary = orch._evaluate_child_task_result(task, result, RunToolEvidence())
     assert evaluated.status == "failed"
     assert "report_task_result" in evaluated.error
+    assert summary.has_report is False
 
 
 def test_evaluate_child_task_result_passes_with_report():
@@ -245,8 +247,11 @@ def test_evaluate_child_task_result_passes_with_report():
         status="complete",
         task_report={"status": "complete", "summary": "done"},
     )
-    evaluated = orch._evaluate_child_task_result(task, result, RunToolEvidence())
+    evaluated, summary = orch._evaluate_child_task_result(task, result, RunToolEvidence())
     assert evaluated.status == "complete"
+    assert summary.has_report is True
+    assert summary.report_status == "complete"
+    assert summary.advisory_issues == []
 
 
 def test_bind_implicit_single_output():
@@ -259,6 +264,259 @@ def test_bind_implicit_single_output():
     result = orch.DispatchTaskResult(run_id="r1", status="complete", artifact_ids=["art_1"])
     bound = orch._bind_implicit_single_output(task, result)
     assert bound["o1"] == "art_1"
+
+
+# ─── advisory issues + LLM semantic evaluation (tasks 2.5, 6.1-6.3) ────────────
+def test_evaluate_child_task_result_collects_advisory_issues():
+    """When report is complete but evidence has issues, advisory_issues are collected
+    instead of blocking (task 6.1)."""
+    from app.utils.dispatch_run_evidence import RunCommandEvidence, RunToolEvidence
+
+    task = DispatchPlanItem(
+        id="t1", agent_id="a", task="impl",
+        task_kind="code",
+        target_paths=["src/foo.py"],
+        acceptance_criteria=["builds"],
+    )
+    result = orch.DispatchTaskResult(
+        run_id="r1", status="complete",
+        task_report={"status": "complete", "summary": "done"},
+    )
+    evidence = RunToolEvidence(
+        commands=[RunCommandEvidence(
+            command="pytest", cwd="/ws", exit_code=1, timed_out=False, is_error=False
+        )]
+    )
+    evaluated, summary = orch._evaluate_child_task_result(
+        task, result, evidence, has_build_toolchain=True
+    )
+    # Task still passes sync evaluation — advisory issues don't block
+    assert evaluated.status == "complete"
+    assert summary.report_status == "complete"
+    assert len(summary.advisory_issues) > 0
+    assert any("Failed command" in i for i in summary.advisory_issues)
+    assert any("Target path" in i for i in summary.advisory_issues)
+    assert any("Acceptance criteria" in i for i in summary.advisory_issues)
+
+
+def test_evaluate_child_task_result_no_advisory_when_clean():
+    """Clean report + matching evidence → no advisory issues (task 6.1)."""
+    from app.utils.dispatch_run_evidence import RunCommandEvidence, RunToolEvidence
+
+    task = DispatchPlanItem(
+        id="t1", agent_id="a", task="impl",
+        task_kind="code",
+        acceptance_criteria=["builds"],
+        target_paths=["src/foo.py"],
+        required_commands=[DispatchRequiredCommand(command="pytest")],
+    )
+    result = orch.DispatchTaskResult(
+        run_id="r1", status="complete",
+        task_report={
+            "status": "complete", "summary": "done",
+            "acceptanceResults": [{"criterion": "builds", "passed": True, "evidence": "ok"}],
+            "filesChanged": [{"path": "src/foo.py", "action": "modified"}],
+            "commandsRun": [{"command": "pytest", "exitCode": 0}],
+        },
+    )
+    evidence = RunToolEvidence(commands=[RunCommandEvidence(
+        command="pytest", cwd="/ws", exit_code=0, timed_out=False, is_error=False
+    )])
+    evaluated, summary = orch._evaluate_child_task_result(
+        task, result, evidence, has_build_toolchain=True
+    )
+    assert evaluated.status == "complete"
+    assert summary.advisory_issues == []
+
+
+def test_evaluate_with_llm_returns_pass_when_no_agent():
+    """_evaluate_with_llm returns (True, '') when ctx has no orchestrator agent (task 6.2)."""
+    import asyncio
+    from app.services.orchestrator import DagContext, _evaluate_with_llm
+    from app.services.task_result_report import TaskEvidenceSummary
+    from app.utils.dispatch_run_evidence import RunToolEvidence
+
+    task = DispatchPlanItem(id="t1", agent_id="a", task="do")
+    summary = TaskEvidenceSummary(
+        advisory_issues=["some issue"],
+        has_report=True,
+        report_status="complete",
+        evidence=RunToolEvidence(),
+    )
+    ctx = DagContext(
+        parent_run_id="r1",
+        conversation_id="c1",
+        trigger_message_id="m1",
+        workspace=None,  # type: ignore[arg-type]
+        cancel_event=asyncio.Event(),
+        orchestrator_agent=None,
+    )
+    import asyncio
+    passed, feedback = asyncio.run(
+        _evaluate_with_llm(task, {"status": "complete", "summary": "ok"}, summary, ctx)
+    )
+    assert passed is True
+    assert feedback == ""
+
+
+async def test_collect_text_from_stream_collects_text_parts():
+    """_collect_text_from_stream correctly assembles text from part.start + part.delta."""
+    from app.schemas.events import PartStartEvent
+    from app.utils.clock import now_ms
+    from app.utils.ids import new_message_id
+
+    async def fake_stream():
+        message_id = new_message_id()
+        yield PartStartEvent(
+            conversation_id="c1", timestamp=now_ms(),
+            message_id=message_id, part_index=0,
+            part={"type": "text", "content": "Hello "},
+        )
+        # Simulate a text.append delta
+        from dataclasses import dataclass
+
+        @dataclass
+        class FakeDelta:
+            type: str = "part.delta"
+            delta: dict = None  # type: ignore[assignment]
+
+        yield FakeDelta(delta={"type": "text.append", "text": "World"})
+
+    text = await orch._collect_text_from_stream(fake_stream())
+    assert text == "Hello World"
+
+
+def test_build_replan_context_includes_review_feedback():
+    """Replan context includes review task's report summary/blockers (tasks 4.2, 6.3)."""
+    views = [
+        dp.ReplanTaskView(
+            task_id="t1", agent_id="a", status="complete",
+        ),
+        dp.ReplanTaskView(
+            task_id="t2", agent_id="reviewer", status="failed",
+            error="review failed",
+            task_report={
+                "status": "failed",
+                "summary": "Code quality issues found",
+                "blockers": ["missing error handling", "no tests"],
+                "acceptanceResults": [
+                    {"criterion": "error handling", "passed": False, "evidence": "missing"},
+                    {"criterion": "tests", "passed": True, "evidence": "ok"},
+                ],
+            },
+        ),
+    ]
+    ctx = dp.build_replan_context(views, [])
+    # Review feedback is included
+    assert "<report_summary>Code quality issues found</report_summary>" in ctx
+    assert "<blocker>missing error handling</blocker>" in ctx
+    assert "<blocker>no tests</blocker>" in ctx
+    assert "<failed_criterion>error handling</failed_criterion>" in ctx
+    # Passed criteria are NOT included as <failed_criterion>
+    # Only the failed criterion "error handling" should appear as an XML element
+    assert "<failed_criterion>error handling</failed_criterion>" in ctx
+    # The passed criterion "tests" should not appear as a failed_criterion element
+    assert "<failed_criterion>tests</failed_criterion>" not in ctx
+
+
+def test_should_replan_triggers_on_review_task_failed():
+    """Review task failed → should_replan returns True (tasks 4.1, 4.3, 6.3)."""
+    views = [
+        dp.ReplanTaskView(task_id="t1", agent_id="a", status="complete"),
+        dp.ReplanTaskView(
+            task_id="t2", agent_id="reviewer", status="failed",
+            error="review found issues",
+            task_report={"status": "failed", "summary": "issues"},
+        ),
+    ]
+    assert dp.should_replan(views, []) is True
+
+
+def test_should_replan_true_on_complete_with_blockers():
+    """A complete task with blockers in its report triggers replan.
+
+    This covers the scenario where a review agent reports status='complete'
+    (the review action itself was done) but includes blockers (critical
+    issues found) that require the implementation task to be fixed.
+    """
+    views = [
+        dp.ReplanTaskView(task_id="t1", agent_id="designer", status="complete"),
+        dp.ReplanTaskView(
+            task_id="t2", agent_id="reviewer", status="complete",
+            task_report={
+                "status": "complete",
+                "summary": "Review completed, found critical issues",
+                "blockers": ["Canvas 水波纵向压缩", "Canvas水边界与CSS不同步"],
+            },
+        ),
+    ]
+    assert dp.should_replan(views, []) is True
+
+
+def test_should_replan_false_when_complete_no_blockers():
+    """A complete task with no blockers does NOT trigger replan."""
+    views = [
+        dp.ReplanTaskView(task_id="t1", agent_id="a", status="complete"),
+        dp.ReplanTaskView(
+            task_id="t2", agent_id="reviewer", status="complete",
+            task_report={"status": "complete", "summary": "All good", "blockers": []},
+        ),
+    ]
+    assert dp.should_replan(views, []) is False
+
+
+def test_build_replan_context_includes_complete_task_with_blockers():
+    """Replan context expands complete tasks that have blockers."""
+    views = [
+        dp.ReplanTaskView(task_id="t1", agent_id="designer", status="complete"),
+        dp.ReplanTaskView(
+            task_id="t2", agent_id="reviewer", status="complete",
+            task_report={
+                "status": "complete",
+                "summary": "Found critical issues",
+                "blockers": ["Canvas 水波纵向压缩", "CSS不同步"],
+            },
+        ),
+    ]
+    ctx = dp.build_replan_context(views, [])
+    # The complete task with blockers should be expanded (not self-closing)
+    assert 'has_review_blockers="true"' in ctx
+    assert "<report_summary>Found critical issues</report_summary>" in ctx
+    assert "<blocker>Canvas 水波纵向压缩</blocker>" in ctx
+    assert "<blocker>CSS不同步</blocker>" in ctx
+    # The clean complete task should still be self-closing
+    assert '<task id="t1" agent="designer" status="complete" />' in ctx
+
+
+def test_to_replan_views_includes_task_report():
+    """_to_replan_views passes task_report from result to view (task 4.2)."""
+    plan_by_id = {
+        "t1": DispatchPlanItem(id="t1", agent_id="a", task="impl"),
+    }
+    results = {
+        "t1": orch.DispatchTaskResult(
+            run_id="r1", status="failed",
+            error="boom",
+            task_report={"status": "failed", "summary": "broke", "blockers": ["db"]},
+        ),
+    }
+    views = orch._to_replan_views(plan_by_id, results)
+    assert len(views) == 1
+    assert views[0].task_id == "t1"
+    assert views[0].status == "failed"
+    assert views[0].error == "boom"
+    assert views[0].task_report == {"status": "failed", "summary": "broke", "blockers": ["db"]}
+
+
+def test_to_replan_views_handles_missing_result():
+    """_to_replan_views handles tasks with no result (skipped)."""
+    plan_by_id = {
+        "t1": DispatchPlanItem(id="t1", agent_id="a", task="impl"),
+    }
+    views = orch._to_replan_views(plan_by_id, {})
+    assert views[0].status == "skipped"
+    assert views[0].task_report is None
+    assert views[0].error is None
 
 
 # ─── e2e dispatch with a scripted fake adapter ────────────────────────────────
@@ -507,3 +765,331 @@ async def test_orchestrator_plan_dispatch_aggregate_e2e(orch_setup):
             await session.execute(select(AgentRun).where(AgentRun.id == handle.run_id))
         ).scalar_one()
     assert run.status == "complete"
+
+
+# ─── dispatch.retry event test ───────────────────────────────────────────────
+class _RetryOnceAdapter:
+    """Fake adapter: plan stage emits plan_tasks; child stage fails on the first
+    call then succeeds on the second; aggregate emits a text message."""
+
+    def __init__(self, name: str, plan_tasks: list[dict]) -> None:
+        self._name = name
+        self._plan_tasks = plan_tasks
+        self._child_call_count = 0
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    async def stream(self, input, cancel_event):  # noqa: A002
+        from app.schemas.events import (
+            MessageEndEvent,
+            MessageStartEvent,
+            PartStartEvent,
+            ToolCallEvent,
+        )
+        from app.services.task_result_report import REPORT_TASK_RESULT_TOOL_NAME
+        from app.utils.clock import now_ms
+        from app.utils.ids import new_message_id, new_tool_call_id
+
+        tools = set(input.tool_names)
+        message_id = new_message_id()
+        yield MessageStartEvent(
+            conversation_id=input.conversation_id,
+            timestamp=now_ms(),
+            message_id=message_id,
+            agent_id=input.agent_id,
+            run_id=input.run_id,
+        )
+
+        if "plan_tasks" in tools:
+            yield ToolCallEvent(
+                conversation_id=input.conversation_id,
+                timestamp=now_ms(),
+                message_id=message_id,
+                call_id=new_tool_call_id(),
+                tool_name="plan_tasks",
+                args={"tasks": self._plan_tasks},
+            )
+            return
+
+        if REPORT_TASK_RESULT_TOOL_NAME in tools:
+            self._child_call_count += 1
+            call_id = new_tool_call_id()
+            if self._child_call_count == 1:
+                # First attempt: report failure → harness will retry.
+                yield ToolCallEvent(
+                    conversation_id=input.conversation_id,
+                    timestamp=now_ms(),
+                    message_id=message_id,
+                    call_id=call_id,
+                    tool_name=REPORT_TASK_RESULT_TOOL_NAME,
+                    args={"status": "failed", "summary": "first attempt broke"},
+                )
+            else:
+                # Second attempt: report success.
+                yield ToolCallEvent(
+                    conversation_id=input.conversation_id,
+                    timestamp=now_ms(),
+                    message_id=message_id,
+                    call_id=call_id,
+                    tool_name=REPORT_TASK_RESULT_TOOL_NAME,
+                    args={"status": "complete", "summary": "child done"},
+                )
+            return
+
+        # aggregate stage
+        yield PartStartEvent(
+            conversation_id=input.conversation_id,
+            timestamp=now_ms(),
+            message_id=message_id,
+            part_index=0,
+            part={"type": "text", "content": "最终总结"},
+        )
+        yield MessageEndEvent(
+            conversation_id=input.conversation_id,
+            timestamp=now_ms(),
+            message_id=message_id,
+        )
+
+
+@pytest_asyncio.fixture
+async def retry_setup(db, tmp_path):
+    """Same as orch_setup but uses _RetryOnceAdapter so the child fails first."""
+    from app.adapters.registry import agent_registry
+    from app.db.engine import get_db
+    from app.db.models import Agent, Conversation, Message, Workspace
+    from app.utils.clock import now_ms
+    from app.utils.ids import (
+        new_conversation_id,
+        new_message_id,
+        new_workspace_id,
+    )
+
+    plan_tasks = [{"id": "t1", "agentId": "ag_worker_r", "task": "写一段说明文档"}]
+    agent_registry.register(_RetryOnceAdapter("retry_scripted", plan_tasks))
+
+    now = now_ms()
+    ws_root = tmp_path / "ws_r"
+    ws_root.mkdir(parents=True, exist_ok=True)
+    conv_id = new_conversation_id()
+    msg_id = new_message_id()
+
+    async with get_db() as session:
+        orch_agent = Agent(
+            id="ag_orch_r",
+            name="OrchestratorR",
+            avatar="O",
+            description="orch",
+            system_prompt="orch prompt",
+            adapter_name="retry_scripted",
+            is_builtin=True,
+            is_orchestrator=True,
+            supports_vision=False,
+            created_at=now,
+        )
+        orch_agent.capabilities_list = []
+        orch_agent.tool_names_list = ["plan_tasks", "ask_user"]
+
+        worker = Agent(
+            id="ag_worker_r",
+            name="WorkerR",
+            avatar="W",
+            description="worker",
+            system_prompt="worker prompt",
+            adapter_name="retry_scripted",
+            is_builtin=False,
+            is_orchestrator=False,
+            supports_vision=False,
+            created_at=now,
+        )
+        worker.capabilities_list = []
+        worker.tool_names_list = []
+
+        session.add(orch_agent)
+        session.add(worker)
+
+        conv = Conversation(
+            id=conv_id,
+            title="T",
+            mode="group",
+            archived=False,
+            fs_write_approval_mode="auto",
+            created_at=now,
+            updated_at=now,
+        )
+        conv.agent_ids_list = ["ag_orch_r", "ag_worker_r"]
+        conv.pinned_message_ids_list = []
+        conv.bookmarked_message_ids_list = []
+        session.add(conv)
+        session.add(
+            Workspace(
+                id=new_workspace_id(),
+                conversation_id=conv_id,
+                root_path=str(ws_root),
+                mode="sandbox",
+                bound_path=None,
+                created_at=now,
+            )
+        )
+        trigger = Message(
+            id=msg_id,
+            conversation_id=conv_id,
+            role="user",
+            agent_id=None,
+            status="complete",
+            run_id=None,
+            created_at=now,
+        )
+        trigger.parts_list = [{"type": "text", "content": "帮我写文档"}]
+        trigger.mentioned_agent_ids_list = []
+        session.add(trigger)
+
+    return {"conversation_id": conv_id, "agent_id": "ag_orch_r", "trigger_message_id": msg_id}
+
+
+async def test_dispatch_retry_event_emitted(retry_setup):
+    """Child task fails first attempt → dispatch.retry emitted before second
+    dispatch.start with correct attempt/error fields."""
+    from app.services.agent_runner import AgentRunnerImpl
+    from app.services.event_bus import event_bus
+    from app.services.pending_dispatch_plans import pending_dispatch_plans
+
+    collected = []
+
+    async def _drain(queue):
+        try:
+            while True:
+                ev = await asyncio.wait_for(queue.get(), timeout=3.0)
+                collected.append(ev)
+                if getattr(ev, "type", None) == "dispatch.plan.pending":
+                    pending_dispatch_plans.approve(ev.pending_plan.id)
+        except TimeoutError:
+            return
+
+    async with event_bus.subscribe() as queue:
+        drainer = asyncio.create_task(_drain(queue))
+        runner = AgentRunnerImpl()
+        handle = runner.run(
+            agent_id=retry_setup["agent_id"],
+            conversation_id=retry_setup["conversation_id"],
+            trigger_message_id=retry_setup["trigger_message_id"],
+        )
+        entry = None
+        from app.services import agent_runner as ar
+
+        for _ in range(200):
+            entry = ar._active_runs.get(handle.run_id)
+            if entry is None:
+                break
+            await asyncio.sleep(0.02)
+        if entry is not None:
+            await entry[0]
+        await asyncio.sleep(0.1)
+        await drainer
+
+    types = [getattr(e, "type", None) for e in collected]
+    assert "dispatch.retry" in types
+
+    retry_event = next(e for e in collected if getattr(e, "type", None) == "dispatch.retry")
+    assert retry_event.attempt == 2
+    assert retry_event.max_attempts == 4
+    assert retry_event.task_id == "t1"
+    assert retry_event.error is not None
+    assert "first attempt broke" in retry_event.error
+
+    # Verify retry appears before the second dispatch.start
+    retry_idx = next(i for i, e in enumerate(collected) if getattr(e, "type", None) == "dispatch.retry")
+    start_indices = [
+        i for i, e in enumerate(collected) if getattr(e, "type", None) == "dispatch.start"
+    ]
+    assert len(start_indices) >= 2
+    assert retry_idx < start_indices[1]
+
+    # Final dispatch.end should be complete
+    dispatch_end = next(e for e in collected if getattr(e, "type", None) == "dispatch.end")
+    assert dispatch_end.status == "complete"
+
+
+# ─── _collect_existing_files (target_paths fallback) ──────────────────────────
+import os
+import tempfile
+
+
+def test_collect_existing_files_finds_existing_file():
+    """_collect_existing_files returns evidence for files that exist in the workspace."""
+    with tempfile.TemporaryDirectory() as workspace_root:
+        # Create a file in the workspace
+        file_path = os.path.join(workspace_root, "index.html")
+        with open(file_path, "w") as f:
+            f.write("<html></html>")
+
+        result = orch._collect_existing_files(["index.html"], workspace_root)
+        assert len(result) == 1
+        assert result[0].path == "index.html"
+        assert os.path.isabs(result[0].absolute_path)
+        assert result[0].bytes is not None and result[0].bytes > 0
+        assert result[0].applied == "existing"
+
+
+def test_collect_existing_files_returns_empty_for_missing_files():
+    """_collect_existing_files returns empty list when files don't exist."""
+    with tempfile.TemporaryDirectory() as workspace_root:
+        result = orch._collect_existing_files(["nonexistent.html"], workspace_root)
+        assert len(result) == 0
+
+
+def test_collect_existing_files_skips_paths_outside_workspace():
+    """_collect_existing_files rejects paths that escape the workspace root."""
+    with tempfile.TemporaryDirectory() as workspace_root:
+        # Create a file outside the workspace
+        outside_dir = tempfile.mkdtemp()
+        try:
+            outside_file = os.path.join(outside_dir, "evil.txt")
+            with open(outside_file, "w") as f:
+                f.write("malicious")
+
+            # Try absolute path escape
+            result = orch._collect_existing_files([outside_file], workspace_root)
+            assert len(result) == 0
+
+            # Try relative path escape
+            result2 = orch._collect_existing_files(["../../../etc/passwd"], workspace_root)
+            assert len(result2) == 0
+        finally:
+            import shutil
+
+            shutil.rmtree(outside_dir, ignore_errors=True)
+
+
+def test_collect_existing_files_handles_mixed_paths():
+    """_collect_existing_files handles a mix of existing and non-existing paths."""
+    with tempfile.TemporaryDirectory() as workspace_root:
+        # Create one file
+        with open(os.path.join(workspace_root, "app.py"), "w") as f:
+            f.write("print('hello')")
+
+        result = orch._collect_existing_files(["app.py", "missing.txt"], workspace_root)
+        assert len(result) == 1
+        assert result[0].path == "app.py"
+
+
+def test_collect_existing_files_handles_empty_list():
+    """_collect_existing_files returns empty list for empty input."""
+    with tempfile.TemporaryDirectory() as workspace_root:
+        result = orch._collect_existing_files([], workspace_root)
+        assert len(result) == 0
+
+
+def test_collect_existing_files_handles_subdirectory_paths():
+    """_collect_existing_files finds files in subdirectories."""
+    with tempfile.TemporaryDirectory() as workspace_root:
+        # Create a file in a subdirectory
+        subdir = os.path.join(workspace_root, "src")
+        os.makedirs(subdir)
+        with open(os.path.join(subdir, "main.py"), "w") as f:
+            f.write("print('main')")
+
+        result = orch._collect_existing_files(["src/main.py"], workspace_root)
+        assert len(result) == 1
+        assert result[0].path == "src/main.py"

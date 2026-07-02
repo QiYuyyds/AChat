@@ -2,7 +2,7 @@
 
 ## Purpose
 
-AChat is a local multi-agent collaboration app that turns agent work into an IM-style workspace. Users create single-agent or group conversations, route messages to Claude Code, Codex, or custom OpenAI-compatible agents, preview generated artifacts, and approve file changes inside local workspaces.
+AChat is a local multi-agent collaboration app that turns agent work into an IM-style workspace. Users create single-agent or group conversations, route messages to Claude Code, Codex, or custom OpenAI-compatible agents (all behind a unified adapter layer), preview generated artifacts, and approve file changes inside local workspaces.
 
 ## Canonical Spec Layout
 
@@ -27,13 +27,15 @@ OpenSpec capability specs under `openspec/specs/` are the concise, testable cont
 
 ## Technology
 
-- Next.js 16 App Router + React 19
-- TypeScript strict mode
-- SQLite + Drizzle + `better-sqlite3`
-- SSE for stream transport
-- Zustand + Immer for client state
-- Adapter SDKs: `@anthropic-ai/claude-agent-sdk`, `@openai/codex-sdk`, `openai`
-- Desktop shell: Electron 33
+- Frontend: Next.js 16 App Router + React 19, TypeScript strict, Tailwind v4 + shadcn/ui, Zustand + Immer, SSE
+- Backend: Python 3.11+ / FastAPI, SQLAlchemy 2.0 async + asyncpg, **PostgreSQL 16**, Pydantic v2, ruff, pytest
+- Adapter routes (see `specs/05-adapter-interface.md`):
+  - **CLI subprocess route** — Claude Code (`spawn claude -p --output-format stream-json`) and Codex (`spawn codex app-server --listen stdio://`, JSON-RPC 2.0). The CLI owns tool execution, sandbox, and approval; AChat translates CLI events into `StreamEvent`.
+  - **SDK route** — Custom adapter uses the `openai` Python SDK (Chat Completions) with an AChat-managed tool loop. Covers DeepSeek / OpenAI / 火山方舟 / OpenRouter / SiliconFlow etc.
+  - **Mock route** — scripted event stream for development without token cost.
+- AChat MCP Bridge (`backend/app/mcp_bridge.py`) exposes platform tools (`report_task_result`, `write_artifact`, `ask_user`, …) to CLI agents via stdio MCP.
+- Infrastructure (Docker Compose, independently degradable): Milvus (vector) · Elasticsearch (BM25) · Neo4j (KG) · Kafka (optional)
+- Desktop shell: Electron 33; Mobile companion: Capacitor
 
 ## Rules
 

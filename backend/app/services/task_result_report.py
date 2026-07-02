@@ -9,6 +9,7 @@ evidence recorded during the run (evaluate half, consumed by AgentRunner in
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -137,6 +138,12 @@ def normalize_task_result_report(data: ReportTaskResultArgs) -> dict[str, Any]:
 
 def parse_and_normalize(value: Any) -> tuple[dict[str, Any] | None, str | None]:
     """Validate raw tool args → (normalized report, None) or (None, error)."""
+    # MCP tools return results as JSON strings; SDK tools pass dicts directly.
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as e:
+            return None, f"Invalid JSON in task result: {e}"
     try:
         parsed = ReportTaskResultArgs.model_validate(value)
     except ValidationError as err:
@@ -146,13 +153,30 @@ def parse_and_normalize(value: Any) -> tuple[dict[str, Any] | None, str | None]:
     return normalize_task_result_report(parsed), None
 
 
-# ─── Completion gating (port of evaluateTaskResultReport) ─────────────────────
+# ─── Advisory evidence collector (replaces fail-fast gating) ──────────────────
 
 
 @dataclass
 class TaskResultReportEvaluation:
+    """Deprecated: kept for backward compatibility. Use TaskEvidenceSummary."""
     ok: bool
     error: str | None = None
+
+
+@dataclass
+class TaskEvidenceSummary:
+    """Advisory evidence collected from a child task's report + tool evidence.
+
+    Hard rules (② report.status != "complete" and ④ acceptanceResults
+    passed=false) are surfaced via *report_status* — the caller checks
+    ``has_report`` and ``report_status`` to decide hard fails.
+    Soft rules (③⑤⑥⑦⑧⑨) are collected into *advisory_issues* for the
+    Orchestrator LLM to judge semantically.
+    """
+    advisory_issues: list[str]
+    has_report: bool
+    report_status: str | None
+    evidence: RunToolEvidence
 
 
 # build/compile/test/typecheck/lint command shapes that count as verification
@@ -197,6 +221,28 @@ def _normalize_command(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip())
 
 
+# Command families where the first two tokens form the "prefix" (e.g.
+# `python -c`, `pnpm run`).  For all other commands, only the first token is
+# the prefix (e.g. `pytest`, `tsc`).
+_TWO_TOKEN_PREFIX_COMMANDS = frozenset({
+    "python", "python3", "pnpm", "npm", "yarn", "bun", "node",
+})
+
+
+def _command_prefix(command: str) -> str:
+    """Extract the prefix of a command for prefix-based failed-command recovery.
+
+    For ``python``/``python3``/``pnpm``/``npm``/``yarn``/``bun``/``node``, the
+    first **two** tokens form the prefix (e.g. ``python -c``, ``pnpm run``).
+    For all other commands, only the first token is the prefix.
+    """
+    normalized = _normalize_command(command)
+    parts = normalized.split()
+    if len(parts) >= 2 and parts[0] in _TWO_TOKEN_PREFIX_COMMANDS:
+        return " ".join(parts[:2])
+    return parts[0] if parts else normalized
+
+
 def _paths_match(expected: str, actual: str) -> bool:
     e = _normalize_path(expected)
     a = _normalize_path(actual)
@@ -235,14 +281,37 @@ def has_successful_verification_command_evidence(evidence: RunToolEvidence) -> b
 
 
 def _is_failed_command(command: RunCommandEvidence) -> bool:
-    return command.is_error or command.timed_out or command.exit_code != 0
+    # A command counts as a real failure only when it produced a concrete
+    # failure signal: a non-zero exit code, a timeout, or a tool error that
+    # carries an actual message. An "empty" tool error (is_error=True but no
+    # error text AND no exit code) is environment/harness noise — e.g. a
+    # subprocess spawn that failed for infra reasons — not evidence that the
+    # task itself failed. Treating those as failures made the orchestrator
+    # reject perfectly good work on every attempt.
+    if command.timed_out:
+        return True
+    if command.exit_code is not None and command.exit_code != 0:
+        return True
+    if command.is_error and (command.error or "").strip():
+        return True
+    return False
 
 
 def _has_later_successful_command(
     failed: RunCommandEvidence, failed_index: int, commands: list[RunCommandEvidence]
 ) -> bool:
+    """Check if a failed command is recovered by a later successful command.
+
+    Recovery requires either:
+    - Exact command-string match (original behavior), OR
+    - Same command prefix (first one or two tokens) with a successful result.
+    """
+    failed_prefix = _command_prefix(failed.command)
     return any(
-        _commands_match(failed.command, c.command)
+        (
+            _commands_match(failed.command, c.command)
+            or _command_prefix(c.command) == failed_prefix
+        )
         and not c.is_error
         and not c.timed_out
         and c.exit_code == 0
@@ -308,9 +377,12 @@ def _evidence_mentions(required: str, report: dict[str, Any], evidence: RunToolE
 
 
 def _required_evidence_satisfied(
-    required: str, report: dict[str, Any], evidence: RunToolEvidence
+    required: str, report: dict[str, Any], evidence: RunToolEvidence,
+    has_build_toolchain: bool = True,
 ) -> bool:
     if required.strip() == CODE_TASK_RUNNABLE_REQUIRED_EVIDENCE:
+        if not has_build_toolchain:
+            return True
         return has_successful_verification_command_evidence(evidence)
     return _evidence_mentions(required, report, evidence)
 
@@ -325,21 +397,55 @@ def evaluate_task_result_report(
     task: DispatchPlanItem,
     report: dict[str, Any] | None,
     evidence: RunToolEvidence | None = None,
-) -> TaskResultReportEvaluation:
-    """Gate a child task's completion against its contract + objective evidence."""
+    has_build_toolchain: bool = True,
+) -> TaskEvidenceSummary:
+    """Collect advisory evidence from a child task's report + tool evidence.
+
+    Returns a :class:`TaskEvidenceSummary` with:
+    - *has_report* / *report_status*: hard-rule signals for the caller.
+      ② ``report.status != "complete"`` and ④ ``acceptanceResults`` with
+      ``passed=false`` are surfaced here — the caller checks these for
+      hard fails.
+    - *advisory_issues*: soft-rule findings (③⑤⑥⑦⑧⑨) collected for the
+      Orchestrator LLM to judge semantically. These do NOT block.
+    """
     if evidence is None:
         evidence = RunToolEvidence()
 
+    # ① No report — hard fail signal.
     if not report:
-        return TaskResultReportEvaluation(
-            ok=False, error=f'Task "{task.id}" completed without report_task_result'
+        return TaskEvidenceSummary(
+            advisory_issues=[],
+            has_report=False,
+            report_status=None,
+            evidence=evidence,
         )
 
-    if report.get("status") != "complete":
-        return TaskResultReportEvaluation(
-            ok=False, error=_format_reported_non_completion(task.id, report)
+    # ② report.status != "complete" — hard fail signal (caller checks report_status).
+    report_status = report.get("status")
+    if report_status != "complete":
+        return TaskEvidenceSummary(
+            advisory_issues=[],
+            has_report=True,
+            report_status=report_status,
+            evidence=evidence,
         )
 
+    # ④ acceptanceResults with passed=false — hard fail signal.
+    # Override report_status to "failed" so the caller's check catches it.
+    failed_acceptance = [r for r in report.get("acceptanceResults") or [] if not r.get("passed")]
+    if failed_acceptance:
+        return TaskEvidenceSummary(
+            advisory_issues=[],
+            has_report=True,
+            report_status="failed",
+            evidence=evidence,
+        )
+
+    # ─── Advisory checks (③⑤⑥⑦⑧⑨) — collected, NOT blocking ─────────
+    advisory_issues: list[str] = []
+
+    # ③ Failed bash commands (not recovered by a later same-prefix success).
     failed_commands = [
         command
         for index, command in enumerate(evidence.commands)
@@ -360,41 +466,28 @@ def evaluate_task_result_report(
             + ")"
             for c in failed_commands
         )
-        return TaskResultReportEvaluation(
-            ok=False, error=f'Task "{task.id}" has failed command evidence: {details}'
-        )
+        advisory_issues.append(f"Failed command evidence: {details}")
 
-    failed_acceptance = [r for r in report.get("acceptanceResults") or [] if not r.get("passed")]
-    if failed_acceptance:
-        details = "; ".join(
-            f"{r.get('criterion')} ({r.get('evidence')})" for r in failed_acceptance
-        )
-        return TaskResultReportEvaluation(
-            ok=False, error=f'Task "{task.id}" did not satisfy acceptance criteria: {details}'
-        )
-
+    # ⑤ Criteria coverage — declared criteria not exact-matched in report.
     criteria = task.acceptance_criteria or []
     if criteria:
         reported = {r.get("criterion", "").strip() for r in report.get("acceptanceResults") or []}
         missing = [c for c in criteria if c.strip() not in reported]
         if missing:
-            return TaskResultReportEvaluation(
-                ok=False,
-                error=(
-                    f'Task "{task.id}" report is missing acceptance criteria '
-                    f"result(s): {'; '.join(missing)}"
-                ),
+            advisory_issues.append(
+                f"Acceptance criteria not exact-matched in report: {'; '.join(missing)}"
             )
 
+    # ⑥ Target paths — declared paths not found in file-write evidence.
     missing_paths = [
         p for p in (task.target_paths or []) if not _has_path_evidence(p, report, evidence)
     ]
     if missing_paths:
-        return TaskResultReportEvaluation(
-            ok=False,
-            error=f'Task "{task.id}" report is missing target path evidence: {"; ".join(missing_paths)}',
+        advisory_issues.append(
+            f"Target path evidence not found: {'; '.join(missing_paths)}"
         )
 
+    # ⑦ Required commands — declared commands without successful evidence.
     missing_commands = [
         required
         for required in (task.required_commands or [])
@@ -402,31 +495,44 @@ def evaluate_task_result_report(
     ]
     if missing_commands:
         details = "; ".join(required.command for required in missing_commands)
-        return TaskResultReportEvaluation(
-            ok=False,
-            error=f'Task "{task.id}" report is missing successful command evidence: {details}',
+        advisory_issues.append(
+            f"Required command evidence not found: {details}"
         )
 
-    if is_code_implementation_task(task) and not has_successful_verification_command_evidence(
-        evidence
+    # ⑧ Verification command gate — code task with project output but no
+    # whitelisted build/test/lint command succeeded. Advisory only.
+    produces_project = any(
+        (o.type == "project") for o in (task.expected_outputs or [])
+    )
+    declared_required_commands = bool(task.required_commands)
+    if (
+        has_build_toolchain
+        and produces_project
+        and not declared_required_commands
+        and is_code_implementation_task(task)
+        and not has_successful_verification_command_evidence(evidence)
     ):
-        return TaskResultReportEvaluation(
-            ok=False,
-            error=(
-                f'Task "{task.id}" is missing successful runnable verification command '
-                "evidence: build/compile/test/typecheck/lint command exitCode=0"
-            ),
+        advisory_issues.append(
+            "No whitelisted verification command (build/compile/test/typecheck/lint) "
+            "found with exitCode=0"
         )
 
+    # ⑨ Required evidence — declared evidence strings not found in report.
     missing_evidence = [
         required
         for required in (task.required_evidence or [])
-        if not _required_evidence_satisfied(required, report, evidence)
+        if not _required_evidence_satisfied(
+            required, report, evidence, has_build_toolchain
+        )
     ]
     if missing_evidence:
-        return TaskResultReportEvaluation(
-            ok=False,
-            error=f'Task "{task.id}" report is missing required evidence: {"; ".join(missing_evidence)}',
+        advisory_issues.append(
+            f"Required evidence not found: {'; '.join(missing_evidence)}"
         )
 
-    return TaskResultReportEvaluation(ok=True)
+    return TaskEvidenceSummary(
+        advisory_issues=advisory_issues,
+        has_report=True,
+        report_status="complete",
+        evidence=evidence,
+    )

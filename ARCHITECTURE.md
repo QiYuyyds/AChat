@@ -49,7 +49,7 @@
 | ORM | SQLAlchemy 2.0 async + asyncpg |
 | 验证 | Pydantic v2 + pydantic-settings |
 | 数据库 | **PostgreSQL 16**（asyncpg 驱动） |
-| AI SDK | `anthropic` · `openai`（Python SDK） |
+| AI 适配器 | Claude Code / Codex 走 **CLI 子进程**（stream-json / JSON-RPC 2.0）；Custom 走 `openai` Python SDK |
 | 包管理 | pip + venv（`pyproject.toml`） |
 
 ### 基础设施（Docker Compose）
@@ -80,7 +80,7 @@
 │     EventBus · ToolExecutor · RAGService · DocumentService ·       │
 │     PromptAssembler · ...                                          │
 │ L2  Agent Platform Adapters                   backend/app/adapters/ │  ← Python
-│     Claude · Custom(OpenAI 兼容) · Mock                            │
+│     ClaudeCLI · CodexCLI (CLI 子进程) · Custom (SDK) · Mock         │
 │ L1  Persistence                               backend/app/db/       │  ← Python
 │     SQLAlchemy + PostgreSQL + workspace 文件系统                    │
 ├──────────────────────────────────────────────────────────────────┤
@@ -180,12 +180,16 @@ backend/
 │   │   ├── network_hints.py       移动端网络发现
 │   │   └── pending_*.py           审批 / 提问 / 命令 / 计划 内存 store
 │   │
-│   ├── adapters/ (8)       【L2 适配器】stream(input, cancel_event) -> AsyncIterator[StreamEvent]
-│   │   ├── base.py          AdapterInput + ABC
+│   ├── adapters/ (11)      【L2 适配器】stream(input, cancel_event) -> AsyncIterator[StreamEvent]
+│   │   ├── base.py          AdapterInput + ABC + AdapterName (事件流契约)
+│   │   ├── cli_base.py      ★ CLI 适配器公共基类 (子进程生命周期 / 管道 / 超时取消 / 参数过滤)
+│   │   ├── conpty.py        Windows ConPTY 支持 (隐藏窗口 / 伪终端)
+│   │   ├── claude_adapter.py ★ ClaudeCLIAdapter: spawn `claude` stream-json 协议
+│   │   ├── codex_adapter.py  ★ CodexCLIAdapter: spawn `codex app-server` JSON-RPC 2.0
 │   │   ├── mock_adapter.py  Mock (脚本流, 不烧 token)
-│   │   ├── custom_adapter.py OpenAI 兼容 (DeepSeek / 火山方舟等, 工具循环 MAX_TURNS=8)
-│   │   ├── claude_adapter.py Anthropic Messages API
+│   │   ├── custom_adapter.py OpenAI 兼容 (DeepSeek / 火山方舟等, SDK 路线, 工具循环 MAX_TURNS=8)
 │   │   └── custom_provider_client.py / registry.py / session_store.py
+│   ├── mcp_bridge.py      ★ AChat MCP Bridge: stdio MCP Server, 把平台工具暴露给 CLI agent
 │   │
 │   ├── tools/ (18)         【工具系统】20 个内置工具
 │   │   ├── base.py / registry.py  ToolContext (asyncio.Event 取消) + 注册表

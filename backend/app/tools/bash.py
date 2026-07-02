@@ -35,6 +35,7 @@ from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
 from app.utils.dispatch_run_evidence import RunCommandEvidence, record_run_command
 from app.utils.platform import IS_WINDOWS
 from app.utils.security import find_banned_pattern
+from app.utils.subprocess_compat import spawn_subprocess
 from app.utils.workspace_utils import assert_path_within_workspace, get_effective_cwd
 
 _PLATFORM = "windows" if IS_WINDOWS else "posix"
@@ -239,8 +240,8 @@ async def _run_shell_command(
         kwargs["start_new_session"] = True
 
     try:
-        proc = await asyncio.create_subprocess_exec(cmd, *cmd_args, **kwargs)
-    except (OSError, ValueError) as e:
+        proc = await spawn_subprocess(cmd, *cmd_args, **kwargs)
+    except (OSError, ValueError, NotImplementedError) as e:
         error = f"Spawn failed: {e}"
         record_run_command(
             ctx.run_id,

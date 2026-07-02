@@ -105,21 +105,26 @@ Custom provider 实现在 `custom-provider-client.ts` 的 `resolveCustomProvider
 源：`src/shared/agent-builder-config.ts`
 
 ```typescript
-const AVAILABLE_AGENT_TOOLS = ['write_artifact', 'deploy_artifact', 'deploy_workspace', 'read_artifact', 'read_attachment', 'ask_user', 'fs_read', 'fs_write', 'bash'] as const
+const AVAILABLE_AGENT_TOOLS = ['write_artifact', 'deploy_artifact', 'deploy_workspace', 'read_artifact', 'read_attachment', 'ask_user', 'plan_tasks', 'fs_list', 'fs_read', 'fs_write', 'fs_edit', 'fs_grep', 'fs_glob', 'bash', 'web_search'] as const
 ```
 
-UI 当前允许勾选产物、附件和 workspace 相关常用工具。`plan_tasks` 不在列表里 —— 因为它是 Orchestrator 专用，自建 agent 不应装备。
+UI 允许勾选产物、附件、workspace 和本地代码工具。`plan_tasks` 在列表里但不在任何角色预设中——它是 Orchestrator 专用，自建 agent 只在勾选 Orchestrator 角色时自动装备。
 
 每个勾选项展示面向用户的中文 label + 一句权限说明 + 原始工具名（来自同文件的 `AGENT_TOOL_META`），而不是只露裸工具名。
 
-工具区提供 4 个一键预设：
+工具区提供 9 个角色预设，每个预设绑定工具集 + 系统提示词模板：
 
 | 预设 | 工具 | 用途 |
 |---|---|---|
-| 全栈通用 | 全部 `AVAILABLE_AGENT_TOOLS` | 默认；既能创建 artifact，也能直接读写本地 workspace 并运行命令 |
-| 本地代码 | `deploy_workspace` / `read_artifact` / `read_attachment` / `ask_user` / `fs_read` / `fs_write` / `bash` | 读取上游产物，直接在当前 workspace 初始化、修改、验证项目源码，并部署已构建静态目录 |
+| 全栈通用 | 全部 `AVAILABLE_AGENT_TOOLS`（排除 `plan_tasks` / `web_search`） | 默认；既能创建 artifact，也能直接读写本地 workspace 并运行命令 |
+| 本地代码 | `deploy_workspace` / `read_artifact` / `read_attachment` / `ask_user` / `fs_list` / `fs_read` / `fs_write` / `fs_edit` / `fs_grep` / `fs_glob` / `bash` | 读取上游产物，直接在当前 workspace 初始化、修改、验证项目源码，并部署已构建静态目录 |
 | 产物交付 | `write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `read_attachment` / `ask_user` | PRD、设计稿、网页原型、文档等聊天内交付；也可发布已有 workspace 静态目录 |
-| 审查验证 | `read_artifact` / `read_attachment` / `ask_user` / `fs_read` / `bash` | 读取产物或本地代码并运行检查，不默认写文件 |
+| 审查验证 | `read_artifact` / `read_attachment` / `ask_user` / `fs_list` / `fs_read` / `bash` | 读取产物或本地代码并运行检查，不默认写文件 |
+| 技术写作 | `write_artifact` / `read_artifact` / `read_attachment` / `ask_user` / `fs_read` / `fs_list` / `fs_glob` / `fs_grep` | 采集源码信息产出结构化文档，不修改源码 |
+| 测试 QA | `bash` / `fs_read` / `fs_list` / `fs_glob` / `fs_grep` / `fs_write` / `read_artifact` / `ask_user` / `write_artifact` | 编写测试用例并运行验证；含 `fs_write` 但不含 `fs_edit`（不改业务代码） |
+| 前端/设计 | `write_artifact` / `deploy_artifact` / `read_artifact` / `ask_user` / `fs_read` / `fs_list` / `fs_glob` / `fs_grep` / `fs_write` / `fs_edit` | 创建 UI 产物与修改前端源码 |
+| 调研员 | `web_search` / `ask_user` / `read_attachment` / `write_artifact` / `read_artifact` | 联网搜索与交叉验证，不使用 fs_*/bash |
+| 数据分析 | `bash` / `fs_read` / `fs_write` / `fs_list` / `fs_glob` / `read_attachment` / `write_artifact` / `ask_user` | 清洗数据、运行处理脚本、生成图表 |
 
 **新增工具时**：除了在 `src/server/tools/registry.ts` 注册，还要在 `src/shared/agent-builder-config.ts` 的 `AVAILABLE_AGENT_TOOLS` 加上、并在 `AGENT_TOOL_META` 补一条文案，才能在 UI 正常勾选（详见 Spec 07 「新增工具步骤」）。
 
@@ -230,7 +235,7 @@ zod 校验 body 在每个 route 文件内。
 
 ## 表单 UX 注意点
 
-- **新建 Custom agent 预填 system prompt**：创建态默认填入一段可编辑模板，强调先判断上下文、少而准地用工具、产物走 `write_artifact`、网页完成后 `deploy_artifact`、`fs_write` / `bash` 只在 workspace 范围内必要时使用。用户可直接替换
+- **新建 Custom agent 预填 system prompt**：创建态默认填入全栈通用角色的系统提示词模板（6 条工作原则骨架），强调先判断上下文、少而准地用工具、产物走 `write_artifact`、网页完成后 `deploy_artifact`、`fs_write` / `bash` 只在 workspace 范围内必要时使用。切换角色预设时自动覆盖为该角色的模板，用户仍可手动微调
 - **Provider 切换重置 modelId**：避免 `provider=openai, modelId=deepseek-v4-flash` 这种串味；`openai-compatible` 默认 modelId 为空，强制用户填写目标平台模型名
 - **API key 输入是 password 类型 + autocomplete=off**：防止浏览器把它存进 form autofill
 - **错误提示就近显示**：submit 失败时在 footer 上方显示 inline red banner，不用 toast

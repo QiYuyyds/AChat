@@ -205,3 +205,24 @@ class RunUsage(BaseModel):
     model: str | None = None
 
     model_config = {"populate_by_name": True}
+
+
+# ─── Context Summary ─────────────────────────────────────
+class ContextSummaryRecord(BaseModel):
+    """A stored conversation context summary (compaction output).
+
+    Wire shape mirrors the frontend ContextSummaryRow (camelCase).
+    """
+
+    id: str
+    conversation_id: str = Field(alias="conversationId")
+    summary: str
+    covered_until_message_id: str = Field(alias="coveredUntilMessageId")
+    covered_until_created_at: int = Field(alias="coveredUntilCreatedAt")
+    source_message_count: int = Field(alias="sourceMessageCount")
+    token_estimate: int = Field(alias="tokenEstimate")
+    model_provider: str | None = Field(default=None, alias="modelProvider")
+    model_id: str | None = Field(default=None, alias="modelId")
+    created_at: int = Field(alias="createdAt")
+
+    model_config = {"populate_by_name": True}

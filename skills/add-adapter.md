@@ -1,39 +1,45 @@
 # Skill：新增一个 Adapter
 
-> **目的**:接入一个新的 agent 平台(如 Codex、OpenCode、Gemini CLI),让它能像 ClaudeCode / CustomAgent 一样被 Agent 选用。
-> **契约文档**:`specs/05-adapter-interface.md`。本指南是它的「落地配方」,并修正了 spec 与真实代码已漂移的几处(见 §坑 2)。
-> *行号基线:commit `b60c4f8`。对不上时按符号名搜索。*
+> **目的**：接入一个新的 agent 平台（如 OpenCode、Hermes、OpenClaw、Gemini CLI），让它能像 Claude Code / Codex 一样被 Agent 选用。
+> **契约文档**：`specs/05-adapter-interface.md`。本指南是它的「落地配方」。
+> **基线**：Python 后端，CLI 子进程路线。参考 `backend/app/adapters/`。
 
 ---
 
 ## 何时用 / 何时不用
 
-- ✅ 要接一个**真正的 agent 平台**(自带 agentic 循环、工具、session 的 CLI/SDK)。
-- ❌ 只是想换一个**模型 provider**(DeepSeek / OpenAI / 火山方舟 等 OpenAI 兼容端点)——那走 `CustomAgentAdapter` 配置即可,**不要**新建 adapter。判断标准:对方是「会自己调工具、写文件的 agent」还是「一个 chat completions 端点」。
+- ✅ 要接一个**真正的 agent 平台**（自带 agentic 循环、工具、session 的 CLI）——走 **CLI 子进程路线**。
+- ❌ 只是想换一个**模型 provider**（DeepSeek / OpenAI / 火山方舟 等 OpenAI 兼容端点）——那走 `CustomAdapter` 配置即可，**不要**新建 adapter。判断标准：对方是「会自己调工具、写文件的 agent CLI」还是「一个 chat completions 端点」。
 
 ---
 
 ## 前置阅读
 
-1. `specs/05-adapter-interface.md` —— 接口契约、事件翻译职责、Abort 约定。
-2. `src/server/adapters/types.ts` —— `AgentPlatformAdapter` 接口 + `AdapterInput`(**以此为准**,不是 spec 里的)。
-3. `src/server/adapters/mock-adapter.ts` —— 最干净的骨架,新 adapter 照它抄。
-4. `src/server/adapters/custom-agent-adapter.ts` —— 真实 tool-loop 参考(流式解析 + 工具执行 + usage 上报)。
+1. `specs/05-adapter-interface.md` —— 接口契约、事件翻译职责、取消约定。
+2. `backend/app/adapters/base.py` —— `AgentPlatformAdapter` ABC + `AdapterInput`（**以此为准**）。
+3. `backend/app/adapters/cli_base.py` —— CLI 适配器公共基类（子进程生命周期、管道、超时/取消、参数过滤）。
+4. `backend/app/adapters/codex_adapter.py` —— 最贴近的 CLI 参考（JSON-RPC 2.0 通信 + 事件翻译）。
+5. `backend/app/adapters/claude_adapter.py` —— stream-json 协议参考。
 
 ---
 
 ## 你要满足的契约
 
-整个接口只有 **2 个成员**(`src/server/adapters/types.ts:11-15`):
+整个接口只有 **2 个成员**（`backend/app/adapters/base.py`）：
 
-```ts
-export interface AgentPlatformAdapter {
-  readonly name: AdapterName
-  stream(input: AdapterInput, signal: AbortSignal): AsyncIterable<StreamEvent>
-}
+```python
+class AgentPlatformAdapter(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> AdapterName: ...
+
+    @abstractmethod
+    def stream(
+        self, input: AdapterInput, cancel_event: asyncio.Event
+    ) -> AsyncIterator[StreamEvent]: ...
 ```
 
-`stream` 是个 async generator,**只管把平台的输出翻译成 `StreamEvent` 并 `yield`**。它的事件生命周期必须是:
+`stream` 是个 async generator，**只管把平台的输出翻译成 `StreamEvent` 并 `yield`**。它的事件生命周期必须是：
 
 ```
 message.start
@@ -43,116 +49,123 @@ message.start
 message.end
 ```
 
-> `run.start` / `run.end` **不归 adapter**,由 `AgentRunner` 在 adapter 外发(`agent-runner.ts` 起止)。adapter 只发 `message.*` / `part.*` / `tool.*` / `run.usage` / `artifact.create`。
+> `run.start` / `run.end` **不归 adapter**，由 `AgentRunner` 在 adapter 外发。adapter 只发 `message.*` / `part.*` / `tool.*` / `run.usage` / `artifact.create`。
 
-**铁律(CLAUDE.md §3.1)**:adapter **永不写 DB、永不推 SSE、不跨调用持有状态**(SDK client 除外)。它只翻译事件;「事件 → 持久化 + 广播」唯一归 `AgentRunner`。
+**铁律（CLAUDE.md §3.1）**：adapter **永不写 DB、永不推 SSE、不跨调用持有状态**。它只翻译事件；「事件 → 持久化 + 广播」唯一归 `AgentRunner`。
 
-`AdapterInput` 里你能读到的关键字段(`types.ts:17-65`):`prompt`(已拼好的完整提示)、`systemPrompt`(已注入 `<workspace_info>`)、`workspacePath`、`apiKey` / `apiBaseUrl` / `modelId`、`toolNames`、`attachments?`、`history?`、`customConfig?`(仅 custom 用)。
+`AdapterInput` 里 CLI adapter 能读到的关键字段（`base.py`）：`prompt`（已拼好的完整提示）、`system_prompt`、`workspace_path`、`executable_path`（CLI 二进制路径）、`extra_env`（额外环境变量）、`custom_args`（CLI 自定义参数）、`resume_session_id`（跨 run 会话续接）、`mcp_config`（MCP server 配置）。CLI adapter 通常**不消费** `api_key` / `tool_names` / `history`（这些走 CLI 自带认证与工具）。
 
 ---
 
 ## 步骤
 
-以新增 `CodexAdapter` 为例。
+以新增 `OpenCodeAdapter` 为例（CLI 子进程路线）。
 
-### 1. 确认 / 扩展 `AdapterName` 联合
+### 1. 扩展 `AdapterName` 联合
 
-`src/shared/types.ts:79`:
+`backend/app/adapters/base.py`：
 
-```ts
-export type AdapterName = 'claude-code' | 'codex' | 'custom' | 'mock'
+```python
+AdapterName = Literal["mock", "custom", "claude-code", "codex", "opencode"]
 ```
 
-> ⚠️ **`'codex'` 已经在联合里**了(历史预留)。这意味着 `agent.adapterName = 'codex'` 能通过类型检查,但 `registry.getAdapter` 在运行时会抛 `No adapter registered for "codex"`。所以接 Codex **不用动这一行**;接一个全新名字(如 `'opencode'`)才需要在这里加。
+> 新增一个全新名字（如 `'opencode'`）才需要在这里加。已有的 `'claude-code'` / `'codex'` 不用动。
 
-### 2. 新建 adapter 文件,抄 MockAdapter 骨架
+### 2. 新建 adapter 文件，继承 `CLIAdapterBase`
 
-新建 `src/server/adapters/codex-adapter.ts`:
+新建 `backend/app/adapters/opencode_adapter.py`：
 
-```ts
-export class CodexAdapter implements AgentPlatformAdapter {
-  readonly name = 'codex' as const
+```python
+from app.adapters.base import AdapterInput, AdapterName
+from app.adapters.cli_base import BlockedArgMode, CLIAdapterBase, filter_custom_args
 
-  async *stream(input: AdapterInput, signal: AbortSignal): AsyncIterable<StreamEvent> {
-    const messageId = newMessageId()
-    yield { type: 'message.start', conversationId: input.conversationId, messageId, timestamp: Date.now() }
-    // … 把平台输出翻译成 part.*/tool.* 事件 yield 出去 …
-    yield { type: 'message.end', conversationId: input.conversationId, messageId, timestamp: Date.now() }
-  }
-}
+
+class OpenCodeAdapter(CLIAdapterBase):
+    """Spawn ``opencode`` CLI, translate events into StreamEvent."""
+
+    def __init__(self, executable_path: str = "opencode") -> None:
+        super().__init__(executable_path=executable_path)
+
+    @property
+    def name(self) -> AdapterName:
+        return "opencode"
+
+    def _build_args(self, input: AdapterInput) -> list[str]:
+        # 协议关键 flag 硬编码；custom_args 经 filter_custom_args 过滤后追加
+        ...
+
+    async def stream(self, input, cancel_event):
+        # CLIAdapterBase 管子进程生命周期；你只写「读 stdout → 翻译 StreamEvent」循环
+        ...
 ```
 
-抄 `mock-adapter.ts:19-159` 的整体结构;每个事件都要带 `conversationId` + `timestamp`(`BaseEvent`,`shared/types.ts:156-159`)。如果是「读子进程行分隔 JSON」(spec 05:413-423 的 `spawn('codex', ['--json'])` 草图),写一个 `行 → StreamEvent` 的翻译循环即可。需要真 LLM tool-loop 就改抄 `custom-agent-adapter.ts`(注意它的 `baseEvent(input, body)` 助手,`:423-432`)。
+抄 `codex_adapter.py` 的整体结构：`_build_args()` 构建参数、`_write_prompt()` 写协议格式、`_read_events()` 逐行/逐消息解析翻译。定义 `_blocked_args` 防止用户覆盖协议关键 flag。
 
 ### 3. 在 registry 注册
 
-`src/server/adapters/registry.ts`:
+`backend/app/adapters/registry.py`：
 
-```ts
-import { CodexAdapter } from './codex-adapter'   // 加在其它 import 旁(约 L4-6)
+```python
+from app.adapters.opencode_adapter import OpenCodeAdapter
 
-function buildRegistry(): AgentRegistry {
-  const reg = new AgentRegistry()
-  reg.register(new MockAdapter())
-  reg.register(new CustomAgentAdapter())
-  reg.register(new ClaudeCodeAdapter())
-  reg.register(new CodexAdapter())   // ← 替换掉这里原来的 `// TODO CodexAdapter` (L37)
-  return reg
-}
+
+def _build_registry() -> AgentRegistry:
+    reg = AgentRegistry()
+    reg.register(MockAdapter())
+    reg.register(CustomAdapter())
+    reg.register(ClaudeCLIAdapter(...))
+    reg.register(CodexCLIAdapter(...))
+    reg.register(OpenCodeAdapter(
+        executable_path=agent_executable_path_fallback("opencode", "opencode"),
+    ))
+    return reg
 ```
 
-`register` 按 `adapter.name` 入 `Map`(`:17-19`);`getAdapter` 按 `agent.adapterName` 取,取不到就抛(`:21-29`)——这就是为什么第 1 步的类型存在 ≠ 运行时可用。
+### 4. 放开创建入口的校验（否则 API 拒绝）
 
-### 4. 放开创建入口的 zod enum(否则 API 拒绝)
+`backend/app/api/agents.py` 的创建校验只认已注册的 adapter name。新增 `'opencode'` 后同步：
+- 创建/更新 Agent 的 Pydantic 校验 enum
+- `backend/app/services/agent_runner.py` 的 `CLI_ADAPTERS` 集合（把 `'opencode'` 加进去，使其走 CLI 分支：跳过 API key 解析、工具注入、历史构建）
 
-`src/app/api/agents/route.ts:18` 的创建校验只认两种:
+### 5. MCP Bridge（CLI agent 需要）
 
-```ts
-adapterName: z.enum(['custom', 'claude-code'])   // → 加 'codex'
-```
+若新 CLI agent 需要调用 AChat 平台工具（`report_task_result` / `write_artifact` / `ask_user` 等），通过 `backend/app/mcp_bridge.py` 暴露。`AdapterInput.mcp_config` 已支持传入 MCP server 配置，CLI adapter 写临时文件并传 `--mcp-config <path>`。参考 `claude_adapter.py` 的 MCP 配置写入逻辑。
 
-不加这里,前端建不出 codex agent(400)。若 Codex 有必填字段(provider / model),同步:
-- `route.ts:26-29` 的 `.refine`
-- `src/server/agent-service.ts:37-43` 的 per-adapter 校验分支
+### 6.（可选）UI 与内置 Agent
 
-### 5.(可选)`buildAdapterInput` 的 per-agent 分支
-
-`AgentRunner` 选 adapter 是**泛型**的(按 `adapterName`),无需改。但 `buildAdapterInput` 目前只为 `'custom'`/`'claude-code'` 填 key 兜底 / `customConfig`(`agent-runner.ts:1008`、`:1071-1077`、`:1086-1098`)。Codex 若要 per-agent key 兜底或类似 config,在这里加 `=== 'codex'` 分支。
-
-### 6.(可选)UI 与内置 Agent
-
-- `src/components/create-agent-dialog.tsx:27` 的本地 `AdapterKind` 联合 + 单选块(约 `:273-280`)——想在创建弹窗里能选 Codex 才需要改。
-- `src/db/builtin-agents.ts`——想随项目种一个内置 Codex agent 才加。
+- `src/shared/agent-builder-config.ts` 的 `AgentBuilderAdapter` 联合——想在创建弹窗里能选新 adapter 才需要改。
+- `backend/app/db/models.py` 的内置 agent seed——想随项目种一个内置 agent 才加。
 
 ### 7. 同步 spec
 
-`specs/05-adapter-interface.md`:状态表(`:11-16`)、CodexAdapter 节(`:413-423`)、新增步骤清单(`:455-464`)改成「已实现」。
+`specs/05-adapter-interface.md`：现状表、新 adapter 节、新增步骤清单改成「已实现」。
 
 ---
 
 ## 常见坑
 
-1. **AbortSignal 必须贯穿每一次 LLM 调用**(CLAUDE.md §4.4)。
-   - 生成器里每步前查 `if (signal.aborted) return`(`mock-adapter.ts:39`、`custom-agent-adapter.ts:92`)。
-   - 把 signal 透传进网络调用:`client.chat.completions.create({...}, { signal })`(`custom-agent-adapter.ts:120`)。
-   - SDK 不收 `AbortSignal` 的,建内层 `AbortController` 并 `signal.addEventListener('abort', () => c.abort(), { once: true })`(spec 05:392-399)。
-   - 中止时静默 `return`,由 AgentRunner 判 run 为 `aborted`。
+1. **`cancel_event` 必须贯穿每一次长操作**（CLAUDE.md §4.4）。
+   - 生成器里每步前查 `if cancel_event.is_set(): return`。
+   - CLI 适配器：`cancel_event` 触发 → 关 stdin → 等 grace period → terminate → kill（`cli_base.py` 已封装）。
+   - 中止时静默 `return`，由 AgentRunner 判 run 为 `aborted`。
 
-2. **不要信 spec 05 里的 `AdapterInput` 代码块**——它已漂移(列了 `parentRunId`、`customConfig.modelId/apiKey/systemPrompt` 等真实代码没有的字段)。`systemPrompt`/`apiKey`/`apiBaseUrl`/`modelId` 在真实 `types.ts` 里是**根字段**,`customConfig` 只有 `modelProvider` + `supportsVision?`。**以 `types.ts` 为准**;顺手把 spec 改对(CLAUDE.md §9)。
+2. **类型存在 ≠ 运行可用**：`AdapterName` 联合（有）、registry 注册（无）、API 校验（无）、UI（无）四处各自为政。少接一处就在那一层断。接新平台时把 §1–§6 逐条过一遍。
 
-3. **类型存在 ≠ 运行可用**:`'codex'` 在 4 个地方各自为政——`AdapterName` 联合(有)、registry 注册(无)、API enum(无)、UI(无)。少接一处就在那一层断。接新平台时把 §1–§6 逐条过一遍。
+3. **CLI adapter 不消费 `api_key` / `tool_names`**：CLI 自带认证（OAuth / 环境变量）与工具集。`build_adapter_input` 对 `CLI_ADAPTERS` 跳过这些；仅当 agent 显式设了 `api_key` 时才注入 `extra_env`。
 
-4. **工具执行不归 adapter**(CLAUDE.md §3.1)。要跑工具就 `toolRegistry.execute(name, args, ctx)`(`custom-agent-adapter.ts:270`),`ctx.abortSignal = signal`。工具 arg 解析失败要变成 `tool.result.isError=true`,不是 adapter 抛错。
+4. **工具执行不归 AChat 的 ToolExecutor**（CLI 路线）：CLI 内部自己执行工具。AChat 的 `ToolExecutor` 只对 SDK 路线（Custom）生效。CLI agent 调 AChat 平台工具走 MCP bridge。
 
-5. **`value.artifactId` 约定**:若工具结果里带 `artifactId`,Custom adapter 会自动补发 `artifact.create`、AgentRunner 注入 `artifact_ref` part(`custom-agent-adapter.ts:281-289`)。**别自己再发** `artifact.create`。
+5. **Windows 子进程**：CLI 子进程在 Windows 上需隐藏窗口（`conpty.py` / `hide_window` flag），且环境变量需继承完整 `os.environ`（曾因缺 `SYSTEMROOT` 崩溃）。
+
+6. **MCP 工具名前缀**：部分 CLI（如 Claude）会自动给 MCP 工具加前缀（`mcp__achat-tools__`），需在 adapter 里剥离后才能匹配 AChat 工具名。参考 `claude_adapter.py` 的 `_strip_mcp_tool_prefix`。
 
 ---
 
-## 提交自检(对齐 CLAUDE.md §6.5)
+## 提交自检（对齐 CLAUDE.md §6.5）
 
-- [ ] `pnpm typecheck` / `pnpm lint` 过
-- [ ] 新 adapter 的 `stream` 严格遵守 `message.start → … → message.end` 生命周期,每个事件带 `conversationId`+`timestamp`
-- [ ] 每个 LLM/网络调用都收了 `AbortSignal`,中止能静默退出
+- [ ] `ruff check .` / `pytest` 过
+- [ ] 新 adapter 的 `stream` 严格遵守 `message.start → … → message.end` 生命周期，每个事件带 `conversation_id` + `timestamp`
+- [ ] `cancel_event` 贯穿，中止能静默退出且子进程清理干净
 - [ ] adapter 没碰 DB / 没推 SSE
-- [ ] `AdapterName` / registry / API enum / (UI) 四处一致,选它不会运行时抛错
-- [ ] `specs/05` 已同步;若顺手修了 spec 的漂移,在 commit 里说明
+- [ ] `AdapterName` / registry / API 校验 / (UI) 四处一致，选它不会运行时抛错
+- [ ] `specs/05` 已同步

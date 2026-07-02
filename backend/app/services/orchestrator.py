@@ -19,6 +19,7 @@ agent_runner without a cycle at load time.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from dataclasses import dataclass, field
 
@@ -34,6 +35,7 @@ from app.schemas.events import (
     ArtifactCreateEvent,
     DispatchEndEvent,
     DispatchPlanEvent,
+    DispatchRetryEvent,
     DispatchStartEvent,
 )
 
@@ -73,10 +75,15 @@ from app.services.orchestrator_prompts import (
     build_sub_agent_prompt,
     ensure_includes,
     escape_xml,
+    render_evaluation_prompt,
 )
 from app.services.pending_dispatch_plans import PlanReviewOutcome, pending_dispatch_plans
 from app.services.project_artifact import build_project_files  # noqa: E402
-from app.services.task_result_report import evaluate_task_result_report
+from app.services.task_result_report import (
+    TaskEvidenceSummary,
+    _format_reported_non_completion,
+    evaluate_task_result_report,
+)
 from app.tools.base import ToolContext
 from app.tools.bash import BashExecutionArgs, execute_bash_command
 from app.utils.clock import now_ms
@@ -94,8 +101,18 @@ from app.utils.dispatch_run_evidence import (
     get_run_tool_evidence,
     record_run_command,
 )
-from app.utils.ids import new_artifact_id  # noqa: E402
-from app.utils.workspace_utils import assert_path_within_workspace, get_effective_cwd
+from app.utils.ids import new_artifact_id, new_run_id  # noqa: E402
+from app.utils.dispatch_run_evidence import RunFileEvidence
+from app.utils.workspace_utils import (
+    assert_path_within_workspace,
+    get_effective_cwd,
+    is_path_within,
+    workspace_has_build_toolchain,
+)
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ─── dispatch result + evaluation views (mirror the TS interfaces) ────────────
@@ -129,6 +146,7 @@ class _ChildAttemptEvaluation:
     result: DispatchTaskResult
     evidence: RunToolEvidence
     verification_results: list[_VerificationCommandResult]
+    summary: TaskEvidenceSummary | None = None
 
 
 @dataclass
@@ -140,6 +158,8 @@ class DagContext:
     cancel_event: asyncio.Event
     seed_results: dict[str, DispatchTaskResult] | None = None
     external_plan_items: list[DispatchPlanItem] | None = None
+    has_build_toolchain: bool = True
+    orchestrator_agent: Agent | None = None
 
 
 # ─── Stage entry: PLAN → EXECUTE (with replan) → AGGREGATE ────────────────────
@@ -184,6 +204,9 @@ async def execute_orchestrator_run(
         for a in other_agents:
             db.expunge(a)
 
+    # Detect workspace build toolchain once for the entire orchestrator run.
+    has_build_toolchain = workspace_has_build_toolchain(get_effective_cwd(workspace))
+
     all_artifact_ids: list[str] = []
     all_output_message_ids: list[str] = []
     all_output_artifacts: dict[str, str] = {}
@@ -217,6 +240,7 @@ async def execute_orchestrator_run(
             cancel_event,
             replan_context,
             list(plan_items_by_id.values()),
+            has_build_toolchain=has_build_toolchain,
         )
         all_artifact_ids.extend(plan_run.artifact_ids)
         all_output_message_ids.extend(plan_run.output_message_ids)
@@ -246,6 +270,7 @@ async def execute_orchestrator_run(
                 orchestrator_agent_id=agent.id,
                 resolved_external_tasks=list(plan_items_by_id.values()),
                 cancel_event=cancel_event,
+                has_build_toolchain=has_build_toolchain,
             )
             if outcome.kind == "approve":
                 approved_plan = outcome.plan
@@ -265,6 +290,7 @@ async def execute_orchestrator_run(
                     cancel_event,
                     build_revise_context(plan, outcome.feedback or ""),
                     list(plan_items_by_id.values()),
+                    has_build_toolchain=has_build_toolchain,
                 )
                 all_artifact_ids.extend(revised_run.artifact_ids)
                 all_output_message_ids.extend(revised_run.output_message_ids)
@@ -305,6 +331,8 @@ async def execute_orchestrator_run(
                 cancel_event=cancel_event,
                 seed_results=merged_results,
                 external_plan_items=list(plan_items_by_id.values()),
+                has_build_toolchain=has_build_toolchain,
+                orchestrator_agent=agent,
             ),
         )
         for task_id, r in results.items():
@@ -317,6 +345,7 @@ async def execute_orchestrator_run(
                 agent_id=t.agent_id,
                 status=(results.get(t.id).status if results.get(t.id) else "skipped"),
                 error=(results.get(t.id).error if results.get(t.id) else None),
+                task_report=(results.get(t.id).task_report if results.get(t.id) else None),
             )
             for t in approved_plan
         ]
@@ -381,6 +410,7 @@ async def _run_plan_stage(
     cancel_event: asyncio.Event,
     replan_context: str | None,
     resolved_external_tasks: list[DispatchPlanItem],
+    has_build_toolchain: bool = True,
 ) -> tuple[list[DispatchPlanItem] | None, RunExecutionResult]:
     plan_system_prompt = build_orchestrator_plan_prompt(
         agent.system_prompt, other_agents, workspace
@@ -406,7 +436,18 @@ async def _run_plan_stage(
         plan_args = extract_plan_tasks_tool_args(event.tool_name, event.args)
         if plan_args is None:
             return None
-        plan = parse_dispatch_plan_tool_args(plan_args)
+        try:
+            plan = parse_dispatch_plan_tool_args(plan_args)
+        except ValueError as e:
+            # Log what the LLM actually sent so intermittent plan failures
+            # can be diagnosed (usually an incomplete / hallucinated call).
+            logger.warning(
+                "[orchestrator] plan_tasks parse failed: %s | tool_name=%s | args=%s",
+                e,
+                event.tool_name,
+                str(event.args)[:500],
+            )
+            raise
         plan_ref["value"] = plan
         return {
             "stop": True,
@@ -432,7 +473,8 @@ async def _run_plan_stage(
     raw = plan_ref["value"]
     plan = (
         compile_and_validate_dispatch_plan(
-            raw, other_agents, agent.id, resolved_external_tasks
+            raw, other_agents, agent.id, resolved_external_tasks,
+            has_build_toolchain=has_build_toolchain,
         ).plan
         if raw
         else None
@@ -453,6 +495,7 @@ def _to_replan_views(
                 agent_id=item.agent_id,
                 status=r.status if r else "skipped",
                 error=r.error if r else None,
+                task_report=r.task_report if r else None,
             )
         )
     return views
@@ -488,10 +531,12 @@ async def _wait_for_dispatch_plan_review(
     orchestrator_agent_id: str,
     resolved_external_tasks: list[DispatchPlanItem],
     cancel_event: asyncio.Event,
+    has_build_toolchain: bool = True,
 ) -> PlanReviewOutcome:
     def validator(p: list[DispatchPlanItem]) -> list[DispatchPlanItem]:
         return compile_and_validate_dispatch_plan(
-            p, available_agents, orchestrator_agent_id, resolved_external_tasks
+            p, available_agents, orchestrator_agent_id, resolved_external_tasks,
+            has_build_toolchain=has_build_toolchain,
         ).plan
 
     pending = pending_dispatch_plans.register(
@@ -674,6 +719,19 @@ async def _run_child_task(
                 _publish_dispatch_end(ctx, task.id, result)
                 return _merge_attempt_aggregate(result, aggregate)
 
+            if attempt > 1 and last_evaluation is not None:
+                publish(
+                    DispatchRetryEvent(
+                        conversation_id=ctx.conversation_id,
+                        timestamp=now_ms(),
+                        parent_run_id=ctx.parent_run_id,
+                        task_id=task.id,
+                        attempt=attempt,
+                        max_attempts=MAX_CHILD_TASK_ATTEMPTS,
+                        error=last_evaluation.result.error,
+                    )
+                )
+
             prompt = (
                 _build_continuation_prompt(base_prompt, task, attempt, continuation_context)
                 if continuation_context
@@ -684,15 +742,41 @@ async def _run_child_task(
                 attempt_run_ids.append(attempt_evaluation.raw_result.run_id)
             _merge_run_execution_result(aggregate, attempt_evaluation.raw_result)
             _merge_run_tool_evidence(aggregate_evidence, attempt_evaluation.evidence)
-            evaluated_result = _evaluate_child_task_result(
-                task, attempt_evaluation.raw_result, aggregate_evidence
+            evaluated_result, evaluation_summary = _evaluate_child_task_result(
+                task, attempt_evaluation.raw_result, aggregate_evidence,
+                has_build_toolchain=ctx.has_build_toolchain,
             )
             evaluated_result.run_ids = list(attempt_run_ids)
+
+            # LLM semantic evaluation: when sync evaluation says "complete" but
+            # advisory issues exist, ask the Orchestrator LLM to judge whether
+            # the task is essentially complete (tasks 2.3, 2.4).
+            if (
+                evaluated_result.status == "complete"
+                and evaluation_summary.advisory_issues
+                and ctx.orchestrator_agent is not None
+            ):
+                llm_passed, llm_feedback = await _evaluate_with_llm(
+                    task, evaluated_result.task_report, evaluation_summary, ctx
+                )
+                if not llm_passed:
+                    evaluated_result = DispatchTaskResult(
+                        run_id=evaluated_result.run_id,
+                        status="failed",
+                        artifact_ids=evaluated_result.artifact_ids,
+                        output_message_ids=evaluated_result.output_message_ids,
+                        output_artifacts=evaluated_result.output_artifacts,
+                        error=llm_feedback,
+                        run_ids=evaluated_result.run_ids,
+                        task_report=evaluated_result.task_report,
+                    )
+
             current_evaluation = _ChildAttemptEvaluation(
                 raw_result=attempt_evaluation.raw_result,
                 result=evaluated_result,
                 evidence=_clone_run_tool_evidence(aggregate_evidence),
                 verification_results=attempt_evaluation.verification_results,
+                summary=evaluation_summary,
             )
 
             if current_evaluation.result.status == "complete":
@@ -702,6 +786,7 @@ async def _run_child_task(
                     agent_id=task.agent_id,
                     task_id=task.id,
                     result=current_evaluation.result,
+                    target_paths=task.target_paths,
                 )
                 result_with_project = _bind_project_expected_output(
                     task, current_evaluation.result, project_artifact_id
@@ -763,6 +848,45 @@ async def _run_child_task(
 # port of maybeCreateProjectArtifact — takes the aggregated evidence object
 # directly (child attempts accumulate writes across retries, so a single run-id
 # lookup would miss earlier attempts' files).
+
+
+def _collect_existing_files(
+    target_paths: list[str],
+    workspace_root: str,
+) -> list[RunFileEvidence]:
+    """Build file evidence from existing workspace files.
+
+    When a task declares target_paths but didn't write any files during this
+    run (e.g. deployment / re-deploy / preview tasks where files were created
+    in a prior task), we still need a project artifact to satisfy the expected
+    output. This function checks whether the declared target_paths already
+    exist in the workspace and synthesizes RunFileEvidence for them.
+    """
+    evidence: list[RunFileEvidence] = []
+    for raw_path in target_paths:
+        abs_path = (
+            os.path.abspath(raw_path)
+            if os.path.isabs(raw_path)
+            else os.path.abspath(os.path.join(workspace_root, raw_path))
+        )
+        if not is_path_within(abs_path, workspace_root):
+            continue
+        try:
+            if os.path.isfile(abs_path):
+                size = os.path.getsize(abs_path)
+                evidence.append(
+                    RunFileEvidence(
+                        path=raw_path,
+                        absolute_path=abs_path,
+                        bytes=size,
+                        applied="existing",
+                    )
+                )
+        except OSError:
+            continue
+    return evidence
+
+
 async def _maybe_create_project_artifact(
     *,
     evidence: RunToolEvidence,
@@ -770,10 +894,8 @@ async def _maybe_create_project_artifact(
     agent_id: str,
     task_id: str | None,
     result: DispatchTaskResult,
+    target_paths: list[str] | None = None,
 ) -> str | None:
-    if len(evidence.file_writes) == 0:
-        return None
-
     async with get_db() as db:
         workspace = (
             await db.execute(
@@ -784,7 +906,21 @@ async def _maybe_create_project_artifact(
             return None
         effective_cwd = get_effective_cwd(workspace)
 
-    files = build_project_files(evidence.file_writes, effective_cwd)
+    # Primary: use file write evidence recorded during this task's tool calls.
+    file_writes = list(evidence.file_writes)
+
+    # Fallback: if no writes were recorded but the task declares target_paths,
+    # check whether those files already exist in the workspace. This handles
+    # deployment / re-deploy / preview tasks where files were created in a
+    # prior task and don't need re-writing — the system still needs a project
+    # artifact to satisfy the expected output.
+    if not file_writes and target_paths:
+        file_writes = _collect_existing_files(target_paths, effective_cwd)
+
+    if not file_writes:
+        return None
+
+    files = build_project_files(file_writes, effective_cwd)
     if len(files) == 0:
         return None
 
@@ -884,12 +1020,16 @@ async def _run_child_task_attempt(
         else await _run_required_commands(task, child_run_id, ctx)
     )
     evidence = get_run_tool_evidence(child_run_id)
-    result = _evaluate_child_task_result(task, raw, evidence)
+    result, summary = _evaluate_child_task_result(
+        task, raw, evidence,
+        has_build_toolchain=ctx.has_build_toolchain,
+    )
     return _ChildAttemptEvaluation(
         raw_result=raw,
         result=result,
         evidence=evidence,
         verification_results=verification_results,
+        summary=summary,
     )
 
 
@@ -897,26 +1037,64 @@ def _evaluate_child_task_result(
     task: DispatchPlanItem,
     result: DispatchTaskResult,
     evidence: RunToolEvidence | None = None,
-) -> DispatchTaskResult:
+    has_build_toolchain: bool = True,
+) -> tuple[DispatchTaskResult, TaskEvidenceSummary]:
+    """Evaluate a child task result against its contract + evidence.
+
+    Returns a tuple of (evaluated result, evidence summary). The caller uses
+    *summary.has_report* and *summary.report_status* for hard-rule fails, and
+    *summary.advisory_issues* for LLM semantic evaluation.
+    """
     if evidence is None:
         evidence = RunToolEvidence()
     if result.status != "complete":
-        return result
+        return result, TaskEvidenceSummary(
+            advisory_issues=[], has_report=False, report_status=None, evidence=evidence
+        )
 
     output_artifacts = _bind_implicit_single_output(task, result)
-    report_evaluation = evaluate_task_result_report(task, result.task_report, evidence)
-    if not report_evaluation.ok:
+    summary = evaluate_task_result_report(
+        task, result.task_report, evidence,
+        has_build_toolchain=has_build_toolchain,
+    )
+
+    # Hard-rule fails: no report, or report status not "complete".
+    if not summary.has_report:
         return DispatchTaskResult(
             run_id=result.run_id,
             status="failed",
             artifact_ids=result.artifact_ids,
             output_message_ids=result.output_message_ids,
             output_artifacts=output_artifacts,
-            error=report_evaluation.error,
+            error=f'Task "{task.id}" completed without report_task_result',
             run_ids=result.run_ids,
             task_report=result.task_report,
-        )
+        ), summary
 
+    if summary.report_status != "complete":
+        report = result.task_report or {}
+        if report.get("status") != "complete":
+            # ② agent self-reported non-completion
+            error = _format_reported_non_completion(task.id, report)
+        else:
+            # ④ acceptanceResults with passed=false (report_status overridden to "failed")
+            failed = [r for r in report.get("acceptanceResults") or [] if not r.get("passed")]
+            details = "; ".join(
+                f"{r.get('criterion')} ({r.get('evidence')})" for r in failed
+            )
+            error = f'Task "{task.id}" did not satisfy acceptance criteria: {details}'
+        return DispatchTaskResult(
+            run_id=result.run_id,
+            status="failed",
+            artifact_ids=result.artifact_ids,
+            output_message_ids=result.output_message_ids,
+            output_artifacts=output_artifacts,
+            error=error,
+            run_ids=result.run_ids,
+            task_report=result.task_report,
+        ), summary
+
+    # report_status == "complete": pass through with advisory issues for LLM eval
     return DispatchTaskResult(
         run_id=result.run_id,
         status=result.status,
@@ -926,7 +1104,118 @@ def _evaluate_child_task_result(
         error=result.error,
         run_ids=result.run_ids,
         task_report=result.task_report,
+    ), summary
+
+
+# ─── LLM semantic evaluation ──────────────────────────────────────────────────
+async def _collect_text_from_stream(stream: object) -> str:
+    """Collect text parts from an adapter stream without DB persistence.
+
+    Lightweight alternative to ``consume_stream`` for internal LLM calls
+    (e.g. evaluation) where message persistence is not needed.
+    """
+    text_parts: list[str] = []
+    try:
+        async for event in stream:  # type: ignore[union-attr]
+            etype = getattr(event, "type", "")
+            if etype == "part.start":
+                part = getattr(event, "part", None)
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(part.get("content", ""))
+            elif etype == "part.delta":
+                delta = getattr(event, "delta", None)
+                if isinstance(delta, dict) and delta.get("type") == "text.append":
+                    text_parts.append(delta.get("text", ""))
+    finally:
+        # Ensure the underlying stream's async generator is closed so that
+        # adapter cleanup (subprocess shutdown) runs even on early exit or
+        # exception.  Mirrors the same fix in consume_stream.
+        _aclose = getattr(stream, "aclose", None)
+        if _aclose is not None:
+            try:
+                await _aclose()
+            except Exception:
+                logger.debug("[_collect_text_from_stream] stream.aclose() failed", exc_info=True)
+    return "".join(text_parts)
+
+
+_EVALUATION_SYSTEM_PROMPT = (
+    "You are a task completion evaluator. Read the task contract, the agent's "
+    "report, and advisory issues, then judge whether the task is essentially "
+    "complete. Respond with ONLY a JSON object."
+)
+
+
+async def _evaluate_with_llm(
+    task: DispatchPlanItem,
+    report: dict | None,
+    summary: TaskEvidenceSummary,
+    ctx: DagContext,
+) -> tuple[bool, str]:
+    """Ask the Orchestrator LLM to semantically judge task completion.
+
+    Returns ``(passed, feedback)``. On LLM failure (network error, invalid
+    JSON), defaults to ``(True, "")`` — the hard rules have already passed,
+    so an infrastructure failure should not block the task.
+    """
+    agent = ctx.orchestrator_agent
+    if agent is None:
+        return True, ""
+
+    prompt = render_evaluation_prompt(
+        task, report, summary.advisory_issues, summary.evidence
     )
+
+    eval_run_id = new_run_id()
+    try:
+        adapter = agent_registry.get_adapter(agent)
+        eval_stream = adapter.stream(
+            await build_adapter_input(
+                RunArgs(
+                    agent_id=agent.id,
+                    conversation_id=ctx.conversation_id,
+                    trigger_message_id=ctx.trigger_message_id,
+                    parent_run_id=ctx.parent_run_id,
+                    override_prompt=prompt,
+                    override_system_prompt=_EVALUATION_SYSTEM_PROMPT,
+                    override_tool_names=[],
+                    parent_cancel_event=ctx.cancel_event,
+                ),
+                agent,
+                eval_run_id,
+                prompt,
+                ctx.workspace,
+                [],
+                _EVALUATION_SYSTEM_PROMPT,
+                [],
+            ),
+            ctx.cancel_event,
+        )
+        raw_text = await _collect_text_from_stream(eval_stream)
+    except Exception as err:  # noqa: BLE001 - LLM eval failure should not block
+        logger.warning(
+            "[orchestrator] LLM evaluation failed for task %s: %s", task.id, err
+        )
+        return True, ""
+
+    # Extract JSON from the response (LLMs may wrap it in markdown fences)
+    text = raw_text.strip()
+    if text.startswith("```"):
+        # strip markdown code fences
+        lines = text.split("\n")
+        if len(lines) >= 2:
+            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+    try:
+        result = json.loads(text)
+        passed = bool(result.get("pass", True))
+        feedback = str(result.get("feedback", ""))
+        return passed, feedback
+    except (json.JSONDecodeError, TypeError) as err:
+        logger.warning(
+            "[orchestrator] LLM evaluation returned invalid JSON for task %s: %s | raw=%s",
+            task.id, err, raw_text[:200],
+        )
+        return True, ""
 
 
 # ─── merge helpers ────────────────────────────────────────────────────────────
@@ -1210,6 +1499,15 @@ def _build_task_continuation_context(
                 lines.append(f"      <output>{escape_xml(result.output[-4000:])}</output>")
             lines.append("    </command>")
         lines.append("  </verification_results>")
+    # If the failure is about missing project output, add a hint to help
+    # the agent satisfy the requirement on the next attempt.
+    error_msg = evaluation.result.error or ""
+    if "missing required project output" in error_msg:
+        lines.append(
+            "  <hint>project expected output 需要 workspace 中存在对应文件。"
+            "请用 fs_write 写入文件（即使文件已存在也需重新写入以记录证据），"
+            "或确认 task 已声明 targetPaths 指向已有文件。</hint>"
+        )
     lines.append("</previous_attempt>")
     return "\n".join(lines)
 

@@ -6,8 +6,6 @@ import pytest
 
 from app.schemas.dispatch import DispatchExpectedOutput, DispatchPlanItem, DispatchTaskInput
 from app.services.dispatch_plan import (
-    CODE_TASK_RUNNABLE_ACCEPTANCE_CRITERION,
-    CODE_TASK_RUNNABLE_REQUIRED_EVIDENCE,
     PLAN_TASKS_TOOL_NAME,
     assert_acyclic_dispatch_plan,
     collect_dependency_closure,
@@ -286,11 +284,14 @@ def test_is_code_task_review_text_not_code():
 
 
 # ─── contract normalization ──────────────────────
-def test_normalize_adds_project_output_and_criteria():
+def test_normalize_adds_project_output_only():
+    """normalize_task_contract ensures project output but no longer auto-appends
+    verification criteria/evidence — the Orchestrator LLM decides."""
     t = normalize_task_contract(_task(task="实现 API"))
     assert any(o.type == "project" and o.required for o in t.expected_outputs)
-    assert CODE_TASK_RUNNABLE_ACCEPTANCE_CRITERION in t.acceptance_criteria
-    assert CODE_TASK_RUNNABLE_REQUIRED_EVIDENCE in t.required_evidence
+    # No auto-appended acceptance criteria or required evidence
+    assert not t.acceptance_criteria
+    assert not t.required_evidence
 
 
 def test_normalize_noop_for_non_code():
@@ -298,13 +299,11 @@ def test_normalize_noop_for_non_code():
     assert normalize_task_contract(t) is t
 
 
-def test_normalize_does_not_duplicate_criteria():
-    t = _task(
-        task="实现 API",
-        acceptance_criteria=[CODE_TASK_RUNNABLE_ACCEPTANCE_CRITERION],
-    )
+def test_normalize_preserves_existing_acceptance_criteria():
+    """User-declared acceptance criteria are preserved (not duplicated, not removed)."""
+    t = _task(task="实现 API", acceptance_criteria=["builds", "lints"])
     out = normalize_task_contract(t)
-    assert out.acceptance_criteria.count(CODE_TASK_RUNNABLE_ACCEPTANCE_CRITERION) == 1
+    assert out.acceptance_criteria == ["builds", "lints"]
 
 
 def test_normalize_preserves_existing_project_output_id():
@@ -317,6 +316,23 @@ def test_normalize_preserves_existing_project_output_id():
     assert len(proj) == 1
     assert proj[0].id == "myproj"
     assert proj[0].required is True
+
+
+# ─── workspace-aware normalization ──────────────────────
+def test_normalize_without_toolchain_still_adds_project_output():
+    """has_build_toolchain=False no longer affects normalization (kept for compat)."""
+    t = normalize_task_contract(_task(task="实现 API"), has_build_toolchain=False)
+    assert any(o.type == "project" and o.required for o in t.expected_outputs)
+    assert not t.acceptance_criteria
+    assert not t.required_evidence
+
+
+def test_normalize_with_toolchain_no_auto_criteria():
+    """has_build_toolchain=True also does not auto-append criteria (deprecated behaviour)."""
+    t = normalize_task_contract(_task(task="实现 API"), has_build_toolchain=True)
+    assert any(o.type == "project" and o.required for o in t.expected_outputs)
+    assert not t.acceptance_criteria
+    assert not t.required_evidence
 
 
 # ─── dependency compilation ──────────────────────

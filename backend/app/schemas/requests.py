@@ -112,6 +112,11 @@ class CreateAgentRequest(BaseModel):
     supports_vision: bool | None = Field(default=None, alias="supportsVision")
     is_orchestrator: bool | None = Field(default=False, alias="isOrchestrator")
 
+    # ── CLI agent fields ──────────────────────────────────────
+    executable_path: str | None = Field(default=None, alias="executablePath")
+    protocol_family: str | None = Field(default=None, alias="protocolFamily")
+    custom_args: list[str] | None = Field(default=None, alias="customArgs")
+
     model_config = {"populate_by_name": True}
 
 
@@ -136,6 +141,11 @@ class UpdateAgentRequest(BaseModel):
     supports_vision: bool | None = Field(default=None, alias="supportsVision")
     is_orchestrator: bool | None = Field(default=None, alias="isOrchestrator")
 
+    # ── CLI agent fields ──────────────────────────────────────
+    executable_path: str | None = Field(default=None, alias="executablePath")
+    protocol_family: str | None = Field(default=None, alias="protocolFamily")
+    custom_args: list[str] | None = Field(default=None, alias="customArgs")
+
     model_config = {"populate_by_name": True}
 
 
@@ -157,6 +167,10 @@ class AgentResponse(BaseModel):
     is_orchestrator: bool = Field(alias="isOrchestrator")
     supports_vision: bool = Field(alias="supportsVision")
     created_at: int = Field(alias="createdAt")
+    # CLI fields
+    executable_path: str | None = Field(default=None, alias="executablePath")
+    protocol_family: str | None = Field(default=None, alias="protocolFamily")
+    custom_args: list[str] = Field(default=[], alias="customArgs")
 
     model_config = {"populate_by_name": True}
 

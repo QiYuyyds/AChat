@@ -61,6 +61,21 @@ class AdapterInput:
     history: list[dict] | None = None
     custom_config: CustomConfig | None = None
 
+    # ── CLI agent fields ───────────────────────────────────────
+    # CLI binary path; empty → adapter uses its default PATH lookup.
+    executable_path: str | None = None
+    # Extra environment variables injected into the CLI subprocess
+    # (e.g. per-agent API key override). Merged on top of filtered os.environ.
+    extra_env: dict[str, str] | None = None
+    # Per-agent CLI custom args (flags appended after hardcoded ones).
+    # Blocked protocol-critical flags are stripped by each adapter.
+    custom_args: list[str] | None = None
+    # Cross-run session / thread ID for CLI resume (--resume / thread/resume).
+    resume_session_id: str | None = None
+    # MCP server config (Claude-style ``{"mcpServers": {...}}``). CLI adapters
+    # write it to a temp file and pass ``--mcp-config <path>``.
+    mcp_config: dict | None = None
+
 
 class AgentPlatformAdapter(ABC):
     """Hides per-platform API differences behind a unified event stream."""

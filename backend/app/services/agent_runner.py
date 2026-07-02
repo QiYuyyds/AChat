@@ -286,6 +286,13 @@ def _empty_run_execution_result() -> RunExecutionResult:
     return RunExecutionResult(artifact_ids=[], output_message_ids=[], output_artifacts={})
 
 
+# ─── Adapter classification ─────────────────────────────────────────────────
+# CLI agents use vendor CLI subprocesses with their own tool sets and auth.
+CLI_ADAPTERS = frozenset({"claude-code", "codex"})
+# SDK agents call LLM APIs via SDKs; AChat manages tools, auth, and history.
+SDK_ADAPTERS = frozenset({"custom"})
+# mock is neither CLI nor SDK; it is test-only and ignored by tool injection.
+
 # ─── Constants (port of agent-runner.ts:212) ─────────────────────────────────
 SUB_AGENT_CONTEXT_RECENT_LIMIT = 5
 MAX_CONCURRENT_SUB_AGENT_RUNS = 4
@@ -563,6 +570,7 @@ async def execute_run(
     except asyncio.CancelledError:
         return await finalize(run_id, args, "aborted", _empty_run_execution_result())
     except Exception as err:  # noqa: BLE001 - faithful catch-all; surfaced via finalize
+        logger.exception("[AgentRunner] run failed: %s", err)
         if cancel_event.is_set():
             return await finalize(run_id, args, "aborted", _empty_run_execution_result())
         return await finalize(
@@ -600,23 +608,23 @@ async def execute_simple_run(
         except Exception as e:
             logger.warning("TaskMemBuffer reset failed: %s", e)
 
-    # Task 1.1: Implicitly inject memory_recall for custom agents
-    if agent.adapter_name == "custom":
+    # Task 1.1: Implicitly inject memory_recall for SDK agents only.
+    # CLI agents bring their own tools; memory/RAG/skill injection is skipped.
+    if agent.adapter_name in SDK_ADAPTERS:
         if "memory_recall" not in base_tool_names:
             base_tool_names = ["memory_recall"] + list(base_tool_names)
             logger.info(
-                "[AgentRunner] Implicitly injected memory_recall tool for custom agent %s",
+                "[AgentRunner] Implicitly injected memory_recall tool for SDK agent %s",
                 args.agent_id,
             )
-
-    # Inject load_skill when a custom agent has equipped (and still-present) skills.
-    if agent.adapter_name == "custom" and agent.skill_names_list:
+    # Inject load_skill when an SDK agent has equipped (and still-present) skills.
+    if agent.adapter_name in SDK_ADAPTERS and agent.skill_names_list:
         from app.services.skill_service import list_skills
         available = {m.slug for m in list_skills()}
         if any(s in available for s in agent.skill_names_list) and "load_skill" not in base_tool_names:
             base_tool_names = list(base_tool_names) + ["load_skill"]
             logger.info(
-                "[AgentRunner] Injected load_skill for custom agent %s (equipped skills)",
+                "[AgentRunner] Injected load_skill for SDK agent %s (equipped skills)",
                 args.agent_id,
             )
 
@@ -628,8 +636,7 @@ async def execute_simple_run(
             await db.execute(select(Conversation).where(Conversation.id == args.conversation_id))
         ).scalar_one_or_none()
         if conv and conv.rag_enabled:
-            # Only inject for custom agents (exclude SDK agents)
-            if agent.adapter_name == "custom":
+            if agent.adapter_name in SDK_ADAPTERS:
                 existing = set(base_tool_names)
                 new_tools = [t for t in RAG_TOOLS if t not in existing]
                 if new_tools:
@@ -652,7 +659,10 @@ async def execute_simple_run(
     )
     stream = adapter.stream(adapter_input, cancel_event)
 
-    result = await consume_stream(stream, args.agent_id, run_id)
+    result = await consume_stream(
+        stream, args.agent_id, run_id,
+        require_task_report=args.require_task_report,
+    )
     if args.parent_run_id:
         return result
 
@@ -759,6 +769,7 @@ async def consume_stream(
     agent_id: str,
     run_id: str,
     on_tool_call: Callable[[StreamEvent], ToolCallControl] | None = None,
+    require_task_report: bool = False,
 ) -> RunExecutionResult:
     parts_buffer: dict[str, list[dict]] = {}
     artifact_ids: list[str] = []
@@ -769,104 +780,195 @@ async def consume_stream(
     task_report: dict[str, Any] | None = None
     current_message_id: str | None = None
 
-    async for event in stream:
-        if event.type == "message.start":
-            current_message_id = event.message_id
-        if event.type == "tool.call":
-            tool_name_by_call_id[event.call_id] = event.tool_name
+    # When require_task_report=True, construct an internal on_tool_call callback
+    # that treats report_task_result as a stream-terminal event (same pattern
+    # as plan_tasks).  The report is parsed from the tool.call args and stored
+    # in report_ref so it survives the early break.
+    report_ref: dict[str, Any | None] = {"value": None}
 
-        await persist_event(
-            event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
+    def _report_terminal_callback(event: StreamEvent) -> ToolCallControl:
+        if event.type != "tool.call":
+            return None
+        tool_name = event.tool_name
+        is_report = (
+            tool_name == REPORT_TASK_RESULT_TOOL_NAME
+            or tool_name.endswith(f"__{REPORT_TASK_RESULT_TOOL_NAME}")
         )
-        publish(event)
+        if not is_report:
+            return None
+        report, _err = parse_and_normalize(event.args)
+        if report:
+            report_ref["value"] = report
+        return {"stop": True, "result": {"acknowledged": True}}
 
-        if event.type == "artifact.create":
-            output_key = output_key_by_artifact_id.get(event.artifact.id)
-            if output_key:
-                output_artifacts[output_key] = event.artifact.id
+    # Combine external + internal callbacks: external takes precedence.
+    if require_task_report and on_tool_call is not None:
+        _external = on_tool_call
 
-        # tool-produced artifact: append an artifact_ref part to the live message
-        if event.type == "artifact.create" and current_message_id:
-            parts = parts_buffer.get(current_message_id, [])
-            part_index = len(parts)
-            ref_part = {"type": "artifact_ref", "artifactId": event.artifact.id}
-            parts.append(ref_part)
-            parts_buffer[current_message_id] = parts
-            await _update_message_parts(current_message_id, parts)
-            publish(
-                PartStartEvent(
-                    conversation_id=event.conversation_id,
-                    timestamp=now_ms(),
-                    message_id=current_message_id,
-                    part_index=part_index,
-                    part=ref_part,
-                )
+        def _combined(event: StreamEvent) -> ToolCallControl:
+            ext = _external(event)
+            if ext and ext.get("stop"):
+                return ext
+            return _report_terminal_callback(event)
+
+        _effective_on_tool_call = _combined
+    elif require_task_report:
+        _effective_on_tool_call = _report_terminal_callback
+    else:
+        _effective_on_tool_call = on_tool_call
+
+    # Wrap the stream iteration in a try/finally so that the underlying async
+    # generator is always properly closed — even when we break early on a
+    # terminal tool call (report_task_result / plan_tasks).  Without this,
+    # CLI adapter subprocesses (Claude CLI, Codex) are left running after
+    # the stream consumer stops reading, because the generator's `finally`
+    # block (which calls cli.shutdown()) never executes.
+    try:
+        async for event in stream:
+            if event.type == "message.start":
+                current_message_id = event.message_id
+            if event.type == "tool.call":
+                tool_name_by_call_id[event.call_id] = event.tool_name
+
+            await persist_event(
+                event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
             )
+            publish(event)
 
-        if event.type == "deploy.status":
-            parts = parts_buffer.get(event.message_id, [])
-            part_index = len(parts)
-            deploy_part = {
-                "type": "deploy_status",
-                "deployment": event.deployment.model_dump(by_alias=True),
-            }
-            parts.append(deploy_part)
-            parts_buffer[event.message_id] = parts
-            await _update_message_parts(event.message_id, parts)
-            publish(
-                PartStartEvent(
-                    conversation_id=event.conversation_id,
-                    timestamp=now_ms(),
-                    message_id=event.message_id,
-                    part_index=part_index,
-                    part=deploy_part,
-                )
-            )
+            if event.type == "artifact.create":
+                output_key = output_key_by_artifact_id.get(event.artifact.id)
+                if output_key:
+                    output_artifacts[output_key] = event.artifact.id
 
-        if event.type == "message.end":
-            current_message_id = None
-        if event.type == "tool.result":
-            tool_name = tool_name_by_call_id.get(event.call_id)
-            if tool_name and not event.is_error and tool_name == REPORT_TASK_RESULT_TOOL_NAME:
-                report, _err = parse_and_normalize(event.result)
-                if report:
-                    task_report = report
-            handoff = _read_artifact_handoff_result(event.result)
-            if handoff:
-                output_key_by_artifact_id[handoff[0]] = handoff[1]
-            # Push StepObservation + ToolCallTrace to shared buffers
-            if tool_name:
-                await _push_tool_observation(
-                    event.call_id, tool_name, event.result, event.is_error,
+            # tool-produced artifact: append an artifact_ref part to the live message
+            if event.type == "artifact.create" and current_message_id:
+                parts = parts_buffer.get(current_message_id, [])
+                part_index = len(parts)
+                ref_part = {"type": "artifact_ref", "artifactId": event.artifact.id}
+                parts.append(ref_part)
+                parts_buffer[current_message_id] = parts
+                await _update_message_parts(current_message_id, parts)
+                publish(
+                    PartStartEvent(
+                        conversation_id=event.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=current_message_id,
+                        part_index=part_index,
+                        part=ref_part,
+                    )
                 )
-        if event.type == "tool.call":
-            control = on_tool_call(event) if on_tool_call else None
-            if control and control.get("stop"):
-                if "result" in control:
-                    result_event = ToolResultEvent(
+
+            if event.type == "deploy.status":
+                parts = parts_buffer.get(event.message_id, [])
+                part_index = len(parts)
+                deploy_part = {
+                    "type": "deploy_status",
+                    "deployment": event.deployment.model_dump(by_alias=True),
+                }
+                parts.append(deploy_part)
+                parts_buffer[event.message_id] = parts
+                await _update_message_parts(event.message_id, parts)
+                publish(
+                    PartStartEvent(
                         conversation_id=event.conversation_id,
                         timestamp=now_ms(),
                         message_id=event.message_id,
-                        call_id=event.call_id,
-                        result=control["result"],
-                        is_error=bool(control.get("isError", False)),
+                        part_index=part_index,
+                        part=deploy_part,
+                    )
+                )
+
+            if event.type == "message.end":
+                current_message_id = None
+            if event.type == "tool.result":
+                tool_name = tool_name_by_call_id.get(event.call_id)
+                # Accept both bare AChat tool names (SDK agents) and
+                # MCP-prefixed names from CLI agents (e.g.
+                # "mcp__achat-tools__report_task_result").
+                is_report = (
+                    tool_name
+                    and not event.is_error
+                    and (
+                        tool_name == REPORT_TASK_RESULT_TOOL_NAME
+                        or tool_name.endswith(f"__{REPORT_TASK_RESULT_TOOL_NAME}")
+                    )
+                )
+                if is_report:
+                    logger.info(
+                        "[consume_stream] report_task_result detected: "
+                        "tool_name=%s, call_id=%s, result_type=%s, result_preview=%s",
+                        tool_name,
+                        event.call_id,
+                        type(event.result).__name__,
+                        str(event.result)[:200],
+                    )
+                    report, _err = parse_and_normalize(event.result)
+                    if report:
+                        logger.info(
+                            "[consume_stream] report_task_result parsed OK: "
+                            "status=%s, summary=%s",
+                            report.get("status"),
+                            report.get("summary", "")[:100],
+                        )
+                        task_report = report
+                    else:
+                        logger.warning(
+                            "[consume_stream] report_task_result parse FAILED: "
+                            "error=%s, raw=%s",
+                            _err,
+                            str(event.result)[:200],
+                        )
+                handoff = _read_artifact_handoff_result(event.result)
+                if handoff:
+                    output_key_by_artifact_id[handoff[0]] = handoff[1]
+                # Push StepObservation + ToolCallTrace to shared buffers
+                if tool_name:
+                    await _push_tool_observation(
+                        event.call_id, tool_name, event.result, event.is_error,
+                    )
+            if event.type == "tool.call":
+                control = _effective_on_tool_call(event) if _effective_on_tool_call else None
+                if control and control.get("stop"):
+                    if "result" in control:
+                        result_event = ToolResultEvent(
+                            conversation_id=event.conversation_id,
+                            timestamp=now_ms(),
+                            message_id=event.message_id,
+                            call_id=event.call_id,
+                            result=control["result"],
+                            is_error=bool(control.get("isError", False)),
+                        )
+                        await persist_event(
+                            result_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
+                        )
+                        publish(result_event)
+
+                    end_event = MessageEndEvent(
+                        conversation_id=event.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=event.message_id,
                     )
                     await persist_event(
-                        result_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
+                        end_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
                     )
-                    publish(result_event)
+                    publish(end_event)
+                    current_message_id = None
+                    break
+    finally:
+        # Ensure the underlying stream's async generator is closed so that
+        # adapter cleanup (subprocess shutdown, connection close) runs.
+        # aclose() is a no-op on an already-exhausted generator.
+        _aclose = getattr(stream, "aclose", None)
+        if _aclose is not None:
+            try:
+                await _aclose()
+            except Exception:
+                logger.debug("[consume_stream] stream.aclose() failed", exc_info=True)
 
-                end_event = MessageEndEvent(
-                    conversation_id=event.conversation_id,
-                    timestamp=now_ms(),
-                    message_id=event.message_id,
-                )
-                await persist_event(
-                    end_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
-                )
-                publish(end_event)
-                current_message_id = None
-                break
+    # If the report was captured via the terminal callback (from tool.call
+    # args) and not via the tool.result handler, use it.
+    if task_report is None and report_ref["value"] is not None:
+        task_report = report_ref["value"]
 
     return RunExecutionResult(
         artifact_ids=artifact_ids,
@@ -1289,34 +1391,61 @@ async def build_adapter_input(
     attachments: list[AdapterAttachment],
 ) -> AdapterInput:
     effective_cwd = get_effective_cwd(workspace)
+    is_cli = agent.adapter_name in CLI_ADAPTERS
+    is_sdk = agent.adapter_name in SDK_ADAPTERS
+
+    # ── system prompt (shared by both paths) ──────────────────────────
     base_system_prompt = system_prompt_override or agent.system_prompt
     system_prompt_with_workspace = (
         _build_workspace_context_block(workspace) + "\n\n" + base_system_prompt
     )
-    tool_guidance = _build_agent_hub_tool_guidance(agent, tool_names, workspace)
-    if tool_guidance:
-        system_prompt_with_workspace += "\n\n" + tool_guidance
 
-    skill_block = _build_skill_metadata_block(agent)
-    if skill_block:
-        system_prompt_with_workspace += "\n\n" + skill_block
+    # ── tool guidance: SDK only (CLI agents bring their own tools) ────
+    if is_sdk:
+        tool_guidance = _build_agent_hub_tool_guidance(agent, tool_names, workspace)
+        if tool_guidance:
+            system_prompt_with_workspace += "\n\n" + tool_guidance
 
-    # key precedence: agent.api_key > app_settings.* > adapter env fallback.
-    # only inject global settings when the per-agent field is empty.
-    effective_api_key = agent.api_key
-    effective_api_base_url = agent.api_base_url
-    if not effective_api_key or (
-        not effective_api_base_url and agent.adapter_name == "claude-code"
-    ):
-        settings = await get_app_settings()
-        if not effective_api_key:
-            effective_api_key = _pick_settings_key(settings, agent)
-        if not effective_api_base_url and agent.adapter_name == "claude-code":
-            effective_api_base_url = settings.anthropic_base_url
+    # ── skill metadata: SDK only (CLI agents skip AChat skill injection) ─
+    if is_sdk:
+        skill_block = _build_skill_metadata_block(agent)
+        if skill_block:
+            system_prompt_with_workspace += "\n\n" + skill_block
 
-    # cross-run history (only CustomAdapter consumes it; SDK adapters resume sessions).
+    # ── API key ─────────────────────────────────────────────────────
+    if is_cli:
+        # CLI agents use their own authentication (claude login / codex login).
+        # Only inject per-agent API key override via extra_env when explicitly set.
+        effective_api_key: str | None = None
+        effective_api_base_url: str | None = None
+        cli_extra_env: dict[str, str] = {}
+        if agent.api_key:
+            if agent.adapter_name == "claude-code":
+                cli_extra_env["ANTHROPIC_API_KEY"] = agent.api_key
+            elif agent.adapter_name == "codex":
+                cli_extra_env["OPENAI_API_KEY"] = agent.api_key
+        if agent.api_base_url:
+            if agent.adapter_name == "claude-code":
+                cli_extra_env["ANTHROPIC_BASE_URL"] = agent.api_base_url
+            elif agent.adapter_name == "codex":
+                cli_extra_env["OPENAI_BASE_URL"] = agent.api_base_url
+    else:
+        # SDK path: full four-layer key chain (agent > app_settings > env > OAuth).
+        effective_api_key = agent.api_key
+        effective_api_base_url = agent.api_base_url
+        cli_extra_env = {}
+        if not effective_api_key or (
+            not effective_api_base_url and agent.adapter_name == "claude-code"
+        ):
+            settings = await get_app_settings()
+            if not effective_api_key:
+                effective_api_key = _pick_settings_key(settings, agent)
+            if not effective_api_base_url and agent.adapter_name == "claude-code":
+                effective_api_base_url = settings.anthropic_base_url
+
+    # ── cross-run history: SDK only (CLI agents use session resume) ──
     history: list[dict] = []
-    if agent.adapter_name == "custom" and not args.override_prompt:
+    if is_sdk and not args.override_prompt:
         async with get_db() as db:
             conv = (
                 await db.execute(
@@ -1348,22 +1477,24 @@ async def build_adapter_input(
             )
             history = []
 
-    # ─── PromptAssembler enrichment (Task 5.3) ───
-    assembler = _get_prompt_assembler()
-    if assembler and not args.override_prompt:
-        try:
-            from app.services.prompt_assembler import Query
-            mode = "react" if "plan_tasks" in (tool_names or []) else "chat"
-            q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id)
-            ctx = await assembler.assemble(q)
-            enriched = ctx.render_system_prompt()
-            if enriched:
-                system_prompt_with_workspace += "\n\n" + enriched
-        except Exception as err:  # noqa: BLE001 - assembler is best-effort
-            logger.warning("[agent-runner] PromptAssembler enrichment failed: %s", err)
+    # ── PromptAssembler enrichment (SDK only; CLI agents self-manage context) ─
+    if is_sdk:
+        assembler = _get_prompt_assembler()
+        if assembler and not args.override_prompt:
+            try:
+                from app.services.prompt_assembler import Query
+                mode = "react" if "plan_tasks" in (tool_names or []) else "chat"
+                q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id)
+                ctx = await assembler.assemble(q)
+                enriched = ctx.render_system_prompt()
+                if enriched:
+                    system_prompt_with_workspace += "\n\n" + enriched
+            except Exception as err:  # noqa: BLE001 - assembler is best-effort
+                logger.warning("[agent-runner] PromptAssembler enrichment failed: %s", err)
 
+    # ── prompt: CLI agents may get a context-summary prefix ──────────
     effective_prompt = prompt
-    if agent.adapter_name in ("claude-code", "codex") and not args.override_prompt:
+    if is_cli and not args.override_prompt:
         try:
             effective_prompt = await prefix_prompt_with_context_summary(
                 args.conversation_id, prompt
@@ -1376,14 +1507,21 @@ async def build_adapter_input(
             )
             effective_prompt = prompt
 
+    # ── custom_config: SDK only ──────────────────────────────────────
     custom_config = (
         CustomConfig(
             model_provider=agent.model_provider,
             supports_vision=agent.supports_vision,
         )
-        if agent.adapter_name == "custom" and agent.model_provider and agent.model_id
+        if is_sdk and agent.model_provider and agent.model_id
         else None
     )
+
+    # ── CLI-specific fields ──────────────────────────────────────────
+    cli_exec_path = agent.executable_path if is_cli else None
+    cli_custom_args = agent.custom_args_list if is_cli else None
+    # Session resume: deferred until AgentRun gets a session_id column.
+    cli_resume_session_id: str | None = None
 
     return AdapterInput(
         agent_id=agent.id,
@@ -1399,6 +1537,12 @@ async def build_adapter_input(
         attachments=attachments if len(attachments) > 0 else None,
         history=history if len(history) > 0 else None,
         custom_config=custom_config,
+        # CLI fields
+        executable_path=cli_exec_path,
+        extra_env=cli_extra_env if cli_extra_env else None,
+        custom_args=cli_custom_args,
+        resume_session_id=cli_resume_session_id,
+        mcp_config=None,  # MCP bridge deferred
     )
 
 

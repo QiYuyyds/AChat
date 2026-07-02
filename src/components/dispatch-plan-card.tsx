@@ -1,6 +1,6 @@
 'use client'
 
-import { Ban, Check, CheckCircle2, Circle, Loader2, Network, X, XCircle } from 'lucide-react'
+import { Ban, Check, CheckCircle2, Circle, Loader2, Network, RotateCw, X, XCircle } from 'lucide-react'
 import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -177,6 +177,9 @@ function PlanTaskList({ dispatch }: { dispatch: DispatchState }) {
                   </span>
                 )}
                 {status === 'running' && <TypingDots />}
+                {dispatch.retryInfo?.[task.id] && (
+                  <RetryBadge info={dispatch.retryInfo[task.id]} />
+                )}
               </div>
               <PlanTaskMarkdown>{task.task}</PlanTaskMarkdown>
               {(inputRefs.length > 0 || outputRefs.length > 0 || criteriaCount > 0) && (
@@ -321,6 +324,22 @@ function StatusIcon({ status }: { status: DispatchTaskStatus }) {
     return <Ban className={cn(base, 'text-zinc-500 animate-in zoom-in-50 duration-300')} />
   }
   return <XCircle className={cn(base, 'text-destructive animate-in zoom-in-50 duration-300')} />
+}
+
+function RetryBadge({
+  info,
+}: {
+  info: { attempt: number; maxAttempts: number; error?: string }
+}) {
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning"
+      title={info.error ?? undefined}
+    >
+      <RotateCw className="size-2.5 animate-spin" />
+      重试 {info.attempt}/{info.maxAttempts}
+    </span>
+  )
 }
 
 function TypingDots() {
