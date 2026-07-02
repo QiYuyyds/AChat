@@ -524,12 +524,17 @@ export async function deployConversationArtifact(
 
 // ─── Runs ───────────────────────────────────────
 export interface CompactConversationResult {
-  summary: ContextSummaryRow
+  /** 良性跳过（无事可压）时为 true：仅带 message 提示，不产生摘要 */
+  skipped?: boolean
+  /** 跳过原因码（skipped 时存在，用于日志/兜底） */
+  reason?: string
+  /** 跳过时无 summary */
+  summary?: ContextSummaryRow
   message: MessageRow
-  /** 压缩前预估的下次 prompt token 数 */
-  ctxBefore: number
-  /** 压缩后预估的下次 prompt token 数（UsageBadge 用来乐观刷新「当前 ctx」） */
-  ctxAfter: number
+  /** 压缩前预估的下次 prompt token 数（跳过时缺省） */
+  ctxBefore?: number
+  /** 压缩后预估的下次 prompt token 数（UsageBadge 用来乐观刷新「当前 ctx」；跳过时缺省） */
+  ctxAfter?: number
 }
 
 export async function compactConversation(

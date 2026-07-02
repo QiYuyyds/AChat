@@ -283,6 +283,14 @@ async def compact(conversation_id: str) -> JSONResponse:
     _log = logging.getLogger(__name__)
     try:
         result = await context_compaction_service.compact_conversation(conversation_id)
+    except context_compaction_service.CompactionSkipped as skip:
+        return JSONResponse(
+            content={
+                "skipped": True,
+                "reason": skip.reason,
+                "message": skip.message.model_dump(by_alias=True),
+            }
+        )
     except ValueError as err:
         _log.warning("[compact] 400 for conv=%s: %s", conversation_id, err)
         return _err(str(err), 400)

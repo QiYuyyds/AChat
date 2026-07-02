@@ -13,6 +13,7 @@
 - app-store 增加 per-conversation 的「压缩后 ctx 覆盖值」`ctxOverrideByConv[convId] = { tokens, at }`，`at` 用压缩系统消息的 `createdAt`（与 DB 时钟一致）。
 - `useConversationUsageTotal` 在派生 `lastInputTokens` 后，若存在 `ctxOverride` 且其 `at` 比「最新有 usage 的 run/message 的时间戳」更新，则用 `override.tokens` 覆盖 `lastInputTokens`。
 - `UsageBadge.handleCompact` 在 `upsertMessage` 后写入覆盖值。
+- 放宽压缩门槛：`KEEP_RECENT_MESSAGES 10→6`、`MIN_COMPACTABLE 4→2`，并新增 `MIN_COMPACT_TOKENS=800` 的 token 底线闸门。改为「按待压内容大小」而非「按消息条数」判定资格——少于十条也能压（内容够大时），纯短对话仍拒压以免浪费一次 LLM 调用。
 
 覆盖值**无需显式清除**：下一次真实 run 的时间戳晚于 `override.at`，比较时自然接管。语义保持「回顾值」——压缩后即时预告「下次将发送的 ctx」，一旦真实对话发生就被实际测量值取代。
 

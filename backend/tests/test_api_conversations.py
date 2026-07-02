@@ -183,10 +183,16 @@ async def test_regenerate_no_user_message(api_client, agents):
 
 # ─── compact (deferred) ──────────────────────────────────────────────────────
 async def test_compact_deferred(api_client, agents):
+    # Nothing to compact is a benign skip, not an error: 200 + a friendly
+    # ephemeral system message, no 400.
     conv = await _create_single(api_client, agents["alice"])
     resp = await api_client.post(f"/api/conversations/{conv['id']}/compact")
-    assert resp.status_code == 400
-    assert "error" in resp.json()
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["skipped"] is True
+    assert body.get("reason")
+    assert body["message"]["role"] == "system"
+    assert "error" not in body
 
 
 # ─── deploy ──────────────────────────────────────────────────────────────────

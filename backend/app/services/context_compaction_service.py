@@ -31,9 +31,53 @@ from app.utils.model_registry import estimate_tokens
 logger = logging.getLogger(__name__)
 
 # Keep the most recent N messages uncompacted; summarise everything older.
-KEEP_RECENT_MESSAGES = 10
+KEEP_RECENT_MESSAGES = 6
 # Refuse to compact when there aren't enough older messages to be worth it.
-MIN_COMPACTABLE = 4
+MIN_COMPACTABLE = 2
+# Token floor on the compactable slice: gate on size, not count, so a short
+# conversation isn't summarised for no gain while a few huge messages still can.
+MIN_COMPACT_TOKENS = 800
+
+# Friendly notices for benign "nothing to compact" outcomes (not errors).
+_TOO_SHORT_NOTICE = "当前对话还太短，暂时不需要压缩上下文。"
+_TOO_LITTLE_NOTICE = "待压缩的内容太少，压缩收益不明显，暂不压缩。"
+_NO_MODEL_NOTICE = "当前会话没有可用于生成摘要的模型 agent，无法压缩上下文。"
+
+
+class CompactionSkipped(Exception):
+    """Benign 'nothing to compact' outcome — surfaced as a friendly notice, not an error."""
+
+    def __init__(self, reason: str, message: MessageRecord) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.message = message
+
+
+def _broadcast_ephemeral_notice(conversation_id: str, content: str) -> MessageRecord:
+    """Broadcast a role=system notice WITHOUT persisting it (transient by design)."""
+    record = MessageRecord(
+        id=new_message_id(),
+        conversation_id=conversation_id,
+        role="system",
+        agent_id=None,
+        parts=[{"type": "text", "content": content}],
+        status="complete",
+        parent_message_id=None,
+        mentioned_agent_ids=[],
+        run_id=None,
+        usage=None,
+        created_at=now_ms(),
+    )
+    event_bus.publish(
+        MessageAddedEvent(
+            conversation_id=conversation_id, timestamp=record.created_at, message=record
+        )
+    )
+    return record
+
+
+def _skip(conversation_id: str, reason: str, content: str) -> CompactionSkipped:
+    return CompactionSkipped(reason, _broadcast_ephemeral_notice(conversation_id, content))
 
 
 async def get_latest_context_summary(conversation_id: str) -> ContextSummary | None:
@@ -98,8 +142,10 @@ class CompactResult:
 async def compact_conversation(conversation_id: str) -> CompactResult:
     """Summarise older history into a ContextSummary and insert a system message.
 
-    Raises ValueError (surfaced as HTTP 400) when compaction cannot proceed:
-    conversation missing, nothing to compact, or no model-backed agent.
+    Raises ``CompactionSkipped`` (surfaced as HTTP 200 + a friendly ephemeral
+    notice) for benign no-op cases: nothing worth compacting, or no model-backed
+    agent. Raises ValueError (HTTP 400) for genuine failures: conversation
+    missing, or the summariser returning empty.
     """
     # a) conversation exists?
     async with get_db() as db:
@@ -132,17 +178,25 @@ async def compact_conversation(conversation_id: str) -> CompactResult:
 
     # d) keep the most recent N; compact the rest
     if len(rows) <= KEEP_RECENT_MESSAGES:
-        raise ValueError("没有足够的历史消息可压缩")
+        raise _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE)
     to_compact = rows[:-KEEP_RECENT_MESSAGES]
     if len(to_compact) < MIN_COMPACTABLE:
-        raise ValueError("没有足够的历史消息可压缩")
+        raise _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE)
 
     # e) pick a summariser model: first Custom agent with model config
-    model_provider, model_id, api_key, api_base_url = await _pick_summary_model(agent_ids)
+    try:
+        model_provider, model_id, api_key, api_base_url = await _pick_summary_model(agent_ids)
+    except ValueError:
+        raise _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE) from None
 
     # f) render the messages to compact into a transcript
     agent_names = await _load_agent_names(agent_ids)
     transcript = _render_transcript(to_compact, agent_names)
+
+    # size gate: only compact when the slice is big enough to be worth an LLM call
+    if estimate_tokens(transcript) < MIN_COMPACT_TOKENS:
+        raise _skip(conversation_id, "compactable_too_small", _TOO_LITTLE_NOTICE)
+
     prior = latest.summary if latest else None
     kept = rows[-KEEP_RECENT_MESSAGES:]
 

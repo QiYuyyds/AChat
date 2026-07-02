@@ -16,6 +16,11 @@
 
 - [x] 3.1 `UsageBadge.handleCompact` 在 `upsertMessage(result.message)` 后调用 `setCtxOverride(conversationId, result.ctxAfter, result.message.createdAt)`
 
+## 5. 放宽压缩门槛（按大小而非条数）
+
+- [x] 5.1 常量调整 `KEEP_RECENT_MESSAGES 10→6`、`MIN_COMPACTABLE 4→2`，新增 `MIN_COMPACT_TOKENS=800`
+- [x] 5.2 在 transcript 渲染后、LLM 调用前加 token 底线闸门：`estimate_tokens(transcript) < MIN_COMPACT_TOKENS` 时 raise「待压缩内容过少，压缩收益不明显」
+
 ## 4. 验证
 
 - [x] 4.1 后端 `ruff check` 通过；`pytest -k "compact or conversation"` → 57 passed（2 个 title 测试失败为 `simplify-conversation-title-add-summary` 变更遗留的陈旧断言，与本变更无关）

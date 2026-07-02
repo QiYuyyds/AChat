@@ -24,3 +24,17 @@ After a successful compaction, the frontend "当前 ctx" indicator MUST show the
 
 - **WHEN** a run newer than the override timestamp produces usage
 - **THEN** the badge shows that run's measured input tokens and the override no longer applies.
+
+### Requirement: Compaction eligibility SHALL gate on size, not message count alone
+
+Compaction MUST be permitted for conversations with fewer than ten messages when the compactable slice is large enough to be worth summarizing, and MUST be refused when that slice is too small to yield meaningful savings, regardless of message count.
+
+#### Scenario: Few but large messages
+
+- **WHEN** the compactable slice (messages older than the retained recent window) estimates above the size floor
+- **THEN** compaction proceeds even though the conversation has fewer than ten messages.
+
+#### Scenario: Short conversation with little content
+
+- **WHEN** the compactable slice estimates below the size floor
+- **THEN** compaction is refused with a clear reason instead of spending an LLM call for negligible savings.

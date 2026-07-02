@@ -46,8 +46,11 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
     try {
       const result = await compactConversation(conversationId)
       upsertMessage(result.message)
-      // 乐观刷新「当前 ctx」到压缩后估计值；下一次真实 run 用实测值接管。
-      setCtxOverride(conversationId, result.ctxAfter, result.message.createdAt)
+      // 良性跳过（无事可压）只显示提示消息，不覆盖「当前 ctx」——没省任何 token。
+      if (!result.skipped && result.ctxAfter !== undefined) {
+        // 乐观刷新「当前 ctx」到压缩后估计值；下一次真实 run 用实测值接管。
+        setCtxOverride(conversationId, result.ctxAfter, result.message.createdAt)
+      }
     } catch (err) {
       console.error('[UsageBadge] compact failed', err)
     } finally {
