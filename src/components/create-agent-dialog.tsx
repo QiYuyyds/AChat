@@ -1,6 +1,6 @@
 'use client'
 
-import { Cpu, MessageSquareText, SlidersHorizontal, Sparkles, User, Wrench } from 'lucide-react'
+import { ChevronDown, Cpu, MessageSquareText, SlidersHorizontal, Sparkles, User, Wrench } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { AgentCreateWizard } from '@/components/agent-create-wizard'
@@ -39,6 +39,7 @@ import {
   type AgentBuilderProvider as Provider,
   type AgentConfigDraft,
   type AgentToolName as ToolName,
+  type AgentToolPresetId,
 } from '@/shared/agent-builder-config'
 import { validateCodexBaseUrl } from '@/shared/codex-compat'
 import {
@@ -50,15 +51,8 @@ import { useAppStore } from '@/stores/app-store'
 type AgentTab = 'basic' | 'model' | 'toolsPrompt'
 type CreateStep = 'choose' | 'wizard' | 'detail'
 
-const DEFAULT_CUSTOM_SYSTEM_PROMPT = `你是一个 AChat custom agent。你的任务是理解用户目标，使用已启用的工具完成工作，并把结果清晰交付给用户。
-
-工作原则：
-1. 先判断需要什么上下文；只有在用户提到附件、已有产物或工作区文件时，才调用对应读取工具。
-2. 多步骤任务先给自己形成简短计划，但不要把固定流程强加给简单问题。
-3. 工具调用要少而准确；每次调用都应服务于当前目标。
-4. 产出代码、网页、文档或设计稿时，优先用 write_artifact 创建结构化产物；网页产物完成后再调用 deploy_artifact。
-5. 探索项目目录时优先用 fs_list，再用 fs_read 读取具体文件；使用 fs_write 或 bash 前确认确有必要，并只在当前 workspace 范围内操作。
-6. 最终回复保持简洁，说明完成了什么、产物在哪里、还剩什么需要用户决策。`
+/** All-purpose preset's system prompt template — used as the default prompt for new custom agents. */
+const DEFAULT_CUSTOM_SYSTEM_PROMPT = TOOL_PRESETS[0].systemPromptTemplate
 
 /**
  * 创建 / 编辑 Agent 的对话框。
@@ -95,10 +89,12 @@ export function CreateAgentDialog({
   const [isOrchestrator, setIsOrchestrator] = useState(false)
   const [executablePath, setExecutablePath] = useState('')
   const [customArgsText, setCustomArgsText] = useState('')
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<AgentTab>('basic')
   const [createStep, setCreateStep] = useState<CreateStep>('choose')
+  const [activePresetId, setActivePresetId] = useState<AgentToolPresetId | null>('all-purpose')
 
   // 每次打开 / 切换 agent 时，重置表单到该 agent 的当前值（或创建态的默认）。
   useEffect(() => {
@@ -126,6 +122,14 @@ export function CreateAgentDialog({
               : PROVIDER_DEFAULTS[p].defaultModel),
       )
       setToolNames(new Set(agent.toolNames))
+      // Infer activePresetId from persisted toolNames (exact match only);
+      // do NOT overwrite the persisted systemPrompt.
+      const inferredPresetId = TOOL_PRESETS.find(
+        (p) =>
+          agent.toolNames.length === p.tools.length &&
+          p.tools.every((t) => agent.toolNames.includes(t)),
+      )?.id ?? null
+      setActivePresetId(inferredPresetId)
       setSkillNames(new Set(agent.skillNames))
       setSupportsVision(agent.supportsVision)
       setIsOrchestrator(agent.isOrchestrator)
@@ -142,6 +146,7 @@ export function CreateAgentDialog({
       setProvider('deepseek')
       setModelId(PROVIDER_DEFAULTS.deepseek.defaultModel)
       setToolNames(new Set(DEFAULT_CUSTOM_AGENT_TOOLS))
+      setActivePresetId('all-purpose')
       setSkillNames(new Set())
       setSupportsVision(true)
       setIsOrchestrator(false)
@@ -153,6 +158,7 @@ export function CreateAgentDialog({
     }
     if (agent) setCreateStep('detail')
     setShowApiKey(false)
+    setShowAdvanced(false)
     setError(null)
     setActiveTab('basic')
   }, [open, agent])
@@ -187,7 +193,15 @@ export function CreateAgentDialog({
       setModelId(CODEX_DEFAULT_MODEL)
     } else {
       setModelId(PROVIDER_DEFAULTS[provider].defaultModel)
-      setToolNames((prev) => (prev.size === 0 ? new Set(DEFAULT_CUSTOM_AGENT_TOOLS) : prev))
+      if (toolNames.size === 0) {
+        setToolNames(new Set(DEFAULT_CUSTOM_AGENT_TOOLS))
+        setActivePresetId('all-purpose')
+      } else {
+        const inferred = TOOL_PRESETS.find(
+          (p) => toolNames.size === p.tools.length && p.tools.every((t) => toolNames.has(t)),
+        )?.id ?? null
+        setActivePresetId(inferred)
+      }
       setSystemPrompt((prev) => (prev.trim() ? prev : DEFAULT_CUSTOM_SYSTEM_PROMPT))
     }
   }
@@ -216,12 +230,15 @@ export function CreateAgentDialog({
     })
   }
 
-  const applyToolPreset = (tools: readonly ToolName[]) => {
-    setToolNames(new Set(tools))
+  const applyToolPreset = (preset: {
+    id: AgentToolPresetId
+    tools: readonly ToolName[]
+    systemPromptTemplate: string
+  }) => {
+    setToolNames(new Set(preset.tools))
+    setSystemPrompt(preset.systemPromptTemplate)
+    setActivePresetId(preset.id)
   }
-
-  const isPresetActive = (tools: readonly ToolName[]) =>
-    toolNames.size === tools.length && tools.every((toolName) => toolNames.has(toolName))
 
   const applyDraftToForm = (draft: AgentConfigDraft) => {
     const kind = draft.adapterName
@@ -241,12 +258,17 @@ export function CreateAgentDialog({
             : PROVIDER_DEFAULTS[p].defaultModel),
     )
     setToolNames(new Set(draft.toolNames))
+    const inferredPresetId = TOOL_PRESETS.find(
+      (p) => draft.toolNames.length === p.tools.length && p.tools.every((t) => draft.toolNames.includes(t)),
+    )?.id ?? null
+    setActivePresetId(inferredPresetId)
     setSkillNames(new Set())
     setSupportsVision(draft.supportsVision)
     setIsOrchestrator(false)
     setApiKey('')
     setApiBaseUrl('')
     setShowApiKey(false)
+    setShowAdvanced(false)
     setError(null)
     setActiveTab('basic')
   }
@@ -535,9 +557,9 @@ export function CreateAgentDialog({
                         className="mt-0.5 accent-primary"
                       />
                       <div className="min-w-0">
-                        <div className="text-xs font-medium">Claude Code SDK</div>
+                        <div className="text-xs font-medium">Claude Code CLI</div>
                         <div className="mt-0.5 text-[10px] text-muted-foreground">
-                          用 @anthropic-ai/claude-agent-sdk，自带 Bash / Read / Write / Edit / Grep / Glob / WebFetch / Task 子 agent 等一整套工具。
+                          启动本机 claude CLI 子进程，自带 Bash / Read / Write / Edit / Grep / Glob / WebFetch / Task 子 agent 等一整套工具。认证走 claude login / 环境变量，无需填 Key。
                         </div>
                       </div>
                     </label>
@@ -555,9 +577,9 @@ export function CreateAgentDialog({
                         className="mt-0.5 accent-primary"
                       />
                       <div className="min-w-0">
-                        <div className="text-xs font-medium">Codex SDK</div>
+                        <div className="text-xs font-medium">Codex CLI</div>
                         <div className="mt-0.5 text-[10px] text-muted-foreground">
-                          用 @openai/codex-sdk，支持本地仓库读写、命令执行、线程续接和结构化事件流；需要 Codex/Responses 兼容后端。
+                          启动本机 codex CLI 子进程，支持本地仓库读写、命令执行、线程续接和结构化事件流；需要 Codex/Responses 兼容后端。认证走 codex login / 环境变量，无需填 Key。
                         </div>
                       </div>
                     </label>
@@ -587,152 +609,215 @@ export function CreateAgentDialog({
                       />
                     </div>
                   </div>
-                ) : (
-                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                    <Label>Model ID</Label>
-                    <div>
-                      <Input
-                        value={modelId}
-                        onChange={(e) => setModelId(e.target.value)}
-                        placeholder={
-                          adapterKind === 'claude-code' ? CLAUDE_CODE_DEFAULT_MODEL : CODEX_DEFAULT_MODEL
-                        }
-                        className="font-mono text-xs"
-                      />
-                      <div className="mt-1 text-[10px] text-muted-foreground">
-                        {adapterKind === 'claude-code' ? (
-                          <>
-                            Claude 模型 id，例 <code className="font-mono">claude-opus-4-7</code> /{' '}
-                            <code className="font-mono">claude-sonnet-4-6</code>。留空走 SDK 默认。
-                          </>
-                        ) : (
-                          <>
-                            Codex 模型 id，例 <code className="font-mono">gpt-5-codex</code>。留空走 SDK 默认。
-                          </>
+                ) : null}
+
+                {(adapterKind === 'claude-code' || adapterKind === 'codex') && (
+                  <div className="rounded-md border border-dashed bg-muted/20">
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvanced((v) => !v)}
+                      className="flex w-full items-center justify-between px-3 py-2 text-left transition hover:bg-muted/40"
+                    >
+                      <span className="text-xs font-medium">高级配置（均可留空，走 CLI 默认）</span>
+                      <ChevronDown
+                        className={cn(
+                          'size-3.5 text-muted-foreground transition-transform',
+                          showAdvanced && 'rotate-180',
                         )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {(adapterKind === 'claude-code' || adapterKind === 'codex') && (
-                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                    <Label>CLI 路径</Label>
-                    <div>
-                      <Input
-                        value={executablePath}
-                        onChange={(e) => setExecutablePath(e.target.value)}
-                        placeholder={adapterKind === 'claude-code' ? 'claude（留空从 PATH 查找）' : 'codex（留空从 PATH 查找）'}
-                        className="font-mono text-xs"
                       />
-                      <div className="mt-1 text-[10px] text-muted-foreground">
-                        本机 {adapterKind === 'claude-code' ? 'Claude Code' : 'Codex'} CLI 的路径。留空则自动 PATH 查找。仅在非标准安装时需要填写。
+                    </button>
+                    {showAdvanced && (
+                      <div className="space-y-3 border-t px-3 py-2">
+                        <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                          <Label>Model ID</Label>
+                          <div>
+                            <Input
+                              value={modelId}
+                              onChange={(e) => setModelId(e.target.value)}
+                              placeholder={
+                                adapterKind === 'claude-code' ? CLAUDE_CODE_DEFAULT_MODEL : CODEX_DEFAULT_MODEL
+                              }
+                              className="font-mono text-xs"
+                            />
+                            <div className="mt-1 text-[10px] text-muted-foreground">
+                              {adapterKind === 'claude-code' ? (
+                                <>
+                                  Claude 模型 id，例 <code className="font-mono">claude-opus-4-7</code> /{' '}
+                                  <code className="font-mono">claude-sonnet-4-6</code>。留空走 CLI 默认。
+                                </>
+                              ) : (
+                                <>
+                                  Codex 模型 id，例 <code className="font-mono">gpt-5-codex</code>。留空走 CLI 默认。
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                          <Label>CLI 路径</Label>
+                          <div>
+                            <Input
+                              value={executablePath}
+                              onChange={(e) => setExecutablePath(e.target.value)}
+                              placeholder={adapterKind === 'claude-code' ? 'claude（留空从 PATH 查找）' : 'codex（留空从 PATH 查找）'}
+                              className="font-mono text-xs"
+                            />
+                            <div className="mt-1 text-[10px] text-muted-foreground">
+                              本机 {adapterKind === 'claude-code' ? 'Claude Code' : 'Codex'} CLI 的路径。留空则自动 PATH 查找。仅在非标准安装时需要填写。
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                          <Label>CLI 参数</Label>
+                          <div>
+                            <Textarea
+                              value={customArgsText}
+                              onChange={(e) => setCustomArgsText(e.target.value)}
+                              placeholder={'每行一个参数，例：\n--verbose\n--max-turns\n20'}
+                              className="min-h-[60px] font-mono text-xs"
+                            />
+                            <div className="mt-1 text-[10px] text-muted-foreground">
+                              传给 {adapterKind === 'claude-code' ? 'claude' : 'codex'} CLI 的额外参数，每行一个。协议关键 flag（如 --output-format）会被自动过滤。
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                          <Label>Base URL</Label>
+                          <div>
+                            <Input
+                              value={apiBaseUrl}
+                              onChange={(e) => setApiBaseUrl(e.target.value)}
+                              placeholder={
+                                adapterKind === 'claude-code'
+                                  ? 'https://api.anthropic.com（默认）'
+                                  : 'https://api.openai.com/v1（默认，需支持 /responses）'
+                              }
+                              className="font-mono text-xs"
+                            />
+                            <div className="mt-1 text-[10px] text-muted-foreground">
+                              {adapterKind === 'claude-code' ? (
+                                <>
+                                  指向第三方 Claude API 兼容网关；留空走 Anthropic 官方 endpoint。配此项时下方 API Key 会作为 <code className="font-mono">ANTHROPIC_API_KEY</code> 环境变量传给 CLI 子进程。
+                                </>
+                              ) : (
+                                <>
+                                  必须指向 Codex/Responses 兼容 endpoint；DeepSeek / 火山方舟等 Chat Completions 兼容接口请用 Custom adapter。留空走 Codex CLI 默认 endpoint。
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                          <Label>API Key</Label>
+                          <div>
+                            <div className="flex gap-2">
+                              <Input
+                                type={showApiKey ? 'text' : 'password'}
+                                value={apiKey}
+                                onChange={(e) => setApiKey(e.target.value)}
+                                placeholder={
+                                  apiBaseUrl.trim()
+                                    ? adapterKind === 'claude-code'
+                                      ? '第三方网关的 token'
+                                      : 'Codex/Responses endpoint token'
+                                    : '留空则使用 claude login 登录态 / 环境变量'
+                                }
+                                className="flex-1 font-mono text-xs"
+                                autoComplete="off"
+                              />
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setShowApiKey((v) => !v)}
+                              >
+                                {showApiKey ? '隐藏' : '显示'}
+                              </Button>
+                            </div>
+                            <div className="mt-1 text-[10px] text-muted-foreground">
+                              {apiBaseUrl.trim() ? (
+                                adapterKind === 'claude-code' ? (
+                                  <>填写后作为 <code className="font-mono">ANTHROPIC_API_KEY</code> 环境变量传给 CLI 子进程，路由到自定义 Base URL；留空则透传空 token（第三方网关可能拒绝）</>
+                                ) : (
+                                  <>填写后作为 <code className="font-mono">OPENAI_API_KEY</code> 环境变量传给 CLI 子进程，路由到自定义 Codex/Responses Base URL；留空则走环境变量</>
+                                )
+                              ) : (
+                                <>
+                                  填写后作为{' '}
+                                  <code className="font-mono">
+                                    {adapterKind === 'claude-code' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'}
+                                  </code>{' '}
+                                  环境变量传给 CLI 子进程；留空则 fallback 到{' '}
+                                  <code className="font-mono">
+                                    {adapterKind === 'claude-code'
+                                      ? '环境变量 / 本机 ~/.claude OAuth 登录态'
+                                      : '环境变量 / 本机 codex login 登录态'}
+                                  </code>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
                 )}
 
-                {(adapterKind === 'claude-code' || adapterKind === 'codex') && (
+                {adapterKind === 'custom' && provider === 'openai-compatible' && (
                   <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                    <Label>CLI 参数</Label>
-                    <div>
-                      <Textarea
-                        value={customArgsText}
-                        onChange={(e) => setCustomArgsText(e.target.value)}
-                        placeholder={'每行一个参数，例：\n--verbose\n--max-turns\n20'}
-                        className="min-h-[60px] font-mono text-xs"
-                      />
-                      <div className="mt-1 text-[10px] text-muted-foreground">
-                        传给 {adapterKind === 'claude-code' ? 'claude' : 'codex'} CLI 的额外参数，每行一个。协议关键 flag（如 --output-format）会被自动过滤。
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {(adapterKind === 'claude-code' ||
-                  adapterKind === 'codex' ||
-                  (adapterKind === 'custom' && provider === 'openai-compatible')) && (
-                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                    <Label required={adapterKind === 'custom' && provider === 'openai-compatible'}>Base URL</Label>
+                    <Label required>Base URL</Label>
                     <div>
                       <Input
                         value={apiBaseUrl}
                         onChange={(e) => setApiBaseUrl(e.target.value)}
-                        placeholder={
-                          adapterKind === 'claude-code'
-                            ? 'https://api.anthropic.com（默认）'
-                            : adapterKind === 'codex'
-                              ? 'https://api.openai.com/v1（默认，需支持 /responses）'
-                              : 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-                        }
+                        placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
                         className="font-mono text-xs"
                       />
                       <div className="mt-1 text-[10px] text-muted-foreground">
-                        {adapterKind === 'claude-code' ? (
-                          <>
-                            指向第三方 Claude API 兼容网关（如 <code className="font-mono">https://anyrouter.top</code>）；留空走 Anthropic 官方 endpoint。配此项时下方 API Key 自动作为 <code className="font-mono">ANTHROPIC_AUTH_TOKEN</code> 传给 SDK。
-                          </>
-                        ) : adapterKind === 'codex' ? (
-                          <>
-                            必须指向 Codex/Responses 兼容 endpoint；DeepSeek / 火山方舟等 Chat Completions 兼容接口请用 Custom adapter。留空走 Codex SDK 默认 endpoint。
-                          </>
-                        ) : (
-                          <>
-                            必须指向 OpenAI Chat Completions 兼容 endpoint，例如通义千问 compatible-mode、智谱 / MiniMax / OpenRouter / SiliconFlow 的 OpenAI 兼容地址。
-                          </>
-                        )}
+                        必须指向 OpenAI Chat Completions 兼容 endpoint，例如通义千问 compatible-mode、智谱 / MiniMax / OpenRouter / SiliconFlow 的 OpenAI 兼容地址。
                       </div>
                     </div>
                   </div>
                 )}
 
-                <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                  <Label>
-                    {adapterKind === 'claude-code' && apiBaseUrl.trim() ? 'Auth Token' : 'API Key'}
-                  </Label>
-                  <div>
-                    <div className="flex gap-2">
-                      <Input
-                        type={showApiKey ? 'text' : 'password'}
-                        value={apiKey}
-                        onChange={(e) => setApiKey(e.target.value)}
-                        placeholder={
-                          adapterKind === 'claude-code' && apiBaseUrl.trim()
-                            ? '第三方网关的 token'
-                            : adapterKind === 'codex' && apiBaseUrl.trim()
-                              ? 'Codex/Responses endpoint token'
-                              : adapterKind === 'custom' && provider === 'openai-compatible'
-                                ? 'OpenAI-compatible endpoint token'
+                {adapterKind === 'custom' && (
+                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                    <Label>API Key</Label>
+                    <div>
+                      <div className="flex gap-2">
+                        <Input
+                          type={showApiKey ? 'text' : 'password'}
+                          value={apiKey}
+                          onChange={(e) => setApiKey(e.target.value)}
+                          placeholder={
+                            provider === 'openai-compatible'
+                              ? 'OpenAI-compatible endpoint token'
                               : '留空则使用环境变量'
-                        }
-                        className="flex-1 font-mono text-xs"
-                        autoComplete="off"
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setShowApiKey((v) => !v)}
-                      >
-                        {showApiKey ? '隐藏' : '显示'}
-                      </Button>
-                    </div>
-                    <div className="mt-1 text-[10px] text-muted-foreground">
-                      {adapterKind === 'claude-code' && apiBaseUrl.trim() ? (
-                        <>填写后作为 <code className="font-mono">ANTHROPIC_AUTH_TOKEN</code> 传给 SDK，路由到自定义 Base URL；留空则透传空 token（第三方网关可能拒绝）</>
-                      ) : adapterKind === 'codex' && apiBaseUrl.trim() ? (
-                        <>填写后作为 <code className="font-mono">CODEX_API_KEY</code> 传给 SDK，路由到自定义 Codex/Responses Base URL；留空则走 AChat 设置或环境变量</>
-                      ) : adapterKind === 'custom' && provider === 'openai-compatible' ? (
-                        <>OpenAI-compatible provider 需要为该 agent 单独填写 API Key；不会使用全局 OpenAI / DeepSeek / 火山方舟 key。</>
-                      ) : (
-                        <>
-                          填写后该 agent 优先用此 key；留空则 fallback 到{' '}
-                          <code className="font-mono">
-                            {adapterKind === 'claude-code'
-                              ? 'ANTHROPIC_API_KEY 环境变量 / 本机 ~/.claude OAuth 登录态'
-                              : adapterKind === 'codex'
-                                ? 'OPENAI_API_KEY / CODEX_API_KEY 环境变量'
-                              : provider === 'deepseek'
+                          }
+                          className="flex-1 font-mono text-xs"
+                          autoComplete="off"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setShowApiKey((v) => !v)}
+                        >
+                          {showApiKey ? '隐藏' : '显示'}
+                        </Button>
+                      </div>
+                      <div className="mt-1 text-[10px] text-muted-foreground">
+                        {provider === 'openai-compatible' ? (
+                          <>OpenAI-compatible provider 需要为该 agent 单独填写 API Key；不会使用全局 OpenAI / DeepSeek / 火山方舟 key。</>
+                        ) : (
+                          <>
+                            填写后该 agent 优先用此 key；留空则 fallback 到{' '}
+                            <code className="font-mono">
+                              {provider === 'deepseek'
                                 ? 'DEEPSEEK_API_KEY'
                                 : provider === 'volcano-ark'
                                   ? 'ARK_API_KEY'
@@ -741,13 +826,14 @@ export function CreateAgentDialog({
                                     : provider === 'anthropic'
                                       ? 'ANTHROPIC_API_KEY'
                                       : '该 agent 的 API Key'}
-                          </code>
-                          {adapterKind === 'claude-code' || adapterKind === 'codex' ? '' : ' 环境变量'}
-                        </>
-                      )}
+                            </code>{' '}
+                            环境变量
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
 
                 <div className="grid grid-cols-[80px_1fr] items-start gap-3">
                   <Label>视觉</Label>
@@ -767,7 +853,7 @@ export function CreateAgentDialog({
                       <div className="text-xs font-medium">该模型支持视觉（多模态）</div>
                       <div className="mt-0.5 text-[10px] text-muted-foreground">
                         {adapterKind === 'codex'
-                          ? '勾选后，发图片时会以本地图片输入传给 Codex SDK。模型不支持会被拒绝，请确认 modelId 支持视觉。'
+                          ? '勾选后，发图片时会以本地图片输入传给 Codex CLI。模型不支持会被拒绝，请确认 modelId 支持视觉。'
                           : '勾选后，发图片时会以 base64 注入 messages.content。模型不支持会被 API 拒绝 (400)，请确认你填的 modelId 真的支持视觉。'}
                       </div>
                     </div>
@@ -777,86 +863,100 @@ export function CreateAgentDialog({
 
               <TabsContent value="toolsPrompt" className="mt-0 space-y-3 py-1">
                 {adapterKind === 'custom' ? (
-                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                    <Label>工具集</Label>
-                    <div className="space-y-2">
-                      <div className="grid grid-cols-2 gap-1.5">
-                        {TOOL_PRESETS.map((preset) => {
-                          const active = isPresetActive(preset.tools)
-                          return (
-                            <button
-                              key={preset.id}
-                              type="button"
-                              onClick={() => applyToolPreset(preset.tools)}
-                              className={cn(
-                                'rounded-md border px-2.5 py-2 text-left transition hover:border-foreground/30',
-                                active && 'border-primary bg-primary/5',
-                              )}
-                            >
-                              <div className="text-xs font-medium">{preset.label}</div>
-                              <div className="mt-0.5 text-[10px] text-muted-foreground">
-                                {preset.desc}
-                              </div>
-                            </button>
-                          )
-                        })}
+                  <>
+                    {/* Horizontal role bar — flex-wrap wraps to multiple rows */}
+                    <div className="flex flex-wrap gap-1.5">
+                      {TOOL_PRESETS.map((preset) => (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => applyToolPreset(preset)}
+                          className={cn(
+                            'rounded-md border px-2.5 py-1.5 text-left transition hover:border-foreground/30',
+                            activePresetId === preset.id && 'border-primary bg-primary/5',
+                          )}
+                        >
+                          <span className="text-xs font-medium">{preset.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {/* Left-right split: tools (left) + prompt (right) */}
+                    <div className="grid grid-cols-2 gap-3">
+                      {/* Left: tool checklist multi-column grid */}
+                      <div className="space-y-2">
+                        <div className="text-xs text-muted-foreground">工具集</div>
+                        <div className="grid grid-cols-2 gap-1.5">
+                          {AVAILABLE_AGENT_TOOLS.map((t) => {
+                            const meta = TOOL_META[t]
+                            return (
+                              <label
+                                key={t}
+                                className={cn(
+                                  'flex cursor-pointer items-start gap-1.5 rounded-md border px-2 py-1.5 transition hover:border-foreground/30',
+                                  toolNames.has(t) && 'border-primary bg-primary/5',
+                                )}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={toolNames.has(t)}
+                                  onChange={() => toggleTool(t)}
+                                  className="mt-0.5 accent-primary"
+                                />
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-[10px] font-medium">{meta.label}</span>
+                                    <code className="font-mono text-[9px] text-muted-foreground">{t}</code>
+                                  </div>
+                                  <div className="text-[9px] leading-tight text-muted-foreground">{meta.desc}</div>
+                                </div>
+                              </label>
+                            )
+                          })}
+                        </div>
                       </div>
-                      {AVAILABLE_AGENT_TOOLS.map((t) => {
-                        const meta = TOOL_META[t]
-                        return (
-                          <label
-                            key={t}
-                            className={cn(
-                              'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
-                              toolNames.has(t) && 'border-primary bg-primary/5',
-                            )}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={toolNames.has(t)}
-                              onChange={() => toggleTool(t)}
-                              className="mt-0.5 accent-primary"
-                            />
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-medium">{meta.label}</span>
-                                <code className="font-mono text-[10px] text-muted-foreground">{t}</code>
-                              </div>
-                              <div className="mt-0.5 text-[10px] text-muted-foreground">{meta.desc}</div>
-                            </div>
-                          </label>
-                        )
-                      })}
+                      {/* Right: System Prompt editor */}
+                      <div className="space-y-2">
+                        <div className="text-xs text-muted-foreground">
+                          System Prompt <span className="text-destructive">*</span>
+                        </div>
+                        <Textarea
+                          value={systemPrompt}
+                          onChange={(e) => setSystemPrompt(e.target.value)}
+                          placeholder="你是…&#10;你的核心产出是…&#10;遵守以下原则…"
+                          className="min-h-[300px] font-mono text-xs"
+                        />
+                      </div>
                     </div>
-                  </div>
+                  </>
                 ) : (
-                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                    <Label>工具集</Label>
-                    <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-                      {adapterKind === 'claude-code' ? (
-                        <>
-                          Claude Code agent 使用 SDK 内置工具集：Bash / Read / Write / Edit / Grep / Glob /
-                          WebFetch / WebSearch / Task / TodoWrite 等。审批 / 沙箱 / 黑名单仍由 AChat 接管。
-                        </>
-                      ) : (
-                        <>
-                          Codex agent 使用 Codex SDK 内置的本地命令、文件修改、MCP 调用和计划事件。
-                          Review 模式下以只读沙箱运行；Auto 模式下允许 workspace-write。运行时使用 AChat 隔离配置，不读取本机 ~/.codex。
-                        </>
-                      )}
+                  <>
+                    <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                      <Label>工具集</Label>
+                      <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                        {adapterKind === 'claude-code' ? (
+                          <>
+                            Claude Code agent 使用 CLI 内置工具集：Bash / Read / Write / Edit / Grep / Glob /
+                            WebFetch / WebSearch / Task / TodoWrite 等。审批 / 沙箱 / 黑名单仍由 AChat 接管。
+                          </>
+                        ) : (
+                          <>
+                            Codex agent 使用 Codex CLI 内置的本地命令、文件修改、MCP 调用和计划事件。
+                            Review 模式下以只读沙箱运行；Auto 模式下允许 workspace-write。运行时使用 AChat 隔离配置，不读取本机 ~/.codex。
+                          </>
+                        )}
+                      </div>
                     </div>
-                  </div>
+                    <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                      <Label required>System Prompt</Label>
+                      <Textarea
+                        value={systemPrompt}
+                        onChange={(e) => setSystemPrompt(e.target.value)}
+                        placeholder="你是…&#10;你的核心产出是…&#10;遵守以下原则…"
+                        className="min-h-[160px] font-mono text-xs"
+                      />
+                    </div>
+                  </>
                 )}
-
-                <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                  <Label required>System Prompt</Label>
-                  <Textarea
-                    value={systemPrompt}
-                    onChange={(e) => setSystemPrompt(e.target.value)}
-                    placeholder="你是…&#10;你的核心产出是…&#10;遵守以下原则…"
-                    className="min-h-[160px] font-mono text-xs"
-                  />
-                </div>
               </TabsContent>
 
               <TabsContent value="skills" className="mt-0 space-y-3 py-1">
@@ -899,7 +999,7 @@ export function CreateAgentDialog({
                   <div className="grid grid-cols-[80px_1fr] items-start gap-3">
                     <Label>技能</Label>
                     <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
-                      仅自建（custom）Agent 支持技能。SDK Agent（Claude Code / Codex）使用各自内置能力。
+                      仅自建（custom）Agent 支持技能。CLI Agent（Claude Code / Codex）使用各自内置能力。
                     </div>
                   </div>
                 )}

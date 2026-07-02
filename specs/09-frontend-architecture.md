@@ -203,7 +203,7 @@ app/page.tsx
     │   ├── <ConversationItem />  ── 单条会话 + hover 置顶/归档/重命名/删除
     │   ├── <ArtifactLibrary />
     │   ├── <AgentLibrary />
-    │   │   └── <CreateAgentDialog />    ── 顶部 radio 选 adapterName（'custom' / 'claude-code' / 'codex'）；SDK adapter 模式下隐藏 provider/工具集，Codex 使用 AChat 隔离 CODEX_HOME
+    │   │   └── <CreateAgentDialog />    ── 顶部 radio 选 adapterName（'custom' / 'claude-code' / 'codex'）；custom 模式下 toolsPrompt Tab 布局：顶部横向角色条（9 个角色胶囊 flex flex-wrap 折行）+ 左右分栏（左：工具 checkbox grid-cols-2，右：System Prompt 编辑区）；点击角色胶囊自动覆盖工具集 checkbox + System Prompt 模板；SDK adapter 模式下隐藏角色条与工具 checklist，保留 prompt 编辑区；Codex 使用 AChat 隔离 CODEX_HOME
     │   └── <RenameInput />       ── 内联重命名
     ├── <ChatPanel />             ── 当前会话主区
     │   ├── header: 头像堆 + AgentInfoPopover + 文件树/产物预览 toggle + FileLibraryDialog + AddAgentDialog + UsageBadge（点开 popover 看 token 拆分）
