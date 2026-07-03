@@ -151,7 +151,7 @@ export function ArtifactPreviewPanel() {
             </div>
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1 max-md:min-w-0 max-md:shrink max-md:overflow-x-auto max-md:overscroll-contain max-md:[scrollbar-width:none] max-md:[&::-webkit-scrollbar]:hidden">
           {hasMultiple && (
             <>
               <Button

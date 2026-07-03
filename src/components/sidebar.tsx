@@ -160,38 +160,42 @@ export function Sidebar() {
     }
   }
 
+  const pickMode = (m: Mode) => {
+    // 移动端：点轨上图标弹出对应面板；再点当前项则收起。桌面端 mobileOpen 不影响布局，无副作用
+    if (mobileOpen && mode === m) {
+      setMobileSidebarOpen(false)
+      return
+    }
+    setMode(m)
+    setMobileSidebarOpen(true)
+  }
+
   return (
     <>
-      {/* 移动端遮罩 —— sidebar 抽屉打开时点击关闭 */}
+      {/* 移动端遮罩 —— 内容面板弹出时点击关闭（图标轨常驻，不被遮罩盖住） */}
       {mobileOpen && (
         <div
-          className="fixed inset-0 z-30 bg-foreground/20 md:hidden"
+          className="fixed inset-0 left-14 z-30 bg-foreground/20 md:hidden"
           onClick={() => setMobileSidebarOpen(false)}
         />
       )}
-      {/* 外层抽屉容器：桌面端常驻，移动端固定滑入 */}
-      <div
-        className={cn(
-          'flex shrink-0 overflow-hidden border-r bg-card transition-transform duration-200',
-          'max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40',
-          mobileOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full',
-        )}
-      >
-        {/* 图标轨：全局 mode 导航（上）+ 设置 / 主题 / 收起（下沉到轨底） */}
-        <nav className="flex w-14 shrink-0 flex-col items-center gap-1 border-r px-1 py-2">
-          <RailButton mode={mode} self="conversations" onClick={() => setMode('conversations')} icon={<MessageSquare className="size-4" />} label="对话" />
-          <RailButton mode={mode} self="artifacts" onClick={() => setMode('artifacts')} icon={<Layers className="size-4" />} label="产物库" />
-          <RailButton mode={mode} self="agents" onClick={() => setMode('agents')} icon={<Bot className="size-4" />} label="Agents" />
-          <RailButton mode={mode} self="analytics" onClick={() => setMode('analytics')} icon={<BarChart3 className="size-4" />} label="分析" />
-          <RailButton mode={mode} self="knowledge" onClick={() => setMode('knowledge')} icon={<BookOpen className="size-4" />} label="知识库" />
-          <RailButton mode={mode} self="skills" onClick={() => setMode('skills')} icon={<Sparkles className="size-4" />} label="技能" />
+      {/* 外层容器：桌面端 flex 常驻；移动端解散为 contents，让图标轨与内容列各自定位 */}
+      <div className="flex shrink-0 overflow-hidden border-r bg-card max-md:contents">
+        {/* 图标轨：桌面端 flex 内联；移动端固定左侧常驻（不再随抽屉整体隐藏） */}
+        <nav className="flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-card px-1 py-2 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40">
+          <RailButton mode={mode} self="conversations" onClick={() => pickMode('conversations')} icon={<MessageSquare className="size-4" />} label="对话" />
+          <RailButton mode={mode} self="artifacts" onClick={() => pickMode('artifacts')} icon={<Layers className="size-4" />} label="产物库" />
+          <RailButton mode={mode} self="agents" onClick={() => pickMode('agents')} icon={<Bot className="size-4" />} label="Agents" />
+          <RailButton mode={mode} self="analytics" onClick={() => pickMode('analytics')} icon={<BarChart3 className="size-4" />} label="分析" />
+          <RailButton mode={mode} self="knowledge" onClick={() => pickMode('knowledge')} icon={<BookOpen className="size-4" />} label="知识库" />
+          <RailButton mode={mode} self="skills" onClick={() => pickMode('skills')} icon={<Sparkles className="size-4" />} label="技能" />
           <div className="mt-auto flex flex-col items-center gap-1">
             <SettingsButton />
             <ThemeToggle />
             <Button
               size="icon"
               variant="ghost"
-              className="group"
+              className="group max-md:hidden"
               onClick={() => setCollapsed((v) => !v)}
               aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
               title={collapsed ? '展开' : '收起'}
@@ -213,9 +217,15 @@ export function Sidebar() {
 
         {/* 上下文栏：AChat 标题 + 按 mode 分发的内容 */}
         {!collapsed && (
-          <div className="flex w-60 shrink-0 flex-col overflow-hidden">
-            {/* AChat 标题（内容保持不变，仅所在栏变窄） */}
-            <div className="flex shrink-0 items-center border-b px-4 py-3">
+          <div
+            className={cn(
+              'flex w-60 shrink-0 flex-col overflow-hidden bg-card',
+              'max-md:fixed max-md:inset-y-0 max-md:left-14 max-md:z-40 max-md:w-[min(20rem,calc(100vw-3.5rem))] max-md:border-r max-md:shadow-xl max-md:transition-transform max-md:duration-200',
+              mobileOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-[calc(100%+3.5rem)]',
+            )}
+          >
+            {/* AChat 标题（移动端省略，节省竖向空间；图标轨已提供导航） */}
+            <div className="flex shrink-0 items-center border-b px-4 py-3 max-md:hidden">
               <div className="min-w-0">
                 <h1 className="truncate text-base font-semibold">AChat</h1>
               </div>
@@ -485,7 +495,7 @@ function ConversationItem({
                   }
                 }}
                 title="编辑摘要"
-                className="shrink-0 cursor-pointer rounded p-0.5 opacity-0 transition group-hover/summary:opacity-100 hover:bg-accent hover:text-foreground"
+                className="shrink-0 cursor-pointer rounded p-0.5 opacity-0 transition group-hover/summary:opacity-100 max-md:opacity-100 hover:bg-accent hover:text-foreground"
               >
                 <Pencil className="size-3" />
               </span>
@@ -498,7 +508,7 @@ function ConversationItem({
           <DropdownMenuTrigger
             onClick={(e) => e.stopPropagation()}
             title="更多操作"
-            className="shrink-0 cursor-pointer rounded p-0.5 opacity-0 transition group-hover:opacity-100 hover:bg-accent hover:text-foreground"
+            className="shrink-0 cursor-pointer rounded p-0.5 opacity-0 transition group-hover:opacity-100 max-md:opacity-100 hover:bg-accent hover:text-foreground"
           >
             <Ellipsis className="size-4" />
           </DropdownMenuTrigger>

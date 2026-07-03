@@ -90,7 +90,7 @@ export function ConversationOutline({ conversationId }: { conversationId: string
         <ListTree className="size-4" />
       </PopoverTrigger>
       <PopoverContent
-        className="flex max-h-[calc(100vh-6rem)] w-[min(calc(100vw-2rem),24rem)] gap-0 overflow-hidden p-0 sm:max-h-[70vh]"
+        className="flex max-h-[calc(100dvh-6rem)] w-[min(calc(100vw-2rem),24rem)] gap-0 overflow-hidden p-0 sm:max-h-[70dvh]"
         align="end"
       >
         <div className="flex shrink-0 items-center justify-between border-b px-3 py-2 text-xs">
@@ -122,7 +122,7 @@ export function ConversationOutline({ conversationId }: { conversationId: string
         <div className="relative min-h-0 flex-1">
           <div
             ref={scrollRef}
-            className="max-h-[calc(100vh-8.5rem)] min-h-0 overflow-y-auto overscroll-contain sm:max-h-[calc(70vh-2.75rem)]"
+            className="max-h-[calc(100dvh-8.5rem)] min-h-0 overflow-y-auto overscroll-contain sm:max-h-[calc(70dvh-2.75rem)]"
           >
             <div className="space-y-0.5 p-1">
               {filtered.length === 0 ? (
@@ -217,7 +217,7 @@ function OutlineItem({
           'mt-0.5 shrink-0 rounded p-0.5 transition disabled:opacity-50',
           starred
             ? 'text-warning'
-            : 'text-muted-foreground/30 opacity-0 hover:text-warning group-hover:opacity-100',
+            : 'text-muted-foreground/30 opacity-0 hover:text-warning group-hover:opacity-100 max-md:opacity-100',
         )}
         title={starred ? '取消收藏' : '收藏（仅用于导航定位）'}
       >

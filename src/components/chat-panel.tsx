@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertTriangle, FilePenLine, FolderOpen, FolderTree, Layers, Menu, MessagesSquare, UserPlus, X } from 'lucide-react'
+import { AlertTriangle, Ellipsis, FilePenLine, FolderOpen, FolderTree, Layers, MessagesSquare, UserPlus, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { AddAgentDialog } from '@/components/add-agent-dialog'
@@ -24,6 +24,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { MessageInput } from '@/components/message-input'
 import { MessageList } from '@/components/message-list'
 import { UsageBadge } from '@/components/usage-badge'
@@ -47,7 +53,6 @@ export function ChatPanel() {
   const setFileExplorerOpen = useAppStore((s) => s.setFileExplorerOpen)
   const closeFile = useAppStore((s) => s.closeFile)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
-  const setMobileSidebarOpen = useAppStore((s) => s.setMobileSidebarOpen)
   const setPendingDispatchPlansForConversation = useAppStore(
     (s) => s.setPendingDispatchPlansForConversation,
   )
@@ -90,7 +95,7 @@ export function ChatPanel() {
 
   if (!conv) {
     return (
-      <main className="flex min-w-0 flex-1 items-center justify-center bg-background">
+      <main className="flex min-w-0 flex-1 items-center justify-center bg-background max-md:pl-14">
         <div className="flex max-w-sm flex-col items-center gap-4 px-6 text-center">
           <div className="flex size-16 items-center justify-center rounded-2xl bg-muted">
             <MessagesSquare className="size-7 text-muted-foreground" />
@@ -109,19 +114,9 @@ export function ChatPanel() {
   const participantAgents = conv.agentIds.map((id) => agents[id]).filter(Boolean)
 
   return (
-    <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+    <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background max-md:pl-14">
       <header className="flex shrink-0 items-center gap-3 overflow-hidden border-b px-3 py-2">
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
-          {/* 移动端汉堡按钮：打开 sidebar 抽屉 */}
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            onClick={() => setMobileSidebarOpen(true)}
-            title="打开会话列表"
-            className="md:hidden"
-          >
-            <Menu className="size-4" />
-          </Button>
           <ParticipantStack agents={participantAgents} />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
@@ -143,7 +138,7 @@ export function ChatPanel() {
             )}
           </div>
         </div>
-        <div className="flex min-w-0 max-w-[65%] shrink-0 items-center gap-1 overflow-x-auto overscroll-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="hidden min-w-0 max-w-[65%] shrink-0 items-center gap-1 overflow-x-auto overscroll-contain md:flex [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {/* 右侧面板切换（文件树 / 产物预览，互斥）。点同一个再关掉。 */}
           <Button
             size="icon-sm"
@@ -185,6 +180,39 @@ export function ChatPanel() {
             />
             {streamConnected ? '已连接' : '断开'}
           </Badge>
+        </div>
+        {/* 移动端：连接点 + ⋯ 更多（收纳文件树 / 产物库 / 文件库 / 加 Agent，避免 header 溢出） */}
+        <div className="flex shrink-0 items-center gap-1.5 md:hidden">
+          <span
+            className={`size-2 rounded-full ${streamConnected ? 'bg-success' : 'bg-muted-foreground'}`}
+            title={streamConnected ? '已连接' : '断开'}
+          />
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              title="更多"
+              className="inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            >
+              <Ellipsis className="size-4" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={() => setFileExplorerOpen(!fileExplorerOpen)}>
+                <FolderTree className="size-4" />
+                文件树
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setArtifactsOpen(true)}>
+                <Layers className="size-4" />
+                本会话产物库
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setFilesOpen(true)}>
+                <FolderOpen className="size-4" />
+                会话文件库
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setAddOpen(true)}>
+                <UserPlus className="size-4" />
+                添加 Agent
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 
@@ -256,7 +284,7 @@ export function ChatPanel() {
       />
 
       <Dialog open={artifactsOpen} onOpenChange={setArtifactsOpen}>
-        <DialogContent className="grid max-h-[min(680px,calc(100vh-2rem))] max-w-md grid-rows-[auto_minmax(0,1fr)] overflow-hidden p-0">
+        <DialogContent className="grid max-h-[min(680px,calc(100dvh-2rem))] max-w-md grid-rows-[auto_minmax(0,1fr)] overflow-hidden p-0">
           <DialogHeader className="border-b px-4 py-3">
             <DialogTitle className="flex items-center gap-2 text-sm">
               <Layers className="size-4 text-muted-foreground" />

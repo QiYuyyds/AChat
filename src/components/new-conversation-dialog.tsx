@@ -108,7 +108,7 @@ export function NewConversationDialog({
         onOpenChange(next)
       }}
     >
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>新建对话</DialogTitle>
           <DialogDescription>

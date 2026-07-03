@@ -201,7 +201,7 @@ function AskUserBody({
         </DialogDescription>
       </DialogHeader>
 
-      <ScrollArea className="max-h-[60vh]">
+      <ScrollArea className="max-h-[60dvh]">
         <div className="space-y-4 p-4">
           {questions.map((q, idx) => (
             <QuestionBlock

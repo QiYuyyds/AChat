@@ -686,6 +686,8 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // IME 组字中（中文/日文等）不拦截按键：让 Enter 用于确认候选词，避免半句误发送
+    if (e.nativeEvent.isComposing) return
     if (slashTrigger && filteredSlashCommands.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()

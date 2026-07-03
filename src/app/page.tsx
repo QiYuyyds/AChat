@@ -7,7 +7,7 @@ import { Sidebar } from '@/components/sidebar'
 
 export default function Home() {
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
+    <div className="flex h-dvh overflow-hidden bg-background">
       <Sidebar />
       <ChatPanel />
       <FileExplorerPanel />

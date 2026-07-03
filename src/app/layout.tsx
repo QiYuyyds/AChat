@@ -1,4 +1,4 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 
 import { GlobalSearch } from '@/components/global-search'
@@ -22,6 +22,13 @@ export const metadata: Metadata = {
   description: 'AChat',
 }
 
+// 键盘弹起时收缩内容区（而非覆盖），配合 h-dvh 让底部输入框始终可见
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  interactiveWidget: 'resizes-content',
+}
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -33,7 +40,7 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
-      <body className="h-screen overflow-hidden">
+      <body className="h-dvh overflow-hidden">
         <ThemeProvider>
           <StreamProvider>{children}</StreamProvider>
         </ThemeProvider>

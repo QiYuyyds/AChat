@@ -63,7 +63,7 @@ export function CodeBlock({ code, language, className }: CodeBlockProps) {
           type="button"
           onClick={copy}
           className={cn(
-            'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] opacity-0 transition group-hover:opacity-100',
+            'flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] opacity-0 transition group-hover:opacity-100 max-md:opacity-100',
             'text-zinc-500 hover:bg-zinc-200 hover:text-zinc-900',
             'dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100',
           )}
