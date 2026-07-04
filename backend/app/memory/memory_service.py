@@ -134,23 +134,18 @@ class MemoryService:
         if role != "user":
             return
 
-        # Async fire-and-forget tasks for user messages
-        tasks = []
-
-        # Preference extraction
-        tasks.append(self._safe_extract_preference(content))
-
-        # LTM add (with importance heuristic)
-        importance = self._estimate_importance(content)
-        tasks.append(self._safe_ltm_add(content, importance))
-
-        await asyncio.gather(*tasks)
-
-        # LLM preference overlay: refine the rule-based extraction above with a
-        # more precise LLM pass. Fire-and-forget after the rule pass so the LLM
-        # values overwrite the coarse ones via save_batch.
+        # User messages drive preference extraction only. Raw user text is no
+        # longer dumped into LTM — LTM is fed exclusively by category-routed
+        # extraction from assistant replies (see memory_writer).
+        #
+        # Single extraction pass: the LLM path is primary. Running the coarse
+        # rule pass alongside it only produces duplicate keys (喜好 vs
+        # 喜欢的音乐类型) that never reconcile, so the rules are a fallback for
+        # when no LLM is available.
         if self._generate_fn and not self._is_trivial_reply(content):
             asyncio.create_task(self._safe_llm_extract_preference(content))
+        else:
+            await self._safe_extract_preference(content)
 
         # Check if consolidation is needed
         if self.ltm.need_consolidation():
@@ -199,12 +194,6 @@ class MemoryService:
                 logger.info("Preference extracted: %s=%s", key, value)
         except Exception as e:
             logger.warning("Preference extraction failed: %s", e)
-
-    async def _safe_ltm_add(self, content: str, importance: float) -> None:
-        try:
-            await self.ltm.add(content, importance)
-        except Exception as e:
-            logger.warning("LTM add failed: %s", e)
 
     async def _safe_consolidate(self) -> None:
         try:
@@ -330,18 +319,3 @@ class MemoryService:
             r"^好的.*没问题",
         ]
         return any(re.match(p, text) for p in trivial_patterns)
-
-    @staticmethod
-    def _estimate_importance(content: str) -> float:
-        """Simple importance heuristic based on content length and keywords."""
-        if not content:
-            return 0.1
-        base = 0.5
-        # Longer messages are slightly more important
-        length_bonus = min(0.3, len(content) / 1000.0)
-        # Question marks suggest information-seeking (less important for memory)
-        question_penalty = -0.1 if content.strip().endswith("？") or content.strip().endswith("?") else 0.0
-        # Keywords that signal high importance
-        important_keywords = ["记住", "重要", "必须", "永远", "不要忘记", "remember", "important", "always"]
-        keyword_bonus = 0.2 if any(kw in content for kw in important_keywords) else 0.0
-        return max(0.1, min(1.0, base + length_bonus + question_penalty + keyword_bonus))

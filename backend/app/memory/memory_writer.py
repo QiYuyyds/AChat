@@ -11,6 +11,7 @@ Key functions:
     followed by classification and ``ltm.store_classified()``.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -102,7 +103,7 @@ async def llm_classify_memory(
     if not generate_fn or not content:
         return "general", [], ""
     try:
-        raw = generate_fn(_CLASSIFY_SYSTEM_PROMPT, content)
+        raw = await asyncio.to_thread(generate_fn, _CLASSIFY_SYSTEM_PROMPT, content)
     except Exception as e:
         logger.warning("llm_classify_memory LLM call failed: %s", e)
         return "general", [], ""
@@ -145,9 +146,12 @@ async def llm_classify_memory(
 # ── LLM extraction prompt ──────────────────────────────────────────────────
 
 _EXTRACTION_SYSTEM_PROMPT = (
-    "你是一个信息提取助手。从下面的AI回复中提取值得长期记住的客观事实或用户偏好信息。\n"
-    "只提取明确的、非临时性的信息，忽略对话上下文和临时细节。\n"
-    "输出 JSON 对象（key为信息名称，value为具体值），如果没有值得记忆的信息则输出 {}。\n"
+    "你是一个信息提取助手。从下面的AI回复中提取值得长期记住的客观事实。\n"
+    "每条事实必须【自包含】：把它所描述的主体/对象/地点/时间写进 key，使其脱离对话也能读懂。\n"
+    "例如天气要写明城市与日期：{\"北京湿度(2026-07-05)\": \"约71%\"}，"
+    "而不是 {\"湿度\": \"约71%\"}。\n"
+    "不要提取脱离主体的孤立数值，也不要提取临时对话细节。\n"
+    "输出 JSON 对象（key=自包含的信息名，value=具体值），没有值得记忆的则输出 {}。\n"
     "只输出 JSON，不要有其他内容。"
 )
 
@@ -187,7 +191,7 @@ async def extract_memory_from_reply(
     # Step 1: LLM extraction
     prompt = f"回复：{content}"
     try:
-        raw = generate_fn(_EXTRACTION_SYSTEM_PROMPT, prompt)
+        raw = await asyncio.to_thread(generate_fn, _EXTRACTION_SYSTEM_PROMPT, prompt)
     except Exception as e:
         logger.warning("Memory extraction LLM call failed: %s", e)
         return
@@ -202,23 +206,19 @@ async def extract_memory_from_reply(
     if not isinstance(kvs, dict) or not kvs:
         return
 
-    # Step 2-4: classify, embed, store each fact
+    # Step 2-4: classify, then route each fact to a SINGLE store by category.
+    # identity/preference → preference store; fact/episodic/policy/tool_failure
+    # → LTM; general → dropped. No double-write.
     for k, v in kvs.items():
         if not k or v in (None, ""):
             continue
 
-        # Mirror into the preference store first (double-write). A failure here
-        # must not block the LTM write — preference is a best-effort refinement.
-        if preference is not None:
-            try:
-                await preference.set(str(k), str(v))
-            except Exception as e:
-                logger.warning(
-                    "Memory extraction preference.set failed for %s: %s", k, e,
-                )
-
+        # No hardcoded "用户" prefix: LTM facts are objective world facts
+        # (weather, tool failures, policies), not user-profile attributes. The
+        # user-related categories route to the preference store below with the
+        # raw key, so the prefix would only ever mislabel LTM content.
         clean_key = str(k).removeprefix("用户")
-        fact_content = f"用户{clean_key}: {v}"
+        fact_content = f"{clean_key}: {v}"
         category, tags, slot_hint = classify_memory_content(str(k), str(v))
         if not category:
             # Rule classification missed — try LLM fallback
@@ -226,11 +226,26 @@ async def extract_memory_from_reply(
                 generate_fn, fact_content,
             )
 
-        # Compute embedding
+        # Profile-class facts belong to the preference store only
+        if category in ("identity", "preference"):
+            if preference is not None:
+                try:
+                    await preference.set(str(k), str(v))
+                except Exception as e:
+                    logger.warning(
+                        "Memory extraction preference.set failed for %s: %s", k, e,
+                    )
+            continue
+
+        # Only recall-worthy facts go to LTM; drop general/unknown noise
+        if category not in ("fact", "episodic", "policy", "tool_failure"):
+            continue
+
+        # Compute embedding off the event loop (embed_fn is a blocking client)
         emb = None
         if embed_fn:
             try:
-                emb = embed_fn(fact_content)
+                emb = await asyncio.to_thread(embed_fn, fact_content)
             except Exception as e:
                 logger.warning("Memory extraction embed failed: %s", e)
 
@@ -258,11 +273,14 @@ async def extract_memory_from_reply(
 
 
 _PREFERENCE_EXTRACTION_PROMPT = (
-    "你是一个用户偏好提取助手。从下面的用户消息中提取值得长期记住的用户偏好和身份信息。\n"
-    "只提取明确的、非临时性的偏好（姓名、喜好、习惯、风格等），忽略对话上下文和临时细节。\n"
-    "输出 JSON 对象（key 为偏好类别名，如 \"姓名\"/\"喜好\"/\"视觉风格\"，value 为具体值），"
-    "如果没有值得记忆的信息则输出 {}。\n"
-    "只输出 JSON，不要有其他内容。"
+    "你是一个用户画像提取助手。只提取【用户本人】明确表达的、稳定的个人偏好或身份。\n"
+    "严格规则：\n"
+    "1. 只有用户明确说出自己的名字（如「我叫X」「我的名字是X」）才提取 姓名；"
+    "用户喜欢/提到的明星、作品、人物（如「我喜欢周润发」）绝不能当作用户的姓名。\n"
+    "2. 只提取关于用户自身的长期偏好（喜好、口味、习惯、风格、职业等）；"
+    "用户临时询问或提到的对象不是偏好（如问「北京天气」不代表用户偏好地点是北京）。\n"
+    "3. key 用稳定简洁的类别名（姓名/喜好/口味/风格/职业 等），同一类信息始终用同一个 key，不要造近义新键。\n"
+    "输出 JSON 对象（key=类别名，value=具体值），没有则输出 {}。只输出 JSON，不要有其他内容。"
 )
 
 
@@ -305,7 +323,7 @@ async def extract_preferences(
         return _extract_rule_based(msg)
 
     try:
-        raw = generate_fn(_PREFERENCE_EXTRACTION_PROMPT, msg)
+        raw = await asyncio.to_thread(generate_fn, _PREFERENCE_EXTRACTION_PROMPT, msg)
     except Exception as e:
         logger.warning("Preference LLM extraction failed: %s", e)
         return _extract_rule_based(msg)
