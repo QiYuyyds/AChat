@@ -27,6 +27,20 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
 
   if (total.runCount === 0) return null
 
+  // Cache hit rate calculation — provider-aware:
+  // DeepSeek: prompt_tokens already includes cache_hit → hitRate = cacheRead / inputTokens
+  // Anthropic: input_tokens excludes cache → hitRate = cacheRead / (input + cacheRead + cacheCreation)
+  const cacheHitRate = (() => {
+    if (total.cacheCreationTokens > 0) {
+      // Anthropic-style: input excludes cache read/creation
+      const denom = total.inputTokens + total.cacheReadTokens + total.cacheCreationTokens
+      return denom > 0 ? (total.cacheReadTokens / denom) * 100 : 0
+    }
+    // DeepSeek-style: input already includes cache hit
+    return total.inputTokens > 0 ? (total.cacheReadTokens / total.inputTokens) * 100 : 0
+  })()
+  const hasCacheData = total.cacheReadTokens > 0 || total.runCount > 1
+
   // 取本会话内 contextWindow 最大的 agent 作为可见上限。详见 specs/13-conversation-context.md。
   const contextWindow = (() => {
     if (!conv) return 0
@@ -72,7 +86,12 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
       <PopoverContent className="w-80 p-3 text-xs" align="end">
         <div className="mb-2 flex items-baseline justify-between border-b pb-2">
           <span className="font-medium">本会话 token 累计</span>
-          <span className="text-[10px] text-muted-foreground">{total.runCount} 次响应</span>
+          <span className="text-[10px] text-muted-foreground">
+            {total.runCount} 次响应
+            {hasCacheData && cacheHitRate > 0 && (
+              <span className="ml-1 text-emerald-600">· 缓存 {Math.round(cacheHitRate)}%</span>
+            )}
+          </span>
         </div>
 
         <div className="space-y-1">
@@ -96,19 +115,20 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
               tip="按 1.25× input 单价计费 (略贵)"
             />
           )}
-          {total.cacheReadTokens > 0 && (
-            <RowWithHint
-              label="Cache 命中"
-              value={total.cacheReadTokens}
-              tip="按 0.1× input 单价计费 (便宜 90%)"
-              className="text-emerald-600"
-            />
-          )}
+          <RowWithHint
+            label="Cache 命中"
+            value={total.cacheReadTokens}
+            tip="按 0.1× input 单价计费 (便宜 90%)"
+            className={total.cacheReadTokens > 0 ? 'text-emerald-600' : 'text-muted-foreground'}
+          />
           <div className="my-1 border-t" />
           <Row label="实际 Prompt"
-            value={total.inputTokens + total.cacheCreationTokens + total.cacheReadTokens}
+            value={total.cacheCreationTokens > 0
+              ? total.inputTokens + total.cacheCreationTokens + total.cacheReadTokens
+              : total.inputTokens
+            }
             bold
-            hint="新+写入+命中"
+            hint={total.cacheCreationTokens > 0 ? '新+写入+命中' : '含缓存命中'}
           />
           {contextWindow > 0 ? (
             <ContextRow used={total.lastInputTokens} ceiling={contextWindow} />
@@ -125,24 +145,9 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
             <Archive className="size-3" />
             {compacting ? '正在压缩...' : '压缩上下文'}
           </button>
-          {/* Cache 命中率：cacheRead / (input + cacheRead + cacheCreation) */}
-          {total.cacheReadTokens > 0 && (
-            <div
-              className="flex items-baseline justify-between gap-3 text-emerald-600"
-              title="按 input 数量算的命中率；实际省钱比略低（cache 读仍算 10% 价）"
-            >
-              <span className="truncate">Cache 命中率</span>
-              <span className="shrink-0 font-mono">
-                {Math.round(
-                  (total.cacheReadTokens * 100) /
-                    (total.inputTokens + total.cacheCreationTokens + total.cacheReadTokens),
-                )}
-                %
-                <span className="ml-1 text-[10px] text-muted-foreground">
-                  (省 ~{Math.round((total.cacheReadTokens * 90) / 100 / 1000)}k input 计费)
-                </span>
-              </span>
-            </div>
+          {/* Cache 命中率 — provider-aware formula + visual bar */}
+          {hasCacheData && (
+            <CacheHitRateRow rate={cacheHitRate} cacheReadTokens={total.cacheReadTokens} />
           )}
         </div>
 
@@ -242,6 +247,44 @@ function formatTok(n: number): string {
   if (n < 1000) return `${n}`
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 1)}k`
   return `${(n / 1_000_000).toFixed(2)}M`
+}
+
+/** Cache 命中率行：展示百分比 + 进度条 + 颜色 + 节省估算。 */
+function CacheHitRateRow({ rate, cacheReadTokens }: { rate: number; cacheReadTokens: number }) {
+  const pct = Math.round(rate)
+  const tone = pct >= 80 ? 'good' : pct >= 50 ? 'warn' : 'low'
+  const toneColor =
+    tone === 'good' ? 'text-emerald-600 dark:text-emerald-400'
+      : tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
+        : 'text-red-600 dark:text-red-400'
+  const barColor =
+    tone === 'good' ? 'bg-emerald-500'
+      : tone === 'warn' ? 'bg-amber-500'
+        : 'bg-red-500'
+  // 节省估算：cacheRead tokens 按 90% 折扣省下的 input 计费量
+  const savedK = Math.round((cacheReadTokens * 0.9) / 1000)
+
+  return (
+    <div className="space-y-1" title="缓存命中率：被缓存复用的 token 占总输入的比例">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className={cn('truncate', toneColor)}>Cache 命中率</span>
+        <span className={cn('shrink-0 font-mono', toneColor)}>
+          {pct}%
+          {savedK > 0 && (
+            <span className="ml-1 text-[10px] text-muted-foreground">
+              (省 ~{savedK}k 计费)
+            </span>
+          )}
+        </span>
+      </div>
+      <div className="h-1 overflow-hidden rounded-full bg-border/60">
+        <div
+          className={cn('h-full transition-all', barColor)}
+          style={{ width: `${Math.max(pct, 2)}%` }}
+        />
+      </div>
+    </div>
+  )
 }
 
 /** 当前 ctx 行的特殊版本：展示「used / ceiling (pct%)」+ 进度条 + 颜色。 */

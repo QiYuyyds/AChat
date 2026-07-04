@@ -116,3 +116,15 @@ async def regenerate_mobile_token() -> JSONResponse:
     """Issue a fresh mobile pairing token, preserving the current companion mode."""
     row = await settings_service.regenerate_mobile_device_token()
     return JSONResponse({"settings": _serialize(row)})
+
+
+@router.get("/cache-metrics")
+async def get_cache_metrics() -> JSONResponse:
+    """Return aggregate prompt cache hit rate metrics for monitoring."""
+    from app.infra.cache_metrics import cache_metrics
+
+    return JSONResponse({
+        "hit_rate": cache_metrics.recent_hit_rate(),
+        "recent_requests": cache_metrics.recent_count,
+        "alert": cache_metrics.should_alert(),
+    })

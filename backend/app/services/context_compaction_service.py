@@ -185,7 +185,7 @@ async def compact_conversation(conversation_id: str) -> CompactResult:
 
     # e) pick a summariser model: first Custom agent with model config
     try:
-        model_provider, model_id, api_key, api_base_url = await _pick_summary_model(agent_ids)
+        model_provider, model_id, api_key, api_base_url, summariser_agent_id = await _pick_summary_model(agent_ids)
     except ValueError:
         raise _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE) from None
 
@@ -208,9 +208,11 @@ async def compact_conversation(conversation_id: str) -> CompactResult:
     if prior:
         ctx_before += estimate_tokens(prior)
 
-    # g) call the LLM
+    # g) call the LLM (reuse parent system prompt for cache prefix hit)
+    parent_system_prompt = await _get_agent_system_prompt(summariser_agent_id)
     summary_text = await _summarise(
-        transcript, prior, model_provider, model_id, api_key, api_base_url
+        transcript, prior, model_provider, model_id, api_key, api_base_url,
+        parent_system_prompt=parent_system_prompt,
     )
     if not summary_text:
         raise ValueError("摘要生成失败：模型返回为空")
@@ -322,10 +324,10 @@ async def compact_conversation(conversation_id: str) -> CompactResult:
 
 async def _pick_summary_model(
     agent_ids: list[str],
-) -> tuple[str, str, str | None, str | None]:
+) -> tuple[str, str, str | None, str | None, str]:
     """First Custom agent (adapter_name='custom') with a full model config.
 
-    Returns (model_provider, model_id, api_key, api_base_url).
+    Returns (model_provider, model_id, api_key, api_base_url, agent_id).
     Raises ValueError when no model-backed agent exists (e.g. CLI-only chat).
     """
     if not agent_ids:
@@ -346,7 +348,7 @@ async def _pick_summary_model(
             and agent.model_provider
             and agent.model_id
         ):
-            return (agent.model_provider, agent.model_id, agent.api_key, agent.api_base_url)
+            return (agent.model_provider, agent.model_id, agent.api_key, agent.api_base_url, aid)
     raise ValueError("当前会话没有配置模型的 agent，无法生成摘要")
 
 
@@ -360,6 +362,17 @@ async def _load_agent_names(agent_ids: list[str]) -> dict[str, str]:
             .all()
         )
     return {a.id: a.name for a in agents}
+
+
+async def _get_agent_system_prompt(agent_id: str) -> str:
+    """Fetch the agent's system prompt from DB for cache-safe compaction."""
+    if not agent_id:
+        return ""
+    async with get_db() as db:
+        agent = await db.get(Agent, agent_id)
+        if agent is None:
+            return ""
+        return agent.system_prompt or ""
 
 
 def _render_transcript(messages: list[Message], agent_names: dict[str, str]) -> str:
@@ -396,8 +409,13 @@ async def _summarise(
     model_id: str,
     api_key: str | None,
     api_base_url: str | None,
+    parent_system_prompt: str = "",
 ) -> str:
-    """Call the LLM to produce a compaction summary. Raises on API failure."""
+    """Call the LLM to produce a compaction summary. Raises on API failure.
+
+    Reuses the parent conversation's system prompt to maximise cache prefix hits.
+    Does NOT pass tools to avoid unintended tool calls during compaction.
+    """
     from openai import AsyncOpenAI
 
     from app.adapters.custom_provider_client import resolve_custom_provider_client_config
@@ -425,9 +443,17 @@ async def _summarise(
     client = AsyncOpenAI(
         api_key=config.api_key, base_url=config.base_url, max_retries=1
     )
+    messages = []
+    if parent_system_prompt:
+        messages.append({"role": "system", "content": parent_system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    logger.info(
+        "[compact-debug] model=%s messages=%d has_system=%s sys_len=%d tools=none",
+        model_id, len(messages), bool(parent_system_prompt), len(parent_system_prompt),
+    )
     response = await client.chat.completions.create(
         model=model_id,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         max_tokens=1024,
         temperature=0.3,
     )

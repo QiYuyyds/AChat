@@ -116,3 +116,26 @@ async def test_mobile_token_response_shape(api_client, db):
     body = resp.json()
     assert set(body.keys()) == {"settings"}
     assert set(body["settings"].keys()) == _FULL_KEYS
+
+
+# ─── Task 9.7: /cache-metrics API endpoint ────────────────────────────────────
+
+
+async def test_cache_metrics_endpoint_shape(api_client, db):
+    """GET /api/cache-metrics returns {hit_rate, recent_requests, alert}."""
+    resp = await api_client.get("/api/cache-metrics")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body.keys()) == {"hit_rate", "recent_requests", "alert"}
+    assert isinstance(body["hit_rate"], (int, float))
+    assert isinstance(body["recent_requests"], int)
+    assert isinstance(body["alert"], bool)
+
+
+async def test_cache_metrics_endpoint_empty_initially(api_client, db):
+    """With no LLM calls recorded, hit_rate is 0.0 and alert is False."""
+    resp = await api_client.get("/api/cache-metrics")
+    body = resp.json()
+    assert body["hit_rate"] == 0.0
+    assert body["recent_requests"] == 0
+    assert body["alert"] is False

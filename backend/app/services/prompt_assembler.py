@@ -49,6 +49,7 @@ class SlotFilter:
 class Slot:
     kind: SlotKind
     required: bool = False
+    static: bool = False
     filter: SlotFilter = field(default_factory=SlotFilter)
     template: str = ""
 
@@ -71,7 +72,7 @@ class FilledSlot:
 
 # ─── Task 4.3: Schemas ───────────────────────────────────────────────────────
 
-DEFAULT_GLOBAL_TOKEN_BUDGET = 2400
+DEFAULT_GLOBAL_TOKEN_BUDGET = 3600
 
 
 @dataclass
@@ -83,12 +84,9 @@ class RuntimeContextSchema:
 CHAT_SCHEMA = RuntimeContextSchema(
     mode="chat",
     slots=[
-        Slot(kind=SlotConstraints, filter=SlotFilter(token_budget=200)),
-        Slot(kind=SlotProfile, filter=SlotFilter(
-            categories=["identity", "preference"], token_budget=300, top_k=10,
-        )),
-        Slot(kind=SlotRecall, filter=SlotFilter(
-            categories=["episodic", "fact", "general"], top_k=3, min_score=0.4, token_budget=400,
+        Slot(kind=SlotConstraints, static=True, filter=SlotFilter(token_budget=400)),
+        Slot(kind=SlotProfile, static=True, filter=SlotFilter(
+            categories=["identity", "preference"], token_budget=600, top_k=10,
         )),
     ],
 )
@@ -96,30 +94,23 @@ CHAT_SCHEMA = RuntimeContextSchema(
 TOOL_SCHEMA = RuntimeContextSchema(
     mode="tool",
     slots=[
-        Slot(kind=SlotConstraints, filter=SlotFilter(token_budget=200)),
-        Slot(kind=SlotProfile, filter=SlotFilter(
-            categories=["identity", "preference"], token_budget=250, top_k=8,
+        Slot(kind=SlotConstraints, static=True, filter=SlotFilter(token_budget=400)),
+        Slot(kind=SlotProfile, static=True, filter=SlotFilter(
+            categories=["identity", "preference"], token_budget=500, top_k=8,
         )),
-        Slot(kind=SlotToolState, required=True, filter=SlotFilter(token_budget=350, top_k=6)),
-        Slot(kind=SlotRecall, filter=SlotFilter(
-            categories=["episodic", "fact", "general"], top_k=2, min_score=0.5, token_budget=250,
-        )),
+        Slot(kind=SlotToolState, required=True, static=False, filter=SlotFilter(token_budget=500, top_k=6)),
     ],
 )
 
 REACT_SCHEMA = RuntimeContextSchema(
     mode="react",
     slots=[
-        Slot(kind=SlotConstraints, required=True, filter=SlotFilter(token_budget=280)),
-        Slot(kind=SlotPlanner, required=True, filter=SlotFilter(token_budget=300)),
-        Slot(kind=SlotTaskMem, filter=SlotFilter(token_budget=350, top_k=8, max_age_hours=24)),
-        Slot(kind=SlotToolState, required=True, filter=SlotFilter(token_budget=350, top_k=8)),
-        Slot(kind=SlotProfile, filter=SlotFilter(
-            categories=["identity", "preference"], token_budget=250, top_k=6,
-        )),
-        Slot(kind=SlotRecall, filter=SlotFilter(
-            categories=["episodic", "fact", "general", "tool_failure"],
-            top_k=2, min_score=0.5, token_budget=200,
+        Slot(kind=SlotConstraints, required=True, static=True, filter=SlotFilter(token_budget=400)),
+        Slot(kind=SlotPlanner, required=True, static=False, filter=SlotFilter(token_budget=400)),
+        Slot(kind=SlotTaskMem, static=False, filter=SlotFilter(token_budget=400, top_k=8, max_age_hours=24)),
+        Slot(kind=SlotToolState, required=True, static=False, filter=SlotFilter(token_budget=400, top_k=8)),
+        Slot(kind=SlotProfile, static=True, filter=SlotFilter(
+            categories=["identity", "preference"], token_budget=500, top_k=6,
         )),
     ],
 )
@@ -127,12 +118,9 @@ REACT_SCHEMA = RuntimeContextSchema(
 RAG_SCHEMA = RuntimeContextSchema(
     mode="rag",
     slots=[
-        Slot(kind=SlotConstraints, filter=SlotFilter(token_budget=200)),
-        Slot(kind=SlotProfile, filter=SlotFilter(
-            categories=["identity", "preference"], token_budget=300, top_k=8,
-        )),
-        Slot(kind=SlotRecall, filter=SlotFilter(
-            categories=["episodic", "fact", "general"], top_k=3, min_score=0.4, token_budget=400,
+        Slot(kind=SlotConstraints, static=True, filter=SlotFilter(token_budget=400)),
+        Slot(kind=SlotProfile, static=True, filter=SlotFilter(
+            categories=["identity", "preference"], token_budget=600, top_k=8,
         )),
     ],
 )
@@ -292,14 +280,20 @@ class ProfileSource(ContextSource):
     async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
         items: List[ContextItem] = []
         top_k = slot.filter.top_k or 0
+        _pref_count = 0
+        _ltm_count = 0
 
         # 1. Preference key-value pairs (score=1.0)
         if self._pref is not None:
             try:
                 prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
+                _pref_count = len(prefs)
                 for k, v in prefs.items():
                     items.append(
                         ContextItem(text=f"{k}: {v}", score=1.0, source="profile")
+                    )
+                    logger.info(
+                        "[cache-debug] Profile pref: %s=%s", k, str(v)[:80],
                     )
             except Exception as e:
                 logger.warning("ProfileSource preference fetch failed: %s", e)
@@ -310,6 +304,7 @@ class ProfileSource(ContextSource):
                 categories = slot.filter.categories or ["identity", "preference"]
                 ltm_limit = top_k if top_k > 0 else 10
                 ltm_items = await self._ltm.filter_by_category(categories, ltm_limit)
+                _ltm_count = len(ltm_items)
                 for it in ltm_items:
                     items.append(
                         ContextItem(
@@ -319,11 +314,20 @@ class ProfileSource(ContextSource):
                             meta={"category": it.category or "general"},
                         )
                     )
+                    logger.info(
+                        "[cache-debug] Profile ltm[%d]: cat=%s imp=%.2f len=%d preview=%s",
+                        len(items) - 1, it.category or "general", it.importance,
+                        len(it.content), it.content[:100],
+                    )
             except Exception as e:
                 logger.warning("ProfileSource LTM fetch failed: %s", e)
 
         if top_k > 0 and len(items) > top_k:
             items = items[:top_k]
+        logger.info(
+            "[cache-debug] ProfileSource: pref=%d ltm_identity_pref=%d total=%d",
+            _pref_count, _ltm_count, len(items),
+        )
         return items
 
 
@@ -612,6 +616,9 @@ class ContextAssembler:
         if slot.filter.token_budget > 0:
             all_items = _trim_by_budget(all_items, slot.filter.token_budget)
 
+        if not all_items:
+            return FilledSlot(kind=slot.kind, skipped=not slot.required, reason="trimmed to empty by budget")
+
         return FilledSlot(kind=slot.kind, items=all_items)
 
     def _apply_global_budget(self, rc: RuntimeContext) -> None:
@@ -636,11 +643,37 @@ class ContextAssembler:
 
 
 def _trim_by_budget(items: List[ContextItem], budget: int) -> List[ContextItem]:
+    logger.info(
+        "[cache-debug] _trim_by_budget V3: items=%d budget=%d first_item_len=%d",
+        len(items), budget, len(items[0].text) if items else 0,
+    )
     total = 0
     for i, item in enumerate(items):
+        remaining = budget - total
+        if remaining <= 0:
+            # Budget exhausted — keep at least 1 item even if we need to
+            # truncate it to fit.
+            kept = items[:max(1, i)]
+            if kept and len(kept[-1].text) > budget:
+                kept[-1].text = kept[-1].text[:budget - 3] + "..."
+            logger.info(
+                "[cache-debug] _trim_by_budget: trimmed %d→%d (budget_exhausted)",
+                len(items), len(kept),
+            )
+            return kept
+        if len(item.text) > remaining:
+            # Truncate this long item to fit the remaining budget,
+            # then stop (no more items).
+            orig_len = len(item.text)
+            item.text = item.text[:remaining - 3] + "..."
+            total += len(item.text)
+            result = items[:i + 1]
+            logger.info(
+                "[cache-debug] _trim_by_budget: truncated item[%d] chars %d→%d (budget=%d remaining=%d)",
+                i, orig_len, len(item.text), budget, remaining,
+            )
+            return result
         total += len(item.text)
-        if total > budget:
-            return items[:i]
     return items
 
 
@@ -680,9 +713,50 @@ class RuntimeContext:
             return f"{base_prompt}\n\n{ctx}"
         return ctx
 
+    def render_static(self) -> str:
+        """Render only static=True slots for cache-stable system prompt."""
+        if not self.filled:
+            return ""
+        sections = []
+        for fs in self.filled:
+            slot_def = self._get_slot_def(fs.kind)
+            if slot_def is None or not slot_def.static:
+                continue
+            if fs.skipped or not fs.items:
+                continue
+            rendered = _render_slot(fs)
+            if rendered:
+                sections.append(rendered)
+        return "\n\n".join(sections)
+
+    def render_dynamic(self) -> str:
+        """Render only static=False slots, wrapped in <system-reminder> tags."""
+        if not self.filled:
+            return ""
+        sections = []
+        for fs in self.filled:
+            slot_def = self._get_slot_def(fs.kind)
+            if slot_def is None or slot_def.static:
+                continue
+            if fs.skipped or not fs.items:
+                continue
+            rendered = _render_slot(fs)
+            if rendered:
+                sections.append(rendered)
+        if not sections:
+            return ""
+        return "<system-reminder>\n" + "\n\n".join(sections) + "\n</system-reminder>"
+
+    def _get_slot_def(self, kind: SlotKind) -> Optional[Slot]:
+        """Look up Slot definition from schema by kind."""
+        for slot in self.schema.slots:
+            if slot.kind == kind:
+                return slot
+        return None
+
     def render_history(self) -> List[Dict[str, str]]:
-        """Render context as OpenAI chat format messages."""
-        ctx = self.render()
+        """Render static context as system messages for cache stability."""
+        ctx = self.render_static()
         if not ctx:
             return []
         return [{"role": "system", "content": ctx}]

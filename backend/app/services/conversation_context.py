@@ -139,13 +139,32 @@ async def _build_history_with_assembler(
     )
     ctx: RuntimeContext = await assembler.assemble(query)
 
-    # Render to OpenAI chat format
+    # Render to OpenAI chat format — render_history() now uses render_static()
+    # for cache-stable system messages.
     system_messages = ctx.render_history()
     
     # Fall back to legacy message serialization for conversation history
     legacy_messages = await _build_history_legacy(
         agent_id, conversation_id, options
     )
+    
+    # Inject dynamic content (render_dynamic) as user message prefix (cache-safe).
+    # Dynamic content is wrapped in <system-reminder> tags by render_dynamic().
+    dynamic_content = ctx.render_dynamic()
+    if dynamic_content and legacy_messages:
+        # Prepend dynamic content to the first user message in history
+        for i, msg in enumerate(legacy_messages):
+            if msg.get("role") == "user":
+                legacy_messages[i] = {
+                    "role": "user",
+                    "content": f"{dynamic_content}\n\n{msg.get('content', '')}",
+                }
+                break
+        else:
+            # No user message found; inject as a new user message
+            legacy_messages.insert(0, {"role": "user", "content": dynamic_content})
+    elif dynamic_content:
+        legacy_messages.insert(0, {"role": "user", "content": dynamic_content})
     
     # Combine: system context + conversation history
     return system_messages + legacy_messages

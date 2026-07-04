@@ -1478,17 +1478,34 @@ async def build_adapter_input(
             history = []
 
     # ── PromptAssembler enrichment (SDK only; CLI agents self-manage context) ─
+    dynamic_prefix = ""
     if is_sdk:
         assembler = _get_prompt_assembler()
         if assembler and not args.override_prompt:
             try:
                 from app.services.prompt_assembler import Query
-                mode = "react" if "plan_tasks" in (tool_names or []) else "chat"
+                if "plan_tasks" in (tool_names or []):
+                    mode = "react"
+                elif tool_names:
+                    mode = "tool"
+                else:
+                    mode = "chat"
                 q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id)
                 ctx = await assembler.assemble(q)
-                enriched = ctx.render_system_prompt()
+                enriched = ctx.render_static()
                 if enriched:
                     system_prompt_with_workspace += "\n\n" + enriched
+                dynamic_prefix = ctx.render_dynamic()
+                _slot_summary = ", ".join(
+                    f"{fs.kind}={'skip' if fs.skipped else len(fs.items)}"
+                    for fs in ctx.filled
+                )
+                logger.info(
+                    "[cache-debug] mode=%s static_len=%d dynamic_len=%d sys_prompt_hash=%d "
+                    "slots=[%s]",
+                    mode, len(enriched), len(dynamic_prefix),
+                    hash(system_prompt_with_workspace), _slot_summary,
+                )
             except Exception as err:  # noqa: BLE001 - assembler is best-effort
                 logger.warning("[agent-runner] PromptAssembler enrichment failed: %s", err)
 
@@ -1506,6 +1523,14 @@ async def build_adapter_input(
                 err,
             )
             effective_prompt = prompt
+
+    # ── dynamic content injection (SDK only; from PromptAssembler) ──
+    if dynamic_prefix:
+        effective_prompt = f"{dynamic_prefix}\n\n{effective_prompt}"
+        logger.info(
+            "[cache-debug] dynamic injected: prefix_len=%d effective_prompt_len=%d",
+            len(dynamic_prefix), len(effective_prompt),
+        )
 
     # ── custom_config: SDK only ──────────────────────────────────────
     custom_config = (
