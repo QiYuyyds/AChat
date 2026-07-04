@@ -132,6 +132,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         app_instance.state.tool_state_tracker = tool_state_tracker
 
         registry = SourceRegistry()
+        _source_flags = []
         if _memory_service:
             # ProfileSource now reads from both Preference AND LTM
             registry.register(ProfileSource(
@@ -139,20 +140,38 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
                 ltm=_memory_service.ltm,
             ))
             registry.register(RecallSource(_memory_service))
+            _source_flags.append("Profile+LTM")
+            _source_flags.append("Recall")
+        else:
+            logger.warning(
+                "PromptAssembler: memory_service unavailable, "
+                "ProfileSource and RecallSource will be skipped"
+            )
         # PlannerSource — reads dispatch plan state
         registry.register(PlannerSource(provider=get_planner_snapshot))
+        _source_flags.append("Planner")
         # TaskMemSource — reads step observations from shared buffer
         registry.register(TaskMemSource(buffer=task_mem_buffer))
+        _source_flags.append("TaskMem")
         # ToolStateSource — reads tool registry + recent call traces
         registry.register(ToolStateSource(
             registry_provider=lambda: _tool_reg._tools,
             tracker=tool_state_tracker,
         ))
-        registry.register(ConstraintsSource())
+        _source_flags.append("ToolState")
+        # ConstraintsSource — default constraints for cache-stable system prompt
+        _default_constraints = (
+            "你是一个可靠的 AI 助手。请遵守以下约束：\n"
+            "- 回答要准确、简洁、有条理\n"
+            "- 不确定时如实说明，不要编造信息\n"
+            "- 使用用户提问时的语言进行回复"
+        )
+        registry.register(ConstraintsSource(constraints_text=_default_constraints))
+        _source_flags.append("Constraints")
         app_instance.state.prompt_assembler = ContextAssembler(registry=registry)
         logger.info(
-            "PromptAssembler initialized: 6 Sources registered "
-            "(Profile+LTM, Recall, Planner, TaskMem, ToolState, Constraints)"
+            "PromptAssembler initialized: %d Sources registered (%s)",
+            len(_source_flags), ", ".join(_source_flags),
         )
     except Exception as e:
         logger.warning("PromptAssembler init failed: %s", e)

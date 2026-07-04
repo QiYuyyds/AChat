@@ -28,6 +28,7 @@ from app.adapters.base import (
 from app.adapters.custom_provider_client import resolve_custom_provider_client_config
 from app.db.engine import get_db
 from app.db.models import Artifact
+from app.infra.cache_metrics import cache_metrics
 from app.schemas.artifacts import ArtifactRecord
 from app.schemas.events import (
     ArtifactCreateEvent,
@@ -174,6 +175,13 @@ class CustomAdapter(AgentPlatformAdapter):
             tool_call_buffer = _ToolCallBuffer()
 
             try:
+                if turn == 1:
+                    _sys_len = len(messages[0].get("content", "")) if messages and messages[0].get("role") == "system" else 0
+                    logger.info(
+                        "[cache-debug] turn=1 model=%s messages=%d sys_prompt_len=%d tools=%d user_prompt_len=%d",
+                        model_id, len(messages), _sys_len,
+                        len(api_tools), len(str(user_content)),
+                    )
                 stream = await client.chat.completions.create(
                     model=model_id,
                     messages=messages,
@@ -205,13 +213,33 @@ class CustomAdapter(AgentPlatformAdapter):
                     cached = _usage_field(usage, "prompt_cache_hit_tokens") or _usage_field(
                         usage, "cached_tokens"
                     )
+                    cache_created = _usage_field(usage, "cache_creation_input_tokens") or _usage_field(
+                        usage, "cache_creation_tokens"
+                    )
                     msg_usage.input_tokens += inp
                     msg_usage.output_tokens += out
                     msg_usage.cache_read_tokens += cached
                     run_usage.input_tokens += inp
                     run_usage.output_tokens += out
                     run_usage.cache_read_tokens += cached
+                    run_usage.cache_creation_tokens += cache_created
                     run_usage.last_input_tokens = inp
+                    # Record per-call cache metrics for aggregate monitoring
+                    cache_metrics.record(
+                        cache_read=cached,
+                        cache_creation=cache_created,
+                        input_tokens=inp,
+                    )
+                    logger.info(
+                        "[cache-debug] input=%d cache_read=%d cache_creation=%d recent_hit_rate=%.1f%%",
+                        inp, cached, cache_created, cache_metrics.recent_hit_rate() * 100,
+                    )
+                    if cache_metrics.should_alert():
+                        logger.warning(
+                            "[CustomAdapter] cache hit rate low: %.1f%% (recent %d calls)",
+                            cache_metrics.recent_hit_rate() * 100,
+                            cache_metrics.recent_count,
+                        )
                 choices = getattr(chunk, "choices", None) or []
                 if not choices:
                     continue
