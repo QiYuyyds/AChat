@@ -9,16 +9,16 @@ and consolidation triggers.
 import asyncio
 import logging
 import time
-from typing import Any, Callable, List, Optional
+from typing import Callable, List, Optional
 
 from app.config import Settings
 from app.db.engine import get_db
 from app.db.models import ChatHistory
-from app.memory.consolidation import ConsolidationConfig, ConsolidationResult, Item
+from app.memory.consolidation import ConsolidationResult, Item
+from app.memory.graph_memory import GraphMemory
 from app.memory.long_term import LongTerm
 from app.memory.preference import Preference
 from app.memory.short_term import ShortTerm
-from app.memory.graph_memory import GraphMemory
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +146,12 @@ class MemoryService:
 
         await asyncio.gather(*tasks)
 
+        # LLM preference overlay: refine the rule-based extraction above with a
+        # more precise LLM pass. Fire-and-forget after the rule pass so the LLM
+        # values overwrite the coarse ones via save_batch.
+        if self._generate_fn and not self._is_trivial_reply(content):
+            asyncio.create_task(self._safe_llm_extract_preference(content))
+
         # Check if consolidation is needed
         if self.ltm.need_consolidation():
             asyncio.create_task(self._safe_consolidate())
@@ -229,6 +235,7 @@ class MemoryService:
         if result.delete_from_db:
             try:
                 from sqlalchemy import delete as sa_delete
+
                 from app.db.models import LongTermMemory
                 async with get_db() as session:
                     stmt = sa_delete(LongTermMemory).where(
@@ -246,6 +253,7 @@ class MemoryService:
         if result.update_in_db:
             try:
                 from sqlalchemy import update as sa_update
+
                 from app.db.models import LongTermMemory
                 for item in result.update_in_db:
                     if item.id is None:
@@ -281,9 +289,26 @@ class MemoryService:
                 embed_fn=self._embed_fn,
                 ltm=self.ltm,
                 content=content,
+                preference=self.preference,
             )
         except Exception as e:
             logger.warning("Memory extraction failed: %s", e)
+
+    async def _safe_llm_extract_preference(self, content: str) -> None:
+        """LLM overlay: refine rule-based preferences with a more precise extraction.
+
+        Runs after the synchronous rule pass so the LLM's values overwrite the
+        coarse rule output via ``save_batch``. Any failure degrades silently —
+        the rule-based result already persisted is kept as-is.
+        """
+        try:
+            from app.memory.memory_writer import extract_preferences
+            prefs = await extract_preferences(self._generate_fn, content)
+            if prefs:
+                await self.preference.save_batch(prefs)
+                logger.info("LLM preference overlay: %d keys", len(prefs))
+        except Exception as e:
+            logger.warning("LLM preference extraction failed: %s", e)
 
     @staticmethod
     def _is_trivial_reply(content: str) -> bool:

@@ -14,9 +14,28 @@ Key functions:
 import json
 import logging
 import re
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Protocol, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# Importance floor per memory category. Replaces the old hardcoded 0.7 so the
+# ranking actually means something — identity/policy outrank plain facts.
+_IMPORTANCE_BY_CATEGORY: Dict[str, float] = {
+    "identity": 0.9,
+    "policy": 0.8,
+    "preference": 0.7,
+    "fact": 0.5,
+    "episodic": 0.4,
+    "tool_failure": 0.3,
+    "general": 0.3,
+}
+
+
+class _PreferenceLike(Protocol):
+    """Minimal contract for the preference store used during double-write."""
+
+    async def set(self, key: str, value: str) -> None: ...
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -141,6 +160,7 @@ async def extract_memory_from_reply(
     embed_fn: Optional[Callable],
     ltm,
     content: str,
+    preference: Optional[_PreferenceLike] = None,
 ) -> None:
     """Extract k-v facts from assistant reply using LLM, classify, and store.
 
@@ -148,13 +168,18 @@ async def extract_memory_from_reply(
       1. LLM extracts key-value facts from the reply.
       2. Each fact is classified via ``classify_memory_content()``.
       3. Embedding is computed for each fact.
-      4. Facts are stored via ``ltm.store_classified()`` with dedup.
+      4. Facts are stored via ``ltm.store_classified()`` with dedup, and the
+         same k-v is mirrored into the preference store (double-write, matching
+         the original AGI-memory behavior).
 
     Args:
         generate_fn: LLM generate function (system_prompt, user_msg) -> str
         embed_fn: Optional embedding function (text) -> list[float]
         ltm: LongTerm memory instance with ``store_classified()`` method
         content: The assistant reply text
+        preference: Optional preference store; when supplied, each extracted
+            k-v is also written via ``preference.set()`` so rule-based
+            extraction can be refined by the LLM's more precise values.
     """
     if not content or not generate_fn:
         return
@@ -182,7 +207,18 @@ async def extract_memory_from_reply(
         if not k or v in (None, ""):
             continue
 
-        fact_content = f"用户{k}: {v}"
+        # Mirror into the preference store first (double-write). A failure here
+        # must not block the LTM write — preference is a best-effort refinement.
+        if preference is not None:
+            try:
+                await preference.set(str(k), str(v))
+            except Exception as e:
+                logger.warning(
+                    "Memory extraction preference.set failed for %s: %s", k, e,
+                )
+
+        clean_key = str(k).removeprefix("用户")
+        fact_content = f"用户{clean_key}: {v}"
         category, tags, slot_hint = classify_memory_content(str(k), str(v))
         if not category:
             # Rule classification missed — try LLM fallback
@@ -198,7 +234,7 @@ async def extract_memory_from_reply(
             except Exception as e:
                 logger.warning("Memory extraction embed failed: %s", e)
 
-        importance = 0.7
+        importance = _IMPORTANCE_BY_CATEGORY.get(category, 0.3)
 
         # Store via store_classified (with cosine dedup)
         try:
@@ -211,8 +247,79 @@ async def extract_memory_from_reply(
                 slot_hint,
             )
             logger.info(
-                "Memory extracted: %s = %s (category=%s, inserted=%s)",
-                k, v, category, inserted,
+                "Memory extracted: %s = %s (category=%s, importance=%.2f, inserted=%s)",
+                k, v, category, importance, inserted,
             )
         except Exception as e:
             logger.warning("Memory extraction store failed: %s", e)
+
+
+# ── User-side preference extraction (LLM with rule fallback) ────────────────
+
+
+_PREFERENCE_EXTRACTION_PROMPT = (
+    "你是一个用户偏好提取助手。从下面的用户消息中提取值得长期记住的用户偏好和身份信息。\n"
+    "只提取明确的、非临时性的偏好（姓名、喜好、习惯、风格等），忽略对话上下文和临时细节。\n"
+    "输出 JSON 对象（key 为偏好类别名，如 \"姓名\"/\"喜好\"/\"视觉风格\"，value 为具体值），"
+    "如果没有值得记忆的信息则输出 {}。\n"
+    "只输出 JSON，不要有其他内容。"
+)
+
+
+def _extract_rule_based(msg: str) -> Dict[str, str]:
+    """Rule-based preference fallback. Ports ``Preference.extract_and_save_sync``
+    rules ("我喜欢" / "我爱" / "我叫"), returning the first match as a single-entry
+    dict — faithful to the original, which returns on the first hit.
+    """
+    if not msg:
+        return {}
+    rules = [
+        ("我喜欢", "喜欢", "喜好"),
+        ("我爱", "爱", "喜好"),
+        ("我叫", "叫", "姓名"),
+    ]
+    for marker, sep, key in rules:
+        if marker not in msg:
+            continue
+        parts = msg.split(sep, 1)
+        if len(parts) < 2:
+            continue
+        value = parts[1].strip()
+        if not value:
+            continue
+        return {key: value}
+    return {}
+
+
+async def extract_preferences(
+    generate_fn: Optional[Callable],
+    msg: str,
+) -> Dict[str, str]:
+    """Extract user preferences from a user message via LLM, with rule fallback.
+
+    When ``generate_fn`` is None, the LLM call raises, or the LLM returns
+    non-JSON / an empty object, falls back to ``_extract_rule_based(msg)`` so
+    preference extraction degrades gracefully without throwing.
+    """
+    if not generate_fn or not msg:
+        return _extract_rule_based(msg)
+
+    try:
+        raw = generate_fn(_PREFERENCE_EXTRACTION_PROMPT, msg)
+    except Exception as e:
+        logger.warning("Preference LLM extraction failed: %s", e)
+        return _extract_rule_based(msg)
+
+    raw = _strip_code_fence(raw)
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        logger.debug("Preference extraction: LLM output is not valid JSON: %s", raw[:100])
+        return _extract_rule_based(msg)
+
+    if not isinstance(parsed, dict) or not parsed:
+        return _extract_rule_based(msg)
+
+    return {
+        str(k): str(v) for k, v in parsed.items() if k and v not in (None, "")
+    }

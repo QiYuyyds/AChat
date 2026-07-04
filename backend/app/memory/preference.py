@@ -9,12 +9,17 @@ import threading
 import time
 from typing import Dict, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, select
 
 from app.db.engine import get_db
 from app.db.models import UserPreference
 
 logger = logging.getLogger(__name__)
+
+# Preference values beyond this length are almost always conversation garbage
+# rather than real preferences (names/fonts/styles rarely exceed 100 chars).
+_PREFERENCE_VALUE_MAX = 200
 
 
 class Preference:
@@ -47,6 +52,9 @@ class Preference:
     async def set(self, key: str, value: str) -> None:
         if not key or value is None:
             return
+        value = str(value)
+        if len(value) > _PREFERENCE_VALUE_MAX:
+            value = value[: _PREFERENCE_VALUE_MAX - 3] + "..."
         with self._lock:
             self.preferences[key] = value
         try:
@@ -124,3 +132,30 @@ class Preference:
             return ""
         lines = [f"{k}: {v}" for k, v in snap.items()]
         return "【用户偏好】\n" + "\n".join(lines)
+
+    async def cleanup_oversized(self) -> int:
+        """One-shot cleanup: drop preference rows whose value length exceeds the cap.
+
+        Removes oversized entries from PG and the in-memory cache. Returns the
+        number of rows deleted. Intended to run once after deploying the length
+        cap to purge legacy garbage already persisted before the guard existed.
+        """
+        try:
+            async with get_db() as session:
+                stmt = sa_delete(UserPreference).where(
+                    (UserPreference.user_id == self.user_id)
+                    & (func.length(UserPreference.value) > _PREFERENCE_VALUE_MAX)
+                )
+                result = await session.execute(stmt)
+                deleted = result.rowcount or 0
+        except Exception as e:
+            logger.warning("Preference cleanup query failed: %s", e)
+            deleted = 0
+
+        with self._lock:
+            self.preferences = {
+                k: v for k, v in self.preferences.items()
+                if len(v) <= _PREFERENCE_VALUE_MAX
+            }
+        logger.info("Preference cleanup: removed %d oversized rows", deleted)
+        return deleted
