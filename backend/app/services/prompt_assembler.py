@@ -288,7 +288,8 @@ class ProfileSource(ContextSource):
             try:
                 prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
                 _pref_count = len(prefs)
-                for k, v in prefs.items():
+                for k in sorted(prefs.keys()):
+                    v = prefs[k]
                     items.append(
                         ContextItem(text=f"{k}: {v}", score=1.0, source="profile")
                     )
@@ -643,37 +644,22 @@ class ContextAssembler:
 
 
 def _trim_by_budget(items: List[ContextItem], budget: int) -> List[ContextItem]:
-    logger.info(
-        "[cache-debug] _trim_by_budget V3: items=%d budget=%d first_item_len=%d",
-        len(items), budget, len(items[0].text) if items else 0,
-    )
+    """Drop items once cumulative length exceeds budget.
+
+    Aligns with the original AGI-memory behavior: when adding an item would
+    push the running total past the budget, that item and everything after it
+    is dropped. No truncation, no forced keep-at-least-one — an empty slot is
+    preferable to stuffing it with a single oversized piece of garbage.
+    """
     total = 0
     for i, item in enumerate(items):
-        remaining = budget - total
-        if remaining <= 0:
-            # Budget exhausted — keep at least 1 item even if we need to
-            # truncate it to fit.
-            kept = items[:max(1, i)]
-            if kept and len(kept[-1].text) > budget:
-                kept[-1].text = kept[-1].text[:budget - 3] + "..."
-            logger.info(
-                "[cache-debug] _trim_by_budget: trimmed %d→%d (budget_exhausted)",
-                len(items), len(kept),
-            )
-            return kept
-        if len(item.text) > remaining:
-            # Truncate this long item to fit the remaining budget,
-            # then stop (no more items).
-            orig_len = len(item.text)
-            item.text = item.text[:remaining - 3] + "..."
-            total += len(item.text)
-            result = items[:i + 1]
-            logger.info(
-                "[cache-debug] _trim_by_budget: truncated item[%d] chars %d→%d (budget=%d remaining=%d)",
-                i, orig_len, len(item.text), budget, remaining,
-            )
-            return result
         total += len(item.text)
+        if total > budget:
+            logger.info(
+                "[cache-debug] _trim_by_budget: %d→%d (budget=%d exceeded at item %d)",
+                len(items), i, budget, i,
+            )
+            return items[:i]
     return items
 
 

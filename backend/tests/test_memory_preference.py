@@ -81,3 +81,77 @@ class TestPreference:
         snap = pref.snapshot()
         snap["姓名"] = "modified"
         assert pref.get("姓名") == "小明"
+
+
+# ─── set() length validation (Task 1.2) ──────────────────────────────────────
+
+
+class TestPreferenceSetLengthCap:
+    def _make_pref(self) -> Preference:
+        return Preference(user_id="default_user")
+
+    @pytest.mark.asyncio
+    async def test_normal_value_unchanged(self):
+        pref = self._make_pref()
+        with patch("app.memory.preference.get_db") as mock_db:
+            mock_db.side_effect = Exception("no db")
+            await pref.set("喜好", "清新风格")
+        assert pref.get("喜好") == "清新风格"
+
+    @pytest.mark.asyncio
+    async def test_oversized_value_truncated(self):
+        pref = self._make_pref()
+        long_value = "x" * 500
+        with patch("app.memory.preference.get_db") as mock_db:
+            mock_db.side_effect = Exception("no db")
+            await pref.set("喜好", long_value)
+        stored = pref.get("喜好")
+        assert len(stored) == 200
+        assert stored.startswith("x" * 197)
+        assert stored.endswith("...")
+
+    @pytest.mark.asyncio
+    async def test_boundary_200_chars_not_truncated(self):
+        """A value of exactly 200 chars is kept verbatim — the cap is >200, not >=200."""
+        pref = self._make_pref()
+        value = "y" * 200
+        with patch("app.memory.preference.get_db") as mock_db:
+            mock_db.side_effect = Exception("no db")
+            await pref.set("喜好", value)
+        assert pref.get("喜好") == value
+        assert len(pref.get("喜好")) == 200
+
+    @pytest.mark.asyncio
+    async def test_boundary_201_chars_truncated(self):
+        """A value of 201 chars trips the cap → truncated to 197 + '...' = 200."""
+        pref = self._make_pref()
+        value = "z" * 201
+        with patch("app.memory.preference.get_db") as mock_db:
+            mock_db.side_effect = Exception("no db")
+            await pref.set("喜好", value)
+        stored = pref.get("喜好")
+        assert len(stored) == 200
+        assert stored.endswith("...")
+
+    @pytest.mark.asyncio
+    async def test_empty_key_ignored(self):
+        pref = self._make_pref()
+        with patch("app.memory.preference.get_db") as mock_db:
+            mock_db.side_effect = Exception("no db")
+            await pref.set("", "some value")
+        assert pref.get_all() == {}
+
+    @pytest.mark.asyncio
+    async def test_cleanup_oversized_removes_long_in_memory(self):
+        """cleanup_oversized purges in-memory entries exceeding the cap."""
+        pref = self._make_pref()
+        # Bypass set() to inject a legacy oversized value directly.
+        pref.preferences["垃圾"] = "g" * 300
+        pref.preferences["姓名"] = "小明"
+        with patch("app.memory.preference.get_db") as mock_db:
+            mock_db.side_effect = Exception("no db")
+            deleted = await pref.cleanup_oversized()
+        # DB failed so rowcount is 0, but in-memory purge still runs.
+        assert deleted == 0
+        assert "垃圾" not in pref.get_all()
+        assert pref.get("姓名") == "小明"

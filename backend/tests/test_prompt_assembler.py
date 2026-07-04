@@ -45,22 +45,25 @@ class TestTrimByBudget:
         result = _trim_by_budget(items, 100)
         assert len(result) == 2
 
-    def test_exceeds_budget(self):
-        items = [ContextItem(text="a" * 50), ContextItem(text="b" * 50), ContextItem(text="c" * 50)]
-        result = _trim_by_budget(items, 80)
-        # item[0] fits (50<80), item[1] truncated from 50→27+"..."=30 (fits remaining 30)
-        # → 2 items returned (truncation preserves more signal than dropping)
-        assert 1 <= len(result) <= 2
-        assert len(result[0].text) == 50  # first item untouched
+    def test_partial_exceed_drops_rest(self):
+        """When a later item pushes the total over budget, it and the rest are dropped."""
+        items = [ContextItem(text="a" * 200), ContextItem(text="b" * 400), ContextItem(text="c" * 50)]
+        result = _trim_by_budget(items, 500)
+        # item[0] fits (200<500); item[1] pushes total to 600>500 → dropped along with item[2]
+        assert len(result) == 1
+        assert result[0].text == "a" * 200
 
-    def test_single_item_exceeds_budget_truncated(self):
-        """A single very long item should be truncated, not dropped."""
+    def test_first_item_exceeds_budget_returns_empty(self):
+        """A single item larger than the budget is dropped, not truncated."""
         items = [ContextItem(text="x" * 600)]
         result = _trim_by_budget(items, 200)
-        assert len(result) == 1
-        # truncated to 200-3=197 + "..." = 200
-        assert len(result[0].text) == 200
-        assert result[0].text.endswith("...")
+        assert result == []
+
+    def test_exact_fit_kept(self):
+        """Items whose cumulative length exactly equals the budget are kept (cap is >, not >=)."""
+        items = [ContextItem(text="a" * 200), ContextItem(text="b" * 300)]
+        result = _trim_by_budget(items, 500)
+        assert len(result) == 2
 
     def test_empty_items(self):
         result = _trim_by_budget([], 100)

@@ -245,3 +245,29 @@ def test_profile_source_only_ltm():
     assert "用户姓名: Bob" in items[0].text
     assert items[0].score == 0.8
     assert items[0].meta.get("category") == "identity"
+
+
+# ─── ProfileSource key sorting (Task 2.2) ─────────────────────────────────────
+
+
+def test_profile_source_preference_keys_sorted():
+    """Preference keys are emitted in sorted() order regardless of insertion order."""
+    # Deliberately unsorted insertion order.
+    pref = _MockPreference({"视觉风格": "editorial", "姓名": "涵涵", "喜好": "rap", "字体": "Noto"})
+    src = ProfileSource(preference_provider=pref, ltm=None)
+    slot = Slot(kind=SlotProfile, filter=SlotFilter(top_k=10))
+    items = asyncio.run(src.fetch(slot, Query()))
+    keys = [it.text.split(":", 1)[0] for it in items]
+    assert keys == sorted(keys)
+    # sorted() orders by Unicode code point: 喜(U+559C) < 姓(U+59D3) < 字(U+5B57) < 视(U+89C6).
+    assert keys == ["喜好", "姓名", "字体", "视觉风格"]
+
+
+def test_profile_source_sort_stable_across_insertion_orders():
+    """Different insertion orders of the same data produce identical item sequences."""
+    data_a = _MockPreference({"姓名": "涵涵", "喜好": "rap", "字体": "Noto"})
+    data_b = _MockPreference({"字体": "Noto", "喜好": "rap", "姓名": "涵涵"})
+    slot = Slot(kind=SlotProfile, filter=SlotFilter(top_k=10))
+    items_a = asyncio.run(ProfileSource(preference_provider=data_a).fetch(slot, Query()))
+    items_b = asyncio.run(ProfileSource(preference_provider=data_b).fetch(slot, Query()))
+    assert [it.text for it in items_a] == [it.text for it in items_b]
