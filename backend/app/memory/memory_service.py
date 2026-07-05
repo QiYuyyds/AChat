@@ -134,23 +134,18 @@ class MemoryService:
         if role != "user":
             return
 
-        # Async fire-and-forget tasks for user messages
-        tasks = []
-
-        # Preference extraction
-        tasks.append(self._safe_extract_preference(content))
-
-        # LTM add (with importance heuristic)
-        importance = self._estimate_importance(content)
-        tasks.append(self._safe_ltm_add(content, importance))
-
-        await asyncio.gather(*tasks)
-
-        # LLM preference overlay: refine the rule-based extraction above with a
-        # more precise LLM pass. Fire-and-forget after the rule pass so the LLM
-        # values overwrite the coarse ones via save_batch.
+        # User messages drive preference extraction only. Raw user text is no
+        # longer dumped into LTM — LTM is fed exclusively by category-routed
+        # extraction from assistant replies (see memory_writer).
+        #
+        # Single extraction pass: the LLM path is primary. Running the coarse
+        # rule pass alongside it only produces duplicate keys (喜好 vs
+        # 喜欢的音乐类型) that never reconcile, so the rules are a fallback for
+        # when no LLM is available.
         if self._generate_fn and not self._is_trivial_reply(content):
             asyncio.create_task(self._safe_llm_extract_preference(content))
+        else:
+            await self._safe_extract_preference(content)
 
         # Check if consolidation is needed
         if self.ltm.need_consolidation():
@@ -200,12 +195,6 @@ class MemoryService:
         except Exception as e:
             logger.warning("Preference extraction failed: %s", e)
 
-    async def _safe_ltm_add(self, content: str, importance: float) -> None:
-        try:
-            await self.ltm.add(content, importance)
-        except Exception as e:
-            logger.warning("LTM add failed: %s", e)
-
     async def _safe_consolidate(self) -> None:
         try:
             if self.graph_memory is not None:
@@ -220,6 +209,10 @@ class MemoryService:
                 await self._sync_consolidation_to_db(result)
         except Exception as e:
             logger.warning("Consolidation failed: %s", e)
+
+        # Layer 3 dedup: LLM-based preference consolidation when entries exceed threshold
+        if len(self.preference.data) > 15:
+            await self._consolidate_preferences()
 
     async def _sync_consolidation_to_db(self, result: ConsolidationResult) -> None:
         """Sync consolidation delete/update results to PostgreSQL.
@@ -280,6 +273,72 @@ class MemoryService:
             except Exception as e:
                 logger.warning("Consolidation DB update failed: %s", e)
 
+    async def _consolidate_preferences(self) -> None:
+        """LLM-based preference consolidation (Layer 3 dedup).
+
+        Sends all ``preference.data`` to the LLM with a merge prompt, receives
+        a merged dict, batch-updates the Preference table, and deletes removed
+        keys from both in-memory cache and PG.
+        """
+        if not self._generate_fn or not self.preference.data:
+            return
+        try:
+            import json
+
+            from app.memory.memory_writer import _PREFERENCE_MERGE_PROMPT
+
+            prefs_json = json.dumps(self.preference.data, ensure_ascii=False)
+            raw = await asyncio.to_thread(
+                self._generate_fn, _PREFERENCE_MERGE_PROMPT, prefs_json,
+            )
+            raw = (raw or "").strip()
+            # Strip markdown code fences
+            if raw.startswith("```"):
+                raw = raw.split("```", 1)[-1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                if raw.endswith("```"):
+                    raw = raw[:-3]
+                raw = raw.strip()
+
+            merged = json.loads(raw)
+            if not isinstance(merged, dict) or not merged:
+                return
+
+            old_keys = set(self.preference.data.keys())
+            new_keys = set(str(k) for k in merged.keys())
+            removed_keys = old_keys - new_keys
+
+            # Save merged preferences (updates existing, inserts new)
+            await self.preference.save_batch(
+                {str(k): str(v) for k, v in merged.items()}
+            )
+
+            # Delete removed keys from in-memory and PG
+            if removed_keys:
+                with self.preference._lock:
+                    for k in removed_keys:
+                        self.preference.preferences.pop(k, None)
+                try:
+                    from sqlalchemy import delete as sa_delete
+
+                    from app.db.models import UserPreference
+                    async with get_db() as session:
+                        stmt = sa_delete(UserPreference).where(
+                            (UserPreference.user_id == self.preference.user_id)
+                            & (UserPreference.key.in_(list(removed_keys)))
+                        )
+                        await session.execute(stmt)
+                except Exception as e:
+                    logger.warning("Preference consolidation delete failed: %s", e)
+
+            logger.info(
+                "Preference consolidation: merged %d → %d keys (removed %d duplicates)",
+                len(old_keys), len(new_keys), len(removed_keys),
+            )
+        except Exception as e:
+            logger.warning("Preference consolidation failed: %s", e)
+
     async def _safe_extract_memory(self, content: str) -> None:
         """Extract memory facts from assistant reply using LLM (background task)."""
         try:
@@ -290,6 +349,7 @@ class MemoryService:
                 ltm=self.ltm,
                 content=content,
                 preference=self.preference,
+                existing_keys=list(self.preference.data.keys()),
             )
         except Exception as e:
             logger.warning("Memory extraction failed: %s", e)
@@ -303,7 +363,11 @@ class MemoryService:
         """
         try:
             from app.memory.memory_writer import extract_preferences
-            prefs = await extract_preferences(self._generate_fn, content)
+            prefs = await extract_preferences(
+                self._generate_fn,
+                content,
+                existing_keys=list(self.preference.data.keys()),
+            )
             if prefs:
                 await self.preference.save_batch(prefs)
                 logger.info("LLM preference overlay: %d keys", len(prefs))
@@ -330,18 +394,3 @@ class MemoryService:
             r"^好的.*没问题",
         ]
         return any(re.match(p, text) for p in trivial_patterns)
-
-    @staticmethod
-    def _estimate_importance(content: str) -> float:
-        """Simple importance heuristic based on content length and keywords."""
-        if not content:
-            return 0.1
-        base = 0.5
-        # Longer messages are slightly more important
-        length_bonus = min(0.3, len(content) / 1000.0)
-        # Question marks suggest information-seeking (less important for memory)
-        question_penalty = -0.1 if content.strip().endswith("？") or content.strip().endswith("?") else 0.0
-        # Keywords that signal high importance
-        important_keywords = ["记住", "重要", "必须", "永远", "不要忘记", "remember", "important", "always"]
-        keyword_bonus = 0.2 if any(kw in content for kw in important_keywords) else 0.0
-        return max(0.1, min(1.0, base + length_bonus + question_penalty + keyword_bonus))

@@ -68,22 +68,25 @@ class LongTerm:
             result = await session.execute(stmt)
             rows = result.scalars().all()
 
+        now_ts = time.time()
         self.items = []
         for r in rows:
             self.items.append(Item(
                 content=r.content,
                 importance=r.importance,
                 embedding=list(r.embedding) if r.embedding else None,
+                id=r.id,
                 created_at=r.created_at,
                 last_accessed=r.last_accessed,
                 category=r.category or "",
                 tags=list(r.tags) if r.tags else [],
                 slot_hint=r.slot_hint or "",
                 score=r.score or 0.0,
+                # Reset decay checkpoint to load time — persisted importance is
+                # already decayed; don't retroactively re-decay the idle period.
+                last_decay_ts=now_ts,
             ))
-        for idx, item in enumerate(self.items):
-            item.id = idx
-        self._next_id = len(self.items)
+        self._next_id = max((r.id for r in rows), default=-1) + 1
         logger.info("Loaded %d long-term memories from PG", len(self.items))
 
         if self.graph_memory is not None:
@@ -94,50 +97,56 @@ class LongTerm:
 
     async def add(self, content: str, importance: float = 0.5) -> None:
         """Add a new memory item, persist to PG, and sync to graph."""
+        # Embedding is blocking I/O — run it off the event loop, outside the lock.
         embedding = None
         if self._embed_fn:
             try:
-                embedding = self._embed_fn(content)
+                embedding = await asyncio.to_thread(self._embed_fn, content)
             except Exception as e:
                 logger.warning("Embedding failed: %s", e)
 
         now_ts = time.time()
-        item = Item(
-            content=content,
-            importance=importance,
-            embedding=embedding,
-            id=self._next_id,
-            created_at=now_ts,
-            last_accessed=now_ts,
-        )
-        self._next_id += 1
-        prior = list(self.items)
-        self.items.append(item)
-        self._items_since_last += 1
+        # Guard in-memory bookkeeping + id assignment against concurrent writers.
+        async with self._lock:
+            item = Item(
+                content=content,
+                importance=importance,
+                embedding=embedding,
+                id=self._next_id,
+                created_at=now_ts,
+                last_accessed=now_ts,
+                last_decay_ts=now_ts,
+            )
+            self._next_id += 1
+            prior = list(self.items)
+            self.items.append(item)
+            self._items_since_last += 1
 
-        # Persist to PG
-        try:
-            async with get_db() as session:
-                row = LongTermMemory(
-                    content=content,
-                    importance=importance,
-                    embedding=embedding,
-                    created_at=now_ts,
-                    last_accessed=now_ts,
-                    category=item.category,
-                    tags=item.tags,
-                    slot_hint=item.slot_hint,
-                    score=item.score,
-                )
-                session.add(row)
-                await session.flush()
-                if row.id:
-                    item.id = row.id
-                    if row.id >= self._next_id:
-                        self._next_id = row.id + 1
-        except Exception as e:
-            logger.warning("PG save failed: %s", e)
+            # Persist to PG (fast local write kept inside the lock so the id
+            # backfill stays atomic with the _next_id bump above).
+            try:
+                async with get_db() as session:
+                    row = LongTermMemory(
+                        content=content,
+                        importance=importance,
+                        embedding=embedding,
+                        created_at=now_ts,
+                        last_accessed=now_ts,
+                        category=item.category,
+                        tags=item.tags,
+                        slot_hint=item.slot_hint,
+                        score=item.score,
+                    )
+                    session.add(row)
+                    await session.flush()
+                    if row.id:
+                        item.id = row.id
+                        if row.id >= self._next_id:
+                            self._next_id = row.id + 1
+            except Exception as e:
+                logger.warning("PG save failed: %s", e)
 
+        # Graph sync (Neo4j I/O) runs outside the lock.
         if self.graph_memory is not None:
             try:
                 await self.graph_memory.add_to_graph(item, neighbors=prior[-50:])
@@ -167,116 +176,119 @@ class LongTerm:
 
         dedup_threshold = self.cfg.dedup_threshold  # default 0.95
 
-        # Cosine dedup: if highly similar to existing item, update instead of insert
-        if emb and self.items:
-            best_idx = -1
-            best_sim = -1.0
-            for idx, existing in enumerate(self.items):
-                if not existing.embedding or len(existing.embedding) != len(emb):
-                    continue
-                sim = cosine_similarity(emb, existing.embedding)
-                if sim > best_sim:
-                    best_sim = sim
-                    best_idx = idx
+        # In-memory dedup/insert bookkeeping is guarded by the lock; graph I/O
+        # (Neo4j) is deferred until after the lock is released.
+        target: Optional[Item] = None
+        new_item: Optional[Item] = None
+        prior: List[Item] = []
 
-            if best_idx >= 0 and best_sim >= dedup_threshold:
-                target = self.items[best_idx]
-                # Update fields on existing item
-                if importance > target.importance:
-                    target.importance = importance
-                if tags:
-                    merged_tags: List[str] = []
-                    seen = set()
-                    for t in list(target.tags) + list(tags):
-                        if not t or t in seen:
-                            continue
-                        seen.add(t)
-                        merged_tags.append(t)
-                    target.tags = merged_tags
-                if category and (target.category == "" or target.category == "general"):
-                    target.category = category
-                if slot_hint and target.slot_hint == "":
-                    target.slot_hint = slot_hint
-                target.last_accessed = time.time()
+        async with self._lock:
+            # Cosine dedup: if highly similar to existing item, update instead of insert
+            if emb and self.items:
+                best_idx = -1
+                best_sim = -1.0
+                for idx, existing in enumerate(self.items):
+                    if not existing.embedding or len(existing.embedding) != len(emb):
+                        continue
+                    sim = cosine_similarity(emb, existing.embedding)
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_idx = idx
 
-                # PG UPDATE
-                if target.id is not None:
-                    try:
-                        async with get_db() as session:
-                            stmt = (
-                                update(LongTermMemory)
-                                .where(LongTermMemory.id == target.id)
-                                .values(
-                                    importance=target.importance,
-                                    tags=target.tags,
-                                    category=target.category,
-                                    slot_hint=target.slot_hint,
-                                    last_accessed=target.last_accessed,
+                if best_idx >= 0 and best_sim >= dedup_threshold:
+                    target = self.items[best_idx]
+                    # Update fields on existing item
+                    if importance > target.importance:
+                        target.importance = importance
+                    if tags:
+                        merged_tags: List[str] = []
+                        seen = set()
+                        for t in list(target.tags) + list(tags):
+                            if not t or t in seen:
+                                continue
+                            seen.add(t)
+                            merged_tags.append(t)
+                        target.tags = merged_tags
+                    if category and (target.category == "" or target.category == "general"):
+                        target.category = category
+                    if slot_hint and target.slot_hint == "":
+                        target.slot_hint = slot_hint
+                    target.last_accessed = time.time()
+
+                    # PG UPDATE
+                    if target.id is not None:
+                        try:
+                            async with get_db() as session:
+                                stmt = (
+                                    update(LongTermMemory)
+                                    .where(LongTermMemory.id == target.id)
+                                    .values(
+                                        importance=target.importance,
+                                        tags=target.tags,
+                                        category=target.category,
+                                        slot_hint=target.slot_hint,
+                                        last_accessed=target.last_accessed,
+                                    )
                                 )
-                            )
-                            await session.execute(stmt)
-                    except Exception as e:
-                        logger.warning("store_classified PG update failed: %s", e)
+                                await session.execute(stmt)
+                        except Exception as e:
+                            logger.warning("store_classified PG update failed: %s", e)
 
-                # Sync to graph
-                if self.graph_memory is not None:
-                    try:
-                        await self.graph_memory.update_node(target)
-                    except Exception as e:
-                        logger.warning("store_classified graph update failed: %s", e)
-
-                return False
-
-        # Dedup miss — full insert path
-        now_ts = time.time()
-        new_item = Item(
-            content=content,
-            importance=importance,
-            embedding=list(emb) if emb else None,
-            id=self._next_id,
-            created_at=now_ts,
-            last_accessed=now_ts,
-            category=category if category else "general",
-            tags=tags,
-            slot_hint=slot_hint,
-            score=0.0,
-        )
-        self._next_id += 1
-        prior = list(self.items)
-        self.items.append(new_item)
-        self._items_since_last += 1
-
-        # PG INSERT
-        try:
-            async with get_db() as session:
-                row = LongTermMemory(
+            # Dedup miss — full insert path
+            if target is None:
+                now_ts = time.time()
+                new_item = Item(
                     content=content,
                     importance=importance,
                     embedding=list(emb) if emb else None,
+                    id=self._next_id,
                     created_at=now_ts,
                     last_accessed=now_ts,
-                    category=new_item.category,
-                    tags=new_item.tags,
-                    slot_hint=new_item.slot_hint,
-                    score=new_item.score,
+                    category=category if category else "general",
+                    tags=tags,
+                    slot_hint=slot_hint,
+                    score=0.0,
+                    last_decay_ts=now_ts,
                 )
-                session.add(row)
-                await session.flush()
-                if row.id:
-                    new_item.id = row.id
-                    if row.id >= self._next_id:
-                        self._next_id = row.id + 1
-        except Exception as e:
-            logger.warning("store_classified PG save failed: %s", e)
+                self._next_id += 1
+                prior = list(self.items)
+                self.items.append(new_item)
+                self._items_since_last += 1
 
-        # Graph sync
+                # PG INSERT
+                try:
+                    async with get_db() as session:
+                        row = LongTermMemory(
+                            content=content,
+                            importance=importance,
+                            embedding=list(emb) if emb else None,
+                            created_at=now_ts,
+                            last_accessed=now_ts,
+                            category=new_item.category,
+                            tags=new_item.tags,
+                            slot_hint=new_item.slot_hint,
+                            score=new_item.score,
+                        )
+                        session.add(row)
+                        await session.flush()
+                        if row.id:
+                            new_item.id = row.id
+                            if row.id >= self._next_id:
+                                self._next_id = row.id + 1
+                except Exception as e:
+                    logger.warning("store_classified PG save failed: %s", e)
+
+        # Graph sync runs outside the lock.
         if self.graph_memory is not None:
             try:
-                await self.graph_memory.add_to_graph(new_item, neighbors=prior[-50:])
+                if target is not None:
+                    await self.graph_memory.update_node(target)
+                elif new_item is not None:
+                    await self.graph_memory.add_to_graph(new_item, neighbors=prior[-50:])
             except Exception as e:
-                logger.warning("store_classified graph add failed: %s", e)
+                logger.warning("store_classified graph sync failed: %s", e)
 
-        return True
+        return target is None
 
     # ─── Recall ───────────────────────────────────────────────────────────────
 
@@ -288,7 +300,7 @@ class LongTerm:
             query_emb = None
             if self._embed_fn:
                 try:
-                    query_emb = self._embed_fn(query)
+                    query_emb = await asyncio.to_thread(self._embed_fn, query)
                 except Exception as e:
                     logger.warning("Query embedding failed: %s", e)
 
@@ -462,10 +474,15 @@ class LongTerm:
 
             now = time.time()
 
-            # Phase 1: per-item exponential decay
+            # Phase 1: incremental exponential decay since each item's last
+            # decay checkpoint (not since creation) so repeated runs don't
+            # compound-decay the same item. Checkpoint advances to now.
             for item in self.items:
-                days = max(0.0, (now - item.created_at) / 86400.0)
-                item.importance *= decay_rate ** days
+                checkpoint = item.last_decay_ts or item.created_at
+                days = max(0.0, (now - checkpoint) / 86400.0)
+                if days > 0:
+                    item.importance *= decay_rate ** days
+                item.last_decay_ts = now
 
             # Phase 2: pairwise dedup + merge
             removed = [False] * len(self.items)
@@ -491,12 +508,12 @@ class LongTerm:
                             result.delete_from_db.append(item_j.id)
                     elif sim >= sim_threshold:
                         merged = self._merge_pair(item_i, item_j, now)
+                        merged.last_decay_ts = now
                         self.items[i] = merged
                         removed[j] = True
                         result.merged += 1
                         if item_j.id is not None:
                             result.delete_from_db.append(item_j.id)
-                        result.update_in_db.append(merged)
 
             # Phase 3: dual-condition expiry
             for idx in range(len(self.items)):
@@ -511,6 +528,11 @@ class LongTerm:
                         result.delete_from_db.append(item.id)
 
             self.items = [it for k, it in enumerate(self.items) if not removed[k]]
+
+            # Persist decayed/merged/deduped importance for all survivors so the
+            # in-memory state and PG stay consistent (survivors exclude removed
+            # items, so there is no overlap with delete_from_db).
+            result.update_in_db = [it for it in self.items if it.id is not None]
 
             # Graph centrality protection
             if self.graph_memory is not None and result.delete_from_db:

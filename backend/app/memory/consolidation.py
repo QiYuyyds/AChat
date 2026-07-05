@@ -31,6 +31,8 @@ class Item:
     tags: List[str] = field(default_factory=list)
     slot_hint: str = ""
     score: float = 0.0
+    # Runtime-only decay checkpoint (not persisted). 0.0 → fall back to created_at.
+    last_decay_ts: float = 0.0
 
 
 @dataclass

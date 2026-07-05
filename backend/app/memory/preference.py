@@ -21,6 +21,28 @@ logger = logging.getLogger(__name__)
 # rather than real preferences (names/fonts/styles rarely exceed 100 chars).
 _PREFERENCE_VALUE_MAX = 200
 
+# Synonym → canonical key mapping. Layer 1 of the three-layer dedup strategy:
+# common Chinese synonyms are collapsed to a single canonical key so that
+# "喜欢=Python" / "偏好=Python" / "偏爱=Python" all update the same row.
+_KEY_SYNONYMS: Dict[str, str] = {
+    "喜欢": "喜好",
+    "偏好": "喜好",
+    "偏爱": "喜好",
+    "爱好": "喜好",
+    "名字": "姓名",
+    "名称": "姓名",
+    "编程语言": "语言",
+    "编程偏好": "语言",
+}
+
+
+def _normalize_key(key: str) -> str:
+    """Return the canonical form of *key* via synonym mapping.
+
+    Unknown keys pass through unchanged.
+    """
+    return _KEY_SYNONYMS.get(key, key)
+
 
 class Preference:
     """User preference extraction and persistence.
@@ -52,6 +74,7 @@ class Preference:
     async def set(self, key: str, value: str) -> None:
         if not key or value is None:
             return
+        key = _normalize_key(key)
         value = str(value)
         if len(value) > _PREFERENCE_VALUE_MAX:
             value = value[: _PREFERENCE_VALUE_MAX - 3] + "..."
@@ -77,7 +100,7 @@ class Preference:
 
     async def save_batch(self, kvs: Dict[str, str]) -> None:
         for k, v in (kvs or {}).items():
-            await self.set(str(k), str(v))
+            await self.set(_normalize_key(str(k)), str(v))
 
     def get(self, key: str, default: str = "") -> str:
         with self._lock:
@@ -114,7 +137,7 @@ class Preference:
             if not value:
                 continue
             with self._lock:
-                self.preferences[key] = value
+                self.preferences[_normalize_key(key)] = value
             return key, value, True
         return "", "", False
 

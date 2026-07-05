@@ -215,7 +215,11 @@ class TestStaticDynamicSplit:
         assert slot.static is True
 
     def test_render_static_only_static_slots(self):
-        """render_static() returns only static=True slot content."""
+        """render_static() returns only static=True slot content.
+
+        Profile is now static=False, so only Constraints content appears
+        in render_static().
+        """
         rc = RuntimeContext(
             schema=CHAT_SCHEMA,
             filled=[
@@ -225,10 +229,10 @@ class TestStaticDynamicSplit:
         )
         static = rc.render_static()
         assert "Rule 1" in static
-        assert "Name: Alice" in static
+        assert "Name: Alice" not in static
 
-    def test_render_dynamic_empty_for_static_only(self):
-        """render_dynamic() returns empty when all slots are static."""
+    def test_render_dynamic_includes_profile(self):
+        """render_dynamic() includes Profile content (now dynamic) wrapped in system-reminder."""
         rc = RuntimeContext(
             schema=CHAT_SCHEMA,
             filled=[
@@ -236,7 +240,10 @@ class TestStaticDynamicSplit:
                 FilledSlot(kind=SlotProfile, items=[ContextItem(text="Name: Alice")]),
             ],
         )
-        assert rc.render_dynamic() == ""
+        dynamic = rc.render_dynamic()
+        assert "<system-reminder>" in dynamic
+        assert "Name: Alice" in dynamic
+        assert "Rule 1" not in dynamic
 
     def test_render_dynamic_includes_dynamic_slots(self):
         """render_dynamic() returns dynamic slot content wrapped in system-reminder."""
@@ -286,27 +293,35 @@ class TestStaticDynamicSplit:
 class TestSchemaStaticClassification:
     def test_chat_schema_static_classification(self):
         for slot in CHAT_SCHEMA.slots:
-            if slot.kind in (SlotConstraints, SlotProfile):
+            if slot.kind == SlotConstraints:
                 assert slot.static is True, f"{slot.kind} should be static=True"
+            elif slot.kind == SlotProfile:
+                assert slot.static is False, f"{slot.kind} should be static=False"
 
     def test_tool_schema_static_classification(self):
         for slot in TOOL_SCHEMA.slots:
-            if slot.kind in (SlotConstraints, SlotProfile):
+            if slot.kind == SlotConstraints:
                 assert slot.static is True, f"{slot.kind} should be static=True"
+            elif slot.kind == SlotProfile:
+                assert slot.static is False, f"{slot.kind} should be static=False"
             elif slot.kind == SlotToolState:
                 assert slot.static is False, f"{slot.kind} should be static=False"
 
     def test_react_schema_static_classification(self):
         for slot in REACT_SCHEMA.slots:
-            if slot.kind in (SlotConstraints, SlotProfile):
+            if slot.kind == SlotConstraints:
                 assert slot.static is True, f"{slot.kind} should be static=True"
+            elif slot.kind == SlotProfile:
+                assert slot.static is False, f"{slot.kind} should be static=False"
             elif slot.kind in (SlotPlanner, SlotTaskMem, SlotToolState):
                 assert slot.static is False, f"{slot.kind} should be static=False"
 
     def test_rag_schema_static_classification(self):
         for slot in RAG_SCHEMA.slots:
-            if slot.kind in (SlotConstraints, SlotProfile):
+            if slot.kind == SlotConstraints:
                 assert slot.static is True, f"{slot.kind} should be static=True"
+            elif slot.kind == SlotProfile:
+                assert slot.static is False, f"{slot.kind} should be static=False"
 
 
 # ─── Task 9.3: No SlotRecall in schemas ──────────────────────────────────────
@@ -328,3 +343,82 @@ class TestSchemaNoRecall:
     def test_rag_schema_no_recall(self):
         kinds = [s.kind for s in RAG_SCHEMA.slots]
         assert SlotRecall not in kinds
+
+
+# ─── optimize-preference-system: Tasks 7.1-7.4 ──────────────────────────────
+
+
+class TestProfileSlotDynamicAndScored:
+    """Tests for the optimize-preference-system change:
+    Profile slot is static=False, ProfileSource reads only from Preference,
+    computes score dynamically, and sorts by score descending.
+    """
+
+    def test_7_1_profile_slot_static_false_all_schemas(self):
+        """Task 7.1: ProfileSlot is static=False in all 4 Schemas."""
+        for schema in (CHAT_SCHEMA, TOOL_SCHEMA, REACT_SCHEMA, RAG_SCHEMA):
+            profile_slots = [s for s in schema.slots if s.kind == SlotProfile]
+            assert len(profile_slots) == 1, f"{schema.mode} should have exactly one Profile slot"
+            assert profile_slots[0].static is False, \
+                f"{schema.mode}: SlotProfile should be static=False"
+            # top_k must not be set on Profile filter
+            assert profile_slots[0].filter.top_k == 0, \
+                f"{schema.mode}: SlotProfile should not set top_k"
+
+    @pytest.mark.asyncio
+    async def test_7_2_profile_source_no_ltm(self):
+        """Task 7.2: ProfileSource.fetch() returns items only from preference_provider."""
+        mock_pref = MagicMock()
+        mock_pref.get_all.return_value = {"姓名": "小明"}
+        src = ProfileSource(preference_provider=mock_pref)
+        slot = Slot(kind=SlotProfile, filter=SlotFilter(token_budget=600))
+        items = await src.fetch(slot, Query(text="hello"))
+        # Should return data from preference_provider only
+        assert len(items) == 1
+        assert "小明" in items[0].text
+        # Verify no LTM attribute exists
+        assert not hasattr(src, "_ltm")
+
+    @pytest.mark.asyncio
+    async def test_7_3_profile_source_correct_scores(self):
+        """Task 7.3: ProfileSource.fetch() assigns correct scores.
+
+        identity (姓名) → 0.9, preference (偏好) → 0.7, unclassified (天气) → 0.3.
+        Keys are chosen to match classify_memory_content rules.
+        """
+        mock_pref = MagicMock()
+        mock_pref.get_all.return_value = {
+            "姓名": "张三",        # identity → 0.9
+            "偏好": "编程",        # preference → 0.7 (contains '偏好')
+            "天气": "晴",          # unclassified → 0.3
+        }
+        src = ProfileSource(preference_provider=mock_pref)
+        slot = Slot(kind=SlotProfile, filter=SlotFilter(token_budget=600))
+        items = await src.fetch(slot, Query(text="hello"))
+        scores = {item.text.split(": ")[0]: item.score for item in items}
+        assert scores["姓名"] == 0.9
+        assert scores["偏好"] == 0.7
+        assert scores["天气"] == 0.3
+
+    @pytest.mark.asyncio
+    async def test_7_4_profile_source_sorted_by_score_desc(self):
+        """Task 7.4: ProfileSource.fetch() sorts items by score descending."""
+        mock_pref = MagicMock()
+        mock_pref.get_all.return_value = {
+            "天气": "晴",          # 0.3 (general)
+            "姓名": "张三",        # 0.9 (identity)
+            "偏好": "编程",        # 0.7 (preference)
+        }
+        src = ProfileSource(preference_provider=mock_pref)
+        slot = Slot(kind=SlotProfile, filter=SlotFilter(token_budget=600))
+        items = await src.fetch(slot, Query(text="hello"))
+        # Should be sorted: identity(0.9) > preference(0.7) > general(0.3)
+        assert items[0].score >= items[1].score >= items[2].score
+        assert "姓名" in items[0].text   # highest score first
+        assert "天气" in items[2].text    # lowest score last
+
+    def test_profile_source_supports_only_profile(self):
+        """ProfileSource.supports() returns True only for SlotProfile, not SlotRecall."""
+        src = ProfileSource(preference_provider=None)
+        assert src.supports(SlotProfile) is True
+        assert src.supports(SlotRecall) is False

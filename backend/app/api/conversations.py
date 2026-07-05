@@ -288,7 +288,7 @@ async def compact(conversation_id: str) -> JSONResponse:
             content={
                 "skipped": True,
                 "reason": skip.reason,
-                "message": skip.message.model_dump(by_alias=True),
+                "message": skip.message.model_dump(by_alias=True) if skip.message else None,
             }
         )
     except ValueError as err:
@@ -300,7 +300,7 @@ async def compact(conversation_id: str) -> JSONResponse:
     return JSONResponse(
         content={
             "summary": result.summary.model_dump(by_alias=True),
-            "message": result.message.model_dump(by_alias=True),
+            "message": result.message.model_dump(by_alias=True) if result.message else None,
             "ctxBefore": result.ctx_before,
             "ctxAfter": result.ctx_after,
         }

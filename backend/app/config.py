@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     rag_rerank_enabled: bool = True
     rag_rerank_preview_len: int = 200
 
+    # ─── Session Metadata (custom_adapter prompt injection) ───
+    default_language: str = "zh-CN"
+    default_timezone: str = "GMT+8"
+    default_location: str = "auto"  # 'auto' → IP geolocation; or set to e.g. 'Chongqing'
+
     # ─── Memory ───
     memory_short_term_max_turns: int = 10
     memory_long_term_top_k: int = 3

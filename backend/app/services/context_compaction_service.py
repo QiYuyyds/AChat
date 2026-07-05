@@ -37,6 +37,9 @@ MIN_COMPACTABLE = 2
 # Token floor on the compactable slice: gate on size, not count, so a short
 # conversation isn't summarised for no gain while a few huge messages still can.
 MIN_COMPACT_TOKENS = 800
+# Auto-compact trigger: when uncompacted message count reaches this watermark,
+# _maybe_auto_compact_hook fires compact_conversation(silent=True).
+AUTO_COMPACT_WATERMARK = 10
 
 # Friendly notices for benign "nothing to compact" outcomes (not errors).
 _TOO_SHORT_NOTICE = "当前对话还太短，暂时不需要压缩上下文。"
@@ -45,9 +48,13 @@ _NO_MODEL_NOTICE = "当前会话没有可用于生成摘要的模型 agent，无
 
 
 class CompactionSkipped(Exception):
-    """Benign 'nothing to compact' outcome — surfaced as a friendly notice, not an error."""
+    """Benign 'nothing to compact' outcome — surfaced as a friendly notice, not an error.
 
-    def __init__(self, reason: str, message: MessageRecord) -> None:
+    In non-silent mode ``message`` is a broadcast ephemeral notice; in silent mode
+    ``message`` is ``None`` (no broadcast).
+    """
+
+    def __init__(self, reason: str, message: MessageRecord | None) -> None:
         super().__init__(reason)
         self.reason = reason
         self.message = message
@@ -80,6 +87,11 @@ def _skip(conversation_id: str, reason: str, content: str) -> CompactionSkipped:
     return CompactionSkipped(reason, _broadcast_ephemeral_notice(conversation_id, content))
 
 
+def _skip_silent(reason: str) -> CompactionSkipped:
+    """Silent skip: raise CompactionSkipped without broadcasting an ephemeral notice."""
+    return CompactionSkipped(reason, None)
+
+
 async def get_latest_context_summary(conversation_id: str) -> ContextSummary | None:
     """Most recent stored summary for a conversation, or None."""
     async with get_db() as db:
@@ -90,6 +102,28 @@ async def get_latest_context_summary(conversation_id: str) -> ContextSummary | N
             .limit(1)
         )
         return result.scalars().first()
+
+
+async def count_uncompacted_messages(conversation_id: str) -> int:
+    """Count completed messages after the last summary's coverage window.
+
+    Returns the watermark used by ``_maybe_auto_compact_hook`` to decide
+    whether to trigger auto-compaction. When no prior summary exists, counts
+    all complete messages in the conversation.
+    """
+    latest = await get_latest_context_summary(conversation_id)
+    since_created_at = latest.covered_until_created_at if latest else None
+    async with get_db() as db:
+        where = [
+            Message.conversation_id == conversation_id,
+            Message.status == "complete",
+        ]
+        if since_created_at is not None:
+            where.append(Message.created_at > since_created_at)
+        result = await db.execute(
+            select(Message.id).where(and_(*where))
+        )
+        return len(result.scalars().all())
 
 
 def render_conversation_summary_block(summary: ContextSummary) -> str:
@@ -129,23 +163,33 @@ def _fmt_k(tokens: int) -> str:
 
 @dataclass
 class CompactResult:
-    """Result of a /compact action: the new summary + the system message."""
+    """Result of a /compact action: the new summary + the system message.
+
+    ``message`` is ``None`` in silent mode (no system announcement).
+    """
 
     summary: ContextSummaryRecord
-    message: MessageRecord
+    message: MessageRecord | None
     # Estimated next-turn context (prompt tokens) before vs. after compaction —
     # the frontend uses ctx_after to optimistically refresh its "当前 ctx" badge.
     ctx_before: int
     ctx_after: int
 
 
-async def compact_conversation(conversation_id: str) -> CompactResult:
+async def compact_conversation(
+    conversation_id: str, *, silent: bool = False
+) -> CompactResult:
     """Summarise older history into a ContextSummary and insert a system message.
 
+    When ``silent=True`` (auto-compaction path): skips the system-message
+    insertion and ``MessageAddedEvent`` broadcast (step i), and does not
+    broadcast ephemeral notices on skip. ``CompactResult.message`` will be
+    ``None`` in silent mode.
+
     Raises ``CompactionSkipped`` (surfaced as HTTP 200 + a friendly ephemeral
-    notice) for benign no-op cases: nothing worth compacting, or no model-backed
-    agent. Raises ValueError (HTTP 400) for genuine failures: conversation
-    missing, or the summariser returning empty.
+    notice in non-silent mode) for benign no-op cases: nothing worth compacting,
+    or no model-backed agent. Raises ValueError (HTTP 400) for genuine failures:
+    conversation missing, or the summariser returning empty.
     """
     # a) conversation exists?
     async with get_db() as db:
@@ -178,16 +222,28 @@ async def compact_conversation(conversation_id: str) -> CompactResult:
 
     # d) keep the most recent N; compact the rest
     if len(rows) <= KEEP_RECENT_MESSAGES:
-        raise _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE)
+        raise (
+            _skip_silent("conversation_too_short")
+            if silent
+            else _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE)
+        )
     to_compact = rows[:-KEEP_RECENT_MESSAGES]
     if len(to_compact) < MIN_COMPACTABLE:
-        raise _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE)
+        raise (
+            _skip_silent("conversation_too_short")
+            if silent
+            else _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE)
+        )
 
     # e) pick a summariser model: first Custom agent with model config
     try:
         model_provider, model_id, api_key, api_base_url, summariser_agent_id = await _pick_summary_model(agent_ids)
     except ValueError:
-        raise _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE) from None
+        raise (
+            _skip_silent("no_summariser_model")
+            if silent
+            else _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE)
+        ) from None
 
     # f) render the messages to compact into a transcript
     agent_names = await _load_agent_names(agent_ids)
@@ -195,7 +251,11 @@ async def compact_conversation(conversation_id: str) -> CompactResult:
 
     # size gate: only compact when the slice is big enough to be worth an LLM call
     if estimate_tokens(transcript) < MIN_COMPACT_TOKENS:
-        raise _skip(conversation_id, "compactable_too_small", _TOO_LITTLE_NOTICE)
+        raise (
+            _skip_silent("compactable_too_small")
+            if silent
+            else _skip(conversation_id, "compactable_too_small", _TOO_LITTLE_NOTICE)
+        )
 
     prior = latest.summary if latest else None
     kept = rows[-KEEP_RECENT_MESSAGES:]
@@ -255,61 +315,64 @@ async def compact_conversation(conversation_id: str) -> CompactResult:
         created_at=created_at,
     )
 
-    # i) insert a system message announcing the compaction
-    sys_msg_id = new_message_id()
-    sys_now = now_ms()
-    saved = max(0, ctx_before - ctx_after)
-    if saved >= 500:
-        content = (
-            f"已将 {len(to_compact)} 条历史消息压缩为上下文摘要。"
-            f"下次对话的上下文预计从 ~{_fmt_k(ctx_before)} 降到 "
-            f"~{_fmt_k(ctx_after)}（约省 {_fmt_k(saved)} tokens）。"
-        )
-    else:
-        content = f"已将 {len(to_compact)} 条历史消息压缩为上下文摘要。"
-    sys_parts = [{"type": "text", "content": content}]
-    async with get_db() as db:
-        sys_msg = Message(
+    # i) insert a system message announcing the compaction (skipped in silent mode)
+    sys_record: MessageRecord | None = None
+    if not silent:
+        sys_msg_id = new_message_id()
+        sys_now = now_ms()
+        saved = max(0, ctx_before - ctx_after)
+        if saved >= 500:
+            content = (
+                f"已将 {len(to_compact)} 条历史消息压缩为上下文摘要。"
+                f"下次对话的上下文预计从 ~{_fmt_k(ctx_before)} 降到 "
+                f"~{_fmt_k(ctx_after)}（约省 {_fmt_k(saved)} tokens）。"
+            )
+        else:
+            content = f"已将 {len(to_compact)} 条历史消息压缩为上下文摘要。"
+        sys_parts = [{"type": "text", "content": content}]
+        async with get_db() as db:
+            sys_msg = Message(
+                id=sys_msg_id,
+                conversation_id=conversation_id,
+                role="system",
+                agent_id=None,
+                status="complete",
+                parent_message_id=None,
+                run_id=None,
+                created_at=sys_now,
+            )
+            sys_msg.parts_list = sys_parts
+            sys_msg.mentioned_agent_ids_list = []
+            db.add(sys_msg)
+
+        sys_record = MessageRecord(
             id=sys_msg_id,
             conversation_id=conversation_id,
             role="system",
             agent_id=None,
+            parts=sys_parts,
             status="complete",
             parent_message_id=None,
+            mentioned_agent_ids=[],
             run_id=None,
+            usage=None,
             created_at=sys_now,
         )
-        sys_msg.parts_list = sys_parts
-        sys_msg.mentioned_agent_ids_list = []
-        db.add(sys_msg)
-
-    sys_record = MessageRecord(
-        id=sys_msg_id,
-        conversation_id=conversation_id,
-        role="system",
-        agent_id=None,
-        parts=sys_parts,
-        status="complete",
-        parent_message_id=None,
-        mentioned_agent_ids=[],
-        run_id=None,
-        usage=None,
-        created_at=sys_now,
-    )
-    event_bus.publish(
-        MessageAddedEvent(
-            conversation_id=conversation_id,
-            timestamp=sys_now,
-            message=sys_record,
+        event_bus.publish(
+            MessageAddedEvent(
+                conversation_id=conversation_id,
+                timestamp=sys_now,
+                message=sys_record,
+            )
         )
-    )
 
     logger.info(
-        "[compact] conversation=%s compacted=%d summary_id=%s model=%s",
+        "[compact] conversation=%s compacted=%d summary_id=%s model=%s silent=%s",
         conversation_id,
         len(to_compact),
         summary_id,
         model_id,
+        silent,
     )
     return CompactResult(
         summary=summary_record,
