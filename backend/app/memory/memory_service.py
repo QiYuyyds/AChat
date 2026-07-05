@@ -210,6 +210,10 @@ class MemoryService:
         except Exception as e:
             logger.warning("Consolidation failed: %s", e)
 
+        # Layer 3 dedup: LLM-based preference consolidation when entries exceed threshold
+        if len(self.preference.data) > 15:
+            await self._consolidate_preferences()
+
     async def _sync_consolidation_to_db(self, result: ConsolidationResult) -> None:
         """Sync consolidation delete/update results to PostgreSQL.
 
@@ -269,6 +273,72 @@ class MemoryService:
             except Exception as e:
                 logger.warning("Consolidation DB update failed: %s", e)
 
+    async def _consolidate_preferences(self) -> None:
+        """LLM-based preference consolidation (Layer 3 dedup).
+
+        Sends all ``preference.data`` to the LLM with a merge prompt, receives
+        a merged dict, batch-updates the Preference table, and deletes removed
+        keys from both in-memory cache and PG.
+        """
+        if not self._generate_fn or not self.preference.data:
+            return
+        try:
+            import json
+
+            from app.memory.memory_writer import _PREFERENCE_MERGE_PROMPT
+
+            prefs_json = json.dumps(self.preference.data, ensure_ascii=False)
+            raw = await asyncio.to_thread(
+                self._generate_fn, _PREFERENCE_MERGE_PROMPT, prefs_json,
+            )
+            raw = (raw or "").strip()
+            # Strip markdown code fences
+            if raw.startswith("```"):
+                raw = raw.split("```", 1)[-1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                if raw.endswith("```"):
+                    raw = raw[:-3]
+                raw = raw.strip()
+
+            merged = json.loads(raw)
+            if not isinstance(merged, dict) or not merged:
+                return
+
+            old_keys = set(self.preference.data.keys())
+            new_keys = set(str(k) for k in merged.keys())
+            removed_keys = old_keys - new_keys
+
+            # Save merged preferences (updates existing, inserts new)
+            await self.preference.save_batch(
+                {str(k): str(v) for k, v in merged.items()}
+            )
+
+            # Delete removed keys from in-memory and PG
+            if removed_keys:
+                with self.preference._lock:
+                    for k in removed_keys:
+                        self.preference.preferences.pop(k, None)
+                try:
+                    from sqlalchemy import delete as sa_delete
+
+                    from app.db.models import UserPreference
+                    async with get_db() as session:
+                        stmt = sa_delete(UserPreference).where(
+                            (UserPreference.user_id == self.preference.user_id)
+                            & (UserPreference.key.in_(list(removed_keys)))
+                        )
+                        await session.execute(stmt)
+                except Exception as e:
+                    logger.warning("Preference consolidation delete failed: %s", e)
+
+            logger.info(
+                "Preference consolidation: merged %d → %d keys (removed %d duplicates)",
+                len(old_keys), len(new_keys), len(removed_keys),
+            )
+        except Exception as e:
+            logger.warning("Preference consolidation failed: %s", e)
+
     async def _safe_extract_memory(self, content: str) -> None:
         """Extract memory facts from assistant reply using LLM (background task)."""
         try:
@@ -279,6 +349,7 @@ class MemoryService:
                 ltm=self.ltm,
                 content=content,
                 preference=self.preference,
+                existing_keys=list(self.preference.data.keys()),
             )
         except Exception as e:
             logger.warning("Memory extraction failed: %s", e)
@@ -292,7 +363,11 @@ class MemoryService:
         """
         try:
             from app.memory.memory_writer import extract_preferences
-            prefs = await extract_preferences(self._generate_fn, content)
+            prefs = await extract_preferences(
+                self._generate_fn,
+                content,
+                existing_keys=list(self.preference.data.keys()),
+            )
             if prefs:
                 await self.preference.save_batch(prefs)
                 logger.info("LLM preference overlay: %d keys", len(prefs))

@@ -374,6 +374,26 @@ def _serialize_message(
 
 
 def _render_user_parts(parts: list[dict]) -> str:
+    # 1. Prefer effective_prompt (contains dynamic_prefix + [current_time]) so
+    #    history reconstruction matches what was actually sent to the LLM,
+    #    keeping DeepSeek's prefix cache continuous across turns.
+    effective = None
+    attachment_labels: list[str] = []
+    for p in parts:
+        t = p.get("type")
+        if t == "effective_prompt" and p.get("content"):
+            effective = p["content"]
+        elif t == "image_attachment":
+            attachment_labels.append(f"[图片附件: {p.get('fileName')}]")
+        elif t == "file_attachment":
+            attachment_labels.append(f"[文件附件: {p.get('fileName')}]")
+
+    if effective is not None:
+        if attachment_labels:
+            effective += "\n" + "\n".join(attachment_labels)
+        return effective
+
+    # 2. Fallback: reconstruct from raw text parts (pre-existing behavior)
     buf: list[str] = []
     for p in parts:
         t = p.get("type")

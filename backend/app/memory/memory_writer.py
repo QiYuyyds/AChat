@@ -70,6 +70,8 @@ def classify_memory_content(key: str, value: str) -> Tuple[str, List[str], str]:
     combined = f"{key}{value}"
     if _contains_any(combined, "叫", "名字", "姓名", "是我", "我是"):
         return "identity", ["name"], "profile"
+    if _contains_any(combined, "所在地", "位于", "住在", "在城市", "在重庆", "在北京", "在上海", "在广州", "在深圳", "在成都"):
+        return "identity", ["location"], "profile"
     if _contains_any(combined, "喜欢", "偏好", "习惯", "爱好", "讨厌", "不喜欢", "prefer"):
         return "preference", ["preference"], "profile"
     if _contains_any(combined, "工具", "失败", "错误", "报错", "异常", "error", "bug"):
@@ -165,6 +167,7 @@ async def extract_memory_from_reply(
     ltm,
     content: str,
     preference: Optional[_PreferenceLike] = None,
+    existing_keys: Optional[List[str]] = None,
 ) -> None:
     """Extract k-v facts from assistant reply using LLM, classify, and store.
 
@@ -184,11 +187,22 @@ async def extract_memory_from_reply(
         preference: Optional preference store; when supplied, each extracted
             k-v is also written via ``preference.set()`` so rule-based
             extraction can be refined by the LLM's more precise values.
+        existing_keys: Optional list of current preference keys. When provided,
+            the LLM prompt includes the key list and instructs the model to
+            reuse semantically equivalent existing keys.
     """
     if not content or not generate_fn:
         return
 
-    # Step 1: LLM extraction
+    # Step 1: LLM extraction — build dynamic prompt with existing keys
+    system_prompt = _EXTRACTION_SYSTEM_PROMPT
+    if existing_keys:
+        keys_str = ", ".join(existing_keys)
+        system_prompt = (
+            system_prompt
+            + f"\n4. 已有的偏好 key：{keys_str}。"
+            "如果新提取的偏好与已有 key 语义相同，必须复用已有 key。"
+        )
     prompt = f"回复：{content}"
     try:
         raw = await asyncio.to_thread(generate_fn, _EXTRACTION_SYSTEM_PROMPT, prompt)
@@ -279,24 +293,64 @@ _PREFERENCE_EXTRACTION_PROMPT = (
     "用户喜欢/提到的明星、作品、人物（如「我喜欢周润发」）绝不能当作用户的姓名。\n"
     "2. 只提取关于用户自身的长期偏好（喜好、口味、习惯、风格、职业等）；"
     "用户临时询问或提到的对象不是偏好（如问「北京天气」不代表用户偏好地点是北京）。\n"
-    "3. key 用稳定简洁的类别名（姓名/喜好/口味/风格/职业 等），同一类信息始终用同一个 key，不要造近义新键。\n"
+    "3. 用户明确陈述自己所在城市/地区（如「我在重庆」「我目前在重庆」「我住在上海」）"
+    "应提取为 所在地；但用户仅查询某地信息（如「北京天气」「东京有什么好玩」）不算。\n"
+    "4. key 用稳定简洁的类别名（姓名/喜好/口味/风格/职业/所在地 等），同一类信息始终用同一个 key，不要造近义新键。\n"
     "输出 JSON 对象（key=类别名，value=具体值），没有则输出 {}。只输出 JSON，不要有其他内容。"
 )
 
 
+_PREFERENCE_MERGE_PROMPT = (
+    "你是一个偏好合并助手。下面是用户的所有偏好键值对（JSON 对象）。\n"
+    "请检查并合并语义重复的 key-value，只保留更具体、更完整的值。\n"
+    "合并规则：\n"
+    "1. 只合并语义明确相同的条目（如「喜好」和「喜欢」指向同一含义时合并为「喜好」）。\n"
+    "2. 合并后保留更具体、更完整的 value。\n"
+    "3. 语义不同的条目保持不变。\n"
+    "输出合并后的 JSON 对象，不要有其他内容。\n"
+)
+
+
+def _truncate_value(value: str) -> str:
+    """Truncate a preference value at the first sentence separator.
+
+    Location and preference values should be concise (e.g. '重庆', not
+    '重庆，看看有什么好玩1的'). Splits on Chinese/English commas, periods,
+    exclamation marks, and question marks.
+    """
+    for sep in ("，", "。", "！", "？", ",", ".", "!", "?"):
+        idx = value.find(sep)
+        if idx >= 0:
+            value = value[:idx]
+    return value.strip()
+
+
 def _extract_rule_based(msg: str) -> Dict[str, str]:
     """Rule-based preference fallback. Ports ``Preference.extract_and_save_sync``
-    rules ("我喜欢" / "我爱" / "我叫"), returning the first match as a single-entry
-    dict — faithful to the original, which returns on the first hit.
+    rules ("我喜欢" / "我爱" / "我叫" / "我在" / "我住在"), returning the first
+    match as a single-entry dict — faithful to the original, which returns on
+    the first hit.
+
+    For location rules ("我在" family), the full marker is used as the
+    separator to avoid splitting inside the marker, and the value is
+    truncated at the first sentence separator to avoid capturing the
+    entire sentence (e.g. "重庆" not "重庆，看看有什么好玩1的").
     """
     if not msg:
         return {}
+    # For location rules, use the full marker as separator to avoid
+    # splitting inside the marker (e.g. "我现在在" contains "在").
     rules = [
-        ("我喜欢", "喜欢", "喜好"),
-        ("我爱", "爱", "喜好"),
-        ("我叫", "叫", "姓名"),
+        ("我喜欢", "喜欢", "喜好", False),
+        ("我爱", "爱", "喜好", False),
+        ("我叫", "叫", "姓名", False),
+        ("我目前在", "我目前在", "所在地", True),
+        ("我现在在", "我现在在", "所在地", True),
+        ("我住在", "我住在", "所在地", True),
+        ("我位于", "我位于", "所在地", True),
+        ("我在", "我在", "所在地", True),
     ]
-    for marker, sep, key in rules:
+    for marker, sep, key, truncate in rules:
         if marker not in msg:
             continue
         parts = msg.split(sep, 1)
@@ -305,6 +359,10 @@ def _extract_rule_based(msg: str) -> Dict[str, str]:
         value = parts[1].strip()
         if not value:
             continue
+        if truncate:
+            value = _truncate_value(value)
+            if not value:
+                continue
         return {key: value}
     return {}
 
@@ -312,18 +370,37 @@ def _extract_rule_based(msg: str) -> Dict[str, str]:
 async def extract_preferences(
     generate_fn: Optional[Callable],
     msg: str,
+    existing_keys: Optional[List[str]] = None,
 ) -> Dict[str, str]:
     """Extract user preferences from a user message via LLM, with rule fallback.
 
     When ``generate_fn`` is None, the LLM call raises, or the LLM returns
     non-JSON / an empty object, falls back to ``_extract_rule_based(msg)`` so
     preference extraction degrades gracefully without throwing.
+
+    Args:
+        generate_fn: LLM generate function (system_prompt, user_msg) -> str
+        msg: The user message text
+        existing_keys: Optional list of current preference keys. When provided,
+            the LLM prompt includes the key list and instructs the model to
+            reuse semantically equivalent existing keys rather than creating
+            synonyms.
     """
     if not generate_fn or not msg:
         return _extract_rule_based(msg)
 
+    # Build dynamic prompt: append existing_keys rule when provided
+    system_prompt = _PREFERENCE_EXTRACTION_PROMPT
+    if existing_keys:
+        keys_str = ", ".join(existing_keys)
+        system_prompt = (
+            system_prompt
+            + f"4. 已有的偏好 key：{keys_str}。"
+            "如果新提取的偏好与已有 key 语义相同，必须复用已有 key。\n"
+        )
+
     try:
-        raw = await asyncio.to_thread(generate_fn, _PREFERENCE_EXTRACTION_PROMPT, msg)
+        raw = await asyncio.to_thread(generate_fn, system_prompt, msg)
     except Exception as e:
         logger.warning("Preference LLM extraction failed: %s", e)
         return _extract_rule_based(msg)

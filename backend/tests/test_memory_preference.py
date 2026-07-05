@@ -155,3 +155,61 @@ class TestPreferenceSetLengthCap:
         assert deleted == 0
         assert "垃圾" not in pref.get_all()
         assert pref.get("姓名") == "小明"
+
+
+# ─── optimize-preference-system: Tasks 7.5-7.6 (key normalization) ──────────
+
+
+from app.memory.preference import _normalize_key
+
+
+class TestPreferenceKeyNormalization:
+    """Tests for the synonym-based key normalization (Layer 1 dedup)."""
+
+    def test_7_5_normalize_key_synonym(self):
+        """Task 7.5: _normalize_key('喜欢') returns '喜好'."""
+        assert _normalize_key("喜欢") == "喜好"
+        assert _normalize_key("偏好") == "喜好"
+        assert _normalize_key("偏爱") == "喜好"
+        assert _normalize_key("爱好") == "喜好"
+        assert _normalize_key("名字") == "姓名"
+        assert _normalize_key("名称") == "姓名"
+        assert _normalize_key("编程语言") == "语言"
+        assert _normalize_key("编程偏好") == "语言"
+
+    def test_7_5_normalize_key_unknown_passthrough(self):
+        """Task 7.5: _normalize_key('unknown') returns 'unknown'."""
+        assert _normalize_key("unknown") == "unknown"
+        assert _normalize_key("编程框架") == "编程框架"
+        assert _normalize_key("") == ""
+
+    @pytest.mark.asyncio
+    async def test_7_6_set_normalizes_synonym_to_existing_key(self):
+        """Task 7.6: preference.set('喜欢', 'Python') normalizes to '喜好'
+        and updates the existing entry instead of creating a new row.
+        """
+        pref = Preference(user_id="default_user")
+        with patch("app.memory.preference.get_db") as mock_db:
+            mock_db.side_effect = Exception("no db")
+            # First set with canonical key
+            await pref.set("喜好", "Java")
+            assert pref.get("喜好") == "Java"
+            assert len(pref.get_all()) == 1
+
+            # Now set with synonym — should update existing '喜好', not create '喜欢'
+            await pref.set("喜欢", "Python")
+            assert pref.get("喜好") == "Python"
+            assert "喜欢" not in pref.get_all()
+            assert len(pref.get_all()) == 1
+
+    @pytest.mark.asyncio
+    async def test_save_batch_normalizes_keys(self):
+        """save_batch also normalizes keys before passing to set()."""
+        pref = Preference(user_id="default_user")
+        with patch("app.memory.preference.get_db") as mock_db:
+            mock_db.side_effect = Exception("no db")
+            await pref.save_batch({"喜欢": "Python", "名字": "小明"})
+            assert pref.get("喜好") == "Python"
+            assert pref.get("姓名") == "小明"
+            assert "喜欢" not in pref.get_all()
+            assert "名字" not in pref.get_all()

@@ -20,6 +20,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from app.memory.memory_writer import _IMPORTANCE_BY_CATEGORY, classify_memory_content
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,8 +87,8 @@ CHAT_SCHEMA = RuntimeContextSchema(
     mode="chat",
     slots=[
         Slot(kind=SlotConstraints, static=True, filter=SlotFilter(token_budget=400)),
-        Slot(kind=SlotProfile, static=True, filter=SlotFilter(
-            categories=["identity", "preference"], token_budget=600, top_k=10,
+        Slot(kind=SlotProfile, static=False, filter=SlotFilter(
+            categories=["identity", "preference"], token_budget=600,
         )),
     ],
 )
@@ -95,8 +97,8 @@ TOOL_SCHEMA = RuntimeContextSchema(
     mode="tool",
     slots=[
         Slot(kind=SlotConstraints, static=True, filter=SlotFilter(token_budget=400)),
-        Slot(kind=SlotProfile, static=True, filter=SlotFilter(
-            categories=["identity", "preference"], token_budget=500, top_k=8,
+        Slot(kind=SlotProfile, static=False, filter=SlotFilter(
+            categories=["identity", "preference"], token_budget=500,
         )),
         Slot(kind=SlotToolState, required=True, static=False, filter=SlotFilter(token_budget=500, top_k=6)),
     ],
@@ -109,8 +111,8 @@ REACT_SCHEMA = RuntimeContextSchema(
         Slot(kind=SlotPlanner, required=True, static=False, filter=SlotFilter(token_budget=400)),
         Slot(kind=SlotTaskMem, static=False, filter=SlotFilter(token_budget=400, top_k=8, max_age_hours=24)),
         Slot(kind=SlotToolState, required=True, static=False, filter=SlotFilter(token_budget=400, top_k=8)),
-        Slot(kind=SlotProfile, static=True, filter=SlotFilter(
-            categories=["identity", "preference"], token_budget=500, top_k=6,
+        Slot(kind=SlotProfile, static=False, filter=SlotFilter(
+            categories=["identity", "preference"], token_budget=500,
         )),
     ],
 )
@@ -119,8 +121,8 @@ RAG_SCHEMA = RuntimeContextSchema(
     mode="rag",
     slots=[
         Slot(kind=SlotConstraints, static=True, filter=SlotFilter(token_budget=400)),
-        Slot(kind=SlotProfile, static=True, filter=SlotFilter(
-            categories=["identity", "preference"], token_budget=600, top_k=8,
+        Slot(kind=SlotProfile, static=False, filter=SlotFilter(
+            categories=["identity", "preference"], token_budget=600,
         )),
     ],
 )
@@ -265,69 +267,59 @@ class ContextSource(ABC):
 
 
 class ProfileSource(ContextSource):
-    """Fills profile slot from user preferences AND LTM identity/preference items."""
+    """Fills profile slot from user preferences only (single-write mode).
 
-    def __init__(self, preference_provider: Any = None, ltm: Any = None):
+    memory_writer routes identity/preference facts exclusively to the
+    Preference table, so this source reads only from ``preference_provider``.
+    Score is computed dynamically via ``classify_memory_content`` +
+    ``_IMPORTANCE_BY_CATEGORY`` and items are sorted by score descending
+    before token-budget trimming.
+    """
+
+    def __init__(self, preference_provider: Any = None):
         self._pref = preference_provider
-        self._ltm = ltm  # Optional[LongTerm] with filter_by_category()
 
     def id(self) -> str:
         return "profile"
 
     def supports(self, kind: SlotKind) -> bool:
-        return kind in (SlotProfile, SlotRecall)
+        return kind == SlotProfile
 
     async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
         items: List[ContextItem] = []
-        top_k = slot.filter.top_k or 0
         _pref_count = 0
-        _ltm_count = 0
 
-        # 1. Preference key-value pairs (score=1.0)
         if self._pref is not None:
             try:
                 prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
                 _pref_count = len(prefs)
-                for k in sorted(prefs.keys()):
-                    v = prefs[k]
-                    items.append(
-                        ContextItem(text=f"{k}: {v}", score=1.0, source="profile")
+                scored: List[ContextItem] = []
+                for k, v in prefs.items():
+                    category, _tags, _slot_hint = classify_memory_content(
+                        str(k), str(v),
                     )
-                    logger.info(
-                        "[cache-debug] Profile pref: %s=%s", k, str(v)[:80],
-                    )
-            except Exception as e:
-                logger.warning("ProfileSource preference fetch failed: %s", e)
-
-        # 2. LTM items filtered by category (score=importance)
-        if self._ltm is not None:
-            try:
-                categories = slot.filter.categories or ["identity", "preference"]
-                ltm_limit = top_k if top_k > 0 else 10
-                ltm_items = await self._ltm.filter_by_category(categories, ltm_limit)
-                _ltm_count = len(ltm_items)
-                for it in ltm_items:
-                    items.append(
+                    score = _IMPORTANCE_BY_CATEGORY.get(category, 0.3)
+                    scored.append(
                         ContextItem(
-                            text=it.content,
-                            score=it.importance,
+                            text=f"{k}: {v}",
+                            score=score,
                             source="profile",
-                            meta={"category": it.category or "general"},
+                            meta={"category": category},
                         )
                     )
                     logger.info(
-                        "[cache-debug] Profile ltm[%d]: cat=%s imp=%.2f len=%d preview=%s",
-                        len(items) - 1, it.category or "general", it.importance,
-                        len(it.content), it.content[:100],
+                        "[cache-debug] Profile pref: %s=%s (cat=%s, score=%.2f)",
+                        k, str(v)[:80], category, score,
                     )
+                # Sort by score descending (stable for equal scores)
+                scored.sort(key=lambda x: x.score, reverse=True)
+                items = scored
             except Exception as e:
-                logger.warning("ProfileSource LTM fetch failed: %s", e)
+                logger.warning("ProfileSource preference fetch failed: %s", e)
 
-        if top_k > 0 and len(items) > top_k:
-            items = items[:top_k]
         logger.info(
-            "[cache-debug] ProfileSource: pref=%d ltm_identity_pref=%d total=%d",
-            _pref_count, _ltm_count, len(items),
+            "[cache-debug] ProfileSource: pref=%d total=%d",
+            _pref_count, len(items),
         )
         return items
 

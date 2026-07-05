@@ -295,12 +295,204 @@ async def test_e2e_conversation_memory_quality():
     # fact_content is a plain "key: value" with no misleading 用户 prefix.
     assert by_cat["fact"]["content"] == "项目数据库: PostgreSQL"
 
-    # Invariant 3: static profile prompt is byte-stable across two runs.
+    # Invariant 3: dynamic profile prompt is byte-stable across two runs.
+    # Profile is now static=False, so content is in render_dynamic(), not render_static().
     registry = SourceRegistry()
-    registry.register(ProfileSource(preference_provider=pref, ltm=None))
+    registry.register(ProfileSource(preference_provider=pref))
     assembler = ContextAssembler(registry=registry)
     rc1 = await assembler.assemble(Query(text="hello", mode="chat"))
     rc2 = await assembler.assemble(Query(text="hello", mode="chat"))
-    assert rc1.render_static() == rc2.render_static()
-    assert "涵涵" in rc1.render_static()
+    assert rc1.render_dynamic() == rc2.render_dynamic()
+    assert "涵涵" in rc1.render_dynamic()
+
+
+# ─── optimize-preference-system: Task 7.7 (existing_keys in prompt) ──────────
+
+
+def test_7_7_extract_preferences_with_existing_keys():
+    """Task 7.7: extract_preferences() with existing_keys produces prompt containing the key list.
+
+    The mock generate_fn captures the system_prompt and verifies that the
+    existing keys are included in the prompt text.
+    """
+    captured = {}
+
+    def mock_generate(sys_prompt, user_msg):
+        captured["sys_prompt"] = sys_prompt
+        return json.dumps({"喜好": "函数式编程"})
+
+    result = asyncio.run(
+        extract_preferences(mock_generate, "我偏爱函数式编程", existing_keys=["喜好", "姓名"])
+    )
+    assert result == {"喜好": "函数式编程"}
+    # The prompt must include the existing keys
+    assert "喜好" in captured["sys_prompt"]
+    assert "姓名" in captured["sys_prompt"]
+    assert "已有的偏好 key" in captured["sys_prompt"]
+
+
+def test_7_7_extract_preferences_without_existing_keys():
+    """When existing_keys is None, the prompt does NOT include the key list rule."""
+    captured = {}
+
+    def mock_generate(sys_prompt, user_msg):
+        captured["sys_prompt"] = sys_prompt
+        return json.dumps({"喜好": "函数式编程"})
+
+    result = asyncio.run(
+        extract_preferences(mock_generate, "我偏爱函数式编程")
+    )
+    assert result == {"喜好": "函数式编程"}
+    assert "已有的偏好 key" not in captured["sys_prompt"]
+
+
+# ─── optimize-preference-system: Task 7.8 (_consolidate_preferences) ────────
+
+
+@pytest.mark.asyncio
+async def test_7_8_consolidate_preferences_merges_duplicates():
+    """Task 7.8: _consolidate_preferences() merges duplicate keys when count > threshold.
+
+    Sets up a MemoryService with 16+ preferences (above threshold), mocks the
+    LLM to return a merged dict with fewer keys, and verifies that removed
+    keys are deleted from the in-memory cache.
+    """
+    from unittest.mock import MagicMock
+
+    from app.memory.memory_service import MemoryService
+
+    # Build a minimal MemoryService with mocked internals
+    ms = MemoryService.__new__(MemoryService)
+    ms._generate_fn = lambda sys_p, msg: json.dumps({"姓名": "小明", "喜好": "编程"})
+    ms.preference = Preference(user_id="default_user")
+
+    # Populate with 16 keys (above threshold of 15), including synonyms
+    for i in range(14):
+        ms.preference.preferences[f"key_{i}"] = f"val_{i}"
+    ms.preference.preferences["喜欢"] = "Python"   # synonym of 喜好
+    ms.preference.preferences["偏好"] = "Java"     # synonym of 喜好
+    assert len(ms.preference.data) == 16
+
+    # Mock get_db to avoid PG operations
+    with patch("app.memory.memory_service.get_db") as mock_db:
+        mock_db.side_effect = Exception("no db")
+        await ms._consolidate_preferences()
+
+    # After consolidation: LLM returned {"姓名": "小明", "喜好": "编程"}
+    # save_batch normalizes and updates, removed keys are deleted from in-memory
+    final = ms.preference.get_all()
+    assert "姓名" in final
+    assert "喜好" in final
+    assert "喜欢" not in final
+    assert "偏好" not in final
+    assert len(final) == 2
+
+
+@pytest.mark.asyncio
+async def test_7_8_consolidate_preferences_skips_when_below_threshold():
+    """When preference count <= 15, _safe_consolidate does not call _consolidate_preferences."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.memory.memory_service import MemoryService
+
+    ms = MemoryService.__new__(MemoryService)
+    ms._generate_fn = lambda sys_p, msg: json.dumps({})
+    ms.preference = Preference(user_id="default_user")
+    ms.preference.preferences = {f"key_{i}": f"val_{i}" for i in range(10)}
+    ms.graph_memory = None
+    ms.ltm = MagicMock()
+    ms.ltm.consolidate = AsyncMock(return_value=None)
+    ms.ltm.need_consolidation = MagicMock(return_value=True)
+    ms._sync_consolidation_to_db = AsyncMock()
+
+    # Spy on _consolidate_preferences
+    ms._consolidate_preferences = AsyncMock()
+    await ms._safe_consolidate()
+    # Below threshold → not called
+    ms._consolidate_preferences.assert_not_called()
+
+
+# ─── optimize-preference-system: Tasks 7.9-7.10 (tool error memory hook) ────
+
+
+@pytest.mark.asyncio
+async def test_7_9_post_run_memory_hook_appends_tool_error():
+    """Task 7.9: _post_run_memory_hook appends tool error block when isError=True parts exist."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.agent_runner import _post_run_memory_hook
+
+    # Mock RunExecutionResult
+    result = MagicMock()
+    result.output_message_ids = ["msg_1"]
+
+    # Mock memory service
+    ms = MagicMock()
+    ms.on_message_end = AsyncMock()
+
+    # Mock message with tool_use + tool_result(isError=True) parts
+    mock_msg = MagicMock()
+    mock_msg.parts_list = [
+        {"type": "text", "content": "I'll create the artifact now."},
+        {"type": "tool_use", "callId": "call_1", "toolName": "write_artifact"},
+        {"type": "tool_result", "callId": "call_1", "isError": True, "result": {"error": "Invalid args"}},
+    ]
+
+    with patch("app.services.agent_runner._get_memory_service", return_value=ms), \
+         patch("app.services.agent_runner.get_db") as mock_get_db:
+        mock_ctx = AsyncMock()
+        mock_ctx.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_msg)))
+        mock_get_db.return_value.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_get_db.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        await _post_run_memory_hook("user prompt", result, "conv_1")
+
+    # Verify on_message_end was called with assistant text containing tool error
+    calls = ms.on_message_end.call_args_list
+    assert len(calls) >= 2  # user + assistant
+    assistant_call = calls[1]
+    assert assistant_call.args[0] == "assistant"
+    assistant_text = assistant_call.args[1]
+    assert "[工具执行错误]" in assistant_text
+    assert "write_artifact" in assistant_text
+    assert "Invalid args" in assistant_text
+
+
+@pytest.mark.asyncio
+async def test_7_10_post_run_memory_hook_no_error_block_when_no_tool_errors():
+    """Task 7.10: _post_run_memory_hook does not append error block when no tool errors."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.services.agent_runner import _post_run_memory_hook
+
+    result = MagicMock()
+    result.output_message_ids = ["msg_1"]
+
+    ms = MagicMock()
+    ms.on_message_end = AsyncMock()
+
+    # Mock message with only successful tool calls (no isError=True)
+    mock_msg = MagicMock()
+    mock_msg.parts_list = [
+        {"type": "text", "content": "Done!"},
+        {"type": "tool_use", "callId": "call_1", "toolName": "read_file"},
+        {"type": "tool_result", "callId": "call_1", "isError": False, "result": "file content"},
+    ]
+
+    with patch("app.services.agent_runner._get_memory_service", return_value=ms), \
+         patch("app.services.agent_runner.get_db") as mock_get_db:
+        mock_ctx = AsyncMock()
+        mock_ctx.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_msg)))
+        mock_get_db.return_value.__aenter__ = AsyncMock(return_value=mock_ctx)
+        mock_get_db.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        await _post_run_memory_hook("user prompt", result, "conv_1")
+
+    calls = ms.on_message_end.call_args_list
+    assert len(calls) >= 2
+    assistant_call = calls[1]
+    assert assistant_call.args[0] == "assistant"
+    assistant_text = assistant_call.args[1]
+    assert "[工具执行错误]" not in assistant_text
+    assert assistant_text == "Done!"
 

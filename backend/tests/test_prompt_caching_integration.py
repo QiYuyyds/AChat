@@ -202,9 +202,11 @@ async def test_build_adapter_input_empty_dynamic_leaves_prompt_unchanged(db, cus
 
     # Static content in system prompt
     assert "STATIC_ONLY" in result.system_prompt
-    # Prompt is unchanged (no system-reminder wrapping)
-    assert result.prompt == "Hello world"
+    # Prompt has no system-reminder wrapping (PromptAssembler dynamic is empty)
     assert "<system-reminder>" not in result.prompt
+    # Original prompt text is preserved (may have [current_time: ...] suffix from
+    # session metadata injection, which is a separate concern)
+    assert "Hello world" in result.prompt
 
 
 # ─── Task 9.5: _summarise() with parent_system_prompt ───────────────────────

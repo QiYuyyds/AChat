@@ -19,12 +19,14 @@ import asyncio
 import logging
 from collections.abc import AsyncIterable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import and_, select
 
 from app.adapters.base import AdapterAttachment, AdapterInput, CustomConfig
 from app.adapters.registry import agent_registry
+from app.config import get_settings
 from app.db.engine import get_db
 from app.db.models import Agent, AgentRun, Artifact, Conversation, Message, Workspace
 from app.schemas.artifacts import ArtifactRecord
@@ -40,7 +42,13 @@ from app.schemas.events import (
 )
 from app.services import runner_registry
 from app.services.attachment_service import get_attachment_absolute_path
-from app.services.context_compaction_service import prefix_prompt_with_context_summary
+from app.services.context_compaction_service import (
+    AUTO_COMPACT_WATERMARK,
+    CompactionSkipped,
+    compact_conversation,
+    count_uncompacted_messages,
+    prefix_prompt_with_context_summary,
+)
 from app.services.conversation_context import BuildHistoryOptions, build_history_for
 from app.services.event_bus import event_bus
 from app.services.project_artifact import build_project_files
@@ -178,12 +186,45 @@ async def _post_run_memory_hook(
                         await db.execute(select(Message).where(Message.id == msg_id))
                     ).scalar_one_or_none()
                     if msg:
+                        parts = msg.parts_list
                         text_parts = [
                             p.get("content", "")
-                            for p in msg.parts_list
+                            for p in parts
                             if p.get("type") == "text"
                         ]
                         agent_text = "\n".join(text_parts)
+
+                        # Collect tool call failures so memory_writer can
+                        # extract them as tool_failure category. Tool errors
+                        # live in tool_result parts (isError=True), not in
+                        # the assistant's text output — without this they
+                        # are invisible to extract_memory_from_reply.
+                        import json as _json
+                        tool_names: dict[str, str] = {}
+                        for p in parts:
+                            if p.get("type") == "tool_use":
+                                cid = p.get("callId", "")
+                                if cid:
+                                    tool_names[cid] = p.get("toolName", "unknown")
+                        tool_errors: list[str] = []
+                        for p in parts:
+                            if p.get("type") == "tool_result" and p.get("isError"):
+                                cid = p.get("callId", "")
+                                tool_name = tool_names.get(cid, "unknown")
+                                err = p.get("result", "")
+                                try:
+                                    err = _json.dumps(err, ensure_ascii=False)
+                                except (TypeError, ValueError):
+                                    err = str(err)
+                                tool_errors.append(f"{tool_name} 调用失败: {err}")
+                        if tool_errors:
+                            err_block = "\n".join(tool_errors)
+                            agent_text = (
+                                f"{agent_text}\n\n[工具执行错误]\n{err_block}"
+                                if agent_text
+                                else f"[工具执行错误]\n{err_block}"
+                            )
+
                         if agent_text:
                             await ms.on_message_end("assistant", agent_text)
     except Exception as e:
@@ -242,6 +283,130 @@ async def _maybe_generate_summary_hook(
         )
     except Exception as e:
         logger.warning("_maybe_generate_summary_hook error: %s", e)
+
+
+async def _maybe_auto_compact_hook(
+    conversation_id: str,
+    override_prompt: str | None = None,
+) -> None:
+    """Background hook: auto-compact conversation context when watermark reached.
+
+    When the uncompacted message count >= AUTO_COMPACT_WATERMARK (10), triggers
+    ``compact_conversation(silent=True)`` to silently refresh the ContextSummary.
+    Skipped for sub-agent runs (``override_prompt`` non-empty) to avoid
+    side-effects on the parent conversation's context.
+
+    All exceptions (including ``CompactionSkipped``) are best-effort caught and
+    logged as warnings — this hook MUST NOT affect the run's final status.
+    """
+    # Guard: sub-agent runs (override_prompt non-empty) are exempt
+    if override_prompt:
+        logger.info(
+            "[auto-compact] skipped: override_prompt set (sub-agent run), conv=%s",
+            conversation_id,
+        )
+        return
+
+    try:
+        watermark = await count_uncompacted_messages(conversation_id)
+        logger.info(
+            "[auto-compact] conv=%s watermark=%d threshold=%d",
+            conversation_id,
+            watermark,
+            AUTO_COMPACT_WATERMARK,
+        )
+        if watermark < AUTO_COMPACT_WATERMARK:
+            return
+
+        result = await compact_conversation(conversation_id, silent=True)
+        logger.info(
+            "[auto-compact] conv=%s compacted=%d silent=True summary_id=%s "
+            "ctx_before=%d ctx_after=%d",
+            conversation_id,
+            result.summary.source_message_count,
+            result.summary.id,
+            result.ctx_before,
+            result.ctx_after,
+        )
+    except CompactionSkipped as skip:
+        logger.info(
+            "[auto-compact] conv=%s skipped: %s (silent)",
+            conversation_id,
+            skip.reason,
+        )
+    except Exception as e:
+        logger.warning("[auto-compact] conv=%s error: %s", conversation_id, e)
+
+
+# ─── Session metadata blunting (custom_adapter prompt injection) ─────────────
+
+
+# ─── IP geolocation for auto location detection ─────────────────────────────
+
+_cached_location: str | None = None
+"""Module-level cache for detected location. Persists for the process lifetime."""
+
+
+async def _detect_location() -> str:
+    """Best-effort IP geolocation to detect the user's city.
+
+    Uses ip-api.com (free, no API key, 45 req/min limit). Results are cached
+    at module level so we only call the API once per process.
+
+    Returns the detected city name (in zh-CN when available), or "Unknown"
+    if detection fails (offline, timeout, API error).
+    """
+    global _cached_location
+    if _cached_location is not None:
+        return _cached_location
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(
+                "http://ip-api.com/json/?lang=zh-CN&fields=city,status"
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") == "success":
+                city = data.get("city", "")
+                if city:
+                    _cached_location = city
+                    logger.info("[session] auto-detected location: %s", city)
+                    return city
+    except Exception as err:
+        logger.debug("[session] location auto-detection failed: %s", err)
+    _cached_location = "Unknown"
+    return _cached_location
+
+
+def _blunt_metadata(
+    language: str, timezone: str, location: str, current_time: datetime
+) -> tuple[str, str, str, str]:
+    """Blunt session metadata into coarse-grained tags for prompt injection.
+
+    - ``language`` → locale tag (e.g. ``zh-CN``)
+    - ``timezone`` → offset tag (e.g. ``GMT+8``)
+    - ``location`` → region/city tag (e.g. ``Beijing``)
+    - ``current_time`` → ``{date}_{Weekday}_{Period}`` (e.g. ``2026年7月5日_Sunday_Morning``)
+
+    Static metadata (language/timezone/location) goes into the system prompt
+    (cache-stable prefix). The time_bucket (with date) goes into the user
+    message tail (dynamic, changes daily).
+    """
+    weekday = current_time.strftime("%A")  # Monday..Sunday
+    hour = current_time.hour
+    if 5 <= hour <= 11:
+        period = "Morning"
+    elif 12 <= hour <= 17:
+        period = "Afternoon"
+    elif 18 <= hour <= 22:
+        period = "Evening"
+    else:
+        period = "LateNight"
+    date_str = f"{current_time.year}年{current_time.month}月{current_time.day}日"
+    time_bucket = f"{date_str}_{weekday}_{period}"
+    return (language, timezone, location, time_bucket)
 
 
 # ─── Args / results (mirror the TS interfaces) ───────────────────────────────
@@ -566,6 +731,12 @@ async def execute_run(
                 args.conversation_id, args.agent_id, prompt, result
             )
         )
+        # ─── Auto-compact hook (watermark-based silent compaction) ───
+        asyncio.create_task(
+            _maybe_auto_compact_hook(
+                args.conversation_id, args.override_prompt
+            )
+        )
         return final_result
     except asyncio.CancelledError:
         return await finalize(run_id, args, "aborted", _empty_run_execution_result())
@@ -657,6 +828,33 @@ async def execute_simple_run(
     adapter_input = await build_adapter_input(
         args, agent, run_id, prompt, workspace, tool_names, args.override_system_prompt, attachments
     )
+
+    # ── Persist effective_prompt for cache-stable history reconstruction ──
+    # The effective_prompt (with dynamic_prefix + [current_time]) must be
+    # persisted so that build_history_for can replay the exact same user
+    # message, keeping DeepSeek's prefix cache continuous across turns.
+    # Without this, history rebuilds from raw text only, losing the injected
+    # prefix/suffix and breaking the cache prefix at messages[1].
+    if adapter_input.prompt and adapter_input.prompt != prompt:
+        try:
+            async with get_db() as db:
+                result = await db.execute(
+                    select(Message).where(Message.id == args.trigger_message_id)
+                )
+                msg = result.scalar_one_or_none()
+                if msg and msg.role == "user":
+                    parts = msg.parts_list or []
+                    if not any(p.get("type") == "effective_prompt" for p in parts):
+                        parts.append({"type": "effective_prompt", "content": adapter_input.prompt})
+                        msg.parts_list = parts
+                        await db.commit()
+                        logger.debug(
+                            "[agent-runner] Persisted effective_prompt for msg=%s (len=%d)",
+                            args.trigger_message_id, len(adapter_input.prompt),
+                        )
+        except Exception as err:  # noqa: BLE001 - best-effort persistence
+            logger.warning("[agent-runner] Failed to persist effective_prompt: %s", err)
+
     stream = adapter.stream(adapter_input, cancel_event)
 
     result = await consume_stream(
@@ -1509,6 +1707,34 @@ async def build_adapter_input(
             except Exception as err:  # noqa: BLE001 - assembler is best-effort
                 logger.warning("[agent-runner] PromptAssembler enrichment failed: %s", err)
 
+    # ── session metadata: static fields (SDK only; cache-stable prefix) ──
+    _meta_time_bucket: str | None = None
+    if is_sdk:
+        try:
+            _settings = get_settings()
+            # Auto-detect location via IP geolocation when configured as 'auto'
+            _loc = _settings.default_location
+            if _loc == "auto":
+                _loc = await _detect_location()
+            _lang, _tz, _loc_out, _time_bucket = _blunt_metadata(
+                _settings.default_language,
+                _settings.default_timezone,
+                _loc,
+                datetime.now(),
+            )
+            _meta_time_bucket = _time_bucket
+            system_prompt_with_workspace += (
+                f"\n\n[session] language={_lang} timezone={_tz} location={_loc_out}"
+            )
+            logger.info(
+                "[cache-debug] session_metadata injected: lang=%s tz=%s "
+                "loc=%s time_bucket=%s sys_prompt_hash=%d",
+                _lang, _tz, _loc_out, _time_bucket,
+                hash(system_prompt_with_workspace),
+            )
+        except Exception as err:  # noqa: BLE001 - metadata is best-effort
+            logger.warning("[agent-runner] session metadata injection failed: %s", err)
+
     # ── prompt: CLI agents may get a context-summary prefix ──────────
     effective_prompt = prompt
     if is_cli and not args.override_prompt:
@@ -1531,6 +1757,10 @@ async def build_adapter_input(
             "[cache-debug] dynamic injected: prefix_len=%d effective_prompt_len=%d",
             len(dynamic_prefix), len(effective_prompt),
         )
+
+    # ── session metadata: dynamic field (SDK only; prompt tail) ──
+    if is_sdk and _meta_time_bucket:
+        effective_prompt = f"{effective_prompt}\n\n[current_time: {_meta_time_bucket}]"
 
     # ── custom_config: SDK only ──────────────────────────────────────
     custom_config = (

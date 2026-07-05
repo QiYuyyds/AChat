@@ -134,13 +134,12 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         registry = SourceRegistry()
         _source_flags = []
         if _memory_service:
-            # ProfileSource now reads from both Preference AND LTM
+            # ProfileSource reads only from Preference table (single-write mode)
             registry.register(ProfileSource(
                 preference_provider=_memory_service.preference,
-                ltm=_memory_service.ltm,
             ))
             registry.register(RecallSource(_memory_service))
-            _source_flags.append("Profile+LTM")
+            _source_flags.append("Profile")
             _source_flags.append("Recall")
         else:
             logger.warning(
