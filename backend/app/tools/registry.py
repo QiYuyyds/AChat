@@ -11,7 +11,7 @@ the integration point 阶段 2 left open.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.services import deploy_command_service
 from app.tools.ask_user import ask_user_tool
@@ -43,6 +43,9 @@ from app.tools.skills import load_skill_tool, write_skill_tool
 from app.tools.web_search import web_search_tool
 from app.tools.write_artifact import write_artifact_tool
 
+if TYPE_CHECKING:
+    from app.services.hook_registry import HookRegistry
+
 
 class ToolRegistry:
     def __init__(self) -> None:
@@ -73,6 +76,72 @@ class ToolRegistry:
             return await tool.handler(args, ctx)
         except Exception as e:  # noqa: BLE001 - tool failures surface to the LLM
             return err(str(e))
+
+    async def execute_with_hooks(
+        self,
+        name: str,
+        args: Any,
+        ctx: ToolContext,
+        hook_registry: HookRegistry | None = None,
+    ) -> ToolResult:
+        """Execute a tool with pre/post hooks.
+
+        1. Dispatch pre_tool_use hook → deny/modify/allow
+        2. Execute tool (if not denied)
+        3. Dispatch post_tool_use hook → modify result
+        4. Return final result
+        """
+        if hook_registry is None:
+            return await self.execute(name, args, ctx)
+
+        from app.services.hook_registry import HookContext, HookEvent
+
+        # ── pre_tool_use ──
+        pre_ctx = HookContext(
+            event=HookEvent.PRE_TOOL_USE,
+            run_id=ctx.run_id,
+            agent_id=ctx.agent_id,
+            conversation_id=ctx.conversation_id,
+            tool_name=name,
+            args=args,
+            call_id=None,
+        )
+        pre_result = await hook_registry.dispatch(pre_ctx)
+
+        if pre_result.action == "deny":
+            return err(str(pre_result.data) if pre_result.data else "blocked by hook")
+
+        effective_args = args
+        if pre_result.action == "modify" and isinstance(pre_result.data, dict):
+            effective_args = pre_result.data.get("args", args)
+
+        # ── execute ──
+        result = await self.execute(name, effective_args, ctx)
+
+        # ── post_tool_use ──
+        post_ctx = HookContext(
+            event=HookEvent.POST_TOOL_USE,
+            run_id=ctx.run_id,
+            agent_id=ctx.agent_id,
+            conversation_id=ctx.conversation_id,
+            tool_name=name,
+            args=effective_args,
+            result=result.value if result.ok else result.error,
+            is_error=not result.ok,
+            tool_names=ctx.tool_names,
+        )
+        post_result = await hook_registry.dispatch(post_ctx)
+
+        # O8: store post_tool_use HookResult on ctx so _run_react_loop can
+        # check for inject actions (skill_auto_activator) without re-dispatching.
+        ctx.last_post_hook_result = post_result
+
+        if post_result.action == "modify" and isinstance(post_result.data, dict):
+            modified = post_result.data.get("result")
+            if modified is not None:
+                return ToolResult(ok=result.ok, value=modified, error=result.error)
+
+        return result
 
 
 def _build_registry() -> ToolRegistry:

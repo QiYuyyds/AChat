@@ -14,6 +14,7 @@ import type {
   PendingQuestion,
   PendingWrite,
   StreamEvent,
+  TurnMetricData,
 } from '@/shared/types'
 
 enableMapSet()
@@ -29,6 +30,12 @@ export interface DispatchState {
   retryInfo?: Record<string, { attempt: number; maxAttempts: number; error?: string }>
 }
 
+/** Run state in store — extends DB row with in-memory turn metrics. */
+export interface RunState extends AgentRunRow {
+  turnMetrics?: Record<number, TurnMetricData>
+  turnMetricsComplete?: boolean
+}
+
 interface AppState {
   // ─── 实体 ──────────────────────────────────────────
   conversations: Record<string, ConversationWithMeta>
@@ -38,7 +45,7 @@ interface AppState {
 
   // ─── 关系（按 conversationId 分桶）───────────────
   messageIdsByConv: Record<string, string[]>
-  runsByConv: Record<string, Record<string, AgentRunRow>>
+  runsByConv: Record<string, Record<string, RunState>>
 
   // 压缩后「当前 ctx」的乐观覆盖值：at 比最新有 usage 的 run/message 更新时生效
   ctxOverrideByConv: Record<string, { tokens: number; at: number }>
@@ -571,6 +578,8 @@ export const useAppStore = create<AppState>()(
               usage: null,
               startedAt: event.timestamp,
               finishedAt: null,
+              turnMetrics: {},
+              turnMetricsComplete: false,
             }
             return
           }
@@ -581,6 +590,7 @@ export const useAppStore = create<AppState>()(
               run.status = event.status
               run.finishedAt = event.timestamp
               run.error = event.error ?? null
+              run.turnMetricsComplete = true
             }
             if (event.status === 'failed' || event.status === 'aborted') {
               closeUnresolvedToolCallsForRun(
@@ -597,6 +607,20 @@ export const useAppStore = create<AppState>()(
           case 'run.usage': {
             const run = s.runsByConv[event.conversationId]?.[event.runId]
             if (run) run.usage = event.usage
+            return
+          }
+
+          case 'turn.metric': {
+            const run = s.runsByConv[event.conversationId]?.[event.runId]
+            if (run) {
+              run.turnMetrics ??= {}
+              run.turnMetrics[event.turn] = {
+                turn: event.turn,
+                tokens: event.tokens,
+                toolCalls: event.toolCalls,
+                durationMs: event.durationMs,
+              }
+            }
             return
           }
 
@@ -1117,6 +1141,17 @@ export const useTopLevelRunningRuns = (conversationId: string) =>
     }),
   )
 
+/** 获取某个 run 的 turn metrics（SDK agent ReAct 循环每轮数据）。CLI agent 无此数据。 */
+export function useTurnMetrics(
+  conversationId: string,
+  runId: string | null,
+): Record<number, TurnMetricData> | undefined {
+  return useAppStore((s) => {
+    if (!runId) return undefined
+    return s.runsByConv[conversationId]?.[runId]?.turnMetrics
+  })
+}
+
 /** 该会话是否有待审批的 Orchestrator 计划。返回 { planId, runId } 供对话式修改路由。 */
 export const usePendingPlanReviewForConversation = (conversationId: string) =>
   useAppStore(
@@ -1203,6 +1238,18 @@ export const usePendingQuestions = (conversationId: string | null): PendingQuest
 export const useUnreadCount = (conversationId: string): number =>
   useAppStore((s) => s.unreadByConv[conversationId] ?? 0)
 
+/** 单个 agent 的累计 token 用量明细。 */
+export interface AgentUsageDetail {
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens: number
+  cacheReadTokens: number
+  totalTokens: number
+  runCount: number
+  /** 最近使用的 model（从 run.usage 或 agent.modelId 推断） */
+  model?: string
+}
+
 /** 累计该会话所有 run 的 token 用量 + 上次 run 的 input prompt 长度（用于 ctx 仪表）+ per-agent 拆分。 */
 export interface ConversationUsageTotal {
   inputTokens: number
@@ -1216,6 +1263,8 @@ export interface ConversationUsageTotal {
   byAgent: Record<string, number>
   /** key = modelId，value = 累计 input+output tokens */
   byModel: Record<string, number>
+  /** key = agentId，value = 该 agent 的详细 token 拆分 */
+  byAgentDetail: Record<string, AgentUsageDetail>
   /** 累计了多少个有 usage 的 run（用于显示 "N 次响应"） */
   runCount: number
 }
@@ -1244,19 +1293,25 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
       totalTokens: 0,
       lastInputTokens: 0,
       byAgent: {},
+      byAgentDetail: {},
       byModel: {},
       runCount: 0,
     }
-    // 优先用 runs（实时性 + model 字段最准）；空则从 messages 兜底（刷新页面后唯一可用的源）
+    const detail = result.byAgentDetail
+    // 合并两个数据源（按 runId 去重）：
+    //   Phase 1 — runs map：streaming 时实时填，含 model / agentId（最准）
+    //   Phase 2 — messages map：从 DB 加载，补充没有 run.usage 的 run（如刷新页面后、
+    //             或 orchestrator 的 plan/aggregate 阶段不经过 react loop 因而没有 run.usage）
     // lastInputTs：产生 lastInputTokens 的那条 run/message 的时间戳，用于和压缩覆盖值比较。
-    let hasRunUsage = false
     let lastInputTs = -1
+
+    // Phase 1: 从有 run.usage 的 run 累加，记录这些 runId 以避免 Phase 2 重复计数
+    const runsWithUsage = new Set<string>()
     if (runs) {
-      let latestRunWithUsage = -1
       for (const run of Object.values(runs)) {
         const u = run.usage
         if (!u) continue
-        hasRunUsage = true
+        runsWithUsage.add(run.id)
         result.inputTokens += u.inputTokens
         result.outputTokens += u.outputTokens
         result.cacheCreationTokens += u.cacheCreationTokens
@@ -1265,28 +1320,37 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
         const sub = u.inputTokens + u.outputTokens
         result.byAgent[run.agentId] = (result.byAgent[run.agentId] ?? 0) + sub
         if (u.model) result.byModel[u.model] = (result.byModel[u.model] ?? 0) + sub
-        if (run.startedAt > latestRunWithUsage) {
-          latestRunWithUsage = run.startedAt
+        const d = detail[run.agentId] ??= {
+          inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
+          cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+        }
+        d.inputTokens += u.inputTokens
+        d.outputTokens += u.outputTokens
+        d.cacheCreationTokens += u.cacheCreationTokens
+        d.cacheReadTokens += u.cacheReadTokens
+        d.runCount++
+        if (u.model) d.model = u.model
+        if (run.startedAt > lastInputTs) {
           lastInputTs = run.startedAt
           result.lastInputTokens = u.lastInputTokens ?? u.inputTokens
         }
       }
     }
 
-    if (!hasRunUsage && messageIds) {
-      // 走 messages 兜底：按 run_id 去重统计 runCount；按 message 累加 token；
-      // model 通过 agent.modelId 推断（messages 不存 model，跑过的模型若已切换无法准确还原）
-      const seenRuns = new Set<string>()
-      let latestMsgCreatedAt = -1
+    // Phase 2: 从 messages 累加，跳过已在 Phase 1 计数的 runId
+    if (messageIds) {
+      const seenRunIds = new Set<string>()
       for (const mid of messageIds) {
         const m = messages[mid]
         if (!m || !m.usage || m.role !== 'agent') continue
+        if (m.runId && runsWithUsage.has(m.runId)) continue
+
         const u = m.usage
         result.inputTokens += u.inputTokens
         result.outputTokens += u.outputTokens
         result.cacheReadTokens += u.cacheReadTokens
-        if (m.runId && !seenRuns.has(m.runId)) {
-          seenRuns.add(m.runId)
+        if (m.runId && !seenRunIds.has(m.runId)) {
+          seenRunIds.add(m.runId)
           result.runCount++
         }
         const sub = u.inputTokens + u.outputTokens
@@ -1294,9 +1358,17 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           result.byAgent[m.agentId] = (result.byAgent[m.agentId] ?? 0) + sub
           const modelId = agents[m.agentId]?.modelId
           if (modelId) result.byModel[modelId] = (result.byModel[modelId] ?? 0) + sub
+          const d = detail[m.agentId] ??= {
+            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
+            cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+          }
+          d.inputTokens += u.inputTokens
+          d.outputTokens += u.outputTokens
+          d.cacheReadTokens += u.cacheReadTokens
+          if (m.runId && !seenRunIds.has(m.runId)) d.runCount++
+          if (modelId) d.model = modelId
         }
-        if (m.createdAt > latestMsgCreatedAt) {
-          latestMsgCreatedAt = m.createdAt
+        if (m.createdAt > lastInputTs) {
           lastInputTs = m.createdAt
           result.lastInputTokens = u.inputTokens
         }
@@ -1305,6 +1377,9 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
 
     result.totalTokens =
       result.inputTokens + result.outputTokens + result.cacheCreationTokens + result.cacheReadTokens
+    for (const d of Object.values(detail)) {
+      d.totalTokens = d.inputTokens + d.outputTokens + d.cacheCreationTokens + d.cacheReadTokens
+    }
 
     // 压缩后的乐观覆盖：仅当覆盖值比最新实测的 run/message 更新时接管「当前 ctx」。
     if (ctxOverride && ctxOverride.at > lastInputTs) {

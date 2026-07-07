@@ -11,6 +11,7 @@ than mutating field-by-field as the TS object literals did.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
@@ -22,6 +23,8 @@ from app.schemas.dispatch import (
     DispatchTaskInput,
     DispatchTaskKind,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -417,6 +420,12 @@ def compile_and_validate_dispatch_plan(
     affects contract normalization.
     """
     validate_dispatch_plan(plan, available_agents, orchestrator_agent_id, resolved_external_tasks)
+    for t in plan:
+        if t.complexity or t.explored:
+            logger.info(
+                "[dispatch-plan] task=%s complexity=%s explored=%d files",
+                t.id, t.complexity, len(t.explored or []),
+            )
     return compile_dispatch_plan(plan, has_build_toolchain)
 
 

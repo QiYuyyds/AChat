@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 
@@ -27,6 +28,7 @@ from sqlalchemy import select
 
 from app.adapters.base import AdapterAttachment
 from app.adapters.registry import agent_registry
+from app.config import get_settings
 from app.db.engine import get_db
 from app.db.models import Agent, Artifact, Conversation, Workspace
 from app.schemas.artifacts import ArtifactRecord
@@ -38,6 +40,7 @@ from app.schemas.events import (
     DispatchRetryEvent,
     DispatchStartEvent,
 )
+from app.services.agent_load_tracker import agent_load_tracker
 
 # the seam from Core-A — import the runner machinery used to spawn nested runs.
 from app.services.agent_runner import (  # noqa: E402 - intentional: keep below local imports
@@ -96,21 +99,19 @@ from app.utils.dispatch_file_writes import (
 )
 from app.utils.dispatch_run_evidence import (
     RunCommandEvidence,
+    RunFileEvidence,
     RunToolEvidence,
     clear_run_tool_evidence,
     get_run_tool_evidence,
     record_run_command,
 )
 from app.utils.ids import new_artifact_id, new_run_id  # noqa: E402
-from app.utils.dispatch_run_evidence import RunFileEvidence
 from app.utils.workspace_utils import (
     assert_path_within_workspace,
     get_effective_cwd,
     is_path_within,
     workspace_has_build_toolchain,
 )
-
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -321,23 +322,24 @@ async def execute_orchestrator_run(
             plan_items_by_id[item.id] = item
 
         # ─── EXECUTE (DAG) ───
-        results, conflicts = await _execute_dag(
-            approved_plan,
-            DagContext(
-                parent_run_id=run_id,
-                conversation_id=args.conversation_id,
-                trigger_message_id=args.trigger_message_id,
-                workspace=workspace,
-                cancel_event=cancel_event,
-                seed_results=merged_results,
-                external_plan_items=list(plan_items_by_id.values()),
-                has_build_toolchain=has_build_toolchain,
-                orchestrator_agent=agent,
-            ),
+        dag_ctx = DagContext(
+            parent_run_id=run_id,
+            conversation_id=args.conversation_id,
+            trigger_message_id=args.trigger_message_id,
+            workspace=workspace,
+            cancel_event=cancel_event,
+            seed_results=merged_results,
+            external_plan_items=list(plan_items_by_id.values()),
+            has_build_toolchain=has_build_toolchain,
+            orchestrator_agent=agent,
         )
+        results, conflicts = await _execute_dag(approved_plan, dag_ctx)
         for task_id, r in results.items():
             merged_results[task_id] = r
         last_conflicts = conflicts
+
+        # ─── VERIFY stage (P2 O6): deterministic validation before replan ───
+        await _verify_stage(results, plan_items_by_id, dag_ctx)
 
         round_views = [
             ReplanTaskView(
@@ -574,6 +576,48 @@ async def _wait_for_dispatch_plan_review(
 
 
 # ─── DAG execution (topological waves; per-wave conflict detection) ───────────
+
+
+def _task_priority(task: DispatchPlanItem) -> int:
+    """Static priority weight for same-wave task ordering (longer tasks first).
+
+    code(3) > doc(2) > others(1); tasks with target_paths get +1.
+    Higher weight = launched earlier to reduce total wall-clock time.
+    """
+    base = {"code": 3, "doc": 2}.get(task.task_kind or "", 1)
+    if task.target_paths:
+        base += 1
+    return base
+
+
+def _partition_by_load(
+    ready: list[DispatchPlanItem],
+    max_per_agent: int,
+) -> tuple[list[DispatchPlanItem], list[DispatchPlanItem]]:
+    """Partition ready tasks into (wave, deferred) based on agent load.
+
+    Greedy allocation in priority order: an agent's concurrent task count
+    (from AgentLoadTracker) must be below max_per_agent. Single-agent
+    scenarios (no alternative agent available) relax the limit.
+
+    Acquires load for each task added to the wave; the caller MUST release
+    after the wave completes.
+    """
+    unique_agents = {t.agent_id for t in ready}
+    single_agent = len(unique_agents) <= 1
+
+    wave: list[DispatchPlanItem] = []
+    deferred: list[DispatchPlanItem] = []
+    for t in ready:
+        load = agent_load_tracker.get_load(t.agent_id)
+        if not single_agent and load >= max_per_agent:
+            deferred.append(t)
+        else:
+            wave.append(t)
+            agent_load_tracker.acquire(t.agent_id)
+    return wave, deferred
+
+
 async def _execute_dag(
     plan: list[DispatchPlanItem],
     ctx: DagContext,
@@ -623,17 +667,43 @@ async def _execute_dag(
         if not ready:
             raise RuntimeError("Circular dependency or unresolved task in plan")
 
-        wave = await asyncio.gather(
-            *(_run_child_task(t, results, plan_context, ctx) for t in ready)
-        )
-        for i, t in enumerate(ready):
+        # O10: sort ready tasks by priority (longer/heavier tasks first)
+        ready.sort(key=lambda t: -_task_priority(t))
+
+        # O7: load-aware dispatch — limit concurrent tasks per agent per wave
+        settings = get_settings()
+        load_aware = settings.enable_load_aware_routing
+        if load_aware:
+            wave_tasks, deferred = _partition_by_load(
+                ready, settings.max_concurrent_tasks_per_agent,
+            )
+        else:
+            wave_tasks = ready
+            deferred = []
+
+        try:
+            wave = await asyncio.gather(
+                *(_run_child_task(t, results, plan_context, ctx) for t in wave_tasks)
+            )
+        finally:
+            if load_aware:
+                for t in wave_tasks:
+                    agent_load_tracker.release(t.agent_id)
+
+        for i, t in enumerate(wave_tasks):
             results[t.id] = wave[i]
             remaining.discard(t.id)
 
+        if deferred:
+            logger.debug(
+                "[dag] deferred %d task(s) to next wave due to load limit: %s",
+                len(deferred), ", ".join(t.id for t in deferred),
+            )
+
         # same-wave code conflict: ≥2 child runs wrote the same file differently.
-        if len(ready) > 1:
+        if len(wave_tasks) > 1:
             run_writes: list[RunFileWrites] = []
-            for i, t in enumerate(ready):
+            for i, t in enumerate(wave_tasks):
                 child_run_ids = _get_dispatch_result_run_ids(wave[i])
                 if not child_run_ids:
                     continue
@@ -1665,3 +1735,81 @@ def _publish_dispatch_end(ctx: DagContext, task_id: str, result: DispatchTaskRes
             error=result.error,
         )
     )
+
+
+# ─── Verify stage (P2 O6) ─────────────────────────────────────────────────────
+async def _verify_stage(
+    results: dict[str, DispatchTaskResult],
+    plan_items_by_id: dict[str, DispatchPlanItem],
+    ctx: DagContext,
+) -> None:
+    """Deterministic verification of complete task results before replan/aggregate."""
+    settings = get_settings()
+    if not settings.enable_verify_stage:
+        return
+
+    from app.services.hook_registry import HookEvent
+    from app.services.verify_stage import verify_task_result
+
+    hook_registry = _get_hook_registry()
+
+    for task_id, result in results.items():
+        if result.status != "complete":
+            continue
+
+        task = plan_items_by_id.get(task_id)
+        if task is None:
+            continue
+
+        vr = verify_task_result(task, result)
+
+        # Dispatch on_task_verified hook
+        if hook_registry and hook_registry.has_handlers(HookEvent.ON_TASK_VERIFIED):
+            from app.services.hook_registry import HookContext
+
+            hook_result = await hook_registry.dispatch(HookContext(
+                event=HookEvent.ON_TASK_VERIFIED,
+                run_id=ctx.parent_run_id,
+                agent_id=task.agent_id,
+                conversation_id=ctx.conversation_id,
+                task_id=task_id,
+                task_kind=task.task_kind,
+                verification_result="passed" if vr.passed else "failed",
+                failure_reason=vr.reason,
+            ))
+            # Hook can override verification result
+            if hook_result.action == "modify" and hook_result.data:
+                override = hook_result.data.get("verification_result")
+                if override == "failed":
+                    vr_passed = False
+                    vr_reason = hook_result.data.get("failure_reason", vr.reason)
+                elif override == "passed":
+                    vr_passed = True
+                    vr_reason = None
+                else:
+                    vr_passed = vr.passed
+                    vr_reason = vr.reason
+            else:
+                vr_passed = vr.passed
+                vr_reason = vr.reason
+        else:
+            vr_passed = vr.passed
+            vr_reason = vr.reason
+
+        if not vr_passed:
+            logger.info(
+                "[verify] task=%s verification_failed: %s", task_id, vr_reason,
+            )
+            result.status = "verification_failed"
+            result.error = vr_reason
+
+
+def _get_hook_registry():
+    """Retrieve the HookRegistry from app.state, or None."""
+    try:
+        from app.main import _app_ref
+        if _app_ref is None:
+            return None
+        return getattr(_app_ref.state, "hook_registry", None)
+    except Exception:
+        return None

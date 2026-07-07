@@ -436,6 +436,14 @@ export type StreamEvent = BaseEvent &
     | { type: 'ask_user.resolved'; pendingId: string; answered: boolean }
     | { type: 'summary.updated'; summary: string | null }
     | { type: 'heartbeat' }
+    | {
+        type: 'turn.metric'
+        runId: string
+        turn: number
+        tokens: { inputTokens: number; outputTokens: number; cacheReadTokens: number }
+        toolCalls: string[]
+        durationMs: number
+      }
   )
 
 /** RunUsage 事件 payload。与 db/schema.ts 的 RunUsage 同形，重复定义避开 client/server 边界 import。 */
@@ -453,6 +461,21 @@ export interface MessageUsageEvent {
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
+}
+
+/** Per-turn token breakdown for TurnMetricEvent. */
+export interface TurnTokenBreakdown {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+}
+
+/** Turn metric data for a single turn in a ReAct loop. */
+export interface TurnMetricData {
+  turn: number
+  tokens: TurnTokenBreakdown
+  toolCalls: string[]
+  durationMs: number
 }
 
 // 简化版 Artifact，用于事件 payload（与 DB 行结构一致）

@@ -9,6 +9,7 @@ import { DispatchPlanCard } from '@/components/dispatch-plan-card'
 import { EditMessageInput } from '@/components/edit-message-input'
 import { PartList } from '@/components/message-parts'
 import { QuotedMessage } from '@/components/quoted-message'
+import { TurnTimeline } from '@/components/turn-timeline'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -28,6 +29,7 @@ import {
   useDispatchForMessage,
   useLatestAgentMessageId,
   useLatestUserMessageId,
+  useTurnMetrics,
 } from '@/stores/app-store'
 
 function MessageItemImpl({ message }: { message: MessageRow }) {
@@ -60,6 +62,8 @@ function MessageItemImpl({ message }: { message: MessageRow }) {
   const name = isUser ? '我' : message.role === 'system' ? '系统' : agent?.name ?? 'Unknown'
   const isLatestUser = isUser && latestUserId === message.id
   const isLatestAgent = !isUser && latestAgentId === message.id
+
+  const turnMetrics = useTurnMetrics(message.conversationId, message.runId)
 
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -275,6 +279,9 @@ function MessageItemImpl({ message }: { message: MessageRow }) {
                 <div className="mt-3">
                   <DispatchPlanCard conversationId={message.conversationId} dispatch={dispatch} />
                 </div>
+              )}
+              {turnMetrics && Object.keys(turnMetrics).length > 0 && (
+                <TurnTimeline turnMetrics={turnMetrics} />
               )}
             </>
           )}

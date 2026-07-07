@@ -97,6 +97,18 @@ class Settings(BaseSettings):
     memory_consolidation_min_importance: float = 0.3
     memory_consolidation_trigger: int = 5
 
+    # ─── ReAct Loop ───
+    # When True, SDK agents (Custom) use the AgentRunner ReAct loop (call_once).
+    # Set to False to fall back to the legacy adapter.stream() path.
+    use_react_loop: bool = True
+
+    # ─── Verify Stage (P2 O6) ───
+    enable_verify_stage: bool = True
+
+    # ─── Load-Aware Routing (P2 O7) ───
+    enable_load_aware_routing: bool = True
+    max_concurrent_tasks_per_agent: int = 2
+
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse CORS origins from comma-separated string."""

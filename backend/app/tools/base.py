@@ -25,6 +25,12 @@ class ToolContext:
     agent_id: str
     run_id: str
     cancel_event: asyncio.Event
+    hook_registry: Any = None  # HookRegistry | None, injected by AgentRunner
+    # O8: stores the last post_tool_use HookResult so _run_react_loop can
+    # check for inject actions without dispatching post_tool_use a second time.
+    last_post_hook_result: Any = None
+    # O8: tool_names for the current run, passed to HookContext for skill checks
+    tool_names: list[str] | None = None
 
 
 @dataclass

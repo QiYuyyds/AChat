@@ -76,6 +76,7 @@ async def _migrate_columns(conn) -> None:  # type: ignore[no-untyped-def]
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS executable_path VARCHAR",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS protocol_family VARCHAR",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS custom_args JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS hook_names JSONB NOT NULL DEFAULT '[]'::jsonb",
         "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS content_hash VARCHAR(16)",
         "CREATE INDEX IF NOT EXISTS idx_rag_content_hash ON rag_chunks (content_hash)",
         "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary TEXT",

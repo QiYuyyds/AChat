@@ -6,12 +6,13 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { AgentAvatar } from '@/components/agent-avatar'
+import { TurnTimeline } from '@/components/turn-timeline'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 import { approvePendingDispatchPlan, rejectPendingDispatchPlan } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import type { DispatchState } from '@/stores/app-store'
-import { useAppStore } from '@/stores/app-store'
+import { useAppStore, useTurnMetrics } from '@/stores/app-store'
 import type { DispatchTaskStatus } from '@/shared/types'
 
 interface DispatchPlanCardProps {
@@ -30,7 +31,7 @@ export function DispatchPlanCard({ conversationId, dispatch }: DispatchPlanCardP
     )
   }
 
-  return <DispatchPlanReadOnlyCard dispatch={dispatch} />
+  return <DispatchPlanReadOnlyCard conversationId={conversationId} dispatch={dispatch} />
 }
 
 function DispatchPlanReviewCard({
@@ -112,7 +113,7 @@ function DispatchPlanReviewCard({
           </div>
         )}
 
-        <PlanTaskList dispatch={dispatch} />
+        <PlanTaskList conversationId={conversationId} dispatch={dispatch} />
 
         <div className="text-[11px] leading-5 text-muted-foreground">
           想改计划？在下方对话框直接说，例如「把 t2 改成依赖 t1」「设计任务交给后端 agent」——Orchestrator
@@ -124,7 +125,13 @@ function DispatchPlanReviewCard({
 }
 
 /** 计划任务行列表（只读展示，审批卡与执行卡共用）。 */
-function PlanTaskList({ dispatch }: { dispatch: DispatchState }) {
+function PlanTaskList({
+  conversationId,
+  dispatch,
+}: {
+  conversationId: string
+  dispatch: DispatchState
+}) {
   const agents = useAppStore((s) => s.agents)
   return (
     <div className="space-y-1.5">
@@ -138,6 +145,7 @@ function PlanTaskList({ dispatch }: { dispatch: DispatchState }) {
         const outputRefs =
           task.expectedOutputs?.map((output) => `${output.id}:${output.type}`) ?? []
         const criteriaCount = task.acceptanceCriteria?.length ?? 0
+        const childRunId = dispatch.childRunIds[task.id]
         return (
           <div
             key={task.id}
@@ -201,6 +209,9 @@ function PlanTaskList({ dispatch }: { dispatch: DispatchState }) {
                   )}
                 </div>
               )}
+              {childRunId && (
+                <TaskTurnMetrics conversationId={conversationId} runId={childRunId} />
+              )}
             </div>
           </div>
         )
@@ -247,7 +258,13 @@ function PlanTaskMarkdown({ children }: { children: string }) {
   )
 }
 
-function DispatchPlanReadOnlyCard({ dispatch }: { dispatch: DispatchState }) {
+function DispatchPlanReadOnlyCard({
+  conversationId,
+  dispatch,
+}: {
+  conversationId: string
+  dispatch: DispatchState
+}) {
   const total = dispatch.plan.length
   const displayStatuses = dispatch.plan.map((task) =>
     dispatch.reviewStatus === 'rejected' ? 'skipped' : (dispatch.taskStatus[task.id] ?? 'pending'),
@@ -295,7 +312,7 @@ function DispatchPlanReadOnlyCard({ dispatch }: { dispatch: DispatchState }) {
           />
         </div>
 
-        <PlanTaskList dispatch={dispatch} />
+        <PlanTaskList conversationId={conversationId} dispatch={dispatch} />
       </div>
     </Card>
   )
@@ -303,6 +320,39 @@ function DispatchPlanReadOnlyCard({ dispatch }: { dispatch: DispatchState }) {
 
 function isTerminalStatus(status: DispatchTaskStatus): boolean {
   return status === 'complete' || status === 'failed' || status === 'aborted' || status === 'skipped'
+}
+
+/** Collapsible turn metrics panel for a child task's run. */
+function TaskTurnMetrics({
+  conversationId,
+  runId,
+}: {
+  conversationId: string
+  runId: string
+}) {
+  const turnMetrics = useTurnMetrics(conversationId, runId)
+  const [expanded, setExpanded] = useState(false)
+
+  if (!turnMetrics || Object.keys(turnMetrics).length === 0) return null
+
+  const count = Object.keys(turnMetrics).length
+
+  return (
+    <div className="mt-1">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="text-[10px] text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {expanded ? '▾' : '▸'} Turn Metrics ({count})
+      </button>
+      {expanded && (
+        <div className="mt-1">
+          <TurnTimeline turnMetrics={turnMetrics} />
+        </div>
+      )}
+    </div>
+  )
 }
 
 function StatusIcon({ status }: { status: DispatchTaskStatus }) {
