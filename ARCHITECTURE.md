@@ -56,7 +56,7 @@
 
 | 服务 | 镜像 | 用途 |
 |---|---|---|
-| PostgreSQL | `postgres:16-alpine` | 关系型主库（17 张表） |
+| PostgreSQL | `postgres:16-alpine` | 关系型主库（18 张表） |
 | Milvus | `milvusdb/milvus:v2.4.17` | 向量检索（RAG 语义 + LTM recall） |
 | Elasticsearch | `elasticsearch:8.14.0` | 全文检索（RAG BM25） |
 | Neo4j | `neo4j:5-community` | 知识图谱（KGStore + GraphMemory） |
@@ -78,7 +78,7 @@
 │ L3  Application Services                      backend/app/services/ │  ← Python
 │     AgentRunner · Orchestrator · ConversationService ·             │
 │     EventBus · ToolExecutor · RAGService · DocumentService ·       │
-│     PromptAssembler · ...                                          │
+│     PromptAssembler · HookRegistry (生命周期 Hooks) · ...           │
 │ L2  Agent Platform Adapters                   backend/app/adapters/ │  ← Python
 │     ClaudeCLI · CodexCLI (CLI 子进程) · Custom (SDK) · Mock         │
 │ L1  Persistence                               backend/app/db/       │  ← Python
@@ -147,7 +147,7 @@ backend/
 │   │   ├── models.py        17 张表 SQLAlchemy 模型 (9 核心 + 6 AGI-memory + 2 Document)
 │   │   └── engine.py        异步引擎 + PostgreSQL (外键 ON / 连接池)
 │   │
-│   ├── schemas/ (7)        【类型契约 Pydantic】
+│   ├── schemas/ (6)        【类型契约 Pydantic】
 │   │   ├── events.py        30+ StreamEvent (SSE 协议, snake_case + camelCase 别名)
 │   │   ├── messages.py      MessagePart (parts 数组)
 │   │   ├── artifacts.py     Artifact 内容类型
@@ -155,7 +155,7 @@ backend/
 │   │   ├── document.py      Document / DocumentVersion
 │   │   └── requests.py      API 请求 / 响应模型
 │   │
-│   ├── services/ (30)      【L3 业务逻辑 —— 核心大头】
+│   ├── services/ (34+)     【L3 业务逻辑 —— 核心大头】
 │   │   ├── agent_runner.py        ★ 执行器 (simple 路径 + 共享机制)
 │   │   ├── orchestrator.py        ★ 编排器三阶段调度 (PLAN / EXECUTE / AGGREGATE)
 │   │   ├── orchestrator_prompts.py编排 prompt / XML 构建
@@ -177,7 +177,20 @@ backend/
 │   │   ├── deploy_command_service.py 部署斜杠命令
 │   │   ├── context_compaction_service.py 上下文压缩
 │   │   ├── usage_summary_service.py Token 分析聚合
+│   │   ├── checkpoint_service.py  SDK Agent turn 级检查点保存/恢复
+│   │   ├── hook_registry.py       ★ 生命周期 Hook 注册与分发
+│   │   ├── verify_stage.py        Orchestrator 子任务验证门禁
+│   │   ├── project_artifact.py    项目产物管理
+│   │   ├── agent_load_tracker.py  Agent 负载追踪
 │   │   ├── network_hints.py       移动端网络发现
+│   │   ├── hooks/                 ★ 内置 Hook 实现 (7 个)
+│   │   │   ├── audit_log.py       审计日志
+│   │   │   ├── auto_compact.py    自动上下文压缩
+│   │   │   ├── checkpoint.py      检查点保存
+│   │   │   ├── memory_persist.py  记忆持久化
+│   │   │   ├── skill_auto_activator.py 技能自动激活
+│   │   │   ├── summary_generate.py 摘要生成
+│   │   │   └── tool_approval.py   工具审批拦截
 │   │   └── pending_*.py           审批 / 提问 / 命令 / 计划 内存 store
 │   │
 │   ├── adapters/ (11)      【L2 适配器】stream(input, cancel_event) -> AsyncIterator[StreamEvent]
@@ -191,10 +204,10 @@ backend/
 │   │   └── custom_provider_client.py / registry.py / session_store.py
 │   ├── mcp_bridge.py      ★ AChat MCP Bridge: stdio MCP Server, 把平台工具暴露给 CLI agent
 │   │
-│   ├── tools/ (18)         【工具系统】20 个内置工具
+│   ├── tools/ (21)         【工具系统】23 个内置工具
 │   │   ├── base.py / registry.py  ToolContext (asyncio.Event 取消) + 注册表
 │   │   ├── write_artifact / read_artifact / deploy_artifact / deploy_workspace
-│   │   ├── fs_read / fs_write / fs_list / bash (黑名单 + 审批)
+│   │   ├── fs_read / fs_write / fs_edit / fs_list / fs_glob / fs_grep / bash (黑名单 + 审批)
 │   │   ├── ask_user / plan_tasks / report_task_result
 │   │   ├── read_attachment (PDF: pypdf)
 │   │   ├── web_search (Tavily API)
@@ -208,12 +221,13 @@ backend/
 │   │   ├── rewriter.py      Query Rewriting (LLM 生成扩展查询)
 │   │   └── reranker.py      Reranking (LLM 打分重排)
 │   │
-│   ├── memory/ (7)         【分层记忆系统】
+│   ├── memory/ (8)         【分层记忆系统】
 │   │   ├── memory_service.py  ★ 门面: STM + LTM + Preference + GraphMemory
 │   │   ├── short_term.py      短期记忆 (chat_history 表, 滑动窗口)
 │   │   ├── long_term.py       长期记忆 (long_term_memory 表, embedding 语义召回)
 │   │   ├── preference.py      用户偏好 (user_preferences 表, KV)
 │   │   ├── graph_memory.py    图谱记忆 (Neo4j + memory_nodes/edges 镜像表)
+│   │   ├── memory_writer.py   记忆写入门面
 │   │   └── consolidation.py   记忆固化 / 去重 / 衰减 / TTL
 │   │
 │   ├── graph/ (4)          【知识图谱】
@@ -221,9 +235,10 @@ backend/
 │   │   ├── extractor.py     LLM 驱动的实体 / 关系抽取
 │   │   └── types.py         图谱类型定义
 │   │
-│   ├── infra/ (4)          【基础设施工厂】
+│   ├── infra/ (5)          【基础设施工厂】
 │   │   ├── factory.py       build_infrastructure(): 配置驱动, 独立降级
 │   │   ├── hybrid.py        HybridStore 抽象 (向量 + 全文 + 图谱统一接口)
+│   │   ├── cache_metrics.py 嵌入缓存命中率指标
 │   │   └── status.py        基础设施连接状态面板
 │   │
 │   ├── api/ (14)           【API 路由】
@@ -234,7 +249,7 @@ backend/
 │   │
 │   └── utils/ (13)         跨平台 · 安全黑名单 · ID · token 估算 · 审批 helper · mermaid 规范化 ...
 │
-└── tests/ (31+)           pytest 测试; ruff 全绿
+└── tests/ (72+)           pytest 测试; ruff 全绿
 ```
 
 ### 关键技术映射（TS → Python）
@@ -254,19 +269,20 @@ backend/
 
 ---
 
-## 6. 数据库：17 张表
+## 6. 数据库：18 张表
 
-### 核心域（9 张）
+### 核心域（10 张）
 
 | 表 | 说明 |
 |---|---|
-| `agents` | AI 代理（name / adapter_name / system_prompt / tool_names / skill_names / api_key） |
-| `conversations` | 会话（mode single/group / agent_ids / pinned / bookmarked / archived / rag_enabled） |
+| `agents` | AI 代理（name / adapter_name / system_prompt / tool_names / skill_names / hook_names / api_key / executable_path / protocol_family / custom_args） |
+| `conversations` | 会话（mode single/group / agent_ids / pinned / bookmarked / archived / rag_enabled / summary） |
 | `messages` | 消息（role / parts JSON / status / run_id / usage） |
 | `artifacts` | 产物（type / content JSON / version / parent_artifact_id） |
 | `workspaces` | 工作区（mode sandbox/local / root_path / bound_path） |
 | `attachments` | 附件（kind image/file / file_path / mime_type） |
 | `agent_runs` | 运行记录（status / usage / dispatch_plan / dispatch_results / parent_run_id） |
+| `agent_run_checkpoints` | SDK Agent turn 级检查点（run_id / turn_number / messages_json） |
 | `conversation_context_summaries` | 上下文压缩摘要 |
 | `app_settings` | 全局设置单行表（各 provider API key + 部署配置 + companion） |
 
@@ -302,9 +318,12 @@ backend/
                  └─ agent_runner.execute_run()
                       ├─ build_adapter_input()  历史注入 + token 预算 + key 选择
                       │   └─ (可选) PromptAssembler 注入 Profile + Recall + Constraints
-                      ├─ adapter.stream()  ← L2 (Claude / Custom / Mock)
+                      ├─ adapter.stream()  ← L2 (Claude / Codex / Custom / Mock)
                       │     产出 StreamEvent: part.delta / tool.call / artifact.create ...
-                      │     工具调用 → tool_registry.execute() (沙箱内)
+                      │     工具调用 → tool_registry.execute_with_hooks()
+                      │       ├─ pre_tool_use hook (审批/拦截/修改)
+                      │       ├─ tool_registry.execute() (沙箱内)
+                      │       └─ post_tool_use hook (记忆持久化/技能激活/审计)
                       └─ consume_stream()
                            ├─ persist_event()  事件落 DB
                            └─ event_bus.publish()  → SSE
@@ -313,7 +332,40 @@ backend/
                                           └─ Zustand store.applyEvent()  → UI 实时更新
 ```
 
-**编排场景**：若目标 agent 是 Orchestrator，`execute_run` 转 `orchestrator.execute_orchestrator_run()` → **PLAN**（plan_tasks）→ 人工审批 → **EXECUTE**（DAG 调度 + 并发 + 子任务重试 + 冲突检测）→ **AGGREGATE**。
+**编排场景**：若目标 agent 是 Orchestrator，`execute_run` 转 `orchestrator.execute_orchestrator_run()` → **PLAN**（plan_tasks）→ 人工审批 → **EXECUTE**（DAG 调度 + 并发 + 子任务重试 + 冲突检测）→ **VERIFY**（子任务产物验证门禁）→ **AGGREGATE**。
+
+---
+
+## 7.5 生命周期 Hooks 数据流
+
+```
+Agent 启动 (ON_RUN_START)
+  └─ HookRegistry.dispatch(ON_RUN_START)
+     └─ 各 hook 按优先级执行 (lower = earlier)
+
+每轮对话循环:
+  ├─ PRE_TURN  → auto_compact: 检查是否需要压缩
+  │            → checkpoint: 恢复上一轮检查点
+  ├─ LLM 调用 + 工具循环:
+  │   ├─ PRE_TOOL_USE  → tool_approval: 拦截需审批工具
+  │   │                → 可 deny / modify / allow
+  │   ├─ tool_registry.execute()
+  │   └─ POST_TOOL_USE → audit_log: 记录工具调用
+  │                    → memory_persist: 持久化记忆
+  │                    → skill_auto_activator: 自动激活技能
+  ├─ POST_TURN → checkpoint: 保存当前轮检查点
+  │            → summary_generate: 生成摘要
+  │            → memory_persist: 固化长期记忆
+  └─ ON_MESSAGE_END
+
+运行结束:
+  └─ ON_RUN_END / ON_STOP / ON_ERROR
+
+Orchestrator 子任务:
+  └─ ON_TASK_VERIFIED → verify_stage 门禁检查
+```
+
+**Hook 控制流**：`deny` 立即终止；`modify` 修改参数/结果；`inject` 注入额外事件；`allow` 放行。Agent 通过 `hook_names` 字段启用特定 Hook 组。
 
 ---
 
@@ -370,10 +422,10 @@ Agent 运行时注入 (PromptAssembler):
 | 目录 | 内容 |
 |---|---|
 | `app/` | `layout.tsx` / `page.tsx`（挂载 StreamProvider + 主界面） |
-| `components/` (63) | ChatPanel / MessageList / MessageParts / ArtifactPreviewPanel / AgentLibrary / CreateAgentDialog / DispatchPlanCard / KnowledgeLibrary / DocumentDetail / UploadDocumentDialog / SkillLibrary / GlobalSearch / SettingsDialog ... |
-| `lib/` | `api.ts`（REST 客户端，统一 `API_BASE_URL` 前缀）· `config.ts`（读 `NEXT_PUBLIC_API_BASE_URL`）· 工具 |
+| `components/` (65) | ChatPanel / MessageList / MessageParts / ArtifactPreviewPanel / ArtifactCodeEditor / AgentLibrary / AgentCreateWizard / CreateAgentDialog / DispatchPlanCard / KnowledgeLibrary / DocumentDetail / UploadDocumentDialog / SkillLibrary / GlobalSearch / SettingsDialog / TurnTimeline / MessageHighlightLayer ... |
+| `lib/` | `api.ts`（REST 客户端，统一 `API_BASE_URL` 前缀）· `config.ts`（读 `NEXT_PUBLIC_API_BASE_URL`）· `artifact-groups.ts` · `tool-display.ts` · 工具 |
 | `stores/` | `app-store.ts`（会话 / 消息 / 事件 reducer）· `search-store.ts` |
-| `shared/` (14) | StreamEvent / MessagePart / Artifact 等**前后端共享类型**（纯类型，无逻辑） |
+| `shared/` (15) | StreamEvent / MessagePart / Artifact 等**前后端共享类型**（纯类型，无逻辑） · `codex-compat.ts` · `model-registry.ts` · `ppt-theme.ts` ... |
 | `db/schema.ts` | 仅保留前端 import 行类型（AgentRow 等） |
 
 **前后端边界**：前端只通过 `lib/api.ts`（REST）和 `stream-provider.tsx`（SSE EventSource）与 Python 后端通信，两者都加 `API_BASE_URL` 前缀；默认空串 = 同源，设环境变量即指向独立 Python 后端。
@@ -385,13 +437,12 @@ Agent 运行时注入 (PromptAssembler):
 | 目录 | 说明 | 当前状态 |
 |---|---|---|
 | `specs/` | 18 份编号详细规格（实体 / 事件 / 适配器 / 工具 / 编排 / DB ...），**语言无关契约** | 有效 |
-| `openspec/` | OpenSpec 能力契约 + 变更提案（`changes/`） | 有效 |
+| `openspec/` | OpenSpec 能力契约（14 个 capability spec）+ 变更提案（`changes/` 下 45+ 提案） | 有效 |
 | `electron/` | 桌面版（`main.ts` 启动内嵌 Next server） | ⚠️ 待改造：内嵌 Next 已无后端，需改启 Python |
 | `apps/mobile/` | 移动伴随 App（Capacitor / 远程审批，spec 14） | 独立模块 |
 | `scripts/` | 构建 / Electron / SQLite ABI 辅助（`.mjs`） | 前端用 |
 | `skills/` | 可复用开发任务模板（add-adapter / add-tool ...） | 参考 |
 | `.agenthub-data/` | 运行时：`workspaces/` + `deployments/` + `skills/` | 前后端共用 |
-| `待融合项目/AGI-memory/` | AGI-memory 源项目（记忆 / RAG / 图谱能力的来源） | 参考 |
 
 ---
 
@@ -471,4 +522,4 @@ ENABLE_GRAPH=false           # true 才启用知识图谱
 
 ---
 
-*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。*
+*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-07 · 同步 Hooks 系统、Checkpoint、新增工具（fs_edit/glob/grep）、18 张表、新增服务。*
