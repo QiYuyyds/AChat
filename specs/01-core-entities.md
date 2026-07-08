@@ -178,6 +178,7 @@ interface Workspace {
 - **local 模式**：不强制配额（用户用 git 等手段自行管理）
 - 删除 Conversation 时物理删除 `rootPath` 目录；`boundPath` 不删（那是用户的真实项目）
 - attachments 等内部文件**始终**存于 `rootPath` 子目录，不污染 `boundPath`
+- **sandbox 模式自动 git init**：创建会话时对 `rootPath` 执行 `git init` + 初始空 commit + `.gitignore`（排除 `.agenthub-data/`），使 sandbox workspace 支持真 git worktree 隔离。git init 失败时不阻断会话创建，workspace 降级为非 git（worktree 隔离降级为目录拷贝）。详见 `worktree_service.ensure_git_init`。
 
 ---
 

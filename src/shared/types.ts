@@ -277,6 +277,7 @@ export type DispatchTaskStatus =
   | 'failed'
   | 'aborted'
   | 'skipped'
+  | 'merge_conflict'
 
 export type DispatchTaskEndStatus = Exclude<DispatchTaskStatus, 'pending' | 'running'>
 
@@ -434,6 +435,13 @@ export type StreamEvent = BaseEvent &
     | { type: 'bash_command.resolved'; pendingId: string; approved: boolean }
     | { type: 'ask_user.pending'; pendingQuestion: PendingQuestion }
     | { type: 'ask_user.resolved'; pendingId: string; answered: boolean }
+    | {
+        type: 'worktree.created' | 'worktree.merged' | 'worktree.cleaned'
+        taskId: string
+        branchName?: string
+        path?: string
+        mergeStatus?: 'success' | 'conflict'
+      }
     | { type: 'summary.updated'; summary: string | null }
     | { type: 'heartbeat' }
     | {

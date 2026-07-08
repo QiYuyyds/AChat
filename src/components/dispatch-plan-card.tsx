@@ -1,6 +1,6 @@
 'use client'
 
-import { Ban, Check, CheckCircle2, Circle, Loader2, Network, RotateCw, X, XCircle } from 'lucide-react'
+import { Ban, Check, CheckCircle2, Circle, GitBranch, Loader2, Network, RotateCw, X, XCircle, AlertTriangle } from 'lucide-react'
 import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -158,6 +158,7 @@ function PlanTaskList({
                 'border-warning/40 bg-warning/10 ring-2 ring-warning/30',
               status === 'complete' && 'border-emerald-200 dark:border-emerald-900/40',
               status === 'failed' && 'border-destructive/40',
+              status === 'merge_conflict' && 'border-warning/40 bg-warning/10',
               status === 'aborted' && 'border-zinc-300 bg-zinc-50/50 dark:border-zinc-700',
               status === 'skipped' && 'border-zinc-200 bg-muted/40 dark:border-zinc-800',
             )}
@@ -179,6 +180,7 @@ function PlanTaskList({
               <div className="flex items-center gap-1.5">
                 <span className="font-medium">{agent?.name ?? task.agentId}</span>
                 <span className="font-mono text-[10px] text-muted-foreground">{task.id}</span>
+                <WorktreeBadge worktree={dispatch.worktreeByTask?.[task.id]} />
                 {task.dependsOn && task.dependsOn.length > 0 && (
                   <span className="text-[10px] text-muted-foreground">
                     → {task.dependsOn.join(', ')}
@@ -271,7 +273,7 @@ function DispatchPlanReadOnlyCard({
   )
   const done = displayStatuses.filter(isTerminalStatus).length
   const allDone = total > 0 && done === total
-  const hasFailed = displayStatuses.some((s) => s === 'failed' || s === 'aborted')
+  const hasFailed = displayStatuses.some((s) => s === 'failed' || s === 'aborted' || s === 'merge_conflict')
   const hasSkipped = displayStatuses.some((s) => s === 'skipped')
   const progress = total > 0 ? Math.round((done / total) * 100) : 0
   const rejected = dispatch.reviewStatus === 'rejected'
@@ -319,7 +321,7 @@ function DispatchPlanReadOnlyCard({
 }
 
 function isTerminalStatus(status: DispatchTaskStatus): boolean {
-  return status === 'complete' || status === 'failed' || status === 'aborted' || status === 'skipped'
+  return status === 'complete' || status === 'failed' || status === 'aborted' || status === 'skipped' || status === 'merge_conflict'
 }
 
 /** Collapsible turn metrics panel for a child task's run. */
@@ -370,6 +372,13 @@ function StatusIcon({ status }: { status: DispatchTaskStatus }) {
       />
     )
   }
+  if (status === 'merge_conflict') {
+    return (
+      <AlertTriangle
+        className={cn(base, 'text-warning animate-in zoom-in-50 duration-300')}
+      />
+    )
+  }
   if (status === 'aborted' || status === 'skipped') {
     return <Ban className={cn(base, 'text-zinc-500 animate-in zoom-in-50 duration-300')} />
   }
@@ -388,6 +397,34 @@ function RetryBadge({
     >
       <RotateCw className="size-2.5 animate-spin" />
       重试 {info.attempt}/{info.maxAttempts}
+    </span>
+  )
+}
+
+function WorktreeBadge({
+  worktree,
+}: {
+  worktree?: { branchName: string; path: string; mergeStatus?: 'success' | 'conflict' }
+}) {
+  if (!worktree) return null
+  const isConflict = worktree.mergeStatus === 'conflict'
+  const isMerged = worktree.mergeStatus === 'success'
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium',
+        isConflict
+          ? 'bg-warning/15 text-warning'
+          : isMerged
+            ? 'bg-success/15 text-success'
+            : 'bg-primary/10 text-primary',
+      )}
+      title={worktree.path}
+    >
+      <GitBranch className="size-2.5" />
+      {worktree.branchName}
+      {isMerged && <Check className="size-2.5" />}
+      {isConflict && <AlertTriangle className="size-2.5" />}
     </span>
   )
 }

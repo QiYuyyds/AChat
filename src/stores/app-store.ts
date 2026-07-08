@@ -28,6 +28,11 @@ export interface DispatchState {
   reviewStatus?: 'pending' | 'approved' | 'rejected'
   pendingPlanId?: string
   retryInfo?: Record<string, { attempt: number; maxAttempts: number; error?: string }>
+  worktreeByTask?: Record<string, {
+    branchName: string
+    path: string
+    mergeStatus?: 'success' | 'conflict'
+  }>
 }
 
 /** Run state in store — extends DB row with in-memory turn metrics. */
@@ -901,6 +906,40 @@ export const useAppStore = create<AppState>()(
             const next = list.filter((q) => q.id !== event.pendingId)
             if (next.length === 0) delete s.pendingQuestionsByConv[event.conversationId]
             else s.pendingQuestionsByConv[event.conversationId] = next
+            return
+          }
+
+          case 'worktree.created': {
+            for (const d of Object.values(s.dispatchesByRunId)) {
+              if (d.taskStatus[event.taskId] !== undefined) {
+                d.worktreeByTask ??= {}
+                d.worktreeByTask[event.taskId] = {
+                  branchName: event.branchName ?? '',
+                  path: event.path ?? '',
+                }
+                return
+              }
+            }
+            return
+          }
+
+          case 'worktree.merged': {
+            for (const d of Object.values(s.dispatchesByRunId)) {
+              if (d.worktreeByTask?.[event.taskId]) {
+                d.worktreeByTask[event.taskId].mergeStatus = event.mergeStatus ?? 'success'
+                if (event.mergeStatus === 'conflict') {
+                  d.taskStatus[event.taskId] = 'merge_conflict'
+                }
+                return
+              }
+            }
+            return
+          }
+
+          case 'worktree.cleaned': {
+            for (const d of Object.values(s.dispatchesByRunId)) {
+              if (d.worktreeByTask) delete d.worktreeByTask[event.taskId]
+            }
             return
           }
 

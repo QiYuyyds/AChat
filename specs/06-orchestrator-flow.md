@@ -432,7 +432,38 @@ PLAN → EXECUTE → (有失败/冲突 且未达上限?) → REPLAN(补救) → 
 
 ---
 
+## Worktree 隔离（并行子任务物理隔离）
+
+同波次并行子任务各自获得独立的 git worktree（或目录拷贝降级），物理隔离文件系统，从根源上消除并发写冲突。
+
+**生命周期对齐 DAG wave**：
+
+- wave 开始前，为 `wave_tasks` 中每个 task 调用 `create_worktree`，创建 `WorktreeRef`（失败则该 task 降级为无 worktree）。
+- wave 中所有 task 并行执行，`ToolContext.workspace_path` / CLI cwd 指向各自 worktree 路径。
+- harness loop 的多次 attempt 在**同一个 worktree** 内串行续跑，保持"不要从头再来"语义（`override_workspace_path` 通过 `RunArgs` 传入，所有 attempt 共享）。
+- wave 结束后：`complete` 状态的 task 调用 `merge_worktree_back` 合并回主 workspace；所有 task（无论状态）调用 `cleanup_worktree` 清理。
+
+**分支命名**：`agent/{sanitized-agent-name}/{short-task-id}`（task_id 截断到 8 字符，Windows 路径长度友好）。
+
+**Merge 策略**：
+
+- git 仓库（local 模式 / sandbox 模式 git init 后）：worktree 内 `git add -A && git commit`，主 workspace `git merge --no-edit <branch>`。
+- 非 git 目录（降级）：`shutil.copytree` 创建 worktree，merge 时 `shutil.copy2` 遍历覆盖回主 workspace。
+- merge 冲突时：task 状态改为 `merge_conflict`，冲突文件列表注入聚合 prompt 的 `<file_conflicts>` 块；merge 被 abort，主 workspace 保持干净。
+
+**降级路径**：worktree 创建失败（git 不可用 / 磁盘满 / 权限）时，task 降级为无 worktree（在主 workspace 执行），该 wave 的 `detect_wave_conflicts` 作为 advisory 运行（不阻断，仅上报）。
+
+**事件**：`worktree.created` / `worktree.merged` / `worktree.cleaned` SSE 事件，前端调度卡显示分支名 badge 和 merge 状态。
+
+**目录**：worktree 创建在 `.agenthub-data/worktrees/<conv_id>/<task_id>/`，与 workspace 目录分离；启动时扫描清理孤儿 worktree。
+
+详见 `backend/app/services/worktree_service.py` 与 `openspec/changes/add-worktree-isolation/`。
+
+---
+
 ## 代码冲突检测（并发写）
+
+> ⚠️ worktree 模式下同波次并行任务物理隔离，**不再产生文件冲突**，`detect_wave_conflicts` 不运行。仅当 wave 中有 task 降级为无 worktree 时，`detect_wave_conflicts` 作为 **advisory** 运行（结果注入冲突列表但不阻断流程）。merge 冲突由 worktree merge-back 阶段单独处理（见上节）。
 
 同一会话的所有子 Agent 共享**唯一** workspace（`agent-runner.ts` 按 conversationId 取）。同波次并行的子任务若写了**同一文件**，文件系统层面是后写覆盖先写——artifact 不受影响（独立 id + 版本链），但 workspace 文件会丢改动。
 

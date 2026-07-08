@@ -87,6 +87,13 @@ from app.services.task_result_report import (
     _format_reported_non_completion,
     evaluate_task_result_report,
 )
+from app.services.worktree_service import (
+    MergeResult,
+    WorktreeRef,
+    cleanup_worktree,
+    create_worktree,
+    merge_worktree_back,
+)
 from app.tools.base import ToolContext
 from app.tools.bash import BashExecutionArgs, execute_bash_command
 from app.utils.clock import now_ms
@@ -681,9 +688,36 @@ async def _execute_dag(
             wave_tasks = ready
             deferred = []
 
+        # ── Worktree isolation: create a worktree per task in the wave ──
+        main_workspace_path = get_effective_cwd(ctx.workspace)
+        agent_names = await _resolve_agent_names({t.agent_id for t in wave_tasks})
+        worktree_refs: dict[str, WorktreeRef | None] = {}
+        for t in wave_tasks:
+            try:
+                wt = await create_worktree(
+                    main_workspace_path,
+                    t.id,
+                    agent_names.get(t.agent_id, t.agent_id),
+                    ctx.conversation_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - degrade to no-worktree
+                logger.warning("create_worktree failed for task %s: %s", t.id, exc)
+                wt = None
+            worktree_refs[t.id] = wt
+
         try:
             wave = await asyncio.gather(
-                *(_run_child_task(t, results, plan_context, ctx) for t in wave_tasks)
+                *(
+                    _run_child_task(
+                        t, results, plan_context, ctx,
+                        worktree_path=(
+                            worktree_refs[t.id].path
+                            if worktree_refs[t.id] is not None
+                            else None
+                        ),
+                    )
+                    for t in wave_tasks
+                )
             )
         finally:
             if load_aware:
@@ -700,8 +734,45 @@ async def _execute_dag(
                 len(deferred), ", ".join(t.id for t in deferred),
             )
 
-        # same-wave code conflict: ≥2 child runs wrote the same file differently.
-        if len(wave_tasks) > 1:
+        # ── Worktree merge-back + cleanup ──
+        any_degraded = False
+        for i, t in enumerate(wave_tasks):
+            wt = worktree_refs[t.id]
+            if wt is None:
+                any_degraded = True
+                continue
+            if wave[i].status == "complete":
+                try:
+                    merge_result = await merge_worktree_back(wt)
+                    if not merge_result.success:
+                        results[t.id] = _merge_conflict_result(
+                            t, wave[i], merge_result
+                        )
+                        wave[i] = results[t.id]
+                        # Re-publish dispatch.end with the authoritative
+                        # merge_conflict status (the task already emitted
+                        # dispatch.end with "complete" inside _run_child_task).
+                        _publish_dispatch_end(ctx, t.id, results[t.id])
+                        conflicts.extend(
+                            _merge_conflict_to_file_conflicts(t, merge_result)
+                        )
+                except Exception as exc:  # noqa: BLE001 - merge failure shouldn't crash the DAG
+                    logger.warning(
+                        "merge_worktree_back failed for task %s: %s", t.id, exc
+                    )
+                    any_degraded = True
+            try:
+                await cleanup_worktree(wt)
+            except Exception as exc:  # noqa: BLE001 - cleanup failure shouldn't crash the DAG
+                logger.warning(
+                    "cleanup_worktree failed for task %s: %s", t.id, exc
+                )
+
+        # ── Advisory file-conflict detection (only when some tasks degraded) ──
+        # In worktree mode, parallel tasks are physically isolated, so file
+        # conflicts are impossible. detect_wave_conflicts runs only as advisory
+        # when at least one task fell back to the shared workspace.
+        if any_degraded and len(wave_tasks) > 1:
             run_writes: list[RunFileWrites] = []
             for i, t in enumerate(wave_tasks):
                 child_run_ids = _get_dispatch_result_run_ids(wave[i])
@@ -745,12 +816,55 @@ def _merge_file_writes(run_ids: list[str]) -> dict[str, str]:
     return merged
 
 
+async def _resolve_agent_names(agent_ids: set[str]) -> dict[str, str]:
+    """Batch-lookup agent names for worktree branch naming."""
+    if not agent_ids:
+        return {}
+    async with get_db() as db:
+        rows = (
+            await db.execute(select(Agent.id, Agent.name).where(Agent.id.in_(agent_ids)))
+        ).all()
+    return {row[0]: row[1] for row in rows}
+
+
+def _merge_conflict_result(
+    task: DispatchPlanItem,
+    original: DispatchTaskResult,
+    merge_result: MergeResult,
+) -> DispatchTaskResult:
+    """Build a ``merge_conflict`` DispatchTaskResult preserving run ids."""
+    conflict_files = ", ".join(merge_result.conflict_files) if merge_result.conflict_files else "(unknown)"
+    return DispatchTaskResult(
+        run_id=original.run_id,
+        status="merge_conflict",
+        artifact_ids=original.artifact_ids,
+        output_message_ids=original.output_message_ids,
+        output_artifacts=original.output_artifacts,
+        error=f'Task "{task.id}" worktree merge conflict: {conflict_files}',
+        run_ids=original.run_ids,
+        task_report=original.task_report,
+    )
+
+
+def _merge_conflict_to_file_conflicts(
+    task: DispatchPlanItem,
+    merge_result: MergeResult,
+) -> list[FileWriteConflict]:
+    """Convert a merge failure into FileWriteConflict records for the aggregate stage."""
+    contributor = {"taskId": task.id, "agentId": task.agent_id, "runId": ""}
+    return [
+        FileWriteConflict(path=path, contributors=[contributor])
+        for path in merge_result.conflict_files
+    ]
+
+
 # ─── one child task: attempts loop, evaluation, project artifact binding ──────
 async def _run_child_task(
     task: DispatchPlanItem,
     upstream: dict[str, DispatchTaskResult],
     plan: list[DispatchPlanItem],
     ctx: DagContext,
+    worktree_path: str | None = None,
 ) -> DispatchTaskResult:
     resolved_inputs = _resolve_task_inputs(task, upstream, plan)
     missing_required_inputs = [
@@ -807,7 +921,7 @@ async def _run_child_task(
                 if continuation_context
                 else base_prompt
             )
-            attempt_evaluation = await _run_child_task_attempt(task, prompt, ctx)
+            attempt_evaluation = await _run_child_task_attempt(task, prompt, ctx, worktree_path=worktree_path)
             if attempt_evaluation.raw_result.run_id:
                 attempt_run_ids.append(attempt_evaluation.raw_result.run_id)
             _merge_run_execution_result(aggregate, attempt_evaluation.raw_result)
@@ -857,6 +971,7 @@ async def _run_child_task(
                     task_id=task.id,
                     result=current_evaluation.result,
                     target_paths=task.target_paths,
+                    effective_cwd_override=worktree_path,
                 )
                 result_with_project = _bind_project_expected_output(
                     task, current_evaluation.result, project_artifact_id
@@ -965,16 +1080,20 @@ async def _maybe_create_project_artifact(
     task_id: str | None,
     result: DispatchTaskResult,
     target_paths: list[str] | None = None,
+    effective_cwd_override: str | None = None,
 ) -> str | None:
-    async with get_db() as db:
-        workspace = (
-            await db.execute(
-                select(Workspace).where(Workspace.conversation_id == conversation_id)
-            )
-        ).scalar_one_or_none()
-        if workspace is None:
-            return None
-        effective_cwd = get_effective_cwd(workspace)
+    if effective_cwd_override:
+        effective_cwd = effective_cwd_override
+    else:
+        async with get_db() as db:
+            workspace = (
+                await db.execute(
+                    select(Workspace).where(Workspace.conversation_id == conversation_id)
+                )
+            ).scalar_one_or_none()
+            if workspace is None:
+                return None
+            effective_cwd = get_effective_cwd(workspace)
 
     # Primary: use file write evidence recorded during this task's tool calls.
     file_writes = list(evidence.file_writes)
@@ -1050,6 +1169,7 @@ async def _run_child_task_attempt(
     task: DispatchPlanItem,
     prompt: str,
     ctx: DagContext,
+    worktree_path: str | None = None,
 ) -> _ChildAttemptEvaluation:
     child_run_id, child_task, _child_cancel = run_with_args(
         RunArgs(
@@ -1060,6 +1180,7 @@ async def _run_child_task_attempt(
             override_prompt=prompt,
             require_task_report=True,
             parent_cancel_event=ctx.cancel_event,
+            override_workspace_path=worktree_path,
         )
     )
 

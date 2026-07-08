@@ -1093,3 +1093,122 @@ def test_collect_existing_files_handles_subdirectory_paths():
         result = orch._collect_existing_files(["src/main.py"], workspace_root)
         assert len(result) == 1
         assert result[0].path == "src/main.py"
+
+
+# ─── worktree path passing (task 5.5) ──────────────────────────────────────────
+async def test_run_child_task_attempt_passes_worktree_path_to_run_args(monkeypatch):
+    """When _run_child_task_attempt is given a worktree_path, it must be forwarded
+    as RunArgs.override_workspace_path so the child run operates inside the worktree."""
+    from app.db.models import Workspace
+    from app.services.agent_runner import RunResult
+    from app.utils.dispatch_run_evidence import RunToolEvidence
+
+    captured_args: list = []
+
+    def _fake_run_with_args(args):
+        captured_args.append(args)
+        fake_result = RunResult(
+            run_id="run_child",
+            status="complete",
+            error=None,
+            artifact_ids=[],
+            output_message_ids=[],
+            output_artifacts={},
+            task_report={},
+        )
+        task = asyncio.ensure_future(asyncio.sleep(0, result=fake_result))
+        cancel = asyncio.Event()
+        return "run_child", task, cancel
+
+    monkeypatch.setattr(orch, "run_with_args", _fake_run_with_args)
+
+    async def _noop_required_commands(*a, **kw):
+        return []
+
+    monkeypatch.setattr(orch, "_run_required_commands", _noop_required_commands)
+    monkeypatch.setattr(orch, "get_run_tool_evidence", lambda _rid: RunToolEvidence())
+    monkeypatch.setattr(
+        orch,
+        "_evaluate_child_task_result",
+        lambda task, result, evidence=None, **kw: (result, None),
+    )
+
+    ws = Workspace(
+        id="ws1",
+        conversation_id="conv_wt",
+        root_path="/tmp/ws",
+        mode="sandbox",
+        bound_path=None,
+        created_at=0,
+    )
+    ctx = orch.DagContext(
+        parent_run_id="run_parent",
+        conversation_id="conv_wt",
+        trigger_message_id="msg1",
+        workspace=ws,
+        cancel_event=asyncio.Event(),
+    )
+    task = DispatchPlanItem(id="t1", agent_id="ag1", task="do something")
+
+    await orch._run_child_task_attempt(task, "prompt", ctx, worktree_path="/fake/worktree/path")
+    assert len(captured_args) == 1
+    assert captured_args[0].override_workspace_path == "/fake/worktree/path"
+
+
+async def test_run_child_task_attempt_none_worktree_path(monkeypatch):
+    """When worktree_path is None, override_workspace_path must also be None
+    so the child run uses the main workspace (degradation mode)."""
+    from app.db.models import Workspace
+    from app.services.agent_runner import RunResult
+    from app.utils.dispatch_run_evidence import RunToolEvidence
+
+    captured_args: list = []
+
+    def _fake_run_with_args(args):
+        captured_args.append(args)
+        fake_result = RunResult(
+            run_id="run_child",
+            status="complete",
+            error=None,
+            artifact_ids=[],
+            output_message_ids=[],
+            output_artifacts={},
+            task_report={},
+        )
+        task = asyncio.ensure_future(asyncio.sleep(0, result=fake_result))
+        cancel = asyncio.Event()
+        return "run_child", task, cancel
+
+    monkeypatch.setattr(orch, "run_with_args", _fake_run_with_args)
+
+    async def _noop_required_commands(*a, **kw):
+        return []
+
+    monkeypatch.setattr(orch, "_run_required_commands", _noop_required_commands)
+    monkeypatch.setattr(orch, "get_run_tool_evidence", lambda _rid: RunToolEvidence())
+    monkeypatch.setattr(
+        orch,
+        "_evaluate_child_task_result",
+        lambda task, result, evidence=None, **kw: (result, None),
+    )
+
+    ws = Workspace(
+        id="ws1",
+        conversation_id="conv_wt",
+        root_path="/tmp/ws",
+        mode="sandbox",
+        bound_path=None,
+        created_at=0,
+    )
+    ctx = orch.DagContext(
+        parent_run_id="run_parent",
+        conversation_id="conv_wt",
+        trigger_message_id="msg1",
+        workspace=ws,
+        cancel_event=asyncio.Event(),
+    )
+    task = DispatchPlanItem(id="t1", agent_id="ag1", task="do something")
+
+    await orch._run_child_task_attempt(task, "prompt", ctx, worktree_path=None)
+    assert len(captured_args) == 1
+    assert captured_args[0].override_workspace_path is None
