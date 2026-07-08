@@ -126,6 +126,33 @@ async def count_uncompacted_messages(conversation_id: str) -> int:
         return len(result.scalars().all())
 
 
+async def estimate_uncompacted_tokens(conversation_id: str) -> int:
+    """Estimate total token count of uncompacted messages.
+
+    Loads the same uncompacted message slice as ``count_uncompacted_messages``
+    and sums coarse token estimates of their text parts. Used by the
+    auto-compaction hook's token-based trigger.
+    """
+    latest = await get_latest_context_summary(conversation_id)
+    since_created_at = latest.covered_until_created_at if latest else None
+    async with get_db() as db:
+        where = [
+            Message.conversation_id == conversation_id,
+            Message.status == "complete",
+        ]
+        if since_created_at is not None:
+            where.append(Message.created_at > since_created_at)
+        rows = (
+            (await db.execute(select(Message).where(and_(*where))))
+            .scalars()
+            .all()
+        )
+    total = 0
+    for m in rows:
+        total += estimate_tokens(_message_text(m))
+    return total
+
+
 def render_conversation_summary_block(summary: ContextSummary) -> str:
     """Wrap a summary in the XML-ish tag the runner injects into prompts."""
     return "\n".join(

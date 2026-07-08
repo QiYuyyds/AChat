@@ -48,13 +48,14 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 ```
 
 **数据流主线（一次 Agent 回复）**：
-用户发消息 → API 路由 → `AgentRunner` 起 run → 选 `Adapter` 调 LLM → Adapter 吐 **`StreamEvent`** → AgentRunner 持久化 + 经 `EventBus` 推 SSE → 前端 `stream-provider` 收事件 → `app-store` reducer 应用 → UI 重渲染。
+用户发消息 → API 路由 → `AgentRunner` 起 run → `HookRegistry` dispatch(ON_RUN_START) → 选 `Adapter` 调 LLM → Adapter 吐 **`StreamEvent`** → 工具调用经 `execute_with_hooks`（pre/post hook 拦截）→ AgentRunner 持久化 + 经 `EventBus` 推 SSE → 前端 `stream-provider` 收事件 → `app-store` reducer 应用 → UI 重渲染 → `HookRegistry` dispatch(ON_RUN_END)。
 
 **核心契约（改动必读对应 spec）**：
 - **`StreamEvent` 联合类型**是粘合全系统的事件协议（`specs/02`）。定义在 `backend/app/schemas/events.py` + `src/shared/`。
 - **Message = parts 数组**（text / thinking / tool_use / artifact_ref …），不是 markdown 字符串（`specs/03`）。
 - **Artifact 独立于 Message**，有自己的生命周期与版本链（`specs/04`）。
 - **Orchestrator 是特殊 Agent**，走同一个 AgentRunner，只是多了 `plan_tasks` / `report_task_result` 工具（`specs/06`）。
+- **工具执行经 HookRegistry 拦截**：`execute_with_hooks` 在 pre/post 阶段分发 Hook，支持 deny/modify/inject/allow 控制流。Agent 通过 `hook_names` 字段启用特定 Hook 组。
 
 ### 3. 功能现状矩阵
 
@@ -67,8 +68,8 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | CustomAgentAdapter | ✅ | OpenAI 兼容（DeepSeek/OpenAI/火山方舟）+ 自驱 tool loop（SDK 路线） |
 | MockAdapter | ✅ | 开发期不烧 token |
 | 自建 Agent | ✅ | 表单/对话式创建，自定义 prompt + 工具集 + Skills |
-| Orchestrator 编排 | ✅ | 三阶段规划 + DAG 调度 + 级联中止 + 同波次代码冲突检测 |
-| 工具系统（20 个） | ✅ | write/read/deploy_artifact · read_attachment · fs_read/fs_write/fs_list/bash · plan_tasks · ask_user · report_task_result · web_search · memory_recall · rag_search/ingest/list/delete · load_skill/write_skill |
+| Orchestrator 编排 | ✅ | 三阶段规划 + DAG 调度 + 级联中止 + 同波次代码冲突检测 + 子任务验证门禁（verify stage） |
+| 工具系统（23 个） | ✅ | write/read/deploy_artifact · read_attachment · fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash · plan_tasks · ask_user · report_task_result · web_search · memory_recall · rag_search/ingest/list/delete · load_skill/write_skill |
 | Agent Skills | ✅ | custom agent 装备 skill · 渐进式披露 · `load_skill` 按需读正文 |
 | Artifact 预览/编辑 | ✅ | web_app / document / image / ppt(真 .pptx 导出) / code_file / diff · 版本链 · 选区改写 · 面板内编辑 |
 | Workspace 沙箱 | ✅ | sandbox/local 双模式 · fs_write 审批 · 双平台 Bash 黑名单 |
@@ -82,9 +83,11 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **Document + Version 知识库** | ✅ | 全局文档版本化 · 解析入库(pdfplumber→PyPDF2→pdftotext) · 按需召回 · 版本刷新 |
 | **PromptAssembler** | ✅ | 上下文组装：Profile(偏好) + Recall(记忆) + Constraints(约束) 注入 Agent |
 | **Web 搜索** | ✅ | Tavily API（`web_search` 工具，需 `TAVILY_API_KEY`） |
+| **生命周期 Hooks 系统** | ✅ | 7 个内置 Hook（审计/压缩/检查点/记忆/技能/摘要/审批）· 10 个生命周期事件 · Agent 按 `hook_names` 启用 |
+| **Checkpoint 检查点** | ✅ | SDK Agent turn 级检查点保存与恢复（`agent_run_checkpoints` 表）|
 | Electron 桌面版 | ⚠️ | 打包脚本就绪；内嵌 Next 已无后端，需改启 Python |
 | 移动端伴随 App | ⏳ | 响应式 Web 已适配；Capacitor 原生壳脚手架已建，配对通信待打通 |
-| 测试覆盖 | 🟡 | 后端 pytest（390+ 测试, ruff 全绿）；前端 Vitest 纯函数；E2E 待补 |
+| 测试覆盖 | 🟡 | 后端 pytest（72+ 测试文件, ruff 全绿）；前端 Vitest 纯函数；E2E 待补 |
 
 ---
 
@@ -106,10 +109,10 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 区域 | 文件 |
 |---|---|
 | 侧栏（会话/产物库/Agents/知识库/Skills/分析 Tab） | `sidebar.tsx` |
-| 聊天主面板 | `chat-panel.tsx` · `message-list.tsx` · `message-item.tsx` · `message-parts.tsx` |
+| 聊天主面板 | `chat-panel.tsx` · `message-list.tsx` · `message-item.tsx` · `message-parts.tsx` · `message-highlight-layer.tsx` · `turn-timeline.tsx` |
 | 输入框（附件/审批/选区引用/斜杠命令） | `message-input.tsx` · `edit-message-input.tsx` |
 | Orchestrator 调度卡 | `dispatch-plan-card.tsx` |
-| 产物预览 / 产物库 | `artifact-preview-panel.tsx` · `artifact-library.tsx` |
+| 产物预览 / 产物库 | `artifact-preview-panel.tsx` · `artifact-library.tsx` · `artifact-code-editor.tsx` |
 | 知识库 / 文档 | `knowledge-library.tsx` · `document-detail.tsx` · `document-version-item.tsx` · `upload-document-dialog.tsx` |
 | Skills 库 | `skill-library.tsx` |
 | 全局搜索 | `global-search.tsx` · `global-search-trigger.tsx` · `search-result-item.tsx` |
@@ -148,7 +151,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 服务 | 文件 | 职责 |
 |---|---|---|
 | **AgentRunner** | `agent_runner.py` | per-run 生命周期、选 adapter、`build_adapter_input`、历史注入、token 预算 —— **L3 核心** |
-| **Orchestrator** | `orchestrator.py` · `orchestrator_prompts.py` | 三阶段调度（PLAN/EXECUTE/AGGREGATE）+ DAG + 冲突检测 |
+| **Orchestrator** | `orchestrator.py` · `orchestrator_prompts.py` | 三阶段调度（PLAN/EXECUTE/VERIFY/AGGREGATE）+ DAG + 冲突检测 |
 | 冲突检测 | `utils/dispatch_file_writes.py` | 子 run fs_write 写入追踪 + 冲突检测纯函数 |
 | 会话服务 | `conversation_service.py` | 会话/消息持久化 |
 | 跨 run 上下文 | `conversation_context.py` | MessagePart → ChatMessage 序列化、pinned 注入 |
@@ -168,6 +171,12 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **Document 服务** | `document_service.py` | ★ Document + Version CRUD + 入库 RAG |
 | **PromptAssembler** | `prompt_assembler.py` | ★ 上下文组装（Profile + Recall + Constraints） |
 | Skill 服务 | `skill_service.py` | Skills 加载 / 写入 |
+| **HookRegistry** | `hook_registry.py` | ★ 生命周期 Hook 注册与分发（10 个事件） |
+| 内置 Hooks | `hooks/`（7 个） | audit_log · auto_compact · checkpoint · memory_persist · skill_auto_activator · summary_generate · tool_approval |
+| Checkpoint | `checkpoint_service.py` | SDK Agent turn 级检查点保存/恢复 |
+| 验证门禁 | `verify_stage.py` | Orchestrator 子任务产物验证 |
+| 项目产物 | `project_artifact.py` | 项目级产物管理 |
+| Agent 负载 | `agent_load_tracker.py` | Agent 负载追踪 |
 
 ### L2 适配器（`backend/app/adapters/`）
 | 文件 | 说明 |
@@ -184,7 +193,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 > MCP Bridge：`backend/app/mcp_bridge.py` — stdio MCP Server，把 `report_task_result`/`write_artifact`/`ask_user` 等 AChat 平台工具暴露给 CLI agent（Claude/Codex CLI 通过 `--mcp-config` 拉起）。
 
 ### 工具系统（`backend/app/tools/`）
-`base.py`（ToolContext + ToolDef） · `registry.py`（注册 20 个工具） · `write_artifact.py` · `read_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_list.py` · `bash.py` · `plan_tasks.py` · `ask_user.py` · `report_task_result.py` · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `skills.py`（load_skill/write_skill）。详见 `specs/07`。
+`base.py`（ToolContext + ToolDef） · `registry.py`（注册 23 个工具） · `write_artifact.py` · `read_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_edit.py` · `fs_list.py` · `fs_glob.py` · `fs_grep.py` · `bash.py` · `plan_tasks.py` · `ask_user.py` · `report_task_result.py` · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `skills.py`（load_skill/write_skill）。详见 `specs/07`。
 
 ### RAG 引擎（`backend/app/rag/`）
 | 文件 | 职责 |
@@ -203,6 +212,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `long_term.py` | 长期记忆（long_term_memory 表，embedding 语义召回） |
 | `preference.py` | 用户偏好（user_preferences 表，KV） |
 | `graph_memory.py` | 图谱记忆（Neo4j + memory_nodes/edges 镜像表） |
+| `memory_writer.py` | 记忆写入门面 |
 | `consolidation.py` | 记忆固化 / 去重 / 衰减 / TTL |
 
 ### 知识图谱（`backend/app/graph/`）
@@ -217,26 +227,27 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 |---|---|
 | `factory.py` | `build_infrastructure()`：配置驱动，独立降级（Milvus/ES/Neo4j/Kafka） |
 | `hybrid.py` | HybridStore 抽象（向量 + 全文 + 图谱统一接口） |
+| `cache_metrics.py` | 嵌入缓存命中率指标 |
 | `status.py` | 基础设施连接状态面板 |
 
 ### L1 持久化（`backend/app/db/`）
 | 文件 | 说明 |
 |---|---|
-| `models.py` | **17 张表**：9 核心（agents/conversations/messages/artifacts/workspaces/attachments/agent_runs/context_summaries/app_settings）+ 6 AGI-memory（long_term_memory/user_preferences/rag_chunks/chat_history/memory_nodes/memory_edges）+ 2 Document（documents/document_versions） |
+| `models.py` | **18 张表**：10 核心（agents/conversations/messages/artifacts/workspaces/attachments/agent_runs/agent_run_checkpoints/context_summaries/app_settings）+ 6 AGI-memory（long_term_memory/user_preferences/rag_chunks/chat_history/memory_nodes/memory_edges）+ 2 Document（documents/document_versions） |
 | `engine.py` | 异步引擎 + PostgreSQL（连接池） |
 | `__init__.py` | 模块导出 |
 
 DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.agenthub-data/workspaces/<conv_xxx>/`。
 
 ### 共享类型（`src/shared/`）
-`types.ts`（**`StreamEvent` / `MessagePart` 等跨层类型，改动牵一发动全身**） · `constants.ts` · `model-registry.ts` · `ppt-theme.ts` 等。前端纯类型，与后端 `backend/app/schemas/` 保持 camelCase 兼容。
+`types.ts`（**`StreamEvent` / `MessagePart` 等跨层类型，改动牵一发动全身**） · `constants.ts` · `model-registry.ts` · `ppt-theme.ts` · `codex-compat.ts` · `openai-compatible.ts` 等 15 个文件。前端纯类型，与后端 `backend/app/schemas/` 保持 camelCase 兼容。
 
 ### 桌面（`electron/`）& 移动（`apps/mobile/`）
 - Electron：`main.ts`（主进程） · `paths.ts`（userData 路径迁移） · `server-bootstrap.ts`。`specs/12`。
 - 移动：`apps/mobile/`（Capacitor 伴随客户端，monorepo workspace `@agenthub/mobile`）。`specs/14`。
 
 ### 测试
-- 后端：`backend/tests/`（pytest，390+ 测试，`asyncio_mode = "auto"`，ruff 全绿）。
+- 后端：`backend/tests/`（pytest，72+ 测试文件，`asyncio_mode = "auto"`，ruff 全绿）。
 - 前端单元：`src/**/*.test.ts`（Vitest 纯函数）。
 
 ---
@@ -244,11 +255,15 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 ## 附 · 当前现状（易过时，以 git 为准）
 
 ### ✅ 近期完成
+- **生命周期 Hooks 系统**：7 个内置 Hook（审计/压缩/检查点/记忆/技能/摘要/审批）· 10 个生命周期事件 · Agent 按 `hook_names` 启用
+- **Checkpoint 检查点**：SDK Agent turn 级检查点保存与恢复（`agent_run_checkpoints` 表）
+- **Orchestrator 验证门禁**：子任务产物 verify stage 门禁检查
+- **新增文件工具**：`fs_edit`（文件编辑）· `fs_glob`（glob 搜索）· `fs_grep`（内容搜索）
 - **RAG 混合检索系统**：Milvus(向量) + Elasticsearch(全文) + Neo4j(KGStore) 三路召回 + RRF 融合 + Query Rewrite + Rerank
 - **分层记忆系统**：STM + LTM(embedding 召回) + Preference + GraphMemory + 自动固化/去重/衰减
 - **Document + Version 知识库**：全局文档版本化 · 解析入库 · 按需召回 · 版本刷新三能力
 - **PromptAssembler**：Profile + Recall + Constraints 上下文组装，注入 Agent system prompt
-- **PostgreSQL 迁移**：从 SQLite 迁移到 PostgreSQL 16（asyncpg），17 张表
+- **PostgreSQL 迁移**：从 SQLite 迁移到 PostgreSQL 16（asyncpg），18 张表
 - **基础设施层**：Docker Compose 编排（PG/Milvus/ES/Neo4j），独立降级策略
 - **Web 搜索工具**：Tavily API
 - **Orchestrator 同波次代码冲突检测**
@@ -285,4 +300,4 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 
 ---
 
-*最后更新：2026-07-02 · 同步 CLI 适配器迁移（Claude/Codex 从 SDK 路线切到 CLI 子进程路线）后的适配器矩阵、代码地图、接入路线图与待办。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*
+*最后更新：2026-07-07 · 同步 Hooks 系统、Checkpoint、新增工具（fs_edit/glob/grep）、18 张表、新增服务（hook_registry/checkpoint_service/verify_stage 等）、Orchestrator 验证门禁。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*

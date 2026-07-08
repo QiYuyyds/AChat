@@ -12,6 +12,7 @@ Port mappings: ``JSON.stringify`` -> json.dumps (no spaces, matching JS default)
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from sqlalchemy import and_, desc, select
 
@@ -22,15 +23,16 @@ from app.schemas.dispatch import (
     DispatchPlanItem,
     DispatchTaskInput,
 )
-from app.utils.dispatch_run_evidence import RunToolEvidence
 from app.services.context_compaction_service import (
     get_latest_context_summary,
     render_conversation_summary_block,
 )
 from app.services.dispatch_plan import collect_dependency_closure
+from app.utils.dispatch_run_evidence import RunToolEvidence
 from app.utils.workspace_utils import get_effective_cwd
 
 SUB_AGENT_CONTEXT_RECENT_LIMIT = 5
+SUB_AGENT_CONTEXT_STANDARD_LIMIT = 10
 
 
 # ─── resolved-input view (mirror the TS ResolvedTaskInput interface) ──────────
@@ -88,10 +90,30 @@ def build_orchestrator_plan_prompt(
             "## 你的工作流",
             "你是编排者（Orchestrator），你的核心职责是规划任务并分派给其他 Agent 执行，而不是自己直接实现。",
             "1. 阅读用户最新请求与上下文。",
-            "2. 如果存在会阻塞正确规划的关键歧义，且能归纳为 2-4 个清晰选项，先调用 ask_user 让用户选择；拿到答案后继续。",
-            "3. 对于任何需要创建、修改、生成、调试、分析内容的用户请求，你【必须】调用 plan_tasks 进行任务规划和分派。不要自己直接写代码、生成文件或产出内容。",
-            "4. 只有纯信息查询、闲聊、或你已经在 aggregate 阶段给出的总结才不需要 plan_tasks。",
-            "5. 系统会自动执行 plan 并把子任务结果回传给你，由你做最终总结。",
+            "2. 【必须】在规划前先用 fs_list / fs_read 扫描当前 workspace 的目录结构和关键文件，了解项目现状。",
+            "3. 根据探索结果评估任务复杂度（simple / moderate / complex），并在 plan_tasks 中声明。",
+            "4. 如果存在会阻塞正确规划的关键歧义，且能归纳为 2-4 个清晰选项，先调用 ask_user 让用户选择；拿到答案后继续。",
+            "5. 对于任何需要创建、修改、生成、调试、分析内容的用户请求，你【必须】调用 plan_tasks 进行任务规划和分派。不要自己直接写代码、生成文件或产出内容。",
+            "6. 只有纯信息查询、闲聊、或你已经在 aggregate 阶段给出的总结才不需要 plan_tasks。",
+            "7. 系统会自动执行 plan 并把子任务结果回传给你，由你做最终总结。",
+            "",
+            "## 规划前探索（强制）",
+            "- 调用 plan_tasks 之前，【必须】先用 fs_list 查看当前 workspace 的根目录结构，了解项目布局。",
+            "- 如果用户请求涉及代码实现或修改，【必须】用 fs_read 读取相关文件，了解现有代码结构和约定。",
+            "- 在 plan_tasks 的参数中，通过 explored 字段声明你探索过的文件路径列表。",
+            "- 如果不探索直接规划，系统会认为这是一个低质量的计划。",
+            "",
+            "## 复杂度评估引导",
+            "- simple（简单）：单文件改动、直接逻辑、无需多步推理 → 不要拆分，直接单任务 plan。",
+            "- moderate（中等）：少量文件改动、需要一定设计思考 → 适度拆分为 2-3 个任务。",
+            "- complex（复杂）：多文件/多模块改动、需要架构设计、有依赖关系 → 充分拆分，确保每个子任务独立可执行。",
+            "- 在 plan_tasks 的参数中通过 complexity 字段声明你的评估。",
+            "",
+            "## 上下文级别引导（contextLevel）",
+            "- 每个子任务可设置 contextLevel 字段控制子 Agent 获得的跨会话上下文量。",
+            "- isolated（默认）：适合独立执行任务，子 Agent 仅获得最近 5 条消息 + 5 个产物摘要。",
+            "- standard：适合审查、调试、跨模块分析任务，子 Agent 获得最近 10 条消息 + 10 个产物摘要 + 全部 pinned 消息。",
+            "- 不设置 contextLevel 等同于 isolated。",
             "",
             "## 可用 Agent",
             agent_list if len(agent_list) > 0 else "（无）",
@@ -162,6 +184,21 @@ def build_orchestrator_aggregate_prompt(base_system_prompt: str) -> str:
             "- 如果存在 failed / skipped / aborted 任务，必须明确说明整体未完成，不要把局部成功说成全部完成",
             "- 用 <artifact_ref id=\"art_xxx\"/> 形式引用关键产物（如果有）",
             "- 给出明确的下一步建议",
+            "",
+            "## 跨任务一致性检查",
+            "- 检查各任务输出之间是否存在矛盾或冲突（如接口定义不一致、命名冲突、重复实现等）。",
+            "- 如果发现不一致，在总结中明确指出涉及哪些任务、具体冲突内容，并建议如何解决。",
+            "",
+            "## 完成度评分",
+            "- 对整体完成度给出评估：fully complete / partially complete / failed。",
+            "- 如果是 partially complete，说明哪些部分已完成、哪些缺失。",
+            "- 不要将部分完成说成完全完成。",
+            "",
+            "## 下一步推荐",
+            "- 对 failed / skipped / aborted 的任务，给出具体的修复建议（如重做、换 agent、调整依赖等）。",
+            "- 如果所有任务都完成，建议下一步可以做什么（如测试、部署、优化等）。",
+            "- 不要在未完成时声称已完成。",
+            "",
             "不要再调用 plan_tasks，不要把任务再次分派。",
         ]
     )
@@ -176,6 +213,12 @@ async def build_sub_agent_prompt(
     resolved_inputs: list[ResolvedTaskInput],
     workspace: Workspace,
 ) -> str:
+    # O11: context_level controls how much cross-conversation context the
+    # sub-agent receives. "standard" = 10 recent + 10 artifacts; else 5 + 5.
+    is_standard = task.context_level == "standard"
+    recent_limit = SUB_AGENT_CONTEXT_STANDARD_LIMIT if is_standard else SUB_AGENT_CONTEXT_RECENT_LIMIT
+    artifact_limit = recent_limit
+
     # transitive dependency closure: a reviewer must see the PRD/UI, not just the
     # direct upstream implementation.
     upstream_artifact_ids: set[str] = set()
@@ -206,7 +249,7 @@ async def build_sub_agent_prompt(
     existing_xml = "\n".join(
         _render_artifact_summary_xml(a)
         for a in [a for a in existing if a.id not in upstream_artifact_ids][
-            :SUB_AGENT_CONTEXT_RECENT_LIMIT
+            :artifact_limit
         ]
     )
 
@@ -230,7 +273,7 @@ async def build_sub_agent_prompt(
                     select(Message)
                     .where(recent_where)
                     .order_by(desc(Message.created_at))
-                    .limit(SUB_AGENT_CONTEXT_RECENT_LIMIT)
+                    .limit(recent_limit)
                 )
             ).scalars().all()
         )
@@ -505,7 +548,15 @@ async def build_aggregate_prompt(
             lines.append(f"  <conflict path={_json(to_rel(c.path))} tasks={_json(tasks)} />")  # type: ignore[attr-defined]
         lines.append("</file_conflicts>")
 
-    lines.extend(["", "请基于以上结果给用户输出最终总结消息。"])
+    lines.extend([
+        "",
+        "请基于以上结果给用户输出最终总结消息。",
+        "",
+        "## 分析要求",
+        "1. 跨任务一致性检查：检查各任务输出之间是否存在矛盾或冲突，如有则明确指出。",
+        "2. 完成度评分：给出整体完成度评估（fully complete / partially complete / failed），并说明缺失项。",
+        "3. 下一步推荐：对 failed/skipped 任务给出具体修复建议；如全部完成则建议后续行动。",
+    ])
     return "\n".join(lines)
 
 

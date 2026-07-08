@@ -47,6 +47,7 @@ def test_parse_skill_md_ok():
     assert svc.parse_skill_md(VALID_MD) == (
         "PPT Builder",
         "Turn an outline into a polished deck.",
+        [],
     )
 
 
@@ -58,6 +59,96 @@ def test_parse_skill_md_missing_field():
 def test_parse_skill_md_no_frontmatter():
     with pytest.raises(SkillError):
         svc.parse_skill_md("# just markdown")
+
+
+# ─── parse_skill_md: trigger_keywords ───
+MD_WITH_KEYWORDS = """---
+name: Python Skill
+description: Python best practices
+trigger_keywords:
+  - python
+  - pytest
+  - .py
+  - pip
+---
+
+# Python guide
+"""
+
+MD_WITH_INLINE_KEYWORDS = """---
+name: Go Skill
+description: Go best practices
+trigger_keywords: ["go", ".go", "golang"]
+---
+
+# Go guide
+"""
+
+MD_WITH_TOO_MANY_KEYWORDS = """---
+name: Many Keywords
+description: Too many
+trigger_keywords:
+  - a
+  - b
+  - c
+  - d
+  - e
+  - f
+  - g
+  - h
+  - i
+  - j
+  - k
+  - l
+---
+body
+"""
+
+MD_WITH_INVALID_KEYWORDS = """---
+name: Invalid
+description: Bad format
+trigger_keywords: 123
+---
+body
+"""
+
+
+def test_parse_skill_md_with_trigger_keywords():
+    name, desc, kw = svc.parse_skill_md(MD_WITH_KEYWORDS)
+    assert name == "Python Skill"
+    assert desc == "Python best practices"
+    assert kw == ["python", "pytest", ".py", "pip"]
+
+
+def test_parse_skill_md_with_inline_keywords():
+    name, desc, kw = svc.parse_skill_md(MD_WITH_INLINE_KEYWORDS)
+    assert kw == ["go", ".go", "golang"]
+
+
+def test_parse_skill_md_no_trigger_keywords():
+    name, desc, kw = svc.parse_skill_md(VALID_MD)
+    assert kw == []
+
+
+def test_parse_skill_md_too_many_keywords_truncated():
+    name, desc, kw = svc.parse_skill_md(MD_WITH_TOO_MANY_KEYWORDS)
+    assert len(kw) == 10
+    assert kw[0] == "a"
+    assert kw[9] == "j"
+
+
+def test_parse_skill_md_invalid_keywords_returns_empty():
+    name, desc, kw = svc.parse_skill_md(MD_WITH_INVALID_KEYWORDS)
+    assert kw == []
+
+
+def test_list_skills_includes_trigger_keywords(_tmp_skills_root):
+    svc.save_skill({"SKILL.md": MD_WITH_KEYWORDS})
+    svc.save_skill({"SKILL.md": VALID_MD})
+    listed = svc.list_skills()
+    by_slug = {m.slug: m for m in listed}
+    assert by_slug["python-skill"].trigger_keywords == ["python", "pytest", ".py", "pip"]
+    assert by_slug["ppt-builder"].trigger_keywords == []
 
 
 def test_strip_frontmatter():

@@ -16,8 +16,10 @@ async / async generators; the TS module-global ``db`` singleton -> per-call
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from collections.abc import AsyncIterable, Callable
+import time
+from collections.abc import AsyncIterable, AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -32,14 +34,19 @@ from app.db.models import Agent, AgentRun, Artifact, Conversation, Message, Work
 from app.schemas.artifacts import ArtifactRecord
 from app.schemas.events import (
     ArtifactCreateEvent,
+    DeployStatusEvent,
     MessageEndEvent,
     MessageStartEvent,
     PartStartEvent,
     RunEndEvent,
     RunStartEvent,
+    RunUsageEvent,
     StreamEvent,
     ToolResultEvent,
+    TurnMetricEvent,
+    TurnTokenBreakdown,
 )
+from app.schemas.messages import DeployStatusRecord, MessageUsage
 from app.services import runner_registry
 from app.services.attachment_service import get_attachment_absolute_path
 from app.services.context_compaction_service import (
@@ -47,6 +54,7 @@ from app.services.context_compaction_service import (
     CompactionSkipped,
     compact_conversation,
     count_uncompacted_messages,
+    estimate_uncompacted_tokens,
     prefix_prompt_with_context_summary,
 )
 from app.services.conversation_context import BuildHistoryOptions, build_history_for
@@ -58,6 +66,7 @@ from app.services.task_result_report import (
     REPORT_TASK_RESULT_TOOL_NAME,
     parse_and_normalize,
 )
+from app.tools.base import ToolContext
 from app.tools.registry import (
     tool_registry,  # noqa: F401 - parity import (tool resolution lives in adapters)
 )
@@ -112,6 +121,17 @@ def _get_tool_state_tracker():
         if _app_ref is None:
             return None
         return getattr(_app_ref.state, "tool_state_tracker", None)
+    except Exception:
+        return None
+
+
+def _get_hook_registry():
+    """Retrieve the HookRegistry from app.state, or None."""
+    try:
+        from app.main import _app_ref
+        if _app_ref is None:
+            return None
+        return getattr(_app_ref.state, "hook_registry", None)
     except Exception:
         return None
 
@@ -288,11 +308,15 @@ async def _maybe_generate_summary_hook(
 async def _maybe_auto_compact_hook(
     conversation_id: str,
     override_prompt: str | None = None,
+    agent_id: str | None = None,
 ) -> None:
     """Background hook: auto-compact conversation context when watermark reached.
 
-    When the uncompacted message count >= AUTO_COMPACT_WATERMARK (10), triggers
-    ``compact_conversation(silent=True)`` to silently refresh the ContextSummary.
+    Triggers ``compact_conversation(silent=True)`` when either:
+    - the uncompacted message count >= AUTO_COMPACT_WATERMARK (10), OR
+    - the estimated token usage of uncompacted messages exceeds 87% of the
+      model's context window (when agent model info is available).
+
     Skipped for sub-agent runs (``override_prompt`` non-empty) to avoid
     side-effects on the parent conversation's context.
 
@@ -315,19 +339,45 @@ async def _maybe_auto_compact_hook(
             watermark,
             AUTO_COMPACT_WATERMARK,
         )
-        if watermark < AUTO_COMPACT_WATERMARK:
+        if watermark >= AUTO_COMPACT_WATERMARK:
+            result = await compact_conversation(conversation_id, silent=True)
+            logger.info(
+                "[auto-compact] conv=%s compacted=%d silent=True summary_id=%s "
+                "ctx_before=%d ctx_after=%d",
+                conversation_id,
+                result.summary.source_message_count,
+                result.summary.id,
+                result.ctx_before,
+                result.ctx_after,
+            )
             return
 
-        result = await compact_conversation(conversation_id, silent=True)
-        logger.info(
-            "[auto-compact] conv=%s compacted=%d silent=True summary_id=%s "
-            "ctx_before=%d ctx_after=%d",
-            conversation_id,
-            result.summary.source_message_count,
-            result.summary.id,
-            result.ctx_before,
-            result.ctx_after,
-        )
+        # O1: token-based trigger — compacts when estimated tokens > 87% of
+        # the model's context window, even if the message count is low.
+        if agent_id:
+            model_limit = await _get_agent_model_limit(agent_id)
+            if model_limit and model_limit > 0:
+                token_threshold = int(model_limit * 0.87)
+                estimated_tokens = await estimate_uncompacted_tokens(conversation_id)
+                logger.info(
+                    "[auto-compact] conv=%s estimated_tokens=%d token_threshold=%d "
+                    "(87%% of %d)",
+                    conversation_id,
+                    estimated_tokens,
+                    token_threshold,
+                    model_limit,
+                )
+                if estimated_tokens > token_threshold:
+                    result = await compact_conversation(conversation_id, silent=True)
+                    logger.info(
+                        "[auto-compact] conv=%s compacted (token trigger) "
+                        "summary_id=%s ctx_before=%d ctx_after=%d",
+                        conversation_id,
+                        result.summary.id,
+                        result.ctx_before,
+                        result.ctx_after,
+                    )
+                    return
     except CompactionSkipped as skip:
         logger.info(
             "[auto-compact] conv=%s skipped: %s (silent)",
@@ -338,7 +388,18 @@ async def _maybe_auto_compact_hook(
         logger.warning("[auto-compact] conv=%s error: %s", conversation_id, e)
 
 
-# ─── Session metadata blunting (custom_adapter prompt injection) ─────────────
+async def _get_agent_model_limit(agent_id: str) -> int | None:
+    """Look up the context window for the agent's configured model."""
+    try:
+        async with get_db() as db:
+            agent = await db.get(Agent, agent_id)
+            if agent is None:
+                return None
+            limits = get_model_limits(agent.model_provider, agent.model_id)
+            return limits.context_window
+    except Exception as e:
+        logger.warning("[auto-compact] failed to get model limit for agent %s: %s", agent_id, e)
+        return None
 
 
 # ─── IP geolocation for auto location detection ─────────────────────────────
@@ -426,6 +487,8 @@ class RunArgs:
     require_task_report: bool = False
     # parent run's cancel signal — cascade: parent abort -> child abort
     parent_cancel_event: asyncio.Event | None = None
+    # resume: reuse existing run_id, load checkpoint, continue ReAct loop
+    resume_from_checkpoint: bool = False
 
 
 @dataclass
@@ -451,12 +514,500 @@ def _empty_run_execution_result() -> RunExecutionResult:
     return RunExecutionResult(artifact_ids=[], output_message_ids=[], output_artifacts={})
 
 
+# ─── TurnResult (internal to the SDK ReAct loop) ───────────────────────────────
+@dataclass
+class ToolCallInfo:
+    id: str
+    name: str
+    args: dict
+
+
+@dataclass
+class TurnResult:
+    """Extracted from call_once events after consumption."""
+
+    message_id: str
+    text_content: str
+    tool_calls: list[ToolCallInfo]
+    finish_reason: str | None
+    usage: MessageUsage | None
+    assistant_message: dict  # written back to messages list (includes reasoning_content)
+
+
 # ─── Adapter classification ─────────────────────────────────────────────────
 # CLI agents use vendor CLI subprocesses with their own tool sets and auth.
 CLI_ADAPTERS = frozenset({"claude-code", "codex"})
 # SDK agents call LLM APIs via SDKs; AChat manages tools, auth, and history.
 SDK_ADAPTERS = frozenset({"custom"})
 # mock is neither CLI nor SDK; it is test-only and ignored by tool injection.
+
+# Max turns in the SDK ReAct loop (mirrors CustomAdapter.MAX_TURNS).
+REACT_LOOP_MAX_TURNS = 8
+
+# O2 Step 5: only read-only tools are cached within a single _run_react_loop call.
+READONLY_CACHEABLE_TOOLS = frozenset({"fs_read", "read_artifact", "read_attachment"})
+
+
+# ─── SDK ReAct loop (Phase 1: call_once + TurnResult) ─────────────────────────
+def _mid_run_compact(messages: list[dict]) -> list[dict]:
+    """Structurally compress messages list mid-run without calling an LLM.
+
+    Adapts prune_old_tool_results + fold_old_messages logic for the dict-based
+    messages used in _run_react_loop. No LLM summarization (latency constraint).
+    """
+    # 1. Prune large old tool results (keep last 6 messages intact)
+    recent_keep = 6
+    if len(messages) > recent_keep:
+        for msg in messages[:-recent_keep]:
+            if msg.get("role") == "tool":
+                content = msg.get("content", "")
+                if isinstance(content, str) and estimate_tokens(content) > 2000:
+                    msg["content"] = "[tool_result 已裁剪（mid-run compact）]"
+
+    # 2. Fold old messages when count exceeds threshold
+    fold_threshold = 20
+    keep_recent = 15
+    if len(messages) > fold_threshold:
+        first = messages[0] if messages[0].get("role") == "system" else None
+        recent = messages[-keep_recent:]
+        old_start = 1 if first else 0
+        old_count = len(messages) - keep_recent - old_start
+        if old_count > 0:
+            fold_marker = {
+                "role": "system",
+                "content": f"[已折叠 {old_count} 条消息（mid-run compact）]",
+            }
+            messages = [first, fold_marker, *recent] if first else [fold_marker, *recent]
+
+    return messages
+
+
+# ─── SDK ReAct loop (Phase 1: call_once + TurnResult) ─────────────────────────
+async def _run_react_loop(
+    adapter: Any,
+    adapter_input: AdapterInput,
+    cancel_event: asyncio.Event,
+    run_id: str,
+    agent_id: str,
+    conversation_id: str,
+    model_id: str | None,
+    model_provider: str | None = None,
+    resume_from_turn: int | None = None,
+    require_task_report: bool = False,
+) -> AsyncIterator[StreamEvent]:
+    """ReAct loop for SDK adapters: call_once → yield events → execute tools → repeat.
+
+    Yields all StreamEvents (same contract as adapter.stream). Persistence and
+    publishing are handled by consume_stream. Tool execution uses
+    tool_registry.execute_with_hooks. Hooks are dispatched at run/turn/tool
+    lifecycle points.
+    """
+    from app.adapters.custom_adapter import _RunUsage, _to_run_usage
+    from app.services.hook_registry import HookContext, HookEvent
+
+    hook_registry = _get_hook_registry()
+
+    # Initialize messages: system + history + user
+    image_attachments = adapter_input.attachments or []
+    if adapter_input.messages is not None:
+        messages: list[dict] = list(adapter_input.messages)
+    else:
+        from app.adapters.custom_adapter import _build_multimodal_user_content
+        supports_vision = (
+            adapter_input.custom_config.supports_vision
+            if adapter_input.custom_config
+            else False
+        )
+        imgs = [a for a in image_attachments if a.kind == "image"]
+        use_multimodal = bool(supports_vision) and len(imgs) > 0
+        user_content: object = (
+            _build_multimodal_user_content(adapter_input.prompt, imgs)
+            if use_multimodal
+            else adapter_input.prompt
+        )
+        messages = [
+            {"role": "system", "content": adapter_input.system_prompt},
+            *(adapter_input.history or []),
+            {"role": "user", "content": user_content},
+        ]
+
+    ctx = ToolContext(
+        conversation_id=conversation_id,
+        workspace_path=adapter_input.workspace_path,
+        agent_id=agent_id,
+        run_id=run_id,
+        cancel_event=cancel_event,
+        hook_registry=hook_registry,
+        tool_names=adapter_input.tool_names,
+    )
+
+    # O2 Step 5: per-run cache for read-only tool results
+    tool_call_cache: dict[str, Any] = {}
+
+    # O2 Step 6: token budget control — get model context window
+    model_limit = 0
+    if model_id:
+        try:
+            model_limit = get_model_limits(model_provider, model_id).context_window
+        except Exception:
+            model_limit = 0
+
+    # ── on_run_start hook ──
+    if hook_registry and hook_registry.has_handlers(HookEvent.ON_RUN_START):
+        run_start_result = await hook_registry.dispatch(HookContext(
+            event=HookEvent.ON_RUN_START,
+            run_id=run_id,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            messages=messages,
+            tool_names=adapter_input.tool_names,
+        ))
+        # O8: capture inject action (e.g. skill_auto_activator on_run_start)
+        if run_start_result.action == "inject" and run_start_result.data:
+            for item in run_start_result.data:
+                if isinstance(item, dict) and item.get("type") == "system_hint":
+                    messages.append({
+                        "role": "system",
+                        "content": item.get("content", ""),
+                    })
+
+    run_usage = _RunUsage()
+
+    start_turn = resume_from_turn or 0
+
+    try:
+        for turn in range(start_turn, REACT_LOOP_MAX_TURNS):
+            if cancel_event.is_set():
+                break
+
+            adapter_input.messages = messages
+            turn_start = time.monotonic()
+
+            # O2 Step 6: token budget control
+            if model_limit > 0:
+                total_tokens = estimate_tokens(json.dumps(messages, ensure_ascii=False))
+                if total_tokens > 0.95 * model_limit:
+                    logger.warning(
+                        "[AgentRunner] token budget exceeded 95%%: %d / %d, stopping loop",
+                        total_tokens, model_limit,
+                    )
+                    yield RunUsageEvent(
+                        conversation_id=conversation_id,
+                        timestamp=now_ms(),
+                        run_id=run_id,
+                        usage=_to_run_usage(run_usage, model_id or ""),
+                    )
+                    break
+                elif total_tokens > 0.90 * model_limit:
+                    pre_compact_count = len(messages)
+                    messages = _mid_run_compact(messages)
+                    post_tokens = estimate_tokens(json.dumps(messages, ensure_ascii=False))
+                    logger.info(
+                        "[AgentRunner] mid-run compact: %d -> %d messages, %d -> %d tokens",
+                        pre_compact_count, len(messages), total_tokens, post_tokens,
+                    )
+
+            # ── pre_turn hook ──
+            if hook_registry and hook_registry.has_handlers(HookEvent.PRE_TURN):
+                await hook_registry.dispatch(HookContext(
+                    event=HookEvent.PRE_TURN,
+                    run_id=run_id,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    turn_number=turn + 1,
+                ))
+
+            # ── Consume call_once events: yield + extract turn data ──
+            # Buffer message.usage and message.end so they are yielded AFTER
+            # tool results — matching the old stream path's event ordering.
+            # consume_stream clears parts_buffer on message.end; if we yield
+            # message.end before tool.result, the parts would be lost.
+            text_content = ""
+            reasoning_content = ""
+            tool_calls: list[ToolCallInfo] = []
+            message_id: str | None = None
+            deferred_events: list[StreamEvent] = []
+            turn_input_tokens = 0
+            turn_output_tokens = 0
+            turn_cache_read_tokens = 0
+
+            terminal_tool_call: StreamEvent | None = None
+            try:
+                async for event in adapter.call_once(adapter_input, cancel_event):
+                    if event.type == "message.start":
+                        message_id = event.message_id
+                    elif event.type == "part.delta":
+                        dtype = event.delta.get("type")
+                        text = event.delta.get("text", "")
+                        if dtype == "text.append":
+                            text_content += text
+                        elif dtype == "thinking.append":
+                            reasoning_content += text
+                    elif event.type == "tool.call":
+                        tool_calls.append(ToolCallInfo(
+                            id=event.call_id,
+                            name=event.tool_name,
+                            args=event.args if isinstance(event.args, dict) else {},
+                        ))
+                        if (
+                            require_task_report
+                            and (
+                                event.tool_name == REPORT_TASK_RESULT_TOOL_NAME
+                                or event.tool_name.endswith(f"__{REPORT_TASK_RESULT_TOOL_NAME}")
+                            )
+                        ):
+                            terminal_tool_call = event
+                            continue
+                    elif event.type == "message.usage":
+                        run_usage.input_tokens += event.usage.input_tokens
+                        run_usage.output_tokens += event.usage.output_tokens
+                        run_usage.cache_read_tokens += event.usage.cache_read_tokens
+                        run_usage.last_input_tokens = event.usage.input_tokens
+                        turn_input_tokens += event.usage.input_tokens
+                        turn_output_tokens += event.usage.output_tokens
+                        turn_cache_read_tokens += event.usage.cache_read_tokens
+                        deferred_events.append(event)
+                        continue
+                    elif event.type == "message.end":
+                        deferred_events.append(event)
+                        continue
+
+                    yield event
+            except Exception:
+                logger.exception("[AgentRunner] _run_react_loop call_once error")
+                return
+
+            if message_id is None:
+                return
+
+            # Build assistant_message dict (includes reasoning_content for DeepSeek)
+            assistant_msg: dict = {"role": "assistant", "content": text_content or None}
+            if tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {"id": tc.id, "type": "function",
+                     "function": {"name": tc.name, "arguments": json.dumps(tc.args)}}
+                    for tc in tool_calls
+                ]
+            if reasoning_content:
+                assistant_msg["reasoning_content"] = reasoning_content
+            messages.append(assistant_msg)
+
+            # Terminal tool call (report_task_result): yield deferred events +
+            # TurnMetricEvent + RunUsageEvent BEFORE the tool.call so consume_stream
+            # receives them before its terminal callback breaks the stream.
+            if terminal_tool_call:
+                for ev in deferred_events:
+                    yield ev
+                yield TurnMetricEvent(
+                    conversation_id=conversation_id,
+                    timestamp=now_ms(),
+                    run_id=run_id,
+                    turn=turn + 1,
+                    tokens=TurnTokenBreakdown(
+                        input_tokens=turn_input_tokens,
+                        output_tokens=turn_output_tokens,
+                        cache_read_tokens=turn_cache_read_tokens,
+                    ),
+                    tool_calls=[tc.name for tc in tool_calls],
+                    duration_ms=int((time.monotonic() - turn_start) * 1000),
+                )
+                yield RunUsageEvent(
+                    conversation_id=conversation_id,
+                    timestamp=now_ms(),
+                    run_id=run_id,
+                    usage=_to_run_usage(run_usage, model_id or ""),
+                )
+                yield terminal_tool_call
+                return
+
+            # If no tool calls → yield deferred events, dispatch on_stop, emit run.usage
+            if len(tool_calls) == 0:
+                for ev in deferred_events:
+                    yield ev
+                # ── turn metric ──
+                yield TurnMetricEvent(
+                    conversation_id=conversation_id,
+                    timestamp=now_ms(),
+                    run_id=run_id,
+                    turn=turn + 1,
+                    tokens=TurnTokenBreakdown(
+                        input_tokens=turn_input_tokens,
+                        output_tokens=turn_output_tokens,
+                        cache_read_tokens=turn_cache_read_tokens,
+                    ),
+                    tool_calls=[],
+                    duration_ms=int((time.monotonic() - turn_start) * 1000),
+                )
+                # ── post_turn hook ──
+                if hook_registry and hook_registry.has_handlers(HookEvent.POST_TURN):
+                    await hook_registry.dispatch(HookContext(
+                        event=HookEvent.POST_TURN,
+                        run_id=run_id,
+                        agent_id=agent_id,
+                        conversation_id=conversation_id,
+                        turn_number=turn + 1,
+                        message_id=message_id,
+                        tool_calls=[],
+                        finish_reason="stop",
+                        messages=messages,
+                    ))
+                # ── on_stop hook ──
+                if hook_registry and hook_registry.has_handlers(HookEvent.ON_STOP):
+                    await hook_registry.dispatch(HookContext(
+                        event=HookEvent.ON_STOP,
+                        run_id=run_id,
+                        agent_id=agent_id,
+                        conversation_id=conversation_id,
+                        turn_number=turn + 1,
+                    ))
+                yield RunUsageEvent(
+                    conversation_id=conversation_id,
+                    timestamp=now_ms(),
+                    run_id=run_id,
+                    usage=_to_run_usage(run_usage, model_id or ""),
+                )
+                break
+
+            # ── Execute tools and yield results ──
+            for tc in tool_calls:
+                if cancel_event.is_set():
+                    break
+
+                # O2 Step 5: check read-only tool cache
+                cache_key: str | None = None
+                if tc.name in READONLY_CACHEABLE_TOOLS:
+                    cache_key = f"{tc.name}:{json.dumps(tc.args, sort_keys=True)}"
+                    if cache_key in tool_call_cache:
+                        value = f"[cached] {tool_call_cache[cache_key]}"
+                        yield ToolResultEvent(
+                            conversation_id=conversation_id,
+                            timestamp=now_ms(),
+                            message_id=message_id,
+                            call_id=tc.id,
+                            result=value,
+                            is_error=False,
+                        )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(value),
+                        })
+                        continue
+
+                result = await tool_registry.execute_with_hooks(tc.name, tc.args, ctx, hook_registry)
+                value = result.value if result.ok else {"error": result.error}
+
+                # O2 Step 5: cache successful read-only tool results
+                if cache_key is not None and result.ok:
+                    tool_call_cache[cache_key] = value
+
+                yield ToolResultEvent(
+                    conversation_id=conversation_id,
+                    timestamp=now_ms(),
+                    message_id=message_id,
+                    call_id=tc.id,
+                    result=value,
+                    is_error=not result.ok,
+                )
+
+                if tc.name == "write_artifact" and result.ok and _has_artifact_id(value):
+                    from app.adapters.custom_adapter import _load_artifact_event
+                    artifact_event = await _load_artifact_event(conversation_id, value["artifactId"])
+                    if artifact_event is not None:
+                        yield artifact_event
+
+                if (
+                    tc.name in ("deploy_artifact", "deploy_workspace")
+                    and result.ok
+                    and _is_deploy_status_record(value)
+                ):
+                    yield DeployStatusEvent(
+                        conversation_id=conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        deployment=DeployStatusRecord.model_validate(value),
+                    )
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(value),
+                })
+
+                # O8: check post_tool_use inject action (e.g. skill_auto_activator)
+                post_result = ctx.last_post_hook_result
+                if post_result and post_result.action == "inject" and post_result.data:
+                    for item in post_result.data:
+                        if isinstance(item, dict) and item.get("type") == "system_hint":
+                            messages.append({
+                                "role": "system",
+                                "content": item.get("content", ""),
+                            })
+
+                        # ── Yield deferred events (message.usage + message.end) after tools ──
+            for ev in deferred_events:
+                yield ev
+            # ── turn metric ──
+            yield TurnMetricEvent(
+                conversation_id=conversation_id,
+                timestamp=now_ms(),
+                run_id=run_id,
+                turn=turn + 1,
+                tokens=TurnTokenBreakdown(
+                    input_tokens=turn_input_tokens,
+                    output_tokens=turn_output_tokens,
+                    cache_read_tokens=turn_cache_read_tokens,
+                ),
+                tool_calls=[tc.name for tc in tool_calls],
+                duration_ms=int((time.monotonic() - turn_start) * 1000),
+            )
+            # ── post_turn hook (after tool execution) ──
+            if hook_registry and hook_registry.has_handlers(HookEvent.POST_TURN):
+                await hook_registry.dispatch(HookContext(
+                    event=HookEvent.POST_TURN,
+                    run_id=run_id,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                    turn_number=turn + 1,
+                    message_id=message_id,
+                    tool_calls=[{"id": tc.id, "name": tc.name, "args": tc.args} for tc in tool_calls],
+                    finish_reason=None,
+                    messages=messages,
+                ))
+        else:
+            # MAX_TURNS fallback: emit accumulated usage
+            yield RunUsageEvent(
+                conversation_id=conversation_id,
+                timestamp=now_ms(),
+                run_id=run_id,
+                usage=_to_run_usage(run_usage, model_id or ""),
+            )
+    finally:
+        # ── on_run_end hook ──
+        if hook_registry and hook_registry.has_handlers(HookEvent.ON_RUN_END):
+            await hook_registry.dispatch(HookContext(
+                event=HookEvent.ON_RUN_END,
+                run_id=run_id,
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+            ))
+
+
+def _has_artifact_id(value: object) -> bool:
+    return isinstance(value, dict) and isinstance(value.get("artifactId"), str)
+
+
+def _is_deploy_status_record(value: object) -> bool:
+    created_at = value.get("createdAt") if isinstance(value, dict) else None
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("id"), str)
+        and isinstance(value.get("artifactId"), str)
+        and isinstance(value.get("previewPath"), str)
+        and value.get("status") in ("ready", "failed")
+        and isinstance(created_at, (int, float))
+        and not isinstance(created_at, bool)
+    )
 
 # ─── Constants (port of agent-runner.ts:212) ─────────────────────────────────
 SUB_AGENT_CONTEXT_RECENT_LIMIT = 5
@@ -694,7 +1245,7 @@ async def execute_run(
                         )
                     )
 
-    await insert_run(run_id, args, args.agent_id)
+    await _insert_run_or_resume(run_id, args, args.agent_id)
     publish(
         RunStartEvent(
             conversation_id=args.conversation_id,
@@ -703,6 +1254,7 @@ async def execute_run(
             agent_id=args.agent_id,
             trigger_message_id=args.trigger_message_id,
             parent_run_id=args.parent_run_id,
+            is_resume=args.resume_from_checkpoint,
         )
     )
 
@@ -731,10 +1283,10 @@ async def execute_run(
                 args.conversation_id, args.agent_id, prompt, result
             )
         )
-        # ─── Auto-compact hook (watermark-based silent compaction) ───
+        # ─── Auto-compact hook (watermark + token based silent compaction) ───
         asyncio.create_task(
             _maybe_auto_compact_hook(
-                args.conversation_id, args.override_prompt
+                args.conversation_id, args.override_prompt, args.agent_id
             )
         )
         return final_result
@@ -855,7 +1407,30 @@ async def execute_simple_run(
         except Exception as err:  # noqa: BLE001 - best-effort persistence
             logger.warning("[agent-runner] Failed to persist effective_prompt: %s", err)
 
-    stream = adapter.stream(adapter_input, cancel_event)
+    settings = get_settings()
+    if agent.adapter_name in SDK_ADAPTERS and settings.use_react_loop:
+        resume_from_turn: int | None = None
+        if args.resume_from_checkpoint:
+            from app.services.checkpoint_service import load_latest_checkpoint
+
+            checkpoint = await load_latest_checkpoint(run_id)
+            if checkpoint is not None:
+                adapter_input.messages = list(checkpoint.messages_json or [])
+                resume_from_turn = checkpoint.turn_number
+                logger.info(
+                    "[AgentRunner] resume from checkpoint: run=%s turn=%d messages=%d",
+                    run_id, resume_from_turn, len(adapter_input.messages),
+                )
+
+        stream = _run_react_loop(
+            adapter, adapter_input, cancel_event,
+            run_id, args.agent_id, args.conversation_id, agent.model_id,
+            model_provider=agent.model_provider,
+            resume_from_turn=resume_from_turn,
+            require_task_report=args.require_task_report,
+        )
+    else:
+        stream = adapter.stream(adapter_input, cancel_event)
 
     result = await consume_stream(
         stream, args.agent_id, run_id,
@@ -1321,6 +1896,24 @@ async def insert_run(run_id: str, args: RunArgs, agent_id: str) -> None:
                 started_at=now_ms(),
             )
         )
+
+
+async def _insert_run_or_resume(run_id: str, args: RunArgs, agent_id: str) -> None:
+    """Insert a new run, or update an existing run for resume."""
+    if not args.resume_from_checkpoint:
+        await insert_run(run_id, args, agent_id)
+        return
+
+    async with get_db() as db:
+        run = (
+            await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+        ).scalar_one_or_none()
+        if run is None:
+            await insert_run(run_id, args, agent_id)
+            return
+        run.status = "running"
+        run.finished_at = None
+        run.error = None
 
 
 async def finalize(

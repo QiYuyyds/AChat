@@ -105,6 +105,221 @@ class CustomAdapter(AgentPlatformAdapter):
     def name(self) -> AdapterName:
         return "custom"
 
+    async def call_once(  # noqa: C901
+        self, input: AdapterInput, cancel_event: asyncio.Event
+    ) -> AsyncIterator[StreamEvent]:
+        """Single-turn LLM call: stream one Chat Completions response.
+
+        Yields message.start → part.* → message.end → tool.call *.
+        Does NOT execute tools or loop. AgentRunner manages the ReAct loop.
+        """
+        if not input.custom_config:
+            raise ValueError("CustomAdapter requires custom_config")
+        if not input.model_id:
+            raise ValueError("CustomAdapter requires model_id")
+
+        model_provider = input.custom_config.model_provider
+        supports_vision = input.custom_config.supports_vision
+        model_id = input.model_id
+
+        client = _build_client(model_provider, input.api_key, input.api_base_url)
+
+        tool_defs = tool_registry.resolve(input.tool_names)
+        api_tools = [_to_api_tool(t) for t in tool_defs]
+
+        # Use provided messages (ReAct loop path) or construct from components (legacy).
+        if input.messages is not None:
+            messages = list(input.messages)
+        else:
+            image_attachments = [
+                a for a in (input.attachments or []) if a.kind == "image"
+            ][:MAX_IMAGES_PER_MESSAGE]
+            use_multimodal = bool(supports_vision) and len(image_attachments) > 0
+            user_content: object = (
+                _build_multimodal_user_content(input.prompt, image_attachments)
+                if use_multimodal
+                else input.prompt
+            )
+            messages = [
+                {"role": "system", "content": input.system_prompt},
+                *(input.history or []),
+                {"role": "user", "content": user_content},
+            ]
+
+        if cancel_event.is_set():
+            return
+
+        message_id = new_message_id()
+        yield MessageStartEvent(
+            conversation_id=input.conversation_id,
+            timestamp=now_ms(),
+            message_id=message_id,
+            agent_id=input.agent_id,
+            run_id=input.run_id,
+        )
+
+        text_part_index = -1
+        text_buffer = ""
+        thinking_part_index = -1
+        reasoning_buffer = ""
+        next_part_index = 0
+        tool_call_buffer = _ToolCallBuffer()
+
+        try:
+            stream = await client.chat.completions.create(
+                model=model_id,
+                messages=messages,
+                tools=api_tools if len(api_tools) > 0 else None,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+        except Exception:
+            yield MessageEndEvent(
+                conversation_id=input.conversation_id,
+                timestamp=now_ms(),
+                message_id=message_id,
+            )
+            raise
+
+        finish_reason: str | None = None
+        msg_usage = _MsgUsage()
+
+        async for chunk in stream:
+            if cancel_event.is_set():
+                return
+            usage = getattr(chunk, "usage", None)
+            if usage:
+                inp = _usage_field(usage, "prompt_tokens")
+                out = _usage_field(usage, "completion_tokens")
+                cached = _usage_field(usage, "prompt_cache_hit_tokens") or _usage_field(
+                    usage, "cached_tokens"
+                )
+                cache_created = _usage_field(usage, "cache_creation_input_tokens") or _usage_field(
+                    usage, "cache_creation_tokens"
+                )
+                msg_usage.input_tokens += inp
+                msg_usage.output_tokens += out
+                msg_usage.cache_read_tokens += cached
+                cache_metrics.record(
+                    cache_read=cached,
+                    cache_creation=cache_created,
+                    input_tokens=inp,
+                )
+                logger.info(
+                    "[cache-debug] input=%d cache_read=%d cache_creation=%d recent_hit_rate=%.1f%%",
+                    inp, cached, cache_created, cache_metrics.recent_hit_rate() * 100,
+                )
+                if cache_metrics.should_alert():
+                    logger.warning(
+                        "[CustomAdapter] cache hit rate low: %.1f%% (recent %d calls)",
+                        cache_metrics.recent_hit_rate() * 100,
+                        cache_metrics.recent_count,
+                    )
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            choice = choices[0]
+            delta = choice.delta
+
+            reasoning = getattr(delta, "reasoning_content", None)
+            if isinstance(reasoning, str) and len(reasoning) > 0:
+                if thinking_part_index < 0:
+                    thinking_part_index = next_part_index
+                    next_part_index += 1
+                    yield PartStartEvent(
+                        conversation_id=input.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        part_index=thinking_part_index,
+                        part={"type": "thinking", "content": ""},
+                    )
+                reasoning_buffer += reasoning
+                yield PartDeltaEvent(
+                    conversation_id=input.conversation_id,
+                    timestamp=now_ms(),
+                    message_id=message_id,
+                    part_index=thinking_part_index,
+                    delta={"type": "thinking.append", "text": reasoning},
+                )
+
+            content = getattr(delta, "content", None)
+            if isinstance(content, str) and len(content) > 0:
+                if text_part_index < 0:
+                    text_part_index = next_part_index
+                    next_part_index += 1
+                    yield PartStartEvent(
+                        conversation_id=input.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        part_index=text_part_index,
+                        part={"type": "text", "content": ""},
+                    )
+                text_buffer += content
+                yield PartDeltaEvent(
+                    conversation_id=input.conversation_id,
+                    timestamp=now_ms(),
+                    message_id=message_id,
+                    part_index=text_part_index,
+                    delta={"type": "text.append", "text": content},
+                )
+
+            for tcd in getattr(delta, "tool_calls", None) or []:
+                entry = tool_call_buffer.get_or_create(tcd.index)
+                if tcd.id:
+                    entry.id = tcd.id
+                if tcd.function and tcd.function.name:
+                    entry.name = tcd.function.name
+                if tcd.function and tcd.function.arguments:
+                    entry.args_buffer += tcd.function.arguments
+
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+
+        if thinking_part_index >= 0:
+            yield PartEndEvent(
+                conversation_id=input.conversation_id,
+                timestamp=now_ms(),
+                message_id=message_id,
+                part_index=thinking_part_index,
+            )
+        if text_part_index >= 0:
+            yield PartEndEvent(
+                conversation_id=input.conversation_id,
+                timestamp=now_ms(),
+                message_id=message_id,
+                part_index=text_part_index,
+            )
+
+        tool_calls = [tc for tc in tool_call_buffer.entries.values() if tc.id and tc.name]
+
+        # yield tool.call events (without executing — AgentRunner handles execution)
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc.args_buffer) if tc.args_buffer else {}
+            except (ValueError, TypeError):
+                args = {}
+            yield ToolCallEvent(
+                conversation_id=input.conversation_id,
+                timestamp=now_ms(),
+                message_id=message_id,
+                call_id=tc.id,
+                tool_name=tc.name,
+                args=args,
+            )
+
+        if msg_usage.input_tokens > 0 or msg_usage.output_tokens > 0:
+            yield MessageUsageEventPayload(
+                conversation_id=input.conversation_id,
+                timestamp=now_ms(),
+                message_id=message_id,
+                usage=_to_message_usage(msg_usage),
+            )
+        yield MessageEndEvent(
+            conversation_id=input.conversation_id,
+            timestamp=now_ms(),
+            message_id=message_id,
+        )
+
     async def stream(  # noqa: C901 - faithful port of the TS tool loop
         self, input: AdapterInput, cancel_event: asyncio.Event
     ) -> AsyncIterator[StreamEvent]:

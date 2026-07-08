@@ -70,6 +70,13 @@ class DispatchPlanItem(BaseModel):
         default=None, alias="requiredCommands"
     )
     required_evidence: list[str] | None = Field(default=None, alias="requiredEvidence")
+    # O4: advisory fields — not validated by compile_and_validate_dispatch_plan
+    complexity: str | None = None
+    explored: list[str] | None = None
+    # O11: advisory context level — controls sub-agent context amount
+    context_level: Literal["isolated", "standard"] | None = Field(
+        default=None, alias="contextLevel"
+    )
 
     model_config = {"populate_by_name": True}
 

@@ -27,7 +27,12 @@ router = APIRouter()
 @router.get("/skills")
 async def list_skills_route() -> JSONResponse:
     skills = [
-        {"slug": m.slug, "name": m.name, "description": m.description}
+        {
+            "slug": m.slug,
+            "name": m.name,
+            "description": m.description,
+            "triggerKeywords": m.trigger_keywords,
+        }
         for m in list_skills()
     ]
     return JSONResponse({"skills": skills})
@@ -68,7 +73,14 @@ async def upload_skill(
         return JSONResponse({"error": str(e)}, status_code=400)
 
     return JSONResponse(
-        {"skill": {"slug": meta.slug, "name": meta.name, "description": meta.description}},
+        {
+            "skill": {
+                "slug": meta.slug,
+                "name": meta.name,
+                "description": meta.description,
+                "triggerKeywords": meta.trigger_keywords,
+            }
+        },
         status_code=201,
     )
 

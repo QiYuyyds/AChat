@@ -94,3 +94,8 @@ def new_document_id() -> str:
 def new_document_version_id() -> str:
     """Generate document version ID: ver_<nanoid>"""
     return _gen_id("ver_")
+
+
+def new_checkpoint_id() -> str:
+    """Generate checkpoint ID: ckpt_<nanoid>"""
+    return _gen_id("ckpt_")

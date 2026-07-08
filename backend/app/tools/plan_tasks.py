@@ -225,6 +225,17 @@ _PARAMETERS: dict[str, Any] = {
                         ),
                         "items": {"type": "string"},
                     },
+                    "contextLevel": {
+                        "type": "string",
+                        "enum": ["isolated", "standard"],
+                        "description": (
+                            "Advisory context level for the sub-agent. "
+                            "isolated (default): 5 recent messages + 5 artifacts, "
+                            "suits independent execution. "
+                            "standard: 10 recent messages + 10 artifacts + all "
+                            "pinned, suits review/debugging/cross-module tasks."
+                        ),
+                    },
                 },
             },
         },

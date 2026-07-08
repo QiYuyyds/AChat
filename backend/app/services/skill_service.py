@@ -13,16 +13,21 @@ rule, so the registry and ``load_skill`` are source-agnostic.
 
 from __future__ import annotations
 
+import logging
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
+
 SKILL_MD = "SKILL.md"
 # Windows-illegal filename chars, plus whitespace, stripped during slugify.
 _ILLEGAL = re.compile(r'[\\/:*?"<>|]')
+# Max trigger_keywords entries; extra entries are truncated.
+MAX_TRIGGER_KEYWORDS = 10
 
 
 class SkillError(Exception):
@@ -34,6 +39,7 @@ class SkillMeta:
     slug: str
     name: str
     description: str
+    trigger_keywords: list[str] = field(default_factory=list)
 
 
 def skills_root() -> Path:
@@ -45,12 +51,84 @@ def skills_root() -> Path:
 
 # ─── Frontmatter parsing ─────────────────────────────────────────────────────
 
-def parse_skill_md(text: str) -> tuple[str, str]:
-    """Extract ``(name, description)`` from a SKILL.md's YAML frontmatter.
+def _parse_trigger_keywords(lines: list[str], start_idx: int, end_idx: int) -> list[str]:
+    """Parse the ``trigger_keywords`` YAML list from frontmatter lines.
+
+    Supports both block style (``- item`` lines) and inline style
+    (``[item1, item2]``). Returns ``[]`` on missing/invalid format.
+    """
+    raw: object = None
+    for i in range(start_idx, end_idx):
+        ln = lines[i]
+        if ":" not in ln:
+            continue
+        key, _, value = ln.partition(":")
+        key = key.strip().lower()
+        value = value.strip()
+        if key != "trigger_keywords":
+            continue
+        if not value:
+            # Block-style list: collect following ``- item`` lines
+            items: list[str] = []
+            for j in range(i + 1, end_idx):
+                next_ln = lines[j].strip()
+                if next_ln.startswith("- "):
+                    items.append(next_ln[2:].strip().strip("\"'"))
+                elif next_ln.startswith("-"):
+                    items.append(next_ln[1:].strip().strip("\"'"))
+                elif next_ln == "":
+                    continue
+                else:
+                    break
+            raw = items
+            break
+        else:
+            # Inline list: ``[item1, item2]`` or bare scalar
+            v = value.strip("\"'")
+            if v.startswith("[") and v.endswith("]"):
+                inner = v[1:-1]
+                raw = [
+                    item.strip().strip("\"'")
+                    for item in inner.split(",")
+                    if item.strip()
+                ]
+            else:
+                raw = v
+            break
+
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        logger.warning(
+            "SKILL.md trigger_keywords is not a list (got %s); treating as empty",
+            type(raw).__name__,
+        )
+        return []
+    result: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            result.append(item.strip())
+        else:
+            logger.warning(
+                "SKILL.md trigger_keywords contains non-string entry %r; skipping",
+                item,
+            )
+    if len(result) > MAX_TRIGGER_KEYWORDS:
+        logger.warning(
+            "SKILL.md trigger_keywords has %d entries; truncating to %d",
+            len(result), MAX_TRIGGER_KEYWORDS,
+        )
+        result = result[:MAX_TRIGGER_KEYWORDS]
+    return result
+
+
+def parse_skill_md(text: str) -> tuple[str, str, list[str]]:
+    """Extract ``(name, description, trigger_keywords)`` from a SKILL.md's frontmatter.
 
     Minimal line-based parser (avoids a YAML dependency): reads the leading
-    ``---`` … ``---`` block for ``name:`` / ``description:`` keys. Raises
-    :class:`SkillError` if the frontmatter or either field is missing/empty.
+    ``---`` … ``---`` block for ``name:`` / ``description:`` keys and the
+    optional ``trigger_keywords`` list. Raises :class:`SkillError` if the
+    frontmatter or either required field is missing/empty.
     """
     stripped = text.lstrip("﻿")  # tolerate BOM
     if not stripped.lstrip().startswith("---"):
@@ -71,7 +149,12 @@ def parse_skill_md(text: str) -> tuple[str, str]:
         if ":" not in ln:
             continue
         key, _, value = ln.partition(":")
-        fields[key.strip().lower()] = value.strip().strip("\"'")
+        key = key.strip().lower()
+        value = value.strip().strip("\"'")
+        # trigger_keywords is parsed separately (list, not scalar)
+        if key == "trigger_keywords":
+            continue
+        fields[key] = value
 
     name = fields.get("name", "").strip()
     description = fields.get("description", "").strip()
@@ -79,7 +162,8 @@ def parse_skill_md(text: str) -> tuple[str, str]:
         raise SkillError("SKILL.md frontmatter is missing a non-empty 'name'")
     if not description:
         raise SkillError("SKILL.md frontmatter is missing a non-empty 'description'")
-    return name, description
+    trigger_keywords = _parse_trigger_keywords(lines, start + 1, end)
+    return name, description, trigger_keywords
 
 
 def strip_frontmatter(text: str) -> str:
@@ -129,7 +213,7 @@ def save_skill(files: dict[str, str]) -> SkillMeta:
     if skill_md is None:
         raise SkillError("Upload must contain a root-level SKILL.md")
 
-    name, description = parse_skill_md(skill_md)
+    name, description, trigger_keywords = parse_skill_md(skill_md)
     slug = slugify(name)
 
     target = skills_root() / slug
@@ -146,7 +230,7 @@ def save_skill(files: dict[str, str]) -> SkillMeta:
         shutil.rmtree(target, ignore_errors=True)  # don't leave a half-written skill
         raise
 
-    return SkillMeta(slug=slug, name=name, description=description)
+    return SkillMeta(slug=slug, name=name, description=description, trigger_keywords=trigger_keywords)
 
 
 def _safe_join(base: Path, rel: str) -> Path:
@@ -170,10 +254,10 @@ def list_skills() -> list[SkillMeta]:
         if not md.is_file():
             continue
         try:
-            name, description = parse_skill_md(md.read_text(encoding="utf-8"))
+            name, description, trigger_keywords = parse_skill_md(md.read_text(encoding="utf-8"))
         except (SkillError, OSError):
             continue
-        out.append(SkillMeta(slug=child.name, name=name, description=description))
+        out.append(SkillMeta(slug=child.name, name=name, description=description, trigger_keywords=trigger_keywords))
     return out
 
 

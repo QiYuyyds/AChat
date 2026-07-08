@@ -34,6 +34,7 @@ AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的
   - [RAG 混合检索与知识库](#rag-混合检索与知识库)
   - [分层记忆系统](#分层记忆系统)
   - [产物与部署预览](#产物与部署预览)
+  - [生命周期 Hooks 与 Checkpoint](#生命周期-hooks-与-checkpoint)
 - [技术栈](#技术栈)
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
@@ -97,6 +98,7 @@ Orchestrator 是一个带额外工具的普通 Agent。它可以：
 - 等待计划被批准或修订
 - 把任务派发给子 Agent（并行调度 + 同波次冲突检测）
 - 跟踪子任务的完成、失败、阻塞和产物
+- 对子任务产物做验证（verify stage 门禁）
 - 把最终结果聚合回会话
 
 ### RAG 混合检索与知识库
@@ -125,7 +127,7 @@ Agent 拥有跨会话的记忆能力：
 - 每个会话有一个 workspace。
 - Sandbox 模式把文件存在 `.agenthub-data/workspaces/<conversationId>` 下。
 - Local 模式把会话绑定到一个真实的本地项目目录。
-- `fs_read`、`fs_write`、`bash` 都被限制在生效的 workspace 目录内。
+- 文件工具 `fs_read`、`fs_write`、`fs_edit`、`fs_list`、`fs_glob`、`fs_grep` 和 `bash` 都被限制在生效的 workspace 目录内。
 - Review 模式可以在文件写入前要求审批。
 - 高风险 bash 命令可以在执行前要求审批。
 
@@ -141,6 +143,15 @@ Agent 可以创建并引用结构化产物：
 - `diff`：版本对比
 
 对于本地前端项目，Agent 可以把 `dist`、`build`、`out`、`client/dist` 等静态输出目录发布到一张本地预览卡片里。
+
+### 生命周期 Hooks 与 Checkpoint
+
+Agent 运行支持可插拔的生命周期 Hooks 系统：
+
+- **7 个内置 Hook**：审计日志（audit_log）、自动压缩（auto_compact）、检查点保存（checkpoint）、记忆持久化（memory_persist）、技能自动激活（skill_auto_activator）、摘要生成（summary_generate）、工具审批（tool_approval）。
+- **10 个生命周期事件**：`pre_turn` / `post_turn` / `pre_tool_use` / `post_tool_use` / `on_stop` / `on_error` / `on_run_start` / `on_run_end` / `on_message_end` / `on_task_verified`。
+- Agent 通过 `hook_names` 字段按需启用 Hook 组。
+- **Checkpoint**：SDK Agent 支持 turn 级检查点保存与恢复（`agent_run_checkpoints` 表）。
 
 ### 桌面与移动端
 
@@ -179,7 +190,7 @@ Agent 可以创建并引用结构化产物：
 
 Next.js 锁定在 `16.2.6`。如果你要改动框架层的行为，先读 `node_modules/next/dist/docs/` 下的本地 Next 文档。
 
-后端 Python 依赖通过 `backend/pyproject.toml` 或 `backend/requirements.txt` 管理。
+后端 Python 依赖分两层管理：核心依赖在 `backend/pyproject.toml`，基础设施相关依赖（pymilvus / elasticsearch / neo4j / pdfplumber 等）在 `backend/requirements.txt`。
 
 ---
 
@@ -434,11 +445,12 @@ AChat 采用前后端分离架构：
 │    AgentRunner、Orchestrator、             │
 │    ConversationService、EventBus、         │
 │    ToolExecutor、RAGService、              │
-│    DocumentService、PromptAssembler       │
+│    DocumentService、PromptAssembler、      │
+│    HookRegistry (生命周期 Hooks)           │
 │  L2 Agent Platform Adapters               │
-│    Claude、Custom、Mock                    │
+│    ClaudeCLI、CodexCLI、Custom、Mock       │
 │  L1 Persistence                           │
-│    SQLAlchemy、PostgreSQL、workspace FS    │
+│    SQLAlchemy、PostgreSQL(18表)、workspace FS │
 ├──────────────────────────────────────────┤
 │  Infrastructure (可选, 独立降级)            │
 │    Milvus(向量) · ES(全文) · Neo4j(图谱)   │
@@ -446,7 +458,7 @@ AChat 采用前后端分离架构：
 └──────────────────────────────────────────┘
 ```
 
-核心契约是 `StreamEvent`。适配器输出、工具活动、产物创建、待审批、调度状态、用量更新，都先汇入这个事件模型，再通过 SSE 到达前端 UI。
+核心契约是 `StreamEvent`。适配器输出、工具活动、产物创建、待审批、调度状态、用量更新，都先汇入这个事件模型，再通过 SSE 到达前端 UI。工具执行经过 `HookRegistry` 拦截（pre/post），支持审批拦截、自动压缩、检查点保存等可插拔 Hook。
 
 关键文档：
 
@@ -483,6 +495,7 @@ AChat 假定 LLM 的输出是不可信输入。
 - Codex CLI 适配器代码就绪，端到端联调与测试待补；Hermes / OpenClaw / OpenCode 适配器待接入。
 - 移动端是伴随客户端，不是独立的 Agent 运行时。
 - 基础设施服务（Milvus / ES / Neo4j）不配时功能降级，但不影响核心对话。
+- Hooks 系统的 `tool_approval` Hook 对 CLI 自带工具不生效（CLI 自管审批），仅拦截 AChat 托管工具。
 
 ---
 

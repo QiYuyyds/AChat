@@ -957,6 +957,7 @@ export interface SkillSummary {
   slug: string
   name: string
   description: string
+  triggerKeywords?: string[]
 }
 
 export async function listSkills(): Promise<SkillSummary[]> {

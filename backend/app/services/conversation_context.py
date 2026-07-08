@@ -16,7 +16,7 @@ context assembly while preserving backward compatibility for existing callers.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -34,6 +34,12 @@ from app.services.prompt_assembler import (
 from app.utils.model_registry import estimate_tokens
 
 DEFAULT_MAX_TURNS = 20
+
+# O1: context compaction thresholds
+TOOL_RESULT_PRUNE_THRESHOLD = 2000
+TOOL_RESULT_RECENT_TURNS = 3
+FOLD_THRESHOLD = 30
+FOLD_KEEP_RECENT = 20
 
 # OpenAI ChatCompletionMessageParam, as a loose dict (kept camelCase-free; pure shape).
 ChatMessage = dict
@@ -59,6 +65,87 @@ class _Item:
     is_pinned: bool
     serialized: list[ChatMessage]
     tokens: int
+
+
+# ─── O1: context compaction layers (read-path, no DB writes) ────────────────
+
+
+def prune_old_tool_results(
+    messages: list[Message],
+    model: str | None = None,
+    recent_turns: int = TOOL_RESULT_RECENT_TURNS,
+    prune_threshold: int = TOOL_RESULT_PRUNE_THRESHOLD,
+) -> list[Message]:
+    """Replace large old tool_result parts with a truncation marker.
+
+    Messages older than *recent_turns* from the end are scanned for
+    ``tool_result`` parts whose estimated token count exceeds *prune_threshold*.
+    Matching parts are replaced with a short text marker so the LLM knows the
+    result existed but doesn't waste tokens on stale verbose output.
+    """
+    if len(messages) <= recent_turns:
+        return messages
+
+    cutoff = len(messages) - recent_turns
+    for msg in messages[:cutoff]:
+        parts = msg.parts_list
+        modified = False
+        for j, p in enumerate(parts):
+            if p.get("type") != "tool_result":
+                continue
+            content = p.get("content", "")
+            if not isinstance(content, str):
+                content = str(content)
+            if estimate_tokens(content) > prune_threshold:
+                parts[j] = {
+                    "type": "text",
+                    "content": f"[tool_result 已裁剪, 详见 message_id={msg.id}]",
+                }
+                modified = True
+        if modified:
+            msg.parts_list = parts
+    return messages
+
+
+def fold_old_messages(
+    messages: list[Message],
+    fold_threshold: int = FOLD_THRESHOLD,
+    keep_recent: int = FOLD_KEEP_RECENT,
+    pinned_ids: set[str] | None = None,
+) -> list[Message]:
+    """Fold old messages into a single marker when count exceeds threshold.
+
+    When the total message count exceeds *fold_threshold*, the oldest messages
+    (beyond the most recent *keep_recent*) are replaced with a single system
+    marker ``[已折叠 N 条消息 (时间 range)]``. Pinned messages are never folded.
+    """
+    if len(messages) <= fold_threshold:
+        return messages
+
+    pinned_set = pinned_ids or set()
+    recent = messages[-keep_recent:]
+    old = messages[:-keep_recent]
+
+    folded = [m for m in old if m.id not in pinned_set]
+    kept_from_old = [m for m in old if m.id in pinned_set]
+
+    if not folded:
+        return messages
+
+    time_start = folded[0].created_at
+    time_end = folded[-1].created_at
+    fold_count = len(folded)
+    fold_marker = SimpleNamespace(
+        id=f"folded_{fold_count}",
+        created_at=time_start,
+        role="user",
+        agent_id=None,
+        parts_list=[{
+            "type": "text",
+            "content": f"[已折叠 {fold_count} 条消息 (时间 {time_start} ~ {time_end})]",
+        }],
+    )
+    return [*kept_from_old, fold_marker, *recent]
 
 
 async def build_history_for(
@@ -255,6 +342,10 @@ async def _build_history_legacy(
             by_id[m.id] = m
         merged = sorted(by_id.values(), key=lambda m: m.created_at)
 
+        # O1: prune large old tool_results, then fold old messages.
+        merged = prune_old_tool_results(merged)
+        merged = fold_old_messages(merged, pinned_ids=pinned_id_set)
+
         # Batch-load artifact titles for artifact_ref folding.
         artifact_ids = _collect_artifact_ids(merged)
         artifact_titles = await _load_artifact_titles(db, artifact_ids)
@@ -436,6 +527,10 @@ def _render_agent_public_text(
         if t in ("text", "code"):
             if p.get("content"):
                 buf.append(p["content"])
+        elif t == "tool_result":
+            content = p.get("content", "")
+            if content:
+                buf.append(f"[tool_result] {content}")
         elif t == "artifact_ref":
             artifact_id = p.get("artifactId")
             title = artifact_titles.get(artifact_id, "")
@@ -457,7 +552,7 @@ def _render_agent_public_text(
                     f"[部署失败: {deployment.get('title')} "
                     f"({deployment.get('error') or 'unknown error'})]"
                 )
-        # Cross-run history keeps public output only; thinking/tool_* not replayed.
+        # thinking/tool_use are not replayed in cross-run history.
     return "\n".join(buf).strip()
 
 

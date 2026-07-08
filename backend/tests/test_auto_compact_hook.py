@@ -1,4 +1,4 @@
-"""Unit tests for _maybe_auto_compact_hook (Task 3.5).
+"""Unit tests for _maybe_auto_compact_hook.
 
 Verifies:
 - watermark >= 10 triggers compact_conversation(silent=True)
@@ -6,6 +6,8 @@ Verifies:
 - CompactionSkipped is swallowed silently
 - override_prompt non-empty exempts (sub-agent runs)
 - hook exception does not propagate (best-effort)
+- O1: token-based trigger fires when estimated tokens > 87% of model limit
+- O1: neither threshold met → no compaction
 """
 
 from unittest.mock import AsyncMock, patch
@@ -134,3 +136,79 @@ async def test_general_exception_does_not_propagate():
         await _maybe_auto_compact_hook("conv_test", override_prompt=None)
 
         mock_compact.assert_awaited_once_with("conv_test", silent=True)
+
+
+# ─── O1: token-based trigger tests ──────────────────────────────────────────
+
+
+def _mock_compact_result():
+    return type("R", (), {
+        "summary": type("S", (), {
+            "id": "cs_tok",
+            "source_message_count": 5,
+        })(),
+        "ctx_before": 60000,
+        "ctx_after": 20000,
+        "message": None,
+    })()
+
+
+@pytest.mark.asyncio
+async def test_token_threshold_triggers_compaction():
+    """Token usage > 87% of model limit triggers compaction even with low watermark."""
+    with patch.object(
+        agent_runner, "count_uncompacted_messages", new_callable=AsyncMock
+    ) as mock_count, patch.object(
+        agent_runner, "estimate_uncompacted_tokens", new_callable=AsyncMock
+    ) as mock_tokens, patch.object(
+        agent_runner, "_get_agent_model_limit", new_callable=AsyncMock
+    ) as mock_limit, patch.object(
+        agent_runner, "compact_conversation", new_callable=AsyncMock
+    ) as mock_compact:
+        mock_count.return_value = 5  # below watermark threshold
+        mock_limit.return_value = 64_000  # deepseek-chat context window
+        mock_tokens.return_value = 60_000  # > 87% of 64000 = 55680
+        mock_compact.return_value = _mock_compact_result()
+
+        await _maybe_auto_compact_hook("conv_test", override_prompt=None, agent_id="ag_1")
+
+        mock_compact.assert_awaited_once_with("conv_test", silent=True)
+
+
+@pytest.mark.asyncio
+async def test_neither_threshold_met_does_not_compact():
+    """When both watermark and token usage are below thresholds, no compaction."""
+    with patch.object(
+        agent_runner, "count_uncompacted_messages", new_callable=AsyncMock
+    ) as mock_count, patch.object(
+        agent_runner, "estimate_uncompacted_tokens", new_callable=AsyncMock
+    ) as mock_tokens, patch.object(
+        agent_runner, "_get_agent_model_limit", new_callable=AsyncMock
+    ) as mock_limit, patch.object(
+        agent_runner, "compact_conversation", new_callable=AsyncMock
+    ) as mock_compact:
+        mock_count.return_value = 5  # below watermark
+        mock_limit.return_value = 64_000
+        mock_tokens.return_value = 10_000  # well below 87% of 64000
+
+        await _maybe_auto_compact_hook("conv_test", override_prompt=None, agent_id="ag_1")
+
+        mock_compact.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_agent_id_falls_back_to_watermark_only():
+    """Without agent_id, only the watermark check applies (no token estimation)."""
+    with patch.object(
+        agent_runner, "count_uncompacted_messages", new_callable=AsyncMock
+    ) as mock_count, patch.object(
+        agent_runner, "estimate_uncompacted_tokens", new_callable=AsyncMock
+    ) as mock_tokens, patch.object(
+        agent_runner, "compact_conversation", new_callable=AsyncMock
+    ) as mock_compact:
+        mock_count.return_value = 5  # below watermark
+
+        await _maybe_auto_compact_hook("conv_test", override_prompt=None, agent_id=None)
+
+        mock_tokens.assert_not_awaited()
+        mock_compact.assert_not_awaited()

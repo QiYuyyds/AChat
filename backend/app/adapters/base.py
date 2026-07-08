@@ -60,6 +60,9 @@ class AdapterInput:
     # cross-run history as OpenAI chat-message dicts (excludes current trigger)
     history: list[dict] | None = None
     custom_config: CustomConfig | None = None
+    # full messages list for SDK call_once path (system + history + user + prior turns);
+    # when provided, the adapter uses it directly instead of constructing its own.
+    messages: list[dict] | None = None
 
     # ── CLI agent fields ───────────────────────────────────────
     # CLI binary path; empty → adapter uses its default PATH lookup.
@@ -88,3 +91,16 @@ class AgentPlatformAdapter(ABC):
     def stream(
         self, input: AdapterInput, cancel_event: asyncio.Event
     ) -> AsyncIterator[StreamEvent]: ...
+
+    async def call_once(
+        self, input: AdapterInput, cancel_event: asyncio.Event
+    ) -> AsyncIterator[StreamEvent]:
+        """Single-turn LLM call for SDK adapters.
+
+        Yields all events for one turn (message.start → parts → message.end →
+        tool.call *). Does NOT execute tools or loop — AgentRunner manages the
+        ReAct loop. CLI adapters raise NotImplementedError.
+        """
+        raise NotImplementedError(
+            f"Adapter '{self.name}' does not implement call_once (SDK-only method)"
+        )

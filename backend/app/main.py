@@ -175,6 +175,27 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning("PromptAssembler init failed: %s", e)
 
+    # ─── HookRegistry ───
+    try:
+        from app.services.hook_registry import HookRegistry
+        from app.services.hooks import register_all
+
+        hook_registry = HookRegistry()
+        register_all(hook_registry)
+        app_instance.state.hook_registry = hook_registry
+        logger.info("HookRegistry initialized with built-in hooks")
+    except Exception as e:
+        logger.warning("HookRegistry init failed: %s", e)
+        app_instance.state.hook_registry = None
+
+    # ─── AgentLoadTracker ───
+    try:
+        from app.services.agent_load_tracker import agent_load_tracker
+        await agent_load_tracker.init_from_db()
+        logger.info("AgentLoadTracker initialized")
+    except Exception as e:
+        logger.warning("AgentLoadTracker init failed: %s", e)
+
     # ─── DocumentService ───
     try:
         from app.services.document_service import DocumentService

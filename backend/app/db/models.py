@@ -120,6 +120,9 @@ class Agent(Base):
     # Skills the agent has equipped (slugs under <data_dir>/skills/). custom adapter only.
     skill_names: Mapped[list] = mapped_column(JSONB, name="skill_names", nullable=False, default=list)
 
+    # Hook groups enabled for this agent (e.g. ["checkpoint", "auto_compact"]).
+    hook_names: Mapped[list] = mapped_column(JSONB, name="hook_names", nullable=False, default=list)
+
     is_builtin: Mapped[bool] = mapped_column(
         Boolean, name="is_builtin", nullable=False, default=False
     )
@@ -163,6 +166,20 @@ class Agent(Base):
     @skill_names_list.setter
     def skill_names_list(self, value: list[str]) -> None:
         self.skill_names = value
+
+    @property
+    def hook_names_list(self) -> list[str]:
+        """Get hook_names as Python list (JSONB already returns list)."""
+        return list(self.hook_names) if self.hook_names else []
+
+    @hook_names_list.setter
+    def hook_names_list(self, value: list[str]) -> None:
+        self.hook_names = value
+
+    @property
+    def checkpoint_enabled(self) -> bool:
+        """Whether checkpoint saving is enabled for this agent."""
+        return "checkpoint" in self.hook_names_list
 
     @property
     def custom_args_list(self) -> list[str]:
@@ -490,6 +507,27 @@ class AgentRun(Base):
     @usage_dict.setter
     def usage_dict(self, value: dict | None) -> None:
         self.usage = value
+
+
+class AgentRunCheckpoint(Base):
+    """Turn-level checkpoint for SDK agent runs (save/resume)."""
+
+    __tablename__ = "agent_run_checkpoints"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("agent_runs.id", ondelete="CASCADE"),
+        name="run_id",
+        nullable=False,
+    )
+    turn_number: Mapped[int] = mapped_column(Integer, name="turn_number", nullable=False)
+    messages_json: Mapped[list] = mapped_column(JSONB, name="messages_json", nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
+
+    __table_args__ = (
+        Index("idx_checkpoints_run_turn", "run_id", "turn_number"),
+    )
 
 
 class ContextSummary(Base):

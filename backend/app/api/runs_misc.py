@@ -9,12 +9,16 @@ intentionally NOT ported here — see the agent's deferral report (no Codex
 adapter / internal-tool-auth module exists in the Python backend yet).
 """
 
+import asyncio
 import os
 from urllib.parse import quote
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import select
 
+from app.db.engine import get_db
+from app.db.models import AgentRun
 from app.schemas import (
     ConnectionHintsResponse,
     PlatformResponse,
@@ -42,6 +46,65 @@ async def abort_run(run_id: str) -> JSONResponse:
             {"error": "Run not found or already finished"}, status_code=404
         )
     return JSONResponse({"ok": True})
+
+
+# ─── POST /api/runs/{id}/resume ──────────────────────────────────────────────
+@router.post("/runs/{run_id}/resume")
+async def resume_run(run_id: str) -> JSONResponse:
+    """Resume an SDK agent run from its latest checkpoint."""
+    from app.services.agent_runner import RunArgs, execute_run
+    from app.services.checkpoint_service import load_latest_checkpoint
+
+    async with get_db() as db:
+        run = (
+            await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+        ).scalar_one_or_none()
+        if run is None:
+            return JSONResponse(
+                {"error": "Run not found"}, status_code=404
+            )
+        if run.status == "complete":
+            return JSONResponse(
+                {"error": "Cannot resume a completed run"}, status_code=409
+            )
+        agent_id = run.agent_id
+        conversation_id = run.conversation_id
+        trigger_message_id = run.trigger_message_id or ""
+
+    checkpoint = await load_latest_checkpoint(run_id)
+    if checkpoint is None:
+        return JSONResponse(
+            {"error": "No checkpoint available for resume"}, status_code=404
+        )
+
+    cancel_event = asyncio.Event()
+    args = RunArgs(
+        agent_id=agent_id,
+        conversation_id=conversation_id,
+        trigger_message_id=trigger_message_id,
+        resume_from_checkpoint=True,
+    )
+    asyncio.create_task(execute_run(run_id, cancel_event, args))
+    return JSONResponse({"ok": True, "runId": run_id, "resumedFromTurn": checkpoint.turn_number})
+
+
+# ─── GET /api/runs/{id}/checkpoints ──────────────────────────────────────────
+@router.get("/runs/{run_id}/checkpoints")
+async def list_run_checkpoints(run_id: str) -> JSONResponse:
+    """List available checkpoints for a run."""
+    from app.services.checkpoint_service import list_checkpoints
+
+    checkpoints = await list_checkpoints(run_id)
+    return JSONResponse({
+        "checkpoints": [
+            {
+                "id": c.id,
+                "turnNumber": c.turn_number,
+                "createdAt": c.created_at,
+            }
+            for c in checkpoints
+        ],
+    })
 
 
 # ─── GET /api/search ─────────────────────────────────────────────────────────

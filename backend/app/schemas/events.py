@@ -42,6 +42,7 @@ class RunStartEvent(BaseEvent):
     agent_id: str = Field(alias="agentId")
     trigger_message_id: str = Field(alias="triggerMessageId")
     parent_run_id: str | None = Field(default=None, alias="parentRunId")
+    is_resume: bool = Field(default=False, alias="isResume")
 
     model_config = {"populate_by_name": True}
 
@@ -355,6 +356,30 @@ class HeartbeatEvent(BaseEvent):
     type: Literal["heartbeat"] = "heartbeat"
 
 
+# ─── Turn Metric Event ─────────────────────────────────────
+class TurnTokenBreakdown(BaseModel):
+    """Per-turn token breakdown."""
+
+    input_tokens: int = Field(alias="inputTokens")
+    output_tokens: int = Field(alias="outputTokens")
+    cache_read_tokens: int = Field(alias="cacheReadTokens")
+
+    model_config = {"populate_by_name": True}
+
+
+class TurnMetricEvent(BaseEvent):
+    """Per-turn metrics: token usage, tool calls, and duration."""
+
+    type: Literal["turn.metric"] = "turn.metric"
+    run_id: str = Field(alias="runId")
+    turn: int  # 1-based
+    tokens: TurnTokenBreakdown
+    tool_calls: list[str] = Field(alias="toolCalls")
+    duration_ms: int = Field(alias="durationMs")
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Summary Updated Event ─────────────────────────────────────
 class SummaryUpdatedEvent(BaseEvent):
     """Event when a conversation summary is updated."""
@@ -404,6 +429,8 @@ StreamEvent = Annotated[
         AskUserResolvedEvent,
         # Heartbeat
         HeartbeatEvent,
+        # Turn metrics
+        TurnMetricEvent,
         # Summary
         SummaryUpdatedEvent,
     ],
