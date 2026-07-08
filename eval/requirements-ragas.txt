@@ -1,0 +1,9 @@
+# RAGAS evaluation dependencies
+# Install in backend venv: pip install -r eval/requirements-ragas.txt
+# (run from project root)
+
+ragas==0.2.15
+langchain-openai==0.3.14
+langchain-community==0.3.20
+langchain-core==0.3.86
+langgraph==0.4.7
