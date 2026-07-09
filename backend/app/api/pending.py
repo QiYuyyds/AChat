@@ -16,6 +16,7 @@ from app.schemas.dispatch import AskUserAnswer
 from app.services import conversation_service
 from app.services.pending_bash_commands import pending_bash_commands
 from app.services.pending_dispatch_plans import pending_dispatch_plans
+from app.services.pending_mcp_calls import pending_mcp_calls
 from app.services.pending_questions import pending_questions
 from app.services.pending_writes import pending_writes
 
@@ -199,4 +200,39 @@ async def resolve_pending_dispatch_plan(
     result = pending_dispatch_plans.approve(plan_id)
     if not result.ok:
         return JSONResponse({"error": result.error}, status_code=400)
+    return JSONResponse({"ok": True})
+
+
+# ─── pending-mcp-calls ────────────────────────────────────────────────────────
+@router.get("/api/conversations/{conversation_id}/pending-mcp-calls")
+async def list_pending_mcp_calls(conversation_id: str) -> JSONResponse:
+    calls = pending_mcp_calls.list_by_conversation(conversation_id)
+    return JSONResponse(
+        {"pendingMcpCalls": [c.model_dump(by_alias=True) for c in calls]}
+    )
+
+
+@router.post("/api/conversations/{conversation_id}/pending-mcp-calls/{call_id}")
+async def resolve_pending_mcp_call(
+    conversation_id: str, call_id: str, req: Request
+) -> JSONResponse:
+    raw = await _read_json(req)
+    if not isinstance(raw, dict) or raw.get("action") not in ("approve", "reject"):
+        return _invalid_body()
+
+    existing = pending_mcp_calls.get(call_id)
+    if existing is None or existing.conversation_id != conversation_id:
+        return JSONResponse(
+            {"error": "Pending MCP call not found"}, status_code=404
+        )
+
+    ok = (
+        pending_mcp_calls.approve(call_id)
+        if raw["action"] == "approve"
+        else pending_mcp_calls.reject(call_id)
+    )
+    if not ok:
+        return JSONResponse(
+            {"error": "Failed to process pending MCP call"}, status_code=500
+        )
     return JSONResponse({"ok": True})

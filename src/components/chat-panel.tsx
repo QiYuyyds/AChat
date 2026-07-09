@@ -12,6 +12,7 @@ import { FileLibraryDialog } from '@/components/file-library-dialog'
 import { FileTab } from '@/components/file-tab'
 import { PendingWriteDiffTab } from '@/components/pending-write-diff-tab'
 import { PendingBashCommandsPanel } from '@/components/pending-bash-commands-panel'
+import { PendingMcpCallsPanel } from '@/components/pending-mcp-call-card'
 import { PendingWritesPanel } from '@/components/pending-writes-panel'
 import { diffTabPendingId, isDiffTabId } from '@/components/pending-writes-panel'
 import { PinnedMessagesBar } from '@/components/pinned-messages-bar'
@@ -261,6 +262,7 @@ export function ChatPanel() {
           <PinnedMessagesBar conversationId={conv.id} />
           <MessageList conversationId={conv.id} />
           <PendingBashCommandsPanel conversationId={conv.id} />
+          <PendingMcpCallsPanel conversationId={conv.id} />
           <PendingWritesPanel conversationId={conv.id} />
           <MessageInput conversationId={conv.id} />
         </>

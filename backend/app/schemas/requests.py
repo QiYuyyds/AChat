@@ -109,6 +109,7 @@ class CreateAgentRequest(BaseModel):
 
     tool_names: list[str] | None = Field(default=None, alias="toolNames")
     skill_names: list[str] | None = Field(default=None, alias="skillNames")
+    mcp_server_ids: list[str] | None = Field(default=None, alias="mcpServerIds")
     supports_vision: bool | None = Field(default=None, alias="supportsVision")
     is_orchestrator: bool | None = Field(default=False, alias="isOrchestrator")
 
@@ -138,6 +139,7 @@ class UpdateAgentRequest(BaseModel):
 
     tool_names: list[str] | None = Field(default=None, alias="toolNames")
     skill_names: list[str] | None = Field(default=None, alias="skillNames")
+    mcp_server_ids: list[str] | None = Field(default=None, alias="mcpServerIds")
     supports_vision: bool | None = Field(default=None, alias="supportsVision")
     is_orchestrator: bool | None = Field(default=None, alias="isOrchestrator")
 

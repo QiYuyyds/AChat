@@ -385,6 +385,18 @@ export interface AskUserAnswer {
   freeformNote?: string
 }
 
+/** MCP 工具调用审批请求（trust='ask' 的 MCP server 首次调用时触发）。 */
+export interface PendingMcpCall {
+  id: string
+  conversationId: string
+  agentId: string
+  runId: string
+  toolName: string
+  args: Record<string, unknown>
+  serverTrust: 'always' | 'ask'
+  createdAt: number
+}
+
 // ─── StreamEvent 联合 ─────────────────────────────────────
 interface BaseEvent {
   conversationId: string
@@ -435,6 +447,8 @@ export type StreamEvent = BaseEvent &
     | { type: 'bash_command.resolved'; pendingId: string; approved: boolean }
     | { type: 'ask_user.pending'; pendingQuestion: PendingQuestion }
     | { type: 'ask_user.resolved'; pendingId: string; answered: boolean }
+    | { type: 'mcp_call.pending'; pendingCall: PendingMcpCall }
+    | { type: 'mcp_call.resolved'; pendingId: string; approved: boolean }
     | {
         type: 'worktree.created' | 'worktree.merged' | 'worktree.cleaned'
         taskId: string

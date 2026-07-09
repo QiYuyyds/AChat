@@ -36,6 +36,7 @@ agents {
   api_base_url    text              // 该 agent 单独的 endpoint；NULL 走 SDK 默认
   tool_names      text JSON         // string[]，引用 Spec 07
   skill_names     jsonb default '[]' // string[] skill slug；仅 custom adapter；内容存 <data_dir>/skills/ 不入库（add-agent-skills）
+  mcp_server_ids  jsonb default '[]' // string[]；引用 mcp_servers.id；仅 custom adapter（Spec 15）
   is_builtin      int  bool default 0
   is_orchestrator int  bool default 0
   supports_vision int  bool default 0
@@ -272,6 +273,39 @@ app_settings {
 
 ---
 
+## 10. mcp_servers
+
+源文件：`backend/app/db/models.py`（SQLAlchemy）、`backend/app/api/mcp.py`（CRUD API）
+
+```python
+mcp_servers {
+  id          text PK           // mcp_<nanoid>
+  name        text UNIQUE       // 命名空间用，仅 [a-z0-9_]；用于 mcp__<name>__<tool>
+  transport   text NOT NULL     // 'stdio' | 'sse'
+  command     text              // stdio: 可执行命令
+  args        jsonb             // stdio: 命令参数 list[str]，默认 []
+  env         jsonb             // stdio: 环境变量 dict[str, str]；支持 ${ENV_NAME} 占位符
+  url         text              // sse: 端点 URL
+  headers     jsonb             // sse: 静态请求头 dict[str, str]；支持 ${ENV_NAME} 占位符
+  trust       text NOT NULL     // 'always' | 'ask'，默认 'ask'
+  enabled     boolean           // 全局开关，默认 True
+  created_at  BigInteger        // unix ms
+}
+```
+
+**约束**：
+- `name` 唯一性 + `[a-z0-9_]` 格式校验（service 层 enforce）
+- `transport='stdio'` 时 `command` 必填；`transport='sse'` 时 `url` 必填
+- `trust='always'` 时 MCP 工具直接放行；`trust='ask'`（默认）时走 per-tool-per-conversation 审批门（详见 Spec 15）
+- 删除 MCP server 时，同步从所有 `agents.mcp_server_ids` 中移除该 ID（service 层 enforce）
+- `env` / `headers` 的值支持 `${ENV_NAME}` 占位符 —— 在 `connect_all()` 前用 `os.environ.get()` 替换，避免在 DB 存明文密钥
+
+**密钥脱敏**：API 列表接口（`GET /api/mcp/servers`）不回明文 —— 值长度 > 20 且非 `${...}` 格式时脱敏为 `****<last4>`。编辑时回填脱敏值，提交时若值仍为脱敏格式则保留原值。
+
+**索引**：无（server 数量小）。
+
+---
+
 ## Cascade 关系图
 
 ```
@@ -302,6 +336,7 @@ app_settings ──(独立，无外键)── 单行表，与任何业务表都�
 | `agents.capabilities` | `string[]` | 能力标签 |
 | `agents.tool_names` | `string[]` | 引用 Spec 07 的工具名 |
 | `agents.skill_names` | `string[]` | 装备的 skill slug（仅 custom adapter）；skill 内容存 `<data_dir>/skills/`，不入库 |
+| `agents.mcp_server_ids` | `string[]` | 启用的 MCP server ID（仅 custom adapter）；引用 `mcp_servers.id`，详见 Spec 15 |
 | `conversations.agent_ids` | `string[]` | 参与的 agent |
 | `conversations.pinned_message_ids` | `string[]` | 用户 pin 的消息 |
 | `messages.parts` | `MessagePart[]` | 见 Spec 03 |
@@ -332,6 +367,8 @@ app_settings ──(独立，无外键)── 单行表，与任何业务表都�
 | Attachment | `att_` | `att_qWeR...` |
 | AgentRun | `run_` | `run_xT9m...` |
 | ContextSummary | `ctx_` | `ctx_mN4p...` |
+| McpServer | `mcp_` | `mcp_xY3w...` |
+| PendingMcpCall | `pmcp_` | `pmcp_aBc...` |
 | ToolCall (内存中) | `call_` | `call_aBc...` |
 | AppSettings | `'singleton'` | 不用 nanoid，固定字面量 |
 

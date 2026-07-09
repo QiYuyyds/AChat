@@ -349,6 +349,41 @@ class AskUserResolvedEvent(BaseEvent):
     model_config = {"populate_by_name": True}
 
 
+# ─── MCP Call Approval Events ─────────────────────────────────────
+class PendingMcpCall(BaseModel):
+    """A pending MCP tool call awaiting user approval."""
+
+    id: str
+    conversation_id: str = Field(alias="conversationId")
+    agent_id: str = Field(alias="agentId")
+    run_id: str = Field(alias="runId")
+    tool_name: str = Field(alias="toolName")
+    args: dict
+    server_trust: str = Field(alias="serverTrust")
+    created_at: int = Field(alias="createdAt")
+
+    model_config = {"populate_by_name": True}
+
+
+class McpCallPendingEvent(BaseEvent):
+    """Event when an MCP tool call is pending approval."""
+
+    type: Literal["mcp_call.pending"] = "mcp_call.pending"
+    pending_call: PendingMcpCall = Field(alias="pendingCall")
+
+    model_config = {"populate_by_name": True}
+
+
+class McpCallResolvedEvent(BaseEvent):
+    """Event when an MCP tool call is resolved."""
+
+    type: Literal["mcp_call.resolved"] = "mcp_call.resolved"
+    pending_id: str = Field(alias="pendingId")
+    approved: bool
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Worktree Events ─────────────────────────────────────
 class WorktreeEvent(BaseEvent):
     """Event when a dispatch task worktree is created/merged/cleaned."""
@@ -440,6 +475,9 @@ StreamEvent = Annotated[
         BashCommandResolvedEvent,
         AskUserPendingEvent,
         AskUserResolvedEvent,
+        # MCP call approval events
+        McpCallPendingEvent,
+        McpCallResolvedEvent,
         # Worktree events
         WorktreeEvent,
         # Heartbeat

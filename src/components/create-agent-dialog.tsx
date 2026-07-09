@@ -1,6 +1,6 @@
 'use client'
 
-import { ChevronDown, Cpu, MessageSquareText, SlidersHorizontal, Sparkles, User, Wrench } from 'lucide-react'
+import { ChevronDown, Cpu, MessageSquareText, Plug, SlidersHorizontal, Sparkles, User, Wrench } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { AgentCreateWizard } from '@/components/agent-create-wizard'
@@ -19,9 +19,11 @@ import { Textarea } from '@/components/ui/textarea'
 import type { AgentRow } from '@/db/schema'
 import {
   createAgent,
+  fetchMcpServers,
   listSkills,
   updateAgent,
   type CreateAgentBody,
+  type McpServerResponse,
   type SkillSummary,
   type UpdateAgentBody,
 } from '@/lib/api'
@@ -48,7 +50,7 @@ import {
 } from '@/shared/openai-compatible'
 import { useAppStore } from '@/stores/app-store'
 
-type AgentTab = 'basic' | 'model' | 'toolsPrompt'
+type AgentTab = 'basic' | 'model' | 'toolsPrompt' | 'skills' | 'mcp'
 type CreateStep = 'choose' | 'wizard' | 'detail'
 
 /** All-purpose preset's system prompt template — used as the default prompt for new custom agents. */
@@ -82,6 +84,8 @@ export function CreateAgentDialog({
   const [toolNames, setToolNames] = useState<Set<string>>(new Set(DEFAULT_CUSTOM_AGENT_TOOLS))
   const [skillNames, setSkillNames] = useState<Set<string>>(new Set())
   const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([])
+  const [mcpServerIds, setMcpServerIds] = useState<Set<string>>(new Set())
+  const [availableMcpServers, setAvailableMcpServers] = useState<McpServerResponse[]>([])
   const [supportsVision, setSupportsVision] = useState(true)
   const [apiKey, setApiKey] = useState('')
   const [apiBaseUrl, setApiBaseUrl] = useState('')
@@ -131,6 +135,7 @@ export function CreateAgentDialog({
       )?.id ?? null
       setActivePresetId(inferredPresetId)
       setSkillNames(new Set(agent.skillNames))
+      setMcpServerIds(new Set(agent.mcpServerIds ?? []))
       setSupportsVision(agent.supportsVision)
       setIsOrchestrator(agent.isOrchestrator)
       setApiKey(agent.apiKey ?? '')
@@ -148,6 +153,7 @@ export function CreateAgentDialog({
       setToolNames(new Set(DEFAULT_CUSTOM_AGENT_TOOLS))
       setActivePresetId('all-purpose')
       setSkillNames(new Set())
+      setMcpServerIds(new Set())
       setSupportsVision(true)
       setIsOrchestrator(false)
       setApiKey('')
@@ -169,6 +175,14 @@ export function CreateAgentDialog({
     listSkills()
       .then(setAvailableSkills)
       .catch((err) => console.error('[CreateAgentDialog] load skills failed', err))
+  }, [open])
+
+  // 打开对话框时加载可用 MCP servers（custom adapter 才会用到）。
+  useEffect(() => {
+    if (!open) return
+    fetchMcpServers()
+      .then((servers) => setAvailableMcpServers(servers.filter((s) => s.enabled)))
+      .catch((err) => console.error('[CreateAgentDialog] load MCP servers failed', err))
   }, [open])
 
   const handleOrchestratorChange = (checked: boolean) => {
@@ -230,6 +244,15 @@ export function CreateAgentDialog({
     })
   }
 
+  const toggleMcpServer = (id: string) => {
+    setMcpServerIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
   const applyToolPreset = (preset: {
     id: AgentToolPresetId
     tools: readonly ToolName[]
@@ -263,6 +286,7 @@ export function CreateAgentDialog({
     )?.id ?? null
     setActivePresetId(inferredPresetId)
     setSkillNames(new Set())
+    setMcpServerIds(new Set())
     setSupportsVision(draft.supportsVision)
     setIsOrchestrator(false)
     setApiKey('')
@@ -295,6 +319,7 @@ export function CreateAgentDialog({
         modelId: draft.modelId?.trim() || undefined,
         toolNames: isSdkAgent ? [] : draft.toolNames,
         skillNames: [],
+        mcpServerIds: isSdkAgent ? [] : Array.from(mcpServerIds),
         supportsVision: draft.supportsVision,
         isOrchestrator: isOrchestrator || undefined,
         executablePath: undefined,
@@ -360,6 +385,7 @@ export function CreateAgentDialog({
           modelId: isSdkAgent ? modelId.trim() || null : modelId.trim(),
           toolNames: isSdkAgent ? [] : Array.from(toolNames),
           skillNames: isSdkAgent ? [] : Array.from(skillNames),
+          mcpServerIds: isSdkAgent ? [] : Array.from(mcpServerIds),
           supportsVision,
           isOrchestrator,
           apiKey: trimmedApiKey || null,
@@ -382,6 +408,7 @@ export function CreateAgentDialog({
           modelId: modelId.trim() || undefined,
           toolNames: isSdkAgent ? [] : Array.from(toolNames),
           skillNames: isSdkAgent ? [] : Array.from(skillNames),
+          mcpServerIds: isSdkAgent ? [] : Array.from(mcpServerIds),
           supportsVision,
           isOrchestrator: isOrchestrator || undefined,
           apiKey: trimmedApiKey || undefined,
@@ -460,6 +487,10 @@ export function CreateAgentDialog({
               <TabsTrigger value="skills">
                 <Sparkles className="size-3.5" />
                 技能
+              </TabsTrigger>
+              <TabsTrigger value="mcp">
+                <Plug className="size-3.5" />
+                MCP
               </TabsTrigger>
             </TabsList>
 
@@ -1000,6 +1031,78 @@ export function CreateAgentDialog({
                     <Label>技能</Label>
                     <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
                       仅自建（custom）Agent 支持技能。CLI Agent（Claude Code / Codex）使用各自内置能力。
+                    </div>
+                  </div>
+                )}
+              </TabsContent>
+
+              <TabsContent value="mcp" className="mt-0 space-y-3 py-1">
+                {adapterKind === 'custom' ? (
+                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                    <Label>MCP Servers</Label>
+                    {availableMcpServers.length === 0 ? (
+                      <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                        还没有已启用的 MCP Server，去左侧 MCP 面板添加。
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {availableMcpServers.map((server) => (
+                          <label
+                            key={server.id}
+                            className={cn(
+                              'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
+                              mcpServerIds.has(server.id) && 'border-primary bg-primary/5',
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={mcpServerIds.has(server.id)}
+                              onChange={() => toggleMcpServer(server.id)}
+                              className="mt-0.5 accent-primary"
+                            />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-medium">{server.name}</span>
+                                <span
+                                  className={cn(
+                                    'shrink-0 rounded px-1 py-0.5 font-mono text-[9px]',
+                                    server.transport === 'stdio'
+                                      ? 'bg-blue-500/10 text-blue-600'
+                                      : 'bg-purple-500/10 text-purple-600',
+                                  )}
+                                >
+                                  {server.transport}
+                                </span>
+                                <span
+                                  className={cn(
+                                    'shrink-0 rounded px-1 py-0.5 font-mono text-[9px]',
+                                    server.trust === 'always'
+                                      ? 'bg-success/10 text-success'
+                                      : 'bg-warning/10 text-warning',
+                                  )}
+                                >
+                                  {server.trust}
+                                </span>
+                              </div>
+                              <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
+                                {server.transport === 'stdio'
+                                  ? `${server.command ?? ''} ${(server.args ?? []).join(' ')}`
+                                  : server.url ?? ''}
+                              </div>
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                    <div className="col-span-2 mt-1 text-[10px] text-muted-foreground">
+                      勾选后，该 Agent 运行时会连接这些 MCP server 并将其工具注入 ReAct 循环。工具名格式为 <code className="font-mono">mcp__&lt;server&gt;__&lt;tool&gt;</code>。
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
+                    <Label>MCP Servers</Label>
+                    <div className="rounded-md border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                      仅自建（custom）Agent 支持外部 MCP server。CLI Agent（Claude Code / Codex）使用各自 SDK 内置的 MCP 接入。
                     </div>
                   </div>
                 )}

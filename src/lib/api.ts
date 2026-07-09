@@ -16,6 +16,7 @@ import type {
   IngestResult,
   PendingBashCommand,
   PendingDispatchPlan,
+  PendingMcpCall,
   PendingQuestion,
   PendingWrite,
   UploadResult,
@@ -68,6 +69,8 @@ export interface CreateAgentBody {
   toolNames: string[]
   /** custom: 启用的 skill slug 列表；SDK adapter: 必须为空 */
   skillNames: string[]
+  /** custom: 启用的 MCP server ID 列表；SDK adapter: 必须为空 */
+  mcpServerIds?: string[]
   supportsVision?: boolean
   apiKey?: string
   /** 自定义 API base URL。Claude/Codex 对 endpoint 协议兼容性要求不同；空走默认 */
@@ -988,5 +991,115 @@ export async function uploadSkill(files: File[], paths: string[]): Promise<Skill
 export async function deleteSkill(slug: string): Promise<void> {
   await json<{ ok: true }>(
     fetch(`${API_BASE_URL}/api/skills/${slug}`, { method: 'DELETE' }),
+  )
+}
+
+// ─── MCP Servers (外部 MCP server 管理) ──────────
+export interface McpServerResponse {
+  id: string
+  name: string
+  transport: 'stdio' | 'sse' | 'streamable_http'
+  command: string | null
+  args: string[]
+  env: Record<string, string> | null
+  url: string | null
+  headers: Record<string, string> | null
+  trust: 'always' | 'ask'
+  enabled: boolean
+  createdAt: number
+}
+
+export interface McpServerCreateBody {
+  name: string
+  transport: 'stdio' | 'sse' | 'streamable_http'
+  command?: string | null
+  args?: string[]
+  env?: Record<string, string> | null
+  url?: string | null
+  headers?: Record<string, string> | null
+  trust?: 'always' | 'ask'
+  enabled?: boolean
+}
+
+export type McpServerUpdateBody = Partial<McpServerCreateBody>
+
+export interface McpTestResult {
+  ok: boolean
+  tools: Array<{ name: string; description: string }>
+  error?: string
+}
+
+export async function fetchMcpServers(): Promise<McpServerResponse[]> {
+  const { servers } = await json<{ servers: McpServerResponse[] }>(
+    fetch(API_BASE_URL + '/api/mcp/servers'),
+  )
+  return servers
+}
+
+export async function createMcpServer(body: McpServerCreateBody): Promise<McpServerResponse> {
+  const { server } = await json<{ server: McpServerResponse }>(
+    fetch(API_BASE_URL + '/api/mcp/servers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
+  return server
+}
+
+export async function updateMcpServer(serverId: string, body: McpServerUpdateBody): Promise<McpServerResponse> {
+  const { server } = await json<{ server: McpServerResponse }>(
+    fetch(`${API_BASE_URL}/api/mcp/servers/${serverId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
+  return server
+}
+
+export async function deleteMcpServer(serverId: string): Promise<void> {
+  await json<{ ok: true }>(
+    fetch(`${API_BASE_URL}/api/mcp/servers/${serverId}`, { method: 'DELETE' }),
+  )
+}
+
+export async function testMcpServer(serverId: string): Promise<McpTestResult> {
+  return json<McpTestResult>(
+    fetch(`${API_BASE_URL}/api/mcp/servers/${serverId}/test`, { method: 'POST' }),
+  )
+}
+
+// ─── Pending MCP calls (ask-trust 审批) ──────────
+export async function fetchPendingMcpCalls(conversationId: string): Promise<PendingMcpCall[]> {
+  const { pendingMcpCalls } = await json<{ pendingMcpCalls: PendingMcpCall[] }>(
+    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-mcp-calls`),
+  )
+  return pendingMcpCalls
+}
+
+export async function approvePendingMcpCall(
+  conversationId: string,
+  callId: string,
+): Promise<void> {
+  await json<{ ok: true }>(
+    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-mcp-calls/${callId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'approve' }),
+    }),
+  )
+}
+
+export async function rejectPendingMcpCall(
+  conversationId: string,
+  callId: string,
+): Promise<void> {
+  await json<{ ok: true }>(
+    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-mcp-calls/${callId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'reject' }),
+    }),
   )
 }

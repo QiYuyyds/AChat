@@ -340,6 +340,40 @@ async function rmDirWithRetry(target: string): Promise<void> {
 
 ---
 
+## 外部 MCP 信任模型与 stdio 子进程安全
+
+源文件：`backend/app/mcp/client_manager.py`、`backend/app/services/pending_mcp_calls.py`
+
+外部 MCP server **运行任意代码（stdio）或访问外部网络（sse）**，**绕过 AChat 的 workspace 沙箱 + Bash 黑名单**。这是用户授予的信任，需要显式 opt-in + 审批门。
+
+### 信任级别
+
+| trust | 行为 | 适用场景 |
+|---|---|---|
+| `always` | 直接放行，不弹审批 | 用户明确信任的 server（如本地只读 filesystem） |
+| `ask`（默认） | per-tool-per-conversation 审批门 | 默认安全级别；首次调用某工具弹审批，本会话内记住 |
+
+### 显式 opt-in 两道
+
+1. **Server 登记**：用户在左边栏 MCP 管理面板手动登记 server（command/args/env + trust 级别 + 「我信任此 server」确认）
+2. **Agent 勾选**：用户在 Agent builder 中手动勾选启用哪些 server
+
+### stdio 子进程安全
+
+- stdio MCP server 是子进程，由 `StdioClientTransport` spawn
+- Windows 上启动时加 `windowsHide: true`（避免闪现控制台）
+- run 结束 / abort 时，`McpClientManager.close_all()` 通过 `AsyncExitStack.aclose()` 关闭所有 session + 杀 stdio 子进程
+- 连接失败不影响其他 server（独立 try/except）
+- 不做 stdio 命令硬白名单（MCP server 命令五花八门，枚举不现实）—— 登记时完整展示 command/args/env + 明确警告「它在沙箱外、以 app 权限运行」
+
+### 密钥管理
+
+- `env` / `headers` 密钥存 DB（同 `app_settings`，不引 keychain）
+- API 列表接口脱敏（值长度 > 20 且非 `${...}` 格式 → `****<last4>`）
+- 支持 `${ENV_NAME}` 占位符 —— 在 `connect_all()` 前用 `os.environ.get()` 替换，免在 DB 存明文
+
+---
+
 ## Worktree 目录安全
 
 Orchestrator 并行子任务的 worktree 隔离（详见 Spec 06「Worktree 隔离」）涉及文件系统操作，需满足以下安全约束：

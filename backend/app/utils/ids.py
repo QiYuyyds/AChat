@@ -99,3 +99,13 @@ def new_document_version_id() -> str:
 def new_checkpoint_id() -> str:
     """Generate checkpoint ID: ckpt_<nanoid>"""
     return _gen_id("ckpt_")
+
+
+def new_mcp_server_id() -> str:
+    """Generate MCP server ID: mcp_<nanoid>"""
+    return _gen_id("mcp_")
+
+
+def new_pending_mcp_call_id() -> str:
+    """Generate pending MCP call ID: pmc_<nanoid>"""
+    return _gen_id("pmc_")

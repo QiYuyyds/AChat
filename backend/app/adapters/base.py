@@ -79,6 +79,10 @@ class AdapterInput:
     # write it to a temp file and pass ``--mcp-config <path>``.
     mcp_config: dict | None = None
 
+    # MCP tool declarations (OpenAI function-calling format), injected by
+    # AgentRunner at run start after connecting to external MCP servers.
+    mcp_tools: list[dict] | None = None
+
 
 class AgentPlatformAdapter(ABC):
     """Hides per-platform API differences behind a unified event stream."""

@@ -5,12 +5,14 @@ import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 
 import type { AgentRunRow, AgentRow, ArtifactRow, AttachmentRow, ConversationWithMeta, MessageRow } from '@/db/schema'
+import { computeWaves, type ChildRunWaveInfo } from '@/lib/wave-utils'
 import type {
   DispatchPlanItem,
   DispatchTaskStatus,
   MessagePart,
   PendingBashCommand,
   PendingDispatchPlan,
+  PendingMcpCall,
   PendingQuestion,
   PendingWrite,
   StreamEvent,
@@ -99,6 +101,9 @@ interface AppState {
   // ─── Agent ask_user 结构化问答等待队列（按 conversationId 分桶）─
   pendingQuestionsByConv: Record<string, PendingQuestion[]>
 
+  // ─── MCP 工具调用审批等待队列（按 conversationId 分桶）─
+  pendingMcpCallsByConv: Record<string, PendingMcpCall[]>
+
   // ─── 未读计数（流式响应到达时，非 active 会话 +1；切到该会话清零）
   unreadByConv: Record<string, number>
 
@@ -165,6 +170,8 @@ interface AppState {
 
   setPendingQuestionsForConversation(conversationId: string, list: PendingQuestion[]): void
 
+  setPendingMcpCallsForConversation(conversationId: string, list: PendingMcpCall[]): void
+
   setPendingDispatchPlansForConversation(
     conversationId: string,
     list: PendingDispatchPlan[],
@@ -207,6 +214,7 @@ export const useAppStore = create<AppState>()(
     pendingWritesByConv: {},
     pendingBashCommandsByConv: {},
     pendingQuestionsByConv: {},
+    pendingMcpCallsByConv: {},
     unreadByConv: {},
     mobileSidebarOpen: false,
     pendingQuoteForInput: null,
@@ -240,6 +248,7 @@ export const useAppStore = create<AppState>()(
         delete s.pendingWritesByConv[id]
         delete s.pendingBashCommandsByConv[id]
         delete s.pendingQuestionsByConv[id]
+        delete s.pendingMcpCallsByConv[id]
         if (s.activeConversationId === id) s.activeConversationId = null
       }),
 
@@ -403,6 +412,7 @@ export const useAppStore = create<AppState>()(
         delete s.pendingWritesByConv[conversationId]
         delete s.pendingBashCommandsByConv[conversationId]
         delete s.pendingQuestionsByConv[conversationId]
+        delete s.pendingMcpCallsByConv[conversationId]
         delete s.unreadByConv[conversationId]
         if (s.highlightedMessageId && messageIds.has(s.highlightedMessageId)) {
           s.highlightedMessageId = null
@@ -470,6 +480,12 @@ export const useAppStore = create<AppState>()(
       set((s) => {
         if (list.length === 0) delete s.pendingQuestionsByConv[conversationId]
         else s.pendingQuestionsByConv[conversationId] = list
+      }),
+
+    setPendingMcpCallsForConversation: (conversationId, list) =>
+      set((s) => {
+        if (list.length === 0) delete s.pendingMcpCallsByConv[conversationId]
+        else s.pendingMcpCallsByConv[conversationId] = list
       }),
 
     setPendingDispatchPlansForConversation: (conversationId, list) =>
@@ -909,6 +925,22 @@ export const useAppStore = create<AppState>()(
             return
           }
 
+          case 'mcp_call.pending': {
+            const list = s.pendingMcpCallsByConv[event.conversationId] ?? []
+            if (list.some((c) => c.id === event.pendingCall.id)) return
+            s.pendingMcpCallsByConv[event.conversationId] = [...list, event.pendingCall]
+            return
+          }
+
+          case 'mcp_call.resolved': {
+            const list = s.pendingMcpCallsByConv[event.conversationId]
+            if (!list) return
+            const next = list.filter((c) => c.id !== event.pendingId)
+            if (next.length === 0) delete s.pendingMcpCallsByConv[event.conversationId]
+            else s.pendingMcpCallsByConv[event.conversationId] = next
+            return
+          }
+
           case 'worktree.created': {
             for (const d of Object.values(s.dispatchesByRunId)) {
               if (d.taskStatus[event.taskId] !== undefined) {
@@ -1149,6 +1181,39 @@ export const usePinnedMessagesForConversation = (conversationId: string) =>
     }),
   )
 
+/** childRunId → { wave, taskId, orchestratorRunId, agentId, planIndex }，用于 MessageList 做 wave 分列 */
+export const useChildRunWaveMap = (conversationId: string): Record<string, ChildRunWaveInfo> => {
+  const dispatches = useAppStore(
+    useShallow((s) => {
+      const runs = s.runsByConv[conversationId]
+      if (!runs) return []
+      const result: DispatchState[] = []
+      for (const runId of Object.keys(runs)) {
+        const dispatch = s.dispatchesByRunId[runId]
+        if (dispatch?.plan) result.push(dispatch)
+      }
+      return result
+    }),
+  )
+  return useMemo(() => {
+    const map: Record<string, ChildRunWaveInfo> = {}
+    for (const dispatch of dispatches) {
+      const waveOf = computeWaves(dispatch.plan)
+      for (const [taskId, childRunId] of Object.entries(dispatch.childRunIds)) {
+        const planIndex = dispatch.plan.findIndex((p) => p.id === taskId)
+        map[childRunId] = {
+          wave: waveOf[taskId] ?? 0,
+          taskId,
+          orchestratorRunId: dispatch.runId,
+          agentId: dispatch.plan[planIndex]?.agentId ?? '',
+          planIndex: planIndex >= 0 ? planIndex : 0,
+        }
+      }
+    }
+    return map
+  }, [dispatches])
+}
+
 export const useActiveConversation = () =>
   useAppStore((s) => (s.activeConversationId ? s.conversations[s.activeConversationId] : null))
 
@@ -1270,6 +1335,14 @@ export const usePendingQuestions = (conversationId: string | null): PendingQuest
   useAppStore(
     useShallow((s) =>
       conversationId ? s.pendingQuestionsByConv[conversationId] ?? [] : [],
+    ),
+  )
+
+/** 该会话当前所有待审批的 MCP 工具调用（trust='ask' 的 server 首次调用）。 */
+export const usePendingMcpCalls = (conversationId: string | null): PendingMcpCall[] =>
+  useAppStore(
+    useShallow((s) =>
+      conversationId ? s.pendingMcpCallsByConv[conversationId] ?? [] : [],
     ),
   )
 

@@ -1,10 +1,10 @@
-# Spec 15 — 外部 MCP 工具接入（设计提案）
+# Spec 15 — 外部 MCP 工具接入
 
 > 让**任意 adapter** 的 Agent 接入「用户配置的外部 MCP server」,把工具扩展统一到 MCP 协议上,而不必为每个能力手写内置工具。
 >
-> **状态:设计提案,未实现。** 本 spec 用于先对齐方案(CLAUDE.md §6.1),确认后再分期落地。涉及安全约束(§5)与跨层接口,**实现前需讨论**。
+> **状态:Custom adapter 部分已实现（P1）；Claude Code / Codex 接线（P0）尚未实现。** 本 spec 描述已落地的 Custom adapter MCP 客户端层 + 数据模型 + 安全模型 + 前端 UI。
 
-源文件(待建):`src/server/mcp/**`(client + registry) · 改动 `src/server/adapters/**`
+源文件：Python `backend/app/mcp/client_manager.py`（MCP 客户端管理）、`backend/app/api/mcp.py`（CRUD API）、`backend/app/services/pending_mcp_calls.py`（审批门）、`backend/app/services/agent_runner.py`（ReAct loop 集成）、`src/components/mcp-server-library.tsx`（前端管理面板）、`src/components/pending-mcp-call-card.tsx`（前端审批卡片）
 
 ---
 
@@ -12,11 +12,11 @@
 
 | Adapter | 工具机制 | 是不是 MCP client | 能接外部 MCP 吗 |
 |---|---|---|---|
-| `custom` | OpenAI function-calling + 内部 `toolRegistry` | ❌ 无 MCP | ❌ |
+| `custom` | OpenAI function-calling + 内部 `tool_registry` + **MCP 客户端层** | ✅（已实现） | ✅ |
 | `claude-code` | SDK 预置工具 + 进程内 `createSdkMcpServer`(只挂 `agenthub`) | ✅(SDK 自带) | ❌(没接线) |
 | `codex` | Codex 内置 + 外部 stdio MCP(只挂 `agenthub`) | ✅(SDK 自带) | ❌(没接线) |
 
-**问题**:三者目前都**只挂了内部 `agenthub` 一个 MCP server**,没有「让用户接第三方 MCP server(filesystem / github / postgres / 自建…)」的路径;`custom` 连 MCP client 底子都没有。
+**现状**:Custom adapter 已实现 MCP 客户端层（`backend/app/mcp/client_manager.py`），用户可在左边栏登记外部 MCP server，在 Agent builder 中勾选启用。Claude Code / Codex adapter 尚未接线（SDK 本身支持，待 P0 实现）。
 
 **动机**:① 接入 MCP 生态 → 工具扩展不再靠手写;② 统一三个 adapter 的扩展入口;③ 复用现有 `tool.call`/`tool.result` 事件,不破坏契约。
 
@@ -138,15 +138,15 @@ createdAt     integer
 
 ---
 
-## 10. 分期建议
+## 10. 实现状态
 
-| 阶段 | 内容 | 成本 |
+| 阶段 | 内容 | 状态 |
 |---|---|---|
-| **P0** | 数据模型(`mcp_servers` + `agents.mcpServerIds`)+ **claude-code/codex 接线** + 全局 server 配置 + agent 选用 | 中(SDK 已支持,主要接线 + UI) |
-| **P1** | **custom 的 MCP 客户端层**(连接 / listTools / 名字空间 / loop 路由 / 清理) | 高(新子系统) |
-| **P2** | `ask` 审批门、SSE/OAuth、连接池、危险命令提示 | 中 |
+| **P0** | 数据模型(`mcp_servers` + `agents.mcpServerIds`)+ **claude-code/codex 接线** + 全局 server 配置 + agent 选用 | ⏳ 数据模型已实现；CLI 接线未实现 |
+| **P1** | **custom 的 MCP 客户端层**(连接 / listTools / 名字空间 / loop 路由 / 清理) | ✅ 已实现 |
+| **P2** | `ask` 审批门、SSE/OAuth、连接池、危险命令提示 | ✅ `ask` 审批门已实现；SSE/OAuth/连接池未实现 |
 
-> 即「先让真 agent 平台(claude-code/codex)接上外部 MCP(便宜),再补 custom(贵)」。
+> P1 已落地：Custom agent 可连接外部 MCP server（stdio + SSE），工具注入 ReAct loop，`ask` trust 级别走 per-tool-per-conversation 审批门。旧路径 `adapter.stream()` 不支持 MCP（仅 `_run_react_loop()` 路径生效）。
 
 ---
 

@@ -1,18 +1,27 @@
 'use client'
 
-import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { Loader2 } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 
 import { MessageItem } from '@/components/message-item'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { WaveColumnHeader } from '@/components/wave-column-header'
 import type { MessageRow } from '@/db/schema'
 import { fetchMessages } from '@/lib/api'
-import { useAppStore, useMessagesForConversation } from '@/stores/app-store'
+import { buildSegments } from '@/lib/wave-utils'
+import { cn } from '@/lib/utils'
+import { useAppStore, useChildRunWaveMap, useMessagesForConversation } from '@/stores/app-store'
 
 const STICKY_BOTTOM_THRESHOLD_PX = 120
 const STREAM_SCROLL_THROTTLE_MS = 80
 
 export function MessageList({ conversationId }: { conversationId: string }) {
   const messages = useMessagesForConversation(conversationId)
+  const childRunWaveMap = useChildRunWaveMap(conversationId)
+  const segments = useMemo(
+    () => buildSegments(messages, childRunWaveMap),
+    [messages, childRunWaveMap],
+  )
   const setMessagesForConversation = useAppStore((s) => s.setMessagesForConversation)
   const messageIdsByConv = useAppStore((s) => s.messageIdsByConv[conversationId])
 
@@ -142,12 +151,62 @@ export function MessageList({ conversationId }: { conversationId: string }) {
 
   return (
     <ScrollArea className="min-h-0 flex-1" viewportRef={viewportRef}>
-      <div className="space-y-4 p-4">
-        {messages.map((m) => (
-          <MessageItem key={m.id} message={m} />
-        ))}
+      <div className="p-4">
+        {segments.map((seg, si) => {
+          const segMargin = si === 0 ? '' : 'mt-4'
+
+          if (seg.kind === 'single') {
+            return (
+              <div key={si} className={segMargin}>
+                {seg.messages.map((m, mi) => {
+                  const grouped = mi > 0 && isGroupedWithPrev(seg.messages[mi - 1], m)
+                  return (
+                    <div
+                      key={m.id}
+                      className={cn(mi === 0 && si === 0 ? '' : grouped ? 'mt-0.5' : 'mt-4')}
+                    >
+                      <MessageItem message={m} grouped={grouped} />
+                    </div>
+                  )
+                })}
+              </div>
+            )
+          }
+
+          return (
+            <div key={si} className={cn(segMargin, 'flex gap-3 max-md:flex-col')}>
+              {seg.columns.map((col) => (
+                <div key={col.taskId} className="min-w-0 flex-1">
+                  <WaveColumnHeader agentId={col.agentId} taskId={col.taskId} />
+                  {col.messages.length === 0 ? (
+                    <div className="flex items-center justify-center py-4 text-xs text-muted-foreground">
+                      <Loader2 className="mr-1 size-3 animate-spin" />
+                      等待消息…
+                    </div>
+                  ) : (
+                    col.messages.map((m, mi) => (
+                      <div key={m.id} className={cn(mi === 0 ? 'mt-1.5' : 'mt-0.5')}>
+                        <MessageItem message={m} grouped={true} />
+                      </div>
+                    ))
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+        })}
       </div>
     </ScrollArea>
+  )
+}
+
+function isGroupedWithPrev(prev: MessageRow, curr: MessageRow): boolean {
+  return (
+    prev.role === 'agent' &&
+    curr.role === 'agent' &&
+    prev.agentId === curr.agentId &&
+    prev.runId === curr.runId &&
+    prev.runId !== null
   )
 }
 

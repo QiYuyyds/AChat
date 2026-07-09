@@ -232,7 +232,7 @@ describe('app-store worktree event handling', () => {
           runId: 'run_orch',
           messageId: 'msg_plan',
           plan: PLAN,
-          taskStatus: { task_frontend: 'in_progress' },
+          taskStatus: { task_frontend: 'running' },
           childRunIds: {},
         },
       },
@@ -261,7 +261,7 @@ describe('app-store worktree event handling', () => {
           runId: 'run_orch',
           messageId: 'msg_plan',
           plan: PLAN,
-          taskStatus: { task_frontend: 'in_progress' },
+          taskStatus: { task_frontend: 'running' },
           childRunIds: {},
           worktreeByTask: {
             task_frontend: {
@@ -292,7 +292,7 @@ describe('app-store worktree event handling', () => {
           runId: 'run_orch',
           messageId: 'msg_plan',
           plan: PLAN,
-          taskStatus: { task_frontend: 'in_progress' },
+          taskStatus: { task_frontend: 'running' },
           childRunIds: {},
           worktreeByTask: {
             task_frontend: {

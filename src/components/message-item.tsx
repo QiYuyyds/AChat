@@ -32,7 +32,7 @@ import {
   useTurnMetrics,
 } from '@/stores/app-store'
 
-function MessageItemImpl({ message }: { message: MessageRow }) {
+function MessageItemImpl({ message, grouped = false }: { message: MessageRow; grouped?: boolean }) {
   const agentsMap = useAppStore((s) => s.agents)
   const agent = message.agentId ? agentsMap[message.agentId] : null
   const dispatch = useDispatchForMessage(message.id)
@@ -168,7 +168,9 @@ function MessageItemImpl({ message }: { message: MessageRow }) {
         isUser && 'flex-row-reverse',
       )}
     >
-      {isUser ? (
+      {grouped ? (
+        <div className="size-8 shrink-0" aria-hidden />
+      ) : isUser ? (
         <Avatar className="size-8 shrink-0 bg-primary text-primary-foreground">
           <AvatarFallback className="bg-primary text-sm text-primary-foreground">
             我
@@ -193,25 +195,29 @@ function MessageItemImpl({ message }: { message: MessageRow }) {
 
       <div className={cn('flex max-w-[80%] min-w-0 flex-1 flex-col gap-1', isUser && 'items-end')}>
         <div className="flex items-center gap-2 text-xs text-muted-foreground font-mono">
-          <span className="font-medium">{name}</span>
-          <span>{formatTime(message.createdAt)}</span>
-          {isBookmarked && (
-            <span className="text-warning" title="已收藏（导航书签）">
-              <Star className="size-3 fill-warning" />
-            </span>
-          )}
-          {isPinned && (
-            <span className="text-primary" title="已 pin（注入 LLM 长期上下文）">
-              <Pin className="size-3 fill-primary" />
-            </span>
-          )}
-          {message.status === 'streaming' && (
-            <Loader2 className="size-3 animate-spin text-muted-foreground/70" />
+          {!grouped && (
+            <>
+              <span className="font-medium">{name}</span>
+              <span>{formatTime(message.createdAt)}</span>
+              {isBookmarked && (
+                <span className="text-warning" title="已收藏（导航书签）">
+                  <Star className="size-3 fill-warning" />
+                </span>
+              )}
+              {isPinned && (
+                <span className="text-primary" title="已 pin（注入 LLM 长期上下文）">
+                  <Pin className="size-3 fill-primary" />
+                </span>
+              )}
+              {message.status === 'streaming' && (
+                <Loader2 className="size-3 animate-spin text-muted-foreground/70" />
+              )}
+            </>
           )}
           {/* Agent 消息的 token 用量小标，hover 看拆分 */}
           {!isUser && message.usage && (
             <span
-              className="cursor-help font-mono text-[10px] text-muted-foreground/60"
+              className="ml-auto cursor-help font-mono text-[10px] text-muted-foreground/60"
               title={`新 Input: ${message.usage.inputTokens.toLocaleString()}\nOutput: ${message.usage.outputTokens.toLocaleString()}${message.usage.cacheReadTokens > 0 ? `\nCache 命中: ${message.usage.cacheReadTokens.toLocaleString()}` : ''}`}
             >
               {formatTokenShort(
