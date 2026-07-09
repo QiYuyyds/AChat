@@ -238,6 +238,10 @@ class Conversation(Base):
 
     summary: Mapped[str | None] = mapped_column(Text, name="summary", nullable=True)
 
+    dispatch_mode: Mapped[str] = mapped_column(
+        String, name="dispatch_mode", nullable=False, default="solo"
+    )
+
     created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
 

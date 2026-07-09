@@ -181,11 +181,11 @@ async def _create_custom_agent(body: CreateAgentRequest) -> dict[str, Any]:
     # Non-custom (CLI) adapters use their own built-in tool set;
     # force empty toolNames/skillNames.
     tool_names = (body.tool_names or []) if adapter_name == "custom" else []
-    # Orchestrator agents require plan_tasks + ask_user tools.
+    # Orchestrator agents require ask_user tool; task_dispatch is auto-injected
+    # at runtime by the coordinated agent loop.
     if body.is_orchestrator and adapter_name == "custom":
-        for required_tool in ("plan_tasks", "ask_user"):
-            if required_tool not in tool_names:
-                tool_names.append(required_tool)
+        if "ask_user" not in tool_names:
+            tool_names.append("ask_user")
     agent.tool_names_list = tool_names
     agent.skill_names_list = (body.skill_names or []) if adapter_name == "custom" else []
     agent.mcp_server_ids_list = (body.mcp_server_ids or []) if adapter_name == "custom" else []
@@ -457,7 +457,6 @@ _AVAILABLE_AGENT_TOOLS: tuple[str, ...] = (
     "read_artifact",
     "read_attachment",
     "ask_user",
-    "plan_tasks",
     "fs_list",
     "fs_read",
     "fs_write",
@@ -580,8 +579,7 @@ _PROMPT_DATA_ANALYSIS = """你是一名数据分析师。你的任务是理解�
 _AGENT_TOOL_PRESETS: dict[str, dict[str, Any]] = {
     "all-purpose": {
         "label": "全栈通用",
-        # _ALL_PURPOSE_TOOLS already excludes plan_tasks (Orchestrator-only) and
-        # web_search (opt-in, consumes Tavily credits).
+        # _ALL_PURPOSE_TOOLS already excludes web_search (opt-in, consumes Tavily credits).
         "tools": list(_ALL_PURPOSE_TOOLS),
         "systemPromptTemplate": _PROMPT_ALL_PURPOSE,
     },
@@ -712,10 +710,6 @@ _AGENT_TOOL_META: dict[str, dict[str, str]] = {
     "ask_user": {
         "label": "结构化提问",
         "desc": "让用户在明确选项中选择，用于范围、风格、平台等关键澄清",
-    },
-    "plan_tasks": {
-        "label": "任务规划",
-        "desc": "Orchestrator 专用：拆解用户目标为子任务并分派给其他 Agent",
     },
     "fs_list": {"label": "列出文件", "desc": "列出工作区内的目录和文件，用于安全探索项目结构"},
     "fs_read": {"label": "读取文件", "desc": "读取工作区内的文件（源码 / 配置等），仅限沙箱目录"},

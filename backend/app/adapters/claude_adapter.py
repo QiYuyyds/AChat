@@ -135,15 +135,12 @@ class ClaudeCLIAdapter(CLIAdapterBase):
         if input.resume_session_id:
             args.extend(("--resume", input.resume_session_id))
         # MCP tool name mapping: Claude CLI prefixes all MCP tools as
-        # mcp__<server>__<tool>, but orchestrator prompts use bare AChat
-        # tool names (e.g. "call report_task_result"). Without this hint
-        # the LLM cannot find the tools and falls back to text-only mode.
+        # mcp__<server>__<tool>, but prompts use bare AChat tool names.
         _mcp_tool_hint = (
             "\n\n## AChat MCP Tools\n"
             "AChat platform tools are available via the \"achat-tools\" MCP "
             "server. When instructions tell you to call an AChat tool, you "
             "MUST use the MCP-prefixed name as shown below:\n\n"
-            "- `report_task_result` → `mcp__achat-tools__report_task_result`\n"
             "- `write_artifact` → `mcp__achat-tools__write_artifact`\n"
             "- `read_artifact` → `mcp__achat-tools__read_artifact`\n"
             "- `ask_user` → `mcp__achat-tools__ask_user`\n"
@@ -157,11 +154,9 @@ class ClaudeCLIAdapter(CLIAdapterBase):
         self._system_prompt_file = _write_temp_system_prompt(_sp_content)
         args.extend(("--append-system-prompt-file", self._system_prompt_file))
 
-        # Expose AChat project tools (report_task_result, write_artifact, etc.)
-        # to Claude CLI via an MCP server. The CLI spawns the server as a
-        # subprocess; the server translates MCP tool calls to AChat ToolRegistry
-        # calls. This is critical for orchestration — without report_task_result
-        # the orchestrator never knows a sub-agent has finished.
+        # Expose AChat project tools (write_artifact, etc.) to Claude CLI
+        # via an MCP server. The CLI spawns the server as a subprocess;
+        # the server translates MCP tool calls to AChat ToolRegistry calls.
         self._mcp_config_file = _write_mcp_config(
             input.conversation_id,
             input.run_id,
@@ -826,7 +821,8 @@ def _write_mcp_config(
     """Write the Claude CLI MCP config JSON file.
 
     Tells Claude CLI how to spawn the AChat MCP Bridge (a stdio-based MCP
-    server that exposes AChat project tools like ``report_task_result``).
+    server that exposes AChat platform tools like ``write_artifact`` /
+    ``read_artifact`` and ``ask_user``).
 
     Returns the path to the temp config file, or ``None`` if the bridge
     module cannot be located.

@@ -96,8 +96,10 @@ async def test_registry_resolve_and_count():
 
     resolved = tool_registry.resolve(["bash", "fs_read"])
     assert [t.name for t in resolved] == ["bash", "fs_read"]
-    with pytest.raises(ValueError):
-        tool_registry.resolve(["nope"])
+    # Unknown tools are skipped (not raised) — DB may have stale tool_names
+    # from removed tools (e.g. plan_tasks, report_task_result).
+    resolved_with_unknown = tool_registry.resolve(["bash", "nope", "fs_read"])
+    assert [t.name for t in resolved_with_unknown] == ["bash", "fs_read"]
 
 
 # ─── write/read artifact ─────────────────────────────────────────────────────
@@ -252,37 +254,13 @@ async def test_bash_blocked_command(conversation):
     assert "safety policy" in result.error
 
 
-# ─── report_task_result / plan_tasks ────────────────────────────────────────
-async def test_report_task_result(conversation):
+# ─── task_dispatch ──────────────────────────────────────────────────────────
+async def test_task_dispatch_registered(conversation):
     from app.tools.registry import tool_registry
 
-    result = await tool_registry.execute(
-        "report_task_result",
-        {"status": "complete", "summary": "  done  ", "blockers": ["", "  "]},
-        _ctx(conversation),
-    )
-    assert result.ok, result.error
-    assert result.value["status"] == "complete"
-    assert result.value["summary"] == "done"
-    assert "blockers" not in result.value  # empty strings filtered out
-
-
-async def test_plan_tasks_ack(conversation):
-    from app.tools.registry import tool_registry
-
-    result = await tool_registry.execute(
-        "plan_tasks",
-        {
-            "reasoning": "split work",
-            "tasks": [
-                {"id": "t1", "agentId": "ag_alice", "task": "do a"},
-                {"id": "t2", "agentId": "ag_alice", "task": "do b", "dependsOn": ["t1"]},
-            ],
-        },
-        _ctx(conversation),
-    )
-    assert result.ok, result.error
-    assert result.value == {"acknowledged": True, "taskCount": 2}
+    tool = tool_registry.get("task_dispatch")
+    assert tool is not None
+    assert tool.name == "task_dispatch"
 
 
 # ─── deploy_artifact ─────────────────────────────────────────────────────────

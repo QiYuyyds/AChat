@@ -2,100 +2,78 @@
 
 ## Purpose
 
-Defines the special agent workflow for planning, dispatching, and aggregating multi-agent tasks. Detailed flow lives in `specs/06-orchestrator-flow.md`.
+Defines the coordinated agent workflow for multi-agent task dispatch. The orchestrator is a regular agent that runs through the Unified Agent Loop (`run_agent_loop(mode='coordinated')`) with a `task_dispatch` tool. Detailed design lives in `specs/19-unified-agent-loop.md`.
 
 ## Requirements
 
 ### Requirement: Orchestrator SHALL be a normal Agent
 
-The orchestrator MUST run through AgentRunner and an adapter like any other agent; it SHALL not have a separate service path.
+The orchestrator MUST run through AgentRunner and `run_agent_loop` like any other agent; it SHALL not have a separate service path.
 
 #### Scenario: User starts a group task
-- **WHEN** the conversation includes an orchestrator
-- **THEN** AgentRunner executes it as an agent run
-- **AND** uses orchestrator-specific prompts and tools.
+- **WHEN** the conversation `dispatch_mode` is `'orchestrated'`
+- **AND** the active agent `is_orchestrator` is `True`
+- **THEN** AgentRunner calls `run_agent_loop(mode='coordinated')`
+- **AND** the orchestrator's tool list includes `task_dispatch`
 
-### Requirement: Orchestrator SHALL plan before dispatch
+### Requirement: Coordinated mode SHALL use task_dispatch for sub-agent dispatch
 
-The orchestration flow MUST produce a compiled and validated task plan before launching child agent runs.
+The orchestrator dispatches sub-tasks by calling the `task_dispatch` tool, which synchronously spawns a sub-agent loop and returns the result. There is no separate plan stage, plan approval, or DAG execution engine.
 
-#### Scenario: Plan tool is called
-- **WHEN** the orchestrator calls `plan_tasks`
-- **THEN** AgentRunner parses, compiles, and validates task ids, agent ids, dependencies, and acyclicity.
+#### Scenario: Orchestrator dispatches a task
+- **WHEN** the orchestrator calls `task_dispatch({ agentId, taskDescription })`
+- **THEN** the handler calls `spawn_subagent_loop` to create a child run
+- **AND** waits for the child run to complete
+- **AND** returns `{ status, summary }` to the orchestrator's loop context
 
-#### Scenario: Plan text implies missing dependencies
-- **WHEN** task text references earlier task outputs but `dependsOn` omits them
-- **THEN** AgentRunner adds high-confidence inferred dependencies before dispatch
-- **AND** publishes and executes the compiled plan.
+#### Scenario: Sub-agent fails
+- **WHEN** the sub-agent run ends with an error
+- **THEN** `task_dispatch` returns `{ status: 'failed', summary: error_text }`
+- **AND** the orchestrator can choose to retry, re-dispatch, or report the failure
 
-#### Scenario: Local workspace code project is requested
-- **WHEN** the conversation workspace is local
-- **AND** the user asks to create, modify, initialize, debug, or build project source files
-- **THEN** the plan prompt tells the orchestrator to prefer agents with file/command tools
-- **AND** the plan should use `acceptanceCriteria` for local file and command outcomes instead of `expectedOutputs`.
+### Requirement: Non-orchestrator agents SHALL use solo mode
 
-#### Scenario: Code task contract is normalized
-- **WHEN** the compiled plan contains a code implementation task
-- **THEN** AgentRunner ensures the task has a required `project` expected output
-- **AND** ensures the task has acceptance/evidence requirements for a successful runnable verification command.
+Agents in orchestrated conversations that are not the orchestrator run in solo mode. Only the orchestrator gets the `task_dispatch` tool.
 
-### Requirement: Child tasks SHALL respect dependency order and semantic reports
+#### Scenario: Regular agent in orchestrated conversation
+- **WHEN** `dispatch_mode` is `'orchestrated'`
+- **AND** `is_orchestrator` is `False`
+- **THEN** AgentRunner calls `run_agent_loop(mode='solo')`
+- **AND** the agent's tool list does NOT include `task_dispatch`
 
-AgentRunner MUST execute dispatch tasks as a DAG and skip dependent tasks when prerequisites fail, required inputs cannot be resolved, or the child task does not report a successful semantic outcome.
+### Requirement: Solo conversations SHALL not use task_dispatch
 
-#### Scenario: Upstream task fails
-- **WHEN** a task dependency ends with status `failed`
-- **THEN** dependent tasks are skipped
-- **AND** dispatch events include the blocking reason.
+Single-agent conversations (`dispatch_mode='solo'`) never inject `task_dispatch`, regardless of agent type.
 
-#### Scenario: Downstream task is missing a required input artifact
-- **WHEN** a downstream task declares a required input from an upstream output key
-- **AND** the upstream result has no artifact bound to that key
-- **THEN** the downstream task is skipped before launch
-- **AND** dispatch events include the missing input reason.
+#### Scenario: Solo conversation with orchestrator agent
+- **WHEN** `dispatch_mode` is `'solo'`
+- **AND** `is_orchestrator` is `True`
+- **THEN** AgentRunner calls `run_agent_loop(mode='solo')`
+- **AND** the agent's tool list does NOT include `task_dispatch`
 
-#### Scenario: Child run completes without a task report
-- **WHEN** a child run ends with status `complete`
-- **AND** it did not call `report_task_result`
-- **THEN** the dispatch task is treated as `failed`
-- **AND** dependent tasks are skipped.
+### Requirement: Subagent runs SHALL use solo mode
 
-#### Scenario: Child task reports failed acceptance
-- **WHEN** a child run calls `report_task_result`
-- **AND** the report status is not `complete` or an acceptance result is missing/failed
-- **THEN** the dispatch task is treated as `failed`
-- **AND** dependent tasks are skipped.
+When `task_dispatch` spawns a child run, the child always runs in solo mode via `execute_simple_run` directly (bypassing the dispatch mode routing).
 
-#### Scenario: Code task lacks runnable verification
-- **WHEN** a code implementation child task reports `complete`
-- **AND** recorded command evidence has no successful non-prepare build, compile, test, lint, or typecheck command
-- **THEN** the dispatch task is treated as `failed`
-- **AND** the existing retry or replan flow may remediate it.
+#### Scenario: Subagent dispatch
+- **WHEN** `spawn_subagent_loop` creates a `RunArgs` with `override_prompt`
+- **THEN** `execute_run` detects `override_prompt` and calls `execute_simple_run` directly
+- **AND** the sub-agent's tools are its own (no `task_dispatch`)
 
-#### Scenario: Code task lacks project output
-- **WHEN** a code implementation child task reports `complete`
-- **AND** no required `project` output can be created and bound from workspace file writes
-- **THEN** the dispatch task is treated as `failed`
-- **AND** the existing retry or replan flow may remediate it.
+### Requirement: Aggregation SHALL be the orchestrator's natural end_turn
 
-#### Scenario: Replan references a previous-round task
-- **WHEN** a remediation plan depends on a task id from an earlier dispatch round
-- **THEN** AgentRunner treats that previous task as a resolved external dependency
-- **AND** validates and executes the remediation plan without requiring the previous task to be repeated in the new plan.
+There is no separate aggregate stage. After dispatching tasks and receiving results, the orchestrator produces its final response as a natural `end_turn` text output.
 
-### Requirement: Child task context SHALL include transitive upstream artifacts
+#### Scenario: Orchestrator finishes after dispatch
+- **WHEN** the orchestrator has received all `task_dispatch` results
+- **THEN** it emits a final text response (end_turn)
+- **AND** that response is the conversation's final message (no separate aggregate LLM call)
 
-AgentRunner MUST include artifact summaries from the full dependency closure in child prompts.
+### Requirement: Legacy verification gates SHALL NOT exist
 
-#### Scenario: Downstream review depends on implementation
-- **WHEN** review task `t4` depends on `t3`, and `t3` depends on `t1` and `t2`
-- **THEN** the review prompt includes artifact summaries from `t1`, `t2`, and `t3`.
+The old `plan_tasks` / `report_task_result` / verify-stage / retry-harness system has been removed. The orchestrator self-verifies via soft prompt guidance only.
 
-### Requirement: Aggregation SHALL summarize child outputs
-
-After child tasks finish, the orchestrator MUST run an aggregate stage that sees task results and produces the final response.
-
-#### Scenario: All child tasks complete
-- **WHEN** the DAG has no remaining runnable tasks
-- **THEN** AgentRunner builds an aggregate prompt
-- **AND** runs the orchestrator without `plan_tasks`.
+#### Scenario: Agent completes a task
+- **WHEN** any agent (solo or subagent) finishes its work
+- **THEN** the run completes with the agent's `end_turn` text
+- **AND** no verification gate, LLM judge, or retry harness runs

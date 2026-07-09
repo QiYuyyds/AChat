@@ -188,10 +188,10 @@ export function CreateAgentDialog({
   const handleOrchestratorChange = (checked: boolean) => {
     setIsOrchestrator(checked)
     if (checked) {
-      // Auto-merge plan_tasks and ask_user into toolNames
+      // Orchestrator needs ask_user for clarification; task_dispatch is auto-injected
+      // by the coordinated loop, so it doesn't need to be in the agent's tool list.
       setToolNames((prev) => {
         const next = new Set(prev)
-        next.add('plan_tasks')
         next.add('ask_user')
         return next
       })
@@ -543,7 +543,7 @@ export function CreateAgentDialog({
                     <div className="min-w-0">
                       <div className="text-xs font-medium">设为协调者 (Orchestrator)</div>
                       <div className="mt-0.5 text-[10px] text-muted-foreground">
-                        协调者负责群聊中的任务拆解与分派，会自动启用 <code className="font-mono">plan_tasks</code> 和 <code className="font-mono">ask_user</code> 工具。
+                        协调者负责群聊中的任务拆解与分派，会自动启用 <code className="font-mono">task_dispatch</code> 和 <code className="font-mono">ask_user</code> 工具。
                       </div>
                     </div>
                   </label>

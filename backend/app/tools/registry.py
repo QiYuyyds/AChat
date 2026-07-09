@@ -11,6 +11,7 @@ the integration point 阶段 2 left open.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from app.services import deploy_command_service
@@ -35,16 +36,17 @@ from app.tools.memory_rag import (
     rag_list_documents_tool,
     rag_search_tool,
 )
-from app.tools.plan_tasks import plan_tasks_tool
 from app.tools.read_artifact import read_artifact_tool
 from app.tools.read_attachment import read_attachment_tool
-from app.tools.report_task_result import report_task_result_tool
 from app.tools.skills import load_skill_tool, write_skill_tool
+from app.tools.task_dispatch import task_dispatch_tool
 from app.tools.web_search import web_search_tool
 from app.tools.write_artifact import write_artifact_tool
 
 if TYPE_CHECKING:
     from app.services.hook_registry import HookRegistry
+
+logger = logging.getLogger(__name__)
 
 
 class ToolRegistry:
@@ -64,7 +66,8 @@ class ToolRegistry:
         for name in names:
             tool = self._tools.get(name)
             if tool is None:
-                raise ValueError(f"Unknown tool: {name}")
+                logger.warning("Skipping unknown tool '%s' (not in registry)", name)
+                continue
             resolved.append(tool)
         return resolved
 
@@ -151,8 +154,7 @@ def _build_registry() -> ToolRegistry:
     reg.register(deploy_artifact_tool)
     reg.register(deploy_workspace_tool)
     reg.register(read_attachment_tool)
-    reg.register(plan_tasks_tool)
-    reg.register(report_task_result_tool)
+    reg.register(task_dispatch_tool)
     reg.register(fs_list_tool)
     reg.register(fs_read_tool)
     reg.register(fs_write_tool)

@@ -203,7 +203,7 @@ async def test_no_tool_text_response(conversation, monkeypatch):
 
 
 async def test_tool_call_loops(conversation, monkeypatch):
-    # Turn 1: model calls report_task_result. Turn 2: model emits final text.
+    # Turn 1: model calls fs_list. Turn 2: model emits final text.
     _install_fake_client(
         monkeypatch,
         [
@@ -217,9 +217,8 @@ async def test_tool_call_loops(conversation, monkeypatch):
                                         index=0,
                                         id="call_1",
                                         function=_FakeFunction(
-                                            name="report_task_result",
-                                            arguments='{"status":"complete",'
-                                            '"summary":"done"}',
+                                            name="fs_list",
+                                            arguments='{"path":""}',
                                         ),
                                     )
                                 ]
@@ -243,7 +242,7 @@ async def test_tool_call_loops(conversation, monkeypatch):
     )
 
     events = await _collect(
-        CustomAdapter(), _input(conversation, tool_names=["report_task_result"])
+        CustomAdapter(), _input(conversation, tool_names=["fs_list"])
     )
     types = [e.type for e in events]
 
@@ -253,12 +252,11 @@ async def test_tool_call_loops(conversation, monkeypatch):
     assert types.count("message.start") == 2
 
     tool_call = next(e for e in events if e.type == "tool.call")
-    assert tool_call.tool_name == "report_task_result"
+    assert tool_call.tool_name == "fs_list"
     assert tool_call.call_id == "call_1"
 
     tool_result = next(e for e in events if e.type == "tool.result")
     assert tool_result.is_error is False
-    assert tool_result.result["status"] == "complete"
 
     # final turn produced the closing text + run.usage
     assert types[-1] == "run.usage"
