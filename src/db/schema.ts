@@ -39,6 +39,9 @@ export const agents = sqliteTable('agents', {
 
   skillNames: text('skill_names', { mode: 'json' }).$type<string[]>().notNull().default(sql`'[]'`),
 
+  /** MCP server IDs this agent has enabled (Custom adapter only). */
+  mcpServerIds: text('mcp_server_ids', { mode: 'json' }).$type<string[]>().notNull().default(sql`'[]'`),
+
   // ── CLI agent fields ──────────────────────────────────────
   /** CLI 二进制路径；NULL 则从 PATH 查找。仅 claude-code / codex 使用。 */
   executablePath: text('executable_path'),
@@ -320,3 +323,21 @@ export type AgentRunInsert = typeof agentRuns.$inferInsert
 
 export type ContextSummaryRow = typeof contextSummaries.$inferSelect
 export type ContextSummaryInsert = typeof contextSummaries.$inferInsert
+
+// ─── MCP Servers (外部 MCP server 管理) ──────────────────────
+/** MCP server 行类型。后端 mcp_servers 表的前端镜像。 */
+export interface McpServerRow {
+  id: string
+  name: string
+  transport: 'stdio' | 'sse'
+  command: string | null
+  args: string[]
+  /** 脱敏后的 env（值可能为 ****xxxx 格式） */
+  env: Record<string, string> | null
+  url: string | null
+  /** 脱敏后的 headers */
+  headers: Record<string, string> | null
+  trust: 'always' | 'ask'
+  enabled: boolean
+  createdAt: number
+}

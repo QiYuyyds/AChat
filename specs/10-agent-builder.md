@@ -38,6 +38,7 @@
 | `apiKey` | string | — | `''` | 命名 provider 留空走 env var；`openai-compatible` 必填 per-agent key |
 | `apiBaseUrl` | string | — | `''` | Claude Code 可填 Anthropic 兼容 endpoint；Codex 仅可填 Codex/Responses 兼容 endpoint；Custom `openai-compatible` 必填 Chat Completions 兼容 endpoint |
 | `toolNames` | string[] | — | 全栈通用预设 | 当前可勾选：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `read_attachment` / `ask_user` / `fs_read` / `fs_write` / `bash` |
+| `mcpServerIds` | string[] | — | `[]` | 启用的 MCP server ID 列表；仅 `adapterName === 'custom'` 时显示选择区（Spec 15） |
 | `supportsVision` | boolean | — | `true` | 决定是否把图片 base64 注入 messages |
 | `avatar` | string | — | `'🤖'` | service 层默认（UI 当前不暴露） |
 | `isBuiltin` | boolean | — | `false` | service 写死，UI 不可改 |
@@ -127,6 +128,22 @@ UI 允许勾选产物、附件、workspace 和本地代码工具。`plan_tasks` 
 | 数据分析 | `bash` / `fs_read` / `fs_write` / `fs_list` / `fs_glob` / `read_attachment` / `write_artifact` / `ask_user` | 清洗数据、运行处理脚本、生成图表 |
 
 **新增工具时**：除了在 `src/server/tools/registry.ts` 注册，还要在 `src/shared/agent-builder-config.ts` 的 `AVAILABLE_AGENT_TOOLS` 加上、并在 `AGENT_TOOL_META` 补一条文案，才能在 UI 正常勾选（详见 Spec 07 「新增工具步骤」）。
+
+---
+
+## MCP Server 勾选
+
+源：`src/components/create-agent-dialog.tsx`、`src/shared/agent-builder-config.ts`
+
+当 `adapterName === 'custom'` 时，工具配置区下方额外显示 MCP server 多选区：
+
+- 从 `GET /api/mcp/servers` 获取启用的 server 列表
+- 渲染为 checkbox 列表，每项显示 server name、transport 标签（stdio/sse）、trust 级别
+- 无 server 时显示空状态提示 + 引导用户去左边栏 MCP 管理面板登记
+- 选中的 server ID 存入 `agent.mcp_server_ids`（JSONB 列）
+- SDK adapter（`claude-code` / `codex`）不显示此区域（MCP 接线尚未实现）
+
+MCP server 的工具在 run 开始时动态发现（`listTools()`），不在 `toolNames` 中体现。详见 Spec 15。
 
 ---
 

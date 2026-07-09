@@ -94,6 +94,11 @@ interface AdapterInput {
   // - MockAdapter：忽略
   history?: ChatCompletionMessageParam[]
 
+  // MCP 工具声明（仅 CustomAgentAdapter + ReAct loop 路径）。
+  // 由 execute_simple_run() 在 run 开始时连接 MCP server、调用 listTools() 后构建。
+  // call_once() 将其与内置工具声明合并。详见 Spec 15。
+  mcp_tools?: list[dict]  // OpenAI function-calling 格式
+
   // 仅 CustomAgentAdapter 使用（OpenAI 兼容协议特有的模型选择）
   customConfig?: {
     modelProvider: 'anthropic' | 'openai' | 'deepseek' | 'volcano-ark' | 'openai-compatible'
@@ -216,6 +221,51 @@ const result = await toolRegistry.execute(name, args, ctx)
 |---|---|---|
 | **A. Adapter 自调 toolRegistry**（现状） | 模块顶部 import，loop 中直接 execute | 代码简单；Adapter 多一个依赖 |
 | **B. Adapter 只 yield 事件，Runner 执行后注入** | Adapter 必须支持「暂停-等待 result-继续」 | 干净；async iterator 双向通信复杂 |
+
+---
+
+## MCP 工具集成（Custom adapter + ReAct loop 路径）
+
+源文件：`backend/app/mcp/client_manager.py`、`backend/app/services/agent_runner.py`
+
+Custom adapter 的 MCP 接入走 **AgentRunner 管理的 ReAct loop** 路径（`use_react_loop=true`，默认开启）。旧路径 `adapter.stream()` 不支持 MCP。
+
+### 生命周期
+
+```
+execute_simple_run()
+  │
+  ├─ 1. build_adapter_input() 解析 agent.mcp_server_ids → 查询 McpServer 行 → 构建 McpServerConfig 列表
+  │
+  ├─ 2. McpClientManager.connect_all(configs)
+  │     ├─ stdio: StdioClientTransport → spawn 子进程
+  │     └─ sse: SSEClientTransport → HTTP 连接
+  │
+  ├─ 3. mcp_manager.list_tools_as_api() → 转 OpenAI function-calling 格式
+  │     工具名：mcp__<serverName>__<toolName>
+  │
+  ├─ 4. adapter_input.mcp_tools = mcp_tools  ← 传给 call_once()
+  │     call_once() 将 mcp_tools 追加到 api_tools
+  │
+  ├─ 5. _run_react_loop(...) 内工具执行路由：
+  │     if tc.name.startswith("mcp__"):
+  │       └─ ask trust? → pending_mcp_calls.register() + await_pending_decision
+  │       └─ mcp_manager.call_tool(tc.name, tc.args)
+  │     else:
+  │       └─ tool_registry.execute_with_hooks(...)
+  │
+  └─ finally: mcp_manager.close_all()
+       └─ AsyncExitStack.aclose() → 关闭所有 session + 杀 stdio 子进程
+```
+
+### 失败降级
+
+- MCP server 连接失败 → 该 server 标记 `available=False`，其他 server 正常工作
+- `listTools()` 失败 → 该 server 标记不可用 + warning log
+- `callTool()` 失败 → 返回 `{error: "..."}` 给 LLM，run 不中断
+- MCP 连接全部失败 → agent 仍能使用内置工具正常对话
+
+详见 Spec 15。
 
 ---
 

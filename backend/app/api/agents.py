@@ -69,6 +69,7 @@ def _serialize(row: Agent) -> dict[str, Any]:
         "apiBaseUrl": row.api_base_url,
         "toolNames": row.tool_names_list,
         "skillNames": row.skill_names_list,
+        "mcpServerIds": row.mcp_server_ids_list,
         "isBuiltin": row.is_builtin,
         "isOrchestrator": row.is_orchestrator,
         "supportsVision": row.supports_vision,
@@ -187,6 +188,7 @@ async def _create_custom_agent(body: CreateAgentRequest) -> dict[str, Any]:
                 tool_names.append(required_tool)
     agent.tool_names_list = tool_names
     agent.skill_names_list = (body.skill_names or []) if adapter_name == "custom" else []
+    agent.mcp_server_ids_list = (body.mcp_server_ids or []) if adapter_name == "custom" else []
 
     # CLI fields: only set for CLI-based adapters
     agent.executable_path = (
@@ -216,6 +218,7 @@ _PATCH_ALIASES: set[str] = {
     "modelId",
     "toolNames",
     "skillNames",
+    "mcpServerIds",
     "supportsVision",
     "isOrchestrator",
     "apiKey",
@@ -298,6 +301,7 @@ async def _update_custom_agent(
     has_model_provider = "model_provider" in provided
     has_tool_names = "tool_names" in provided
     has_skill_names = "skill_names" in provided
+    has_mcp_server_ids = "mcp_server_ids" in provided
     has_is_orchestrator = "is_orchestrator" in provided
     has_executable_path = "executable_path" in provided
     has_protocol_family = "protocol_family" in provided
@@ -389,13 +393,17 @@ async def _update_custom_agent(
             if has_skill_names and body.skill_names is not None:
                 agent.skill_names_list = body.skill_names
                 updated = True
+            if has_mcp_server_ids and body.mcp_server_ids is not None:
+                agent.mcp_server_ids_list = body.mcp_server_ids
+                updated = True
         else:
             # Non-custom (CLI) adapter: drop modelProvider/toolNames/skillNames.
             # modelId is still relevant (CLI agents pass --model <id>).
-            if has_adapter_name or has_model_provider or has_tool_names or has_skill_names:
+            if has_adapter_name or has_model_provider or has_tool_names or has_skill_names or has_mcp_server_ids:
                 agent.model_provider = None
                 agent.tool_names_list = []
                 agent.skill_names_list = []
+                agent.mcp_server_ids_list = []
                 updated = True
 
         if not updated:

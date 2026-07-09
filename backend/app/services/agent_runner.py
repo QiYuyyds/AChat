@@ -597,6 +597,7 @@ async def _run_react_loop(
     model_provider: str | None = None,
     resume_from_turn: int | None = None,
     require_task_report: bool = False,
+    mcp_manager: Any | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """ReAct loop for SDK adapters: call_once → yield events → execute tools → repeat.
 
@@ -897,6 +898,90 @@ async def _run_react_loop(
                         })
                         continue
 
+                # ── MCP tool routing: mcp__ prefix → mcp_manager ──
+                if mcp_manager is not None and tc.name.startswith("mcp__"):
+                    # Check ask-trust approval gate
+                    server_name = mcp_manager.get_server_name(tc.name)
+                    trust = mcp_manager.get_trust(server_name) if server_name else "ask"
+                    needs_approval = trust == "ask"
+                    if needs_approval:
+                        from app.services.pending_mcp_calls import pending_mcp_calls
+                        from app.utils.approval import await_pending_decision
+
+                        # Check if already approved/rejected in this conversation
+                        if pending_mcp_calls.is_rejected(conversation_id, tc.name):
+                            value = {"error": "User denied MCP tool call", "isError": True}
+                            yield ToolResultEvent(
+                                conversation_id=conversation_id,
+                                timestamp=now_ms(),
+                                message_id=message_id,
+                                call_id=tc.id,
+                                result=value,
+                                is_error=True,
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps(value),
+                            })
+                            continue
+
+                        if not pending_mcp_calls.is_approved(conversation_id, tc.name):
+                            pending = pending_mcp_calls.register(
+                                conversation_id=conversation_id,
+                                agent_id=agent_id,
+                                run_id=run_id,
+                                tool_name=tc.name,
+                                args=tc.args,
+                                server_trust=trust,
+                            )
+                            decision = await await_pending_decision(
+                                attach_resolver=lambda r, pid=pending.id: pending_mcp_calls.attach_resolver(pid, r),
+                                cancel=lambda pid=pending.id: pending_mcp_calls.cancel(pid),
+                                cancel_event=cancel_event,
+                                cancelled_value={"approved": False},
+                            )
+                            approved = bool(decision.get("approved")) if isinstance(decision, dict) else False
+                            if not approved:
+                                value = {"error": "User denied MCP tool call", "isError": True}
+                                yield ToolResultEvent(
+                                    conversation_id=conversation_id,
+                                    timestamp=now_ms(),
+                                    message_id=message_id,
+                                    call_id=tc.id,
+                                    result=value,
+                                    is_error=True,
+                                )
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": json.dumps(value),
+                                })
+                                continue
+
+                    try:
+                        value = await mcp_manager.call_tool(tc.name, tc.args)
+                        is_error = isinstance(value, dict) and value.get("isError", False)
+                    except Exception as mcp_err:  # noqa: BLE001 - surface to LLM
+                        logger.warning("[AgentRunner] MCP call_tool failed: %s", mcp_err)
+                        value = {"error": f"MCP tool call failed: {mcp_err}"}
+                        is_error = True
+
+                    yield ToolResultEvent(
+                        conversation_id=conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        call_id=tc.id,
+                        result=value,
+                        is_error=is_error,
+                    )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(value),
+                    })
+                    continue
+
                 result = await tool_registry.execute_with_hooks(tc.name, tc.args, ctx, hook_registry)
                 value = result.value if result.ok else {"error": result.error}
 
@@ -1173,6 +1258,7 @@ def run_with_args(args: RunArgs) -> tuple[str, asyncio.Task[RunResult], asyncio.
     run_id = new_run_id()
     cancel_event = asyncio.Event()
 
+    watcher: asyncio.Task[None] | None = None
     if args.parent_cancel_event is not None:
         if args.parent_cancel_event.is_set():
             cancel_event.set()
@@ -1185,6 +1271,8 @@ def run_with_args(args: RunArgs) -> tuple[str, asyncio.Task[RunResult], asyncio.
     _active_runs[run_id] = (task, cancel_event)
     task.add_done_callback(lambda _t: _active_runs.pop(run_id, None))
     task.add_done_callback(_log_uncaught)
+    if watcher is not None:
+        task.add_done_callback(lambda _t: watcher.cancel())
     return run_id, task, cancel_event
 
 
@@ -1305,6 +1393,36 @@ async def execute_run(
 
 
 # ─── Simple agent ────────────────────────────────────────────────────────────
+
+
+async def _resolve_mcp_configs(agent: Agent) -> list[Any]:
+    """Resolve MCP server configs for an agent from the database.
+
+    Returns a list of McpServerConfig objects for enabled MCP servers
+    referenced by the agent's mcp_server_ids. Returns empty list for
+    non-SDK agents or agents with no MCP servers.
+    """
+    if agent.adapter_name not in SDK_ADAPTERS:
+        return []
+    server_ids = agent.mcp_server_ids_list
+    if not server_ids:
+        return []
+    from app.db.models import McpServer
+    from app.mcp.client_manager import build_mcp_server_configs_from_db
+
+    async with get_db() as db:
+        result = await db.execute(
+            select(McpServer).where(
+                McpServer.id.in_(server_ids),
+                McpServer.enabled == True,  # noqa: E712 - SQLAlchemy filter
+            )
+        )
+        rows = result.scalars().all()
+    if not rows:
+        return []
+    return build_mcp_server_configs_from_db(list(rows))
+
+
 async def execute_simple_run(
     run_id: str,
     cancel_event: asyncio.Event,
@@ -1427,20 +1545,48 @@ async def execute_simple_run(
                     run_id, resume_from_turn, len(adapter_input.messages),
                 )
 
-        stream = _run_react_loop(
-            adapter, adapter_input, cancel_event,
-            run_id, args.agent_id, args.conversation_id, agent.model_id,
-            model_provider=agent.model_provider,
-            resume_from_turn=resume_from_turn,
-            require_task_report=args.require_task_report,
-        )
+        # ── MCP lifecycle: connect, discover tools, inject into adapter_input ──
+        mcp_manager: Any | None = None
+        mcp_configs = await _resolve_mcp_configs(agent)
+        if mcp_configs:
+            from app.mcp.client_manager import McpClientManager
+            mcp_manager = McpClientManager()
+            try:
+                await mcp_manager.connect_all(mcp_configs)
+                mcp_tools = await mcp_manager.list_tools_as_api()
+                if mcp_tools:
+                    adapter_input.mcp_tools = mcp_tools
+                    logger.info(
+                        "[AgentRunner] MCP tools injected: %d tools from %d servers",
+                        len(mcp_tools), len(mcp_configs),
+                    )
+            except Exception as err:  # noqa: BLE001 - MCP is best-effort
+                logger.warning("[AgentRunner] MCP connect_all failed: %s", err)
+
+        try:
+            stream = _run_react_loop(
+                adapter, adapter_input, cancel_event,
+                run_id, args.agent_id, args.conversation_id, agent.model_id,
+                model_provider=agent.model_provider,
+                resume_from_turn=resume_from_turn,
+                require_task_report=args.require_task_report,
+                mcp_manager=mcp_manager,
+            )
+            result = await consume_stream(
+                stream, args.agent_id, run_id,
+                require_task_report=args.require_task_report,
+            )
+        finally:
+            if mcp_manager is not None:
+                await mcp_manager.close_all()
+                logger.info("[AgentRunner] MCP connections closed")
     else:
         stream = adapter.stream(adapter_input, cancel_event)
 
-    result = await consume_stream(
-        stream, args.agent_id, run_id,
-        require_task_report=args.require_task_report,
-    )
+        result = await consume_stream(
+            stream, args.agent_id, run_id,
+            require_task_report=args.require_task_report,
+        )
     if args.parent_run_id:
         return result
 

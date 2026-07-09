@@ -123,6 +123,11 @@ class Agent(Base):
     # Hook groups enabled for this agent (e.g. ["checkpoint", "auto_compact"]).
     hook_names: Mapped[list] = mapped_column(JSONB, name="hook_names", nullable=False, default=list)
 
+    # MCP server IDs this agent has enabled (Custom adapter only).
+    mcp_server_ids: Mapped[list] = mapped_column(
+        JSONB, name="mcp_server_ids", nullable=False, default=list
+    )
+
     is_builtin: Mapped[bool] = mapped_column(
         Boolean, name="is_builtin", nullable=False, default=False
     )
@@ -175,6 +180,15 @@ class Agent(Base):
     @hook_names_list.setter
     def hook_names_list(self, value: list[str]) -> None:
         self.hook_names = value
+
+    @property
+    def mcp_server_ids_list(self) -> list[str]:
+        """Get mcp_server_ids as Python list (JSONB already returns list)."""
+        return list(self.mcp_server_ids) if self.mcp_server_ids else []
+
+    @mcp_server_ids_list.setter
+    def mcp_server_ids_list(self, value: list[str]) -> None:
+        self.mcp_server_ids = value
 
     @property
     def checkpoint_enabled(self) -> bool:
@@ -612,6 +626,24 @@ class AppSettings(Base):
     settings: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+
+
+class McpServer(Base):
+    """MCP server configuration — globally defined, per-agent opted-in."""
+
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    transport: Mapped[str] = mapped_column(String, nullable=False)  # 'stdio' | 'sse' | 'streamable_http'
+    command: Mapped[str | None] = mapped_column(String, nullable=True)
+    args: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    env: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    url: Mapped[str | None] = mapped_column(String, nullable=True)
+    headers: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    trust: Mapped[str] = mapped_column(String, nullable=False, default="ask")
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
 
 # ---------------------------------------------------------------------------

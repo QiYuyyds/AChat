@@ -32,6 +32,9 @@ dependencies = [
     "httpx>=0.28.0",
     "python-dotenv>=1.0.1",
     "pypdf>=5.1.0",  # read_attachment PDF text extraction (replaces TS pdf-parse)
+
+    # MCP client (external MCP server support for Custom adapter)
+    "mcp>=1.0.0",
 ]
 
 [project.optional-dependencies]

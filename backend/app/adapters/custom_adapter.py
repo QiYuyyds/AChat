@@ -126,6 +126,9 @@ class CustomAdapter(AgentPlatformAdapter):
 
         tool_defs = tool_registry.resolve(input.tool_names)
         api_tools = [_to_api_tool(t) for t in tool_defs]
+        # Merge MCP tool declarations (already in OpenAI function-calling format).
+        if input.mcp_tools:
+            api_tools = api_tools + list(input.mcp_tools)
 
         # Use provided messages (ReAct loop path) or construct from components (legacy).
         if input.messages is not None:

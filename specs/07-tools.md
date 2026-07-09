@@ -599,7 +599,47 @@ AgentRunner 在构造 `AdapterInput.systemPrompt` 时会追加按可用工具生
 - **bash 命令前匹配双平台黑名单**（详见 Spec 11；POSIX：rm -rf /、sudo、fork bomb、curl pipe shell 等；Windows：Remove-Item -Recurse -Force、format、shutdown、iex(iwr ...)、reg delete 等）
 - **不引入新依赖而不在 PR 中说明**（CLAUDE.md §4.3）
 
-**`getBannedPatterns(platform)` 跨 adapter / 工具共享**：定义在 `src/server/security.ts`，由 `findBannedPattern(command, platform?)` 暴露（platform 省略时取 `currentPlatform()`）。`bash` 工具和 `ClaudeCodeAdapter`（用 SDK Bash 工具时）都走同一份名单，新增模式同步 Spec 11 「命令黑名单」节并只改 `security.ts` 这一处。
+**`getBannedPatterns(platform)` 跨 adapter / 工具共享**：定义在 `src/server/security.ts`，由 `findBannedPattern(command, platform?)` 暴露（platform 省略时取 `currentPlatform()`）。`bash` 工具和 `ClaudeCodeAdapter`（用 SDK Bash 工具时）都走同一份名单，新增模式同步 Spec 11「命令黑名单」节并只改 `security.ts` 这一处。
+
+---
+
+## 外部 MCP 工具（Custom adapter 专属）
+
+源文件：`backend/app/mcp/client_manager.py`、`backend/app/services/agent_runner.py`
+
+Custom agent 可连接用户配置的外部 MCP server（详见 Spec 15），MCP 工具与内置工具并列供 LLM 选择，但**不在 `tool_registry` 中注册**。
+
+### 命名空间
+
+外部 MCP 工具统一命名 `mcp__<serverName>__<toolName>`（对齐 Claude Code / Codex SDK 约定）：
+
+- `mcp__` 前缀作为路由信号 —— `_run_react_loop()` 中工具执行时判断前缀路由到 `McpClientManager.call_tool()` 或 `tool_registry.execute_with_hooks()`
+- 避免与内置工具冲突（内置工具名如 `fs_read` / `write_artifact`）
+- `<serverName>` 是 `mcp_servers.name` 字段（`[a-z0-9_]` 格式）
+- `<toolName>` 由 MCP server 的 `listTools()` 返回
+
+### 事件
+
+MCP 工具调用复用现有 `tool.call` / `tool.result` StreamEvent，`toolName` 用命名空间名。**不新增事件类型**（审批门除外，见下）。
+
+### 审批门（`ask` trust 级别）
+
+trust 级别为 `ask` 的 server，其某个工具在某个会话内**首次**调用时弹审批：
+
+- 产生 `mcp_call.pending` SSE 事件（`PendingMcpCall`：工具名、参数、server trust 级别）
+- 前端展示 `PendingMcpCallCard`（Approve / Reject 按钮）
+- 批准后该会话内该工具免再问；拒绝则该次调用返回 `isError`
+- 复用 `await_pending_decision` 机制（同 `pending_writes` / `pending_bash_commands`）
+
+### 与内置工具的区别
+
+| 维度 | 内置工具 | MCP 工具 |
+|---|---|---|
+| 注册 | `tool_registry.register()` | 运行时 `listTools()` 动态发现 |
+| 执行 | `tool_registry.execute_with_hooks()` | `McpClientManager.call_tool()` |
+| 沙箱 | workspace 沙箱 + bash 黑名单 | **不在沙箱内**（外部进程 / 网络） |
+| 审批 | `fs_write` review 模式 / `bash` 关键命令审批 | `ask` trust → per-tool-per-conversation 审批门 |
+| 生命周期 | 进程级单例 | per-run 连接 + teardown |
 
 **TODO 工具（CLAUDE.md 提到但仍未实装）**：
 

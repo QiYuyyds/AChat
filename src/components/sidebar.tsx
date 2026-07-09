@@ -1,6 +1,6 @@
 'use client'
 
-import { Archive, ArchiveRestore, BarChart3, BookOpen, Bot, ChevronDown, ChevronRight, Ellipsis, Layers, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plus, Search, Sparkles, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, BarChart3, BookOpen, Bot, ChevronDown, ChevronRight, Ellipsis, Layers, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plug, Plus, Search, Sparkles, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { AgentLibrary } from '@/components/agent-library'
@@ -8,6 +8,7 @@ import { ConversationAvatar } from '@/components/agent-avatar'
 import { GlobalSearchTrigger } from '@/components/global-search-trigger'
 import { ArtifactLibrary } from '@/components/artifact-library'
 import { KnowledgeLibrary } from '@/components/knowledge-library'
+import { McpServerLibrary } from '@/components/mcp-server-library'
 import { SkillLibrary } from '@/components/skill-library'
 import { NewConversationDialog } from '@/components/new-conversation-dialog'
 import { SettingsButton } from '@/components/settings-dialog'
@@ -44,7 +45,7 @@ import { cn } from '@/lib/utils'
 import type { AgentRow, ConversationRow } from '@/db/schema'
 import { useAppStore, useConversationList, useUnreadCount } from '@/stores/app-store'
 
-type Mode = 'conversations' | 'artifacts' | 'agents' | 'analytics' | 'knowledge' | 'skills'
+type Mode = 'conversations' | 'artifacts' | 'agents' | 'analytics' | 'knowledge' | 'skills' | 'mcp'
 
 export function Sidebar() {
   const mobileOpen = useAppStore((s) => s.mobileSidebarOpen)
@@ -189,6 +190,7 @@ export function Sidebar() {
           <RailButton mode={mode} self="analytics" onClick={() => pickMode('analytics')} icon={<BarChart3 className="size-4" />} label="分析" />
           <RailButton mode={mode} self="knowledge" onClick={() => pickMode('knowledge')} icon={<BookOpen className="size-4" />} label="知识库" />
           <RailButton mode={mode} self="skills" onClick={() => pickMode('skills')} icon={<Sparkles className="size-4" />} label="技能" />
+          <RailButton mode={mode} self="mcp" onClick={() => pickMode('mcp')} icon={<Plug className="size-4" />} label="MCP" />
           <div className="mt-auto flex flex-col items-center gap-1">
             <SettingsButton />
             <ThemeToggle />
@@ -359,6 +361,8 @@ export function Sidebar() {
               <KnowledgeLibrary />
             ) : mode === 'skills' ? (
               <SkillLibrary />
+            ) : mode === 'mcp' ? (
+              <McpServerLibrary />
             ) : (
               <UsageDashboard />
             )}

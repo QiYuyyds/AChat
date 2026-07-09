@@ -238,6 +238,8 @@ export interface AgentConfigDraft {
   modelId?: string
   toolNames: AgentToolName[]
   supportsVision: boolean
+  /** custom adapter 启用的 MCP server ID 列表 */
+  mcpServerIds: string[]
   rationale: string[]
   assumptions: AgentDraftAssumption[]
   toolPermissionSummaries: AgentToolPermissionSummary[]
