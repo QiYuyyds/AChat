@@ -131,6 +131,7 @@ def _conversation_response(
         fs_write_approval_mode=conv.fs_write_approval_mode,
         rag_enabled=conv.rag_enabled,
         summary=conv.summary,
+        dispatch_mode=getattr(conv, "dispatch_mode", None) or "solo",
         created_at=conv.created_at,
         updated_at=conv.updated_at,
         workspace_mode=ws_mode,
@@ -297,6 +298,7 @@ async def create_conversation(
     agent_ids: list[str],
     title: str | None = None,
     bound_path: str | None = None,
+    dispatch_mode: str | None = None,
 ) -> ConversationResponse:
     """Create a conversation + its workspace, validating agents and the bound path."""
     if len(agent_ids) == 0:
@@ -368,6 +370,7 @@ async def create_conversation(
             pinned_at=None,
             fs_write_approval_mode="review",
             rag_enabled=False,
+            dispatch_mode=dispatch_mode or ("orchestrated" if mode == "group" else "solo"),
             created_at=now,
             updated_at=now,
         )
@@ -511,6 +514,18 @@ async def set_rag_mode(
     async with get_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv.rag_enabled = enabled
+        conv.updated_at = now_ms()
+        ws_mode, bound_path = await _ws_meta(db, conversation_id)
+        return _conversation_response(conv, ws_mode, bound_path)
+
+
+async def set_dispatch_mode(
+    conversation_id: str, dispatch_mode: str
+) -> ConversationResponse:
+    """Update conversation dispatch_mode (solo | orchestrated)."""
+    async with get_db() as db:
+        conv = await _require_conversation(db, conversation_id)
+        conv.dispatch_mode = dispatch_mode
         conv.updated_at = now_ms()
         ws_mode, bound_path = await _ws_meta(db, conversation_id)
         return _conversation_response(conv, ws_mode, bound_path)

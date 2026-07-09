@@ -126,9 +126,9 @@ message.parts = [
 
 产物有自己的生命周期、版本、二次编辑。**不要**把产物内容内联到 message 里。
 
-### 3.6 Orchestrator 是特殊 Agent，不是独立服务
+### 3.6 Orchestrator 是特殊 Agent，走统一 Agent Loop
 
-Orchestrator 走同一个 `AgentRunner`，只是多了 `plan_tasks` / `report_task_result` 工具与不同的 system prompt。**不要**为它写独立服务路径。
+Orchestrator 走同一个 `AgentRunner` + `run_agent_loop(mode='coordinated')`，通过 `task_dispatch` 工具派发子任务。**不要**为它写独立服务路径，也不要恢复旧的 `plan_tasks` / `report_task_result` / 验证 gate 三阶段流程。详见 `specs/19-unified-agent-loop.md`。
 
 ### 3.7 RAG / 记忆是可选增强，不是硬依赖
 
@@ -338,7 +338,7 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `03-message-parts.md` — MessagePart 各类型详解
 - `04-artifacts.md` — Artifact 类型与渲染契约
 - `05-adapter-interface.md` — AgentPlatformAdapter 接口
-- `06-orchestrator-flow.md` — Orchestrator 三阶段工作流
+- `06-orchestrator-flow.md` — Orchestrator 旧三阶段工作流（已被 spec 19 Unified Agent Loop 替代）
 - `07-tools.md` — 内置工具清单与签名
 - `08-db-schema.md` — SQLAlchemy schema 与索引
 - `09-frontend-architecture.md` — 前端状态结构与事件应用
@@ -351,6 +351,7 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `16-message-search.md` / `16-task-contract-handoff.md` — 消息搜索 / 任务契约交接
 - `17-orchestrator-plan-review.md` — Orchestrator 计划审批
 - `18-document-knowledge-base.md` — Document + Version 知识库体系
+- `19-unified-agent-loop.md` — 统一 Agent Loop（solo / coordinated / subagent 模式，替代旧三阶段 Orchestrator）
 
 ### `skills/`（可复用开发任务模板）
 

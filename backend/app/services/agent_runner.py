@@ -20,7 +20,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterable, AsyncIterator, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
@@ -62,10 +62,6 @@ from app.services.event_bus import event_bus
 from app.services.project_artifact import build_project_files
 from app.services.runner_registry import RunHandle
 from app.services.settings_service import get_app_settings
-from app.services.task_result_report import (
-    REPORT_TASK_RESULT_TOOL_NAME,
-    parse_and_normalize,
-)
 from app.tools.base import ToolContext
 from app.tools.registry import (
     tool_registry,  # noqa: F401 - parity import (tool resolution lives in adapters)
@@ -479,12 +475,10 @@ class RunArgs:
     parent_run_id: str | None = None
     # sub-agent dispatch: external prompt assembled by the Orchestrator
     override_prompt: str | None = None
-    # orchestrator stages use different system prompts
+    # unified loop: override system prompt (solo/coordinated modes)
     override_system_prompt: str | None = None
-    # orchestrator aggregate stage drops plan_tasks
+    # override tool list (e.g. coordinated mode adds task_dispatch)
     override_tool_names: list[str] | None = None
-    # sub-task runs must report a semantic result via report_task_result
-    require_task_report: bool = False
     # parent run's cancel signal — cascade: parent abort -> child abort
     parent_cancel_event: asyncio.Event | None = None
     # resume: reuse existing run_id, load checkpoint, continue ReAct loop
@@ -502,7 +496,6 @@ class RunResult:
     artifact_ids: list[str] = field(default_factory=list)
     output_message_ids: list[str] = field(default_factory=list)
     output_artifacts: dict[str, str] = field(default_factory=dict)
-    task_report: dict[str, Any] | None = None
 
 
 @dataclass
@@ -510,7 +503,6 @@ class RunExecutionResult:
     artifact_ids: list[str] = field(default_factory=list)
     output_message_ids: list[str] = field(default_factory=list)
     output_artifacts: dict[str, str] = field(default_factory=dict)
-    task_report: dict[str, Any] | None = None
 
 
 def _empty_run_execution_result() -> RunExecutionResult:
@@ -549,6 +541,208 @@ REACT_LOOP_MAX_TURNS = 8
 
 # O2 Step 5: only read-only tools are cached within a single _run_react_loop call.
 READONLY_CACHEABLE_TOOLS = frozenset({"fs_read", "read_artifact", "read_attachment"})
+
+
+# ─── Parallel tool execution helper ──────────────────────────────────────────
+@dataclass
+class _ToolCallExecResult:
+    """Result of executing a single tool call (for parallel dispatch)."""
+
+    events: list[StreamEvent]
+    tool_message: dict
+    extra_messages: list[dict]  # e.g. system hints from post_tool_use inject
+
+
+async def _execute_tool_call_to_result(
+    *,
+    tc: ToolCallInfo,
+    conversation_id: str,
+    message_id: str,
+    run_id: str,
+    agent_id: str,
+    cancel_event: asyncio.Event,
+    tool_call_cache: dict[str, Any],
+    mcp_manager: Any | None,
+    ctx: ToolContext,
+    hook_registry: Any | None,
+) -> _ToolCallExecResult:
+    """Execute a single tool call and return its events + messages.
+
+    This is extracted from the _run_react_loop body so that multiple tool_calls
+    can be dispatched in parallel via asyncio.gather.
+
+    Handles: cache hits, MCP tools (with approval gate), and standard tools
+    (with hooks). Returns a _ToolCallExecResult with all yieldable events and
+    message-append dicts.
+    """
+    events: list[StreamEvent] = []
+    extra_messages: list[dict] = []
+
+    if cancel_event.is_set():
+        value = {"error": "cancelled"}
+        events.append(ToolResultEvent(
+            conversation_id=conversation_id,
+            timestamp=now_ms(),
+            message_id=message_id,
+            call_id=tc.id,
+            result=value,
+            is_error=True,
+        ))
+        return _ToolCallExecResult(
+            events=events,
+            tool_message={"role": "tool", "tool_call_id": tc.id, "content": json.dumps(value)},
+            extra_messages=extra_messages,
+        )
+
+    # O2 Step 5: check read-only tool cache
+    cache_key: str | None = None
+    if tc.name in READONLY_CACHEABLE_TOOLS:
+        cache_key = f"{tc.name}:{json.dumps(tc.args, sort_keys=True)}"
+        if cache_key in tool_call_cache:
+            value = f"[cached] {tool_call_cache[cache_key]}"
+            events.append(ToolResultEvent(
+                conversation_id=conversation_id,
+                timestamp=now_ms(),
+                message_id=message_id,
+                call_id=tc.id,
+                result=value,
+                is_error=False,
+            ))
+            return _ToolCallExecResult(
+                events=events,
+                tool_message={"role": "tool", "tool_call_id": tc.id, "content": json.dumps(value)},
+                extra_messages=extra_messages,
+            )
+
+    # ── MCP tool routing: mcp__ prefix → mcp_manager ──
+    if mcp_manager is not None and tc.name.startswith("mcp__"):
+        server_name = mcp_manager.get_server_name(tc.name)
+        trust = mcp_manager.get_trust(server_name) if server_name else "ask"
+        needs_approval = trust == "ask"
+        if needs_approval:
+            from app.services.pending_mcp_calls import pending_mcp_calls
+            from app.utils.approval import await_pending_decision
+
+            if pending_mcp_calls.is_rejected(conversation_id, tc.name):
+                value = {"error": "User denied MCP tool call", "isError": True}
+                events.append(ToolResultEvent(
+                    conversation_id=conversation_id,
+                    timestamp=now_ms(),
+                    message_id=message_id,
+                    call_id=tc.id,
+                    result=value,
+                    is_error=True,
+                ))
+                return _ToolCallExecResult(
+                    events=events,
+                    tool_message={"role": "tool", "tool_call_id": tc.id, "content": json.dumps(value)},
+                    extra_messages=extra_messages,
+                )
+
+            if not pending_mcp_calls.is_approved(conversation_id, tc.name):
+                pending = pending_mcp_calls.register(
+                    conversation_id=conversation_id,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    tool_name=tc.name,
+                    args=tc.args,
+                    server_trust=trust,
+                )
+                decision = await await_pending_decision(
+                    attach_resolver=lambda r, pid=pending.id: pending_mcp_calls.attach_resolver(pid, r),
+                    cancel=lambda pid=pending.id: pending_mcp_calls.cancel(pid),
+                    cancel_event=cancel_event,
+                    cancelled_value={"approved": False},
+                )
+                approved = bool(decision.get("approved")) if isinstance(decision, dict) else False
+                if not approved:
+                    value = {"error": "User denied MCP tool call", "isError": True}
+                    events.append(ToolResultEvent(
+                        conversation_id=conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        call_id=tc.id,
+                        result=value,
+                        is_error=True,
+                    ))
+                    return _ToolCallExecResult(
+                        events=events,
+                        tool_message={"role": "tool", "tool_call_id": tc.id, "content": json.dumps(value)},
+                        extra_messages=extra_messages,
+                    )
+
+        try:
+            value = await mcp_manager.call_tool(tc.name, tc.args)
+            is_error = isinstance(value, dict) and value.get("isError", False)
+        except Exception as mcp_err:  # noqa: BLE001 - surface to LLM
+            logger.warning("[AgentRunner] MCP call_tool failed: %s", mcp_err)
+            value = {"error": f"MCP tool call failed: {mcp_err}"}
+            is_error = True
+
+        events.append(ToolResultEvent(
+            conversation_id=conversation_id,
+            timestamp=now_ms(),
+            message_id=message_id,
+            call_id=tc.id,
+            result=value,
+            is_error=is_error,
+        ))
+        return _ToolCallExecResult(
+            events=events,
+            tool_message={"role": "tool", "tool_call_id": tc.id, "content": json.dumps(value)},
+            extra_messages=extra_messages,
+        )
+
+    # ── Standard tool execution (with hooks) ──
+    result = await tool_registry.execute_with_hooks(tc.name, tc.args, ctx, hook_registry)
+    value = result.value if result.ok else {"error": result.error}
+
+    # O2 Step 5: cache successful read-only tool results
+    if cache_key is not None and result.ok:
+        tool_call_cache[cache_key] = value
+
+    events.append(ToolResultEvent(
+        conversation_id=conversation_id,
+        timestamp=now_ms(),
+        message_id=message_id,
+        call_id=tc.id,
+        result=value,
+        is_error=not result.ok,
+    ))
+
+    if tc.name == "write_artifact" and result.ok and _has_artifact_id(value):
+        from app.adapters.custom_adapter import _load_artifact_event
+        artifact_event = await _load_artifact_event(conversation_id, value["artifactId"])
+        if artifact_event is not None:
+            events.append(artifact_event)
+
+    if (
+        tc.name in ("deploy_artifact", "deploy_workspace")
+        and result.ok
+        and _is_deploy_status_record(value)
+    ):
+        events.append(DeployStatusEvent(
+            conversation_id=conversation_id,
+            timestamp=now_ms(),
+            message_id=message_id,
+            deployment=DeployStatusRecord.model_validate(value),
+        ))
+
+    # O8: check post_tool_use inject action (e.g. skill_auto_activator)
+    post_result = ctx.last_post_hook_result
+    if post_result and post_result.action == "inject" and post_result.data:
+        for item in post_result.data:
+            if isinstance(item, dict) and item.get("type") == "system_hint":
+                extra_messages.append({
+                    "role": "system",
+                    "content": item.get("content", ""),
+                })
+
+    return _ToolCallExecResult(
+        events=events,
+        tool_message={"role": "tool", "tool_call_id": tc.id, "content": json.dumps(value)},
+        extra_messages=extra_messages,
+    )
 
 
 # ─── SDK ReAct loop (Phase 1: call_once + TurnResult) ─────────────────────────
@@ -596,7 +790,6 @@ async def _run_react_loop(
     model_id: str | None,
     model_provider: str | None = None,
     resume_from_turn: int | None = None,
-    require_task_report: bool = False,
     mcp_manager: Any | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """ReAct loop for SDK adapters: call_once → yield events → execute tools → repeat.
@@ -735,7 +928,6 @@ async def _run_react_loop(
             turn_output_tokens = 0
             turn_cache_read_tokens = 0
 
-            terminal_tool_call: StreamEvent | None = None
             try:
                 async for event in adapter.call_once(adapter_input, cancel_event):
                     if event.type == "message.start":
@@ -753,15 +945,6 @@ async def _run_react_loop(
                             name=event.tool_name,
                             args=event.args if isinstance(event.args, dict) else {},
                         ))
-                        if (
-                            require_task_report
-                            and (
-                                event.tool_name == REPORT_TASK_RESULT_TOOL_NAME
-                                or event.tool_name.endswith(f"__{REPORT_TASK_RESULT_TOOL_NAME}")
-                            )
-                        ):
-                            terminal_tool_call = event
-                            continue
                     elif event.type == "message.usage":
                         run_usage.input_tokens += event.usage.input_tokens
                         run_usage.output_tokens += event.usage.output_tokens
@@ -784,7 +967,10 @@ async def _run_react_loop(
             if message_id is None:
                 return
 
-            # Build assistant_message dict (includes reasoning_content for DeepSeek)
+            # Build assistant_message dict
+            # DeepSeek thinking-mode models require reasoning_content to be
+            # echoed back next turn, else the API errors with "The reasoning_content
+            # in the thinking mode must be passed back".
             assistant_msg: dict = {"role": "assistant", "content": text_content or None}
             if tool_calls:
                 assistant_msg["tool_calls"] = [
@@ -795,34 +981,6 @@ async def _run_react_loop(
             if reasoning_content:
                 assistant_msg["reasoning_content"] = reasoning_content
             messages.append(assistant_msg)
-
-            # Terminal tool call (report_task_result): yield deferred events +
-            # TurnMetricEvent + RunUsageEvent BEFORE the tool.call so consume_stream
-            # receives them before its terminal callback breaks the stream.
-            if terminal_tool_call:
-                for ev in deferred_events:
-                    yield ev
-                yield TurnMetricEvent(
-                    conversation_id=conversation_id,
-                    timestamp=now_ms(),
-                    run_id=run_id,
-                    turn=turn + 1,
-                    tokens=TurnTokenBreakdown(
-                        input_tokens=turn_input_tokens,
-                        output_tokens=turn_output_tokens,
-                        cache_read_tokens=turn_cache_read_tokens,
-                    ),
-                    tool_calls=[tc.name for tc in tool_calls],
-                    duration_ms=int((time.monotonic() - turn_start) * 1000),
-                )
-                yield RunUsageEvent(
-                    conversation_id=conversation_id,
-                    timestamp=now_ms(),
-                    run_id=run_id,
-                    usage=_to_run_usage(run_usage, model_id or ""),
-                )
-                yield terminal_tool_call
-                return
 
             # If no tool calls → yield deferred events, dispatch on_stop, emit run.usage
             if len(tool_calls) == 0:
@@ -873,23 +1031,44 @@ async def _run_react_loop(
                 break
 
             # ── Execute tools and yield results ──
-            for tc in tool_calls:
-                if cancel_event.is_set():
-                    break
+            # When the model emits multiple tool_calls in a single turn, execute
+            # them in parallel (asyncio.gather) so that e.g. two task_dispatch
+            # calls run concurrently instead of sequentially.
+            if not cancel_event.is_set() and tool_calls:
+                tasks = [
+                    asyncio.create_task(
+                        _execute_tool_call_to_result(
+                            tc=tc,
+                            conversation_id=conversation_id,
+                            message_id=message_id,
+                            run_id=run_id,
+                            agent_id=agent_id,
+                            cancel_event=cancel_event,
+                            tool_call_cache=tool_call_cache,
+                            mcp_manager=mcp_manager,
+                            ctx=replace(ctx) if len(tool_calls) > 1 else ctx,
+                            hook_registry=hook_registry,
+                        )
+                    )
+                    for tc in tool_calls
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                # O2 Step 5: check read-only tool cache
-                cache_key: str | None = None
-                if tc.name in READONLY_CACHEABLE_TOOLS:
-                    cache_key = f"{tc.name}:{json.dumps(tc.args, sort_keys=True)}"
-                    if cache_key in tool_call_cache:
-                        value = f"[cached] {tool_call_cache[cache_key]}"
+                # Yield results in original tool_calls order (not completion order)
+                for i, tc in enumerate(tool_calls):
+                    if i >= len(results):
+                        break
+                    res = results[i]
+
+                    if isinstance(res, Exception):
+                        value = {"error": f"Tool execution error: {res}"}
                         yield ToolResultEvent(
                             conversation_id=conversation_id,
                             timestamp=now_ms(),
                             message_id=message_id,
                             call_id=tc.id,
                             result=value,
-                            is_error=False,
+                            is_error=True,
                         )
                         messages.append({
                             "role": "tool",
@@ -898,141 +1077,13 @@ async def _run_react_loop(
                         })
                         continue
 
-                # ── MCP tool routing: mcp__ prefix → mcp_manager ──
-                if mcp_manager is not None and tc.name.startswith("mcp__"):
-                    # Check ask-trust approval gate
-                    server_name = mcp_manager.get_server_name(tc.name)
-                    trust = mcp_manager.get_trust(server_name) if server_name else "ask"
-                    needs_approval = trust == "ask"
-                    if needs_approval:
-                        from app.services.pending_mcp_calls import pending_mcp_calls
-                        from app.utils.approval import await_pending_decision
+                    for ev in res.events:
+                        yield ev
+                    messages.append(res.tool_message)
+                    for extra_msg in res.extra_messages:
+                        messages.append(extra_msg)
 
-                        # Check if already approved/rejected in this conversation
-                        if pending_mcp_calls.is_rejected(conversation_id, tc.name):
-                            value = {"error": "User denied MCP tool call", "isError": True}
-                            yield ToolResultEvent(
-                                conversation_id=conversation_id,
-                                timestamp=now_ms(),
-                                message_id=message_id,
-                                call_id=tc.id,
-                                result=value,
-                                is_error=True,
-                            )
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": json.dumps(value),
-                            })
-                            continue
-
-                        if not pending_mcp_calls.is_approved(conversation_id, tc.name):
-                            pending = pending_mcp_calls.register(
-                                conversation_id=conversation_id,
-                                agent_id=agent_id,
-                                run_id=run_id,
-                                tool_name=tc.name,
-                                args=tc.args,
-                                server_trust=trust,
-                            )
-                            decision = await await_pending_decision(
-                                attach_resolver=lambda r, pid=pending.id: pending_mcp_calls.attach_resolver(pid, r),
-                                cancel=lambda pid=pending.id: pending_mcp_calls.cancel(pid),
-                                cancel_event=cancel_event,
-                                cancelled_value={"approved": False},
-                            )
-                            approved = bool(decision.get("approved")) if isinstance(decision, dict) else False
-                            if not approved:
-                                value = {"error": "User denied MCP tool call", "isError": True}
-                                yield ToolResultEvent(
-                                    conversation_id=conversation_id,
-                                    timestamp=now_ms(),
-                                    message_id=message_id,
-                                    call_id=tc.id,
-                                    result=value,
-                                    is_error=True,
-                                )
-                                messages.append({
-                                    "role": "tool",
-                                    "tool_call_id": tc.id,
-                                    "content": json.dumps(value),
-                                })
-                                continue
-
-                    try:
-                        value = await mcp_manager.call_tool(tc.name, tc.args)
-                        is_error = isinstance(value, dict) and value.get("isError", False)
-                    except Exception as mcp_err:  # noqa: BLE001 - surface to LLM
-                        logger.warning("[AgentRunner] MCP call_tool failed: %s", mcp_err)
-                        value = {"error": f"MCP tool call failed: {mcp_err}"}
-                        is_error = True
-
-                    yield ToolResultEvent(
-                        conversation_id=conversation_id,
-                        timestamp=now_ms(),
-                        message_id=message_id,
-                        call_id=tc.id,
-                        result=value,
-                        is_error=is_error,
-                    )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": json.dumps(value),
-                    })
-                    continue
-
-                result = await tool_registry.execute_with_hooks(tc.name, tc.args, ctx, hook_registry)
-                value = result.value if result.ok else {"error": result.error}
-
-                # O2 Step 5: cache successful read-only tool results
-                if cache_key is not None and result.ok:
-                    tool_call_cache[cache_key] = value
-
-                yield ToolResultEvent(
-                    conversation_id=conversation_id,
-                    timestamp=now_ms(),
-                    message_id=message_id,
-                    call_id=tc.id,
-                    result=value,
-                    is_error=not result.ok,
-                )
-
-                if tc.name == "write_artifact" and result.ok and _has_artifact_id(value):
-                    from app.adapters.custom_adapter import _load_artifact_event
-                    artifact_event = await _load_artifact_event(conversation_id, value["artifactId"])
-                    if artifact_event is not None:
-                        yield artifact_event
-
-                if (
-                    tc.name in ("deploy_artifact", "deploy_workspace")
-                    and result.ok
-                    and _is_deploy_status_record(value)
-                ):
-                    yield DeployStatusEvent(
-                        conversation_id=conversation_id,
-                        timestamp=now_ms(),
-                        message_id=message_id,
-                        deployment=DeployStatusRecord.model_validate(value),
-                    )
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps(value),
-                })
-
-                # O8: check post_tool_use inject action (e.g. skill_auto_activator)
-                post_result = ctx.last_post_hook_result
-                if post_result and post_result.action == "inject" and post_result.data:
-                    for item in post_result.data:
-                        if isinstance(item, dict) and item.get("type") == "system_hint":
-                            messages.append({
-                                "role": "system",
-                                "content": item.get("content", ""),
-                            })
-
-                        # ── Yield deferred events (message.usage + message.end) after tools ──
+            # ── Yield deferred events (message.usage + message.end) after tools ──
             for ev in deferred_events:
                 yield ev
             # ── turn metric ──
@@ -1101,18 +1152,6 @@ def _is_deploy_status_record(value: object) -> bool:
 SUB_AGENT_CONTEXT_RECENT_LIMIT = 5
 MAX_CONCURRENT_SUB_AGENT_RUNS = 4
 ASK_USER_TOOL_NAME = "ask_user"
-ORCHESTRATOR_PLAN_ALLOWED_TOOLS = {
-    "plan_tasks",
-    ASK_USER_TOOL_NAME,
-    "fs_list",
-    "fs_read",
-    "read_artifact",
-    "read_attachment",
-}
-MAX_DISPATCH_ROUNDS = 4
-MAX_CHILD_TASK_ATTEMPTS = 4
-DEFAULT_VERIFICATION_TIMEOUT_MS = 5 * 60_000
-DEFAULT_PREPARE_TIMEOUT_MS = 10 * 60_000
 
 
 # ─── Fair async semaphore (port of the TS Semaphore) ─────────────────────────
@@ -1313,6 +1352,13 @@ async def execute_run(
                 run_id, args, f"Trigger message not found: {args.trigger_message_id}"
             )
 
+        # Load conversation to determine dispatch_mode
+        conv = (
+            await db.execute(
+                select(Conversation).where(Conversation.id == args.conversation_id)
+            )
+        ).scalar_one_or_none()
+
         is_orchestrator = agent.is_orchestrator
         trigger_parts = trigger_message.parts_list
 
@@ -1350,17 +1396,26 @@ async def execute_run(
     )
 
     try:
-        if is_orchestrator:
-            # lazy import to break the agent_runner <-> orchestrator import cycle
-            from app.services.orchestrator import execute_orchestrator_run
+        from app.services.agent_loop import get_dispatch_mode, run_agent_loop
 
-            result = await execute_orchestrator_run(
-                run_id, cancel_event, args, prompt, attachments
-            )
-        else:
+        # Subagent runs (override_prompt set) always use solo mode.
+        # Top-level runs branch on conversation.dispatch_mode.
+        if args.override_prompt:
             result = await execute_simple_run(
                 run_id, cancel_event, args, prompt, attachments
             )
+        else:
+            dispatch_mode = get_dispatch_mode(conv)
+            if dispatch_mode == "coordinated" and is_orchestrator:
+                result = await run_agent_loop(
+                    run_id, cancel_event, args, prompt, attachments,
+                    mode="coordinated",
+                )
+            else:
+                result = await run_agent_loop(
+                    run_id, cancel_event, args, prompt, attachments,
+                    mode="solo",
+                )
         if cancel_event.is_set():
             return await finalize(run_id, args, "aborted", result)
         final_result = await finalize_ok(run_id, args, result)
@@ -1491,11 +1546,7 @@ async def execute_simple_run(
                         args.conversation_id,
                     )
 
-    tool_names = (
-        _ensure_includes(base_tool_names, REPORT_TASK_RESULT_TOOL_NAME)
-        if args.require_task_report
-        else base_tool_names
-    )
+    tool_names = base_tool_names
 
     adapter = agent_registry.get_adapter(agent)
     adapter_input = await build_adapter_input(
@@ -1569,12 +1620,10 @@ async def execute_simple_run(
                 run_id, args.agent_id, args.conversation_id, agent.model_id,
                 model_provider=agent.model_provider,
                 resume_from_turn=resume_from_turn,
-                require_task_report=args.require_task_report,
                 mcp_manager=mcp_manager,
             )
             result = await consume_stream(
                 stream, args.agent_id, run_id,
-                require_task_report=args.require_task_report,
             )
         finally:
             if mcp_manager is not None:
@@ -1585,7 +1634,6 @@ async def execute_simple_run(
 
         result = await consume_stream(
             stream, args.agent_id, run_id,
-            require_task_report=args.require_task_report,
         )
     if args.parent_run_id:
         return result
@@ -1693,7 +1741,6 @@ async def consume_stream(
     agent_id: str,
     run_id: str,
     on_tool_call: Callable[[StreamEvent], ToolCallControl] | None = None,
-    require_task_report: bool = False,
 ) -> RunExecutionResult:
     parts_buffer: dict[str, list[dict]] = {}
     artifact_ids: list[str] = []
@@ -1701,52 +1748,12 @@ async def consume_stream(
     output_artifacts: dict[str, str] = {}
     output_key_by_artifact_id: dict[str, str] = {}
     tool_name_by_call_id: dict[str, str] = {}
-    task_report: dict[str, Any] | None = None
     current_message_id: str | None = None
-
-    # When require_task_report=True, construct an internal on_tool_call callback
-    # that treats report_task_result as a stream-terminal event (same pattern
-    # as plan_tasks).  The report is parsed from the tool.call args and stored
-    # in report_ref so it survives the early break.
-    report_ref: dict[str, Any | None] = {"value": None}
-
-    def _report_terminal_callback(event: StreamEvent) -> ToolCallControl:
-        if event.type != "tool.call":
-            return None
-        tool_name = event.tool_name
-        is_report = (
-            tool_name == REPORT_TASK_RESULT_TOOL_NAME
-            or tool_name.endswith(f"__{REPORT_TASK_RESULT_TOOL_NAME}")
-        )
-        if not is_report:
-            return None
-        report, _err = parse_and_normalize(event.args)
-        if report:
-            report_ref["value"] = report
-        return {"stop": True, "result": {"acknowledged": True}}
-
-    # Combine external + internal callbacks: external takes precedence.
-    if require_task_report and on_tool_call is not None:
-        _external = on_tool_call
-
-        def _combined(event: StreamEvent) -> ToolCallControl:
-            ext = _external(event)
-            if ext and ext.get("stop"):
-                return ext
-            return _report_terminal_callback(event)
-
-        _effective_on_tool_call = _combined
-    elif require_task_report:
-        _effective_on_tool_call = _report_terminal_callback
-    else:
-        _effective_on_tool_call = on_tool_call
 
     # Wrap the stream iteration in a try/finally so that the underlying async
     # generator is always properly closed — even when we break early on a
-    # terminal tool call (report_task_result / plan_tasks).  Without this,
-    # CLI adapter subprocesses (Claude CLI, Codex) are left running after
-    # the stream consumer stops reading, because the generator's `finally`
-    # block (which calls cli.shutdown()) never executes.
+    # terminal tool call. Without this, CLI adapter subprocesses
+    # are left running after the stream consumer stops reading.
     try:
         async for event in stream:
             if event.type == "message.start":
@@ -1806,42 +1813,6 @@ async def consume_stream(
                 current_message_id = None
             if event.type == "tool.result":
                 tool_name = tool_name_by_call_id.get(event.call_id)
-                # Accept both bare AChat tool names (SDK agents) and
-                # MCP-prefixed names from CLI agents (e.g.
-                # "mcp__achat-tools__report_task_result").
-                is_report = (
-                    tool_name
-                    and not event.is_error
-                    and (
-                        tool_name == REPORT_TASK_RESULT_TOOL_NAME
-                        or tool_name.endswith(f"__{REPORT_TASK_RESULT_TOOL_NAME}")
-                    )
-                )
-                if is_report:
-                    logger.info(
-                        "[consume_stream] report_task_result detected: "
-                        "tool_name=%s, call_id=%s, result_type=%s, result_preview=%s",
-                        tool_name,
-                        event.call_id,
-                        type(event.result).__name__,
-                        str(event.result)[:200],
-                    )
-                    report, _err = parse_and_normalize(event.result)
-                    if report:
-                        logger.info(
-                            "[consume_stream] report_task_result parsed OK: "
-                            "status=%s, summary=%s",
-                            report.get("status"),
-                            report.get("summary", "")[:100],
-                        )
-                        task_report = report
-                    else:
-                        logger.warning(
-                            "[consume_stream] report_task_result parse FAILED: "
-                            "error=%s, raw=%s",
-                            _err,
-                            str(event.result)[:200],
-                        )
                 handoff = _read_artifact_handoff_result(event.result)
                 if handoff:
                     output_key_by_artifact_id[handoff[0]] = handoff[1]
@@ -1851,7 +1822,7 @@ async def consume_stream(
                         event.call_id, tool_name, event.result, event.is_error,
                     )
             if event.type == "tool.call":
-                control = _effective_on_tool_call(event) if _effective_on_tool_call else None
+                control = on_tool_call(event) if on_tool_call else None
                 if control and control.get("stop"):
                     if "result" in control:
                         result_event = ToolResultEvent(
@@ -1889,16 +1860,10 @@ async def consume_stream(
             except Exception:
                 logger.debug("[consume_stream] stream.aclose() failed", exc_info=True)
 
-    # If the report was captured via the terminal callback (from tool.call
-    # args) and not via the tool.result handler, use it.
-    if task_report is None and report_ref["value"] is not None:
-        task_report = report_ref["value"]
-
     return RunExecutionResult(
         artifact_ids=artifact_ids,
         output_message_ids=output_message_ids,
         output_artifacts=output_artifacts,
-        task_report=task_report,
     )
 
 
@@ -2129,7 +2094,6 @@ async def finalize(
         artifact_ids=result.artifact_ids,
         output_message_ids=result.output_message_ids,
         output_artifacts=result.output_artifacts,
-        task_report=result.task_report,
     )
 
 
@@ -2428,9 +2392,7 @@ async def build_adapter_input(
         if assembler and not args.override_prompt:
             try:
                 from app.services.prompt_assembler import Query
-                if "plan_tasks" in (tool_names or []):
-                    mode = "react"
-                elif tool_names:
+                if tool_names:
                     mode = "tool"
                 else:
                     mode = "chat"
@@ -2612,27 +2574,21 @@ def _build_agent_hub_tool_guidance(
     tools = set(tool_names)
     is_sdk_agent = agent.adapter_name in ("claude-code", "codex")
     if is_sdk_agent:
-        sdk_agent_hub_tools = (
-            ["read_artifact", "read_attachment", "fs_list", ASK_USER_TOOL_NAME]
-            if "plan_tasks" in tools
-            else [
-                "write_artifact",
-                "read_artifact",
-                "deploy_artifact",
-                "deploy_workspace",
-                ASK_USER_TOOL_NAME,
-                REPORT_TASK_RESULT_TOOL_NAME,
-            ]
-        )
+        sdk_agent_hub_tools = [
+            "write_artifact",
+            "read_artifact",
+            "deploy_artifact",
+            "deploy_workspace",
+            ASK_USER_TOOL_NAME,
+        ]
         tools.update(sdk_agent_hub_tools)
-    is_plan_stage = "plan_tasks" in tools
 
     sections: list[str] = []
 
     def add(lines: list[str]) -> None:
         sections.append("\n".join(lines))
 
-    has_workspace_file_tools = not is_plan_stage and (
+    has_workspace_file_tools = (
         "fs_read" in tools or "fs_write" in tools or "bash" in tools or is_sdk_agent
     )
 
@@ -2642,7 +2598,7 @@ def _build_agent_hub_tool_guidance(
                 "## AChat 工具调用规范",
                 "- 需要调用工具时，必须用工具调用通道提交结构化参数，不要把 JSON 示例写进普通回复里假装调用。",
                 "- 字段名必须严格使用工具 schema 里的 camelCase，例如 artifactId、attachmentId、"
-                "parentArtifactId、outputKey、dependsOn、expectedOutputs、acceptanceCriteria、acceptanceResults。",
+                "parentArtifactId、outputKey、dependsOn、agentId、taskDescription。",
                 "- 不要编造 artifactId、attachmentId、outputKey、文件路径；只能使用上下文里明确给出的 id / 路径。",
                 "- 工具返回 ok:false 或 isError=true 时，先根据错误修正参数；不要继续基于失败结果推进。",
             ]
@@ -2738,7 +2694,7 @@ def _build_agent_hub_tool_guidance(
             ]
         )
 
-    if not is_plan_stage and (
+    if (
         "fs_list" in tools or "fs_read" in tools or "fs_write" in tools or "bash" in tools
     ):
         add(
@@ -2752,12 +2708,13 @@ def _build_agent_hub_tool_guidance(
             ]
         )
 
-    if "plan_tasks" in tools:
+    if "task_dispatch" in tools:
         add(
             [
-                "### plan_tasks",
-                "用途：Orchestrator 用结构化计划拆分子任务；执行顺序只认 dependsOn 字段。",
-                "字段名必须是 agentId、dependsOn、expectedOutputs、acceptanceCriteria、taskKind、targetPaths、expectedWorkspaceChanges、requiredCommands、requiredEvidence；不要写 snake_case。",
+                "### task_dispatch",
+                "用途：协调者将任务派发给其他 Agent 执行；子 Agent 独立运行并返回结果。",
+                "字段名必须是 agentId、taskDescription、dependsOn；不要写 snake_case。",
+                "简单任务自己做，不要每件事都派发。",
             ]
         )
 

@@ -13,6 +13,9 @@ class CreateConversationRequest(BaseModel):
     mode: Literal["single", "group"]
     agent_ids: list[str] = Field(alias="agentIds", min_length=1)
     bound_path: str | None = Field(default=None, alias="boundPath")
+    dispatch_mode: Literal["solo", "orchestrated"] | None = Field(
+        default=None, alias="dispatchMode"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -28,6 +31,9 @@ class UpdateConversationRequest(BaseModel):
     )
     toggle_pin: bool | None = Field(default=None, alias="togglePin")
     toggle_archive: bool | None = Field(default=None, alias="toggleArchive")
+    dispatch_mode: Literal["solo", "orchestrated"] | None = Field(
+        default=None, alias="dispatchMode"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -46,6 +52,7 @@ class ConversationResponse(BaseModel):
     fs_write_approval_mode: Literal["auto", "review"] = Field(alias="fsWriteApprovalMode")
     rag_enabled: bool = Field(alias="ragEnabled")
     summary: str | None = None
+    dispatch_mode: str = Field(default="solo", alias="dispatchMode")
     created_at: int = Field(alias="createdAt")
     updated_at: int = Field(alias="updatedAt")
     workspace_mode: Literal["sandbox", "local"] = Field(alias="workspaceMode")

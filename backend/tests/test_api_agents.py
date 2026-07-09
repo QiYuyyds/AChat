@@ -275,8 +275,7 @@ async def test_create_orchestrator_agent(api_client, db):
     assert resp.status_code == 201
     agent = resp.json()["agent"]
     assert agent["isOrchestrator"] is True
-    # plan_tasks and ask_user should be auto-added
-    assert "plan_tasks" in agent["toolNames"]
+    # ask_user should be auto-added for orchestrator agents
     assert "ask_user" in agent["toolNames"]
     # Original tools preserved
     assert "bash" in agent["toolNames"]
@@ -298,7 +297,7 @@ async def test_create_non_orchestrator_default(api_client, db):
     assert resp.status_code == 201
     agent = resp.json()["agent"]
     assert agent["isOrchestrator"] is False
-    assert "plan_tasks" not in agent["toolNames"]
+    assert "ask_user" not in agent["toolNames"]
 
 
 async def test_patch_update_is_orchestrator(api_client, agents):

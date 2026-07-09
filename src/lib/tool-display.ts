@@ -4,8 +4,6 @@ const ACHAT_TOOL_LABELS = {
   deploy_artifact: '部署网页',
   deploy_workspace: '部署目录',
   read_attachment: '读取附件',
-  plan_tasks: '拆分任务',
-  report_task_result: '上报结果',
   fs_read: '读取文件',
   fs_write: '写入文件',
   fs_edit: '编辑文件',

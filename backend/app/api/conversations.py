@@ -70,6 +70,7 @@ async def create_conversation(req: Request) -> JSONResponse:
             agent_ids=body.agent_ids,
             title=body.title,
             bound_path=body.bound_path,
+            dispatch_mode=body.dispatch_mode,
         )
     except ValueError as err:
         return _err(str(err), 400)
@@ -95,6 +96,7 @@ async def update_conversation(conversation_id: str, req: Request) -> JSONRespons
     fs_mode = raw.get("fsWriteApprovalMode") if isinstance(raw, dict) else None
     toggle_pin = raw.get("togglePin") if isinstance(raw, dict) else None
     toggle_archive = raw.get("toggleArchive") if isinstance(raw, dict) else None
+    dispatch_mode = raw.get("dispatchMode") if isinstance(raw, dict) else None
 
     # Mirror the zod refine: at least one recognized field is required.
     if (
@@ -106,6 +108,7 @@ async def update_conversation(conversation_id: str, req: Request) -> JSONRespons
             and fs_mode is None
             and toggle_pin is None
             and toggle_archive is None
+            and dispatch_mode is None
         )
     ):
         return JSONResponse(
@@ -116,8 +119,8 @@ async def update_conversation(conversation_id: str, req: Request) -> JSONRespons
                     {
                         "message": (
                             "At least one of addAgentIds / title / summary / "
-                            "fsWriteApprovalMode / togglePin / toggleArchive "
-                            "is required"
+                            "fsWriteApprovalMode / togglePin / toggleArchive / "
+                            "dispatchMode is required"
                         )
                     }
                 ],
@@ -142,6 +145,8 @@ async def update_conversation(conversation_id: str, req: Request) -> JSONRespons
     if toggle_pin is not None and toggle_pin is not True:
         return _err("Invalid body", 400)
     if toggle_archive is not None and toggle_archive is not True:
+        return _err("Invalid body", 400)
+    if dispatch_mode is not None and dispatch_mode not in ("solo", "orchestrated"):
         return _err("Invalid body", 400)
 
     try:
@@ -169,6 +174,10 @@ async def update_conversation(conversation_id: str, req: Request) -> JSONRespons
         if toggle_archive:
             conversation = await conversation_service.toggle_archive_conversation(
                 conversation_id
+            )
+        if dispatch_mode is not None:
+            conversation = await conversation_service.set_dispatch_mode(
+                conversation_id, dispatch_mode
             )
     except ValueError as err:
         return _err(str(err), 400)

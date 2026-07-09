@@ -274,6 +274,10 @@ class CustomAdapter(AgentPlatformAdapter):
                     entry.name = tcd.function.name
                 if tcd.function and tcd.function.arguments:
                     entry.args_buffer += tcd.function.arguments
+                    logger.debug(
+                        "[CustomAdapter] tool_call delta idx=%d id=%s name=%s args_chunk=%r",
+                        tcd.index, tcd.id, tcd.function.name, tcd.function.arguments[:200],
+                    )
 
             if choice.finish_reason:
                 finish_reason = choice.finish_reason
@@ -297,9 +301,37 @@ class CustomAdapter(AgentPlatformAdapter):
 
         # yield tool.call events (without executing — AgentRunner handles execution)
         for tc in tool_calls:
+            if not tc.args_buffer:
+                logger.warning(
+                    "[CustomAdapter] tool_call id=%s name=%s has EMPTY args_buffer "
+                    "(model=%s, finish_reason=%s, text_buffer_len=%d, "
+                    "text_buffer_preview=%r)",
+                    tc.id, tc.name, model_id, finish_reason, len(text_buffer),
+                    text_buffer[:500] if text_buffer else "",
+                )
+                # Fallback: some models (e.g. deepseek-reasoner) emit tool call
+                # arguments as text content instead of in the tool_calls delta.
+                # Try to parse the text_buffer as JSON.
+                if text_buffer.strip().startswith("{"):
+                    try:
+                        fallback_args = json.loads(text_buffer)
+                        if isinstance(fallback_args, dict):
+                            logger.info(
+                                "[CustomAdapter] recovered tool args from text_buffer "
+                                "for tool=%s", tc.name,
+                            )
+                            tc.args_buffer = text_buffer
+                            text_buffer = ""  # consume it so it's not double-counted
+                    except (ValueError, TypeError):
+                        pass
             try:
                 args = json.loads(tc.args_buffer) if tc.args_buffer else {}
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logger.warning(
+                    "[CustomAdapter] tool_call id=%s name=%s args_buffer JSON parse failed: %s "
+                    "buffer=%r",
+                    tc.id, tc.name, e, tc.args_buffer[:500],
+                )
                 args = {}
             yield ToolCallEvent(
                 conversation_id=input.conversation_id,

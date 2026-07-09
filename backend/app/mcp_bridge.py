@@ -1,9 +1,8 @@
 """AChat MCP Bridge — expose AChat tools to CLI agents via MCP stdio protocol.
 
 Claude Code CLI agents bring their own tool suite (bash, fs_read, fs_write,
-grep, glob, ...) but lack AChat platform tools like ``report_task_result``
-(required for orchestration), ``write_artifact`` / ``read_artifact``
-(AChat artifact system), and ``ask_user`` (user interaction).
+grep, glob, ...) but lack AChat platform tools like ``write_artifact`` /
+``read_artifact`` (AChat artifact system) and ``ask_user`` (user interaction).
 
 This module implements a **stdio-based MCP server** that Claude CLI spawns
 as a child process (configured via ``--mcp-config``).  The server translates
@@ -42,7 +41,6 @@ from app.tools.registry import tool_registry
 # ─── Tools exposed to CLI agents ──────────────────────────────────
 
 CLI_MCP_TOOL_NAMES = frozenset({
-    "report_task_result",   # orchestration handshake
     "write_artifact",       # create AChat artifacts
     "read_artifact",        # read existing artifacts
     "ask_user",             # user interaction

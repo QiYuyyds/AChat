@@ -2,10 +2,11 @@
 
 Port of src/server/pending-dispatch-plans.ts.
 
-When an Orchestrator run produces a plan (``plan_tasks`` tool call) it parks the
-plan here and emits ``dispatch.plan.pending``; the run then awaits the user's
-decision. The user approves / revises / rejects through the API, which routes
-into :meth:`PendingDispatchPlansStore.approve` / ``revise`` / ``reject``; those
+Historically, when an Orchestrator run produced a plan (via the now-removed
+``plan_tasks`` tool) it parked the plan here and emitted ``dispatch.plan.pending``.
+The unified Agent Loop no longer creates new dispatch plans, but this module
+is retained because the API layer still references it for backwards-compatible
+plan approval flows on legacy conversations.
 hand the outcome back to the waiting run via its registered ``resolver`` and emit
 ``dispatch.plan.resolved``.
 

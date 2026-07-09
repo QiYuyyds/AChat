@@ -1183,20 +1183,31 @@ export const usePinnedMessagesForConversation = (conversationId: string) =>
 
 /** childRunId → { wave, taskId, orchestratorRunId, agentId, planIndex }，用于 MessageList 做 wave 分列 */
 export const useChildRunWaveMap = (conversationId: string): Record<string, ChildRunWaveInfo> => {
-  const dispatches = useAppStore(
-    useShallow((s) => {
-      const runs = s.runsByConv[conversationId]
-      if (!runs) return []
-      const result: DispatchState[] = []
-      for (const runId of Object.keys(runs)) {
-        const dispatch = s.dispatchesByRunId[runId]
-        if (dispatch?.plan) result.push(dispatch)
-      }
-      return result
-    }),
-  )
+  // Select raw store references (stable under immer — only change when data changes).
+  // Avoid useShallow with derived objects/arrays: it creates new references each
+  // call, causing "getSnapshot should be cached" infinite loops.
+  const runs = useAppStore((s) => s.runsByConv[conversationId] ?? null)
+  const dispatchesByRunId = useAppStore((s) => s.dispatchesByRunId)
   return useMemo(() => {
     const map: Record<string, ChildRunWaveInfo> = {}
+    if (!runs) return map
+
+    const dispatches: DispatchState[] = []
+    const childRuns: { childRunId: string; agentId: string; startedAt: number; parentRunId: string }[] = []
+    for (const run of Object.values(runs)) {
+      const dispatch = dispatchesByRunId[run.id]
+      if (dispatch?.plan) dispatches.push(dispatch)
+      if (run.parentRunId) {
+        childRuns.push({
+          childRunId: run.id,
+          agentId: run.agentId,
+          startedAt: run.startedAt,
+          parentRunId: run.parentRunId,
+        })
+      }
+    }
+
+    // 1. DispatchState-based wave mapping (legacy plan_tasks flow)
     for (const dispatch of dispatches) {
       const waveOf = computeWaves(dispatch.plan)
       for (const [taskId, childRunId] of Object.entries(dispatch.childRunIds)) {
@@ -1210,8 +1221,34 @@ export const useChildRunWaveMap = (conversationId: string): Record<string, Child
         }
       }
     }
+
+    // 2. parentRunId-based wave mapping (task_dispatch flow — no DispatchState)
+    //    All children of the same orchestrator run are wave 0 (parallel).
+    //    Only add entries not already covered by DispatchState above.
+    const parentsWithDispatch = new Set(dispatches.map((d) => d.runId))
+    const groups: Record<string, { childRunId: string; agentId: string; startedAt: number }[]> = {}
+    for (const cr of childRuns) {
+      if (parentsWithDispatch.has(cr.parentRunId)) continue
+      groups[cr.parentRunId] ??= []
+      groups[cr.parentRunId].push({ childRunId: cr.childRunId, agentId: cr.agentId, startedAt: cr.startedAt })
+    }
+    for (const [parentRunId, children] of Object.entries(groups)) {
+      children.sort((a, b) => a.startedAt - b.startedAt)
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i]
+        if (map[child.childRunId]) continue
+        map[child.childRunId] = {
+          wave: 0,
+          taskId: `task_${i}`,
+          orchestratorRunId: parentRunId,
+          agentId: child.agentId,
+          planIndex: i,
+        }
+      }
+    }
+
     return map
-  }, [dispatches])
+  }, [runs, dispatchesByRunId])
 }
 
 export const useActiveConversation = () =>

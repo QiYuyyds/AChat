@@ -1,28 +1,19 @@
-"""Dispatch/Orchestrator-related Pydantic schemas.
+"""Dispatch-related Pydantic schemas.
 
-Corresponds to DispatchPlanItem, TaskResultReport types from src/shared/types.ts
+Corresponds to DispatchPlanItem and pending-action types from src/shared/types.ts.
+Legacy verification schemas (DispatchExpectedOutput, DispatchRequiredCommand,
+TaskResultReport and related evidence types) have been removed — the Unified
+Agent Loop no longer uses verification gates or task result reports.
 """
 
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.schemas.artifacts import DispatchExpectedOutputType
-
 # ─── Dispatch Types ─────────────────────────────────────
 DispatchTaskKind = Literal["code", "test", "review", "design", "doc", "analysis"]
 DispatchTaskStatus = Literal["pending", "running", "complete", "failed", "aborted", "skipped", "merge_conflict"]
 DispatchTaskEndStatus = Literal["complete", "failed", "aborted", "skipped", "merge_conflict"]
-TaskResultReportStatus = Literal["complete", "failed", "blocked"]
-
-
-class DispatchExpectedOutput(BaseModel):
-    """Expected output from a dispatch task."""
-
-    id: str
-    type: DispatchExpectedOutputType
-    required: bool | None = None
-    description: str | None = None
 
 
 class DispatchTaskInput(BaseModel):
@@ -36,17 +27,6 @@ class DispatchTaskInput(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class DispatchRequiredCommand(BaseModel):
-    """Required command to run for verification."""
-
-    command: str
-    description: str | None = None
-    cwd: str | None = None
-    timeout_ms: int | None = Field(default=None, alias="timeoutMs")
-
-    model_config = {"populate_by_name": True}
-
-
 class DispatchPlanItem(BaseModel):
     """A single task in a dispatch plan."""
 
@@ -55,9 +35,6 @@ class DispatchPlanItem(BaseModel):
     task: str
     task_kind: DispatchTaskKind | None = Field(default=None, alias="taskKind")
     depends_on: list[str] | None = Field(default=None, alias="dependsOn")
-    expected_outputs: list[DispatchExpectedOutput] | None = Field(
-        default=None, alias="expectedOutputs"
-    )
     inputs: list[DispatchTaskInput] | None = None
     acceptance_criteria: list[str] | None = Field(
         default=None, alias="acceptanceCriteria"
@@ -66,73 +43,13 @@ class DispatchPlanItem(BaseModel):
     expected_workspace_changes: list[str] | None = Field(
         default=None, alias="expectedWorkspaceChanges"
     )
-    required_commands: list[DispatchRequiredCommand] | None = Field(
-        default=None, alias="requiredCommands"
-    )
-    required_evidence: list[str] | None = Field(default=None, alias="requiredEvidence")
-    # O4: advisory fields — not validated by compile_and_validate_dispatch_plan
+    # advisory fields
     complexity: str | None = None
     explored: list[str] | None = None
-    # O11: advisory context level — controls sub-agent context amount
+    # advisory context level — controls sub-agent context amount
     context_level: Literal["isolated", "standard"] | None = Field(
         default=None, alias="contextLevel"
     )
-
-    model_config = {"populate_by_name": True}
-
-
-# ─── Task Result Report ─────────────────────────────────────
-class TaskAcceptanceResult(BaseModel):
-    """Result of an acceptance criterion check."""
-
-    criterion: str
-    passed: bool
-    evidence: str
-
-
-class TaskFileEvidence(BaseModel):
-    """File-related evidence from task execution."""
-
-    path: str
-    action: Literal["created", "modified", "deleted", "verified"] | None = None
-
-
-class TaskCommandEvidence(BaseModel):
-    """Command execution evidence from task."""
-
-    command: str
-    exit_code: int | None = Field(alias="exitCode")
-    cwd: str | None = None
-    timed_out: bool | None = Field(default=None, alias="timedOut")
-    summary: str | None = None
-
-    model_config = {"populate_by_name": True}
-
-
-class TaskTestEvidence(BaseModel):
-    """Test execution evidence from task."""
-
-    command: str
-    passed: bool
-    summary: str | None = None
-
-
-class TaskResultReport(BaseModel):
-    """Report from a completed task."""
-
-    status: TaskResultReportStatus
-    summary: str
-    acceptance_results: list[TaskAcceptanceResult] | None = Field(
-        default=None, alias="acceptanceResults"
-    )
-    files_changed: list[TaskFileEvidence] | None = Field(
-        default=None, alias="filesChanged"
-    )
-    commands_run: list[TaskCommandEvidence] | None = Field(
-        default=None, alias="commandsRun"
-    )
-    tests: list[TaskTestEvidence] | None = None
-    blockers: list[str] | None = None
 
     model_config = {"populate_by_name": True}
 
