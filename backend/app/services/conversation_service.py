@@ -42,13 +42,19 @@ from app.db.models import (
     Message,
     Workspace,
 )
-from app.schemas.events import MessageAddedEvent, MessageRecord, MessageRemovedEvent, SummaryUpdatedEvent
+from app.schemas.events import (
+    MessageAddedEvent,
+    MessageRecord,
+    MessageRemovedEvent,
+    SummaryUpdatedEvent,
+)
 from app.schemas.requests import ConversationResponse
 from app.services import deploy_command_service
 from app.services.deploy_command_service import DeployCommandResult
 from app.services.event_bus import event_bus
 from app.services.pending_dispatch_plans import pending_dispatch_plans
 from app.services.runner_registry import get_agent_runner
+from app.services.worktree_service import ensure_git_init
 from app.utils.clock import now_ms
 from app.utils.ids import new_conversation_id, new_message_id, new_workspace_id
 from app.utils.platform import IS_WINDOWS
@@ -333,6 +339,15 @@ async def create_conversation(
 
     # Internal sandbox dir always exists (used for attachments etc.) regardless of mode.
     os.makedirs(root_path, exist_ok=True)
+
+    # Sandbox-mode workspaces are auto-initialised as git repos so they support
+    # true git worktree isolation for parallel dispatch tasks. Failure is
+    # non-fatal: the workspace simply degrades to directory-copy worktrees.
+    if workspace_mode == "sandbox":
+        try:
+            await ensure_git_init(root_path)
+        except Exception as exc:  # noqa: BLE001 - never block conversation creation
+            logger.warning("ensure_git_init failed for %s: %s", root_path, exc)
 
     async with get_db() as db:
         result = await db.execute(select(Agent).where(Agent.id.in_(agent_ids)))

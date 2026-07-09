@@ -11,8 +11,8 @@ from app.schemas.artifacts import DispatchExpectedOutputType
 
 # ─── Dispatch Types ─────────────────────────────────────
 DispatchTaskKind = Literal["code", "test", "review", "design", "doc", "analysis"]
-DispatchTaskStatus = Literal["pending", "running", "complete", "failed", "aborted", "skipped"]
-DispatchTaskEndStatus = Literal["complete", "failed", "aborted", "skipped"]
+DispatchTaskStatus = Literal["pending", "running", "complete", "failed", "aborted", "skipped", "merge_conflict"]
+DispatchTaskEndStatus = Literal["complete", "failed", "aborted", "skipped", "merge_conflict"]
 TaskResultReportStatus = Literal["complete", "failed", "blocked"]
 
 

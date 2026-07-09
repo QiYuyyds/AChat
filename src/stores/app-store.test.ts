@@ -219,3 +219,132 @@ describe('app-store run failure cleanup', () => {
     expect(message.parts.filter((part) => part.type === 'tool_result')).toHaveLength(1)
   })
 })
+
+describe('app-store worktree event handling', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it('worktree.created populates worktreeByTask with branchName and path', () => {
+    useAppStore.setState({
+      dispatchesByRunId: {
+        run_orch: {
+          runId: 'run_orch',
+          messageId: 'msg_plan',
+          plan: PLAN,
+          taskStatus: { task_frontend: 'in_progress' },
+          childRunIds: {},
+        },
+      },
+    })
+
+    useAppStore.getState().applyEvent({
+      type: 'worktree.created',
+      conversationId: 'conv_1',
+      timestamp: 1,
+      taskId: 'task_frontend',
+      branchName: 'agent/code-writer/t1',
+      path: '/data/worktrees/conv_1/task_frontend',
+    })
+
+    const wt = useAppStore.getState().dispatchesByRunId.run_orch?.worktreeByTask?.task_frontend
+    expect(wt).toBeDefined()
+    expect(wt?.branchName).toBe('agent/code-writer/t1')
+    expect(wt?.path).toBe('/data/worktrees/conv_1/task_frontend')
+    expect(wt?.mergeStatus).toBeUndefined()
+  })
+
+  it('worktree.merged updates mergeStatus to success', () => {
+    useAppStore.setState({
+      dispatchesByRunId: {
+        run_orch: {
+          runId: 'run_orch',
+          messageId: 'msg_plan',
+          plan: PLAN,
+          taskStatus: { task_frontend: 'in_progress' },
+          childRunIds: {},
+          worktreeByTask: {
+            task_frontend: {
+              branchName: 'agent/code-writer/t1',
+              path: '/data/worktrees/conv_1/task_frontend',
+            },
+          },
+        },
+      },
+    })
+
+    useAppStore.getState().applyEvent({
+      type: 'worktree.merged',
+      conversationId: 'conv_1',
+      timestamp: 2,
+      taskId: 'task_frontend',
+      mergeStatus: 'success',
+    })
+
+    const wt = useAppStore.getState().dispatchesByRunId.run_orch?.worktreeByTask?.task_frontend
+    expect(wt?.mergeStatus).toBe('success')
+  })
+
+  it('worktree.merged with conflict sets task status to merge_conflict', () => {
+    useAppStore.setState({
+      dispatchesByRunId: {
+        run_orch: {
+          runId: 'run_orch',
+          messageId: 'msg_plan',
+          plan: PLAN,
+          taskStatus: { task_frontend: 'in_progress' },
+          childRunIds: {},
+          worktreeByTask: {
+            task_frontend: {
+              branchName: 'agent/code-writer/t1',
+              path: '/data/worktrees/conv_1/task_frontend',
+            },
+          },
+        },
+      },
+    })
+
+    useAppStore.getState().applyEvent({
+      type: 'worktree.merged',
+      conversationId: 'conv_1',
+      timestamp: 2,
+      taskId: 'task_frontend',
+      mergeStatus: 'conflict',
+    })
+
+    const state = useAppStore.getState().dispatchesByRunId.run_orch!
+    expect(state.worktreeByTask?.task_frontend?.mergeStatus).toBe('conflict')
+    expect(state.taskStatus.task_frontend).toBe('merge_conflict')
+  })
+
+  it('worktree.cleaned removes worktree data for the task', () => {
+    useAppStore.setState({
+      dispatchesByRunId: {
+        run_orch: {
+          runId: 'run_orch',
+          messageId: 'msg_plan',
+          plan: PLAN,
+          taskStatus: { task_frontend: 'complete' },
+          childRunIds: {},
+          worktreeByTask: {
+            task_frontend: {
+              branchName: 'agent/code-writer/t1',
+              path: '/data/worktrees/conv_1/task_frontend',
+              mergeStatus: 'success',
+            },
+          },
+        },
+      },
+    })
+
+    useAppStore.getState().applyEvent({
+      type: 'worktree.cleaned',
+      conversationId: 'conv_1',
+      timestamp: 3,
+      taskId: 'task_frontend',
+    })
+
+    const wt = useAppStore.getState().dispatchesByRunId.run_orch?.worktreeByTask?.task_frontend
+    expect(wt).toBeUndefined()
+  })
+})

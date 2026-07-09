@@ -337,3 +337,27 @@ async function rmDirWithRetry(target: string): Promise<void> {
 - Spec 07（工具系统）：bash 工具的 `description` 与黑名单引用本 spec
 - CLAUDE.md §5.2：黑名单原文从单平台改为双平台，详见本 spec 「命令黑名单」节
 - Spec 05（adapter）：Claude Code adapter 的 `canUseTool` 黑名单走 `getBannedPatterns(currentPlatform())`
+
+---
+
+## Worktree 目录安全
+
+Orchestrator 并行子任务的 worktree 隔离（详见 Spec 06「Worktree 隔离」）涉及文件系统操作，需满足以下安全约束：
+
+**路径校验**：
+- worktree 创建路径必须落在 `.agenthub-data/worktrees/` 子树内（`_validate_worktree_path` 用 `is_path_within` 校验），防止路径穿越。
+- worktree 路径格式固定为 `.agenthub-data/worktrees/<conv_id>/<task_id>/`，不接受外部输入拼接。
+
+**Symlink 防护**：
+- `shutil.copytree` / `shutil.copy2` 默认跟随 symlink；worktree 降级模式（目录拷贝）不复制 `.git` 目录，避免复制仓库元数据。
+- 主 workspace 的 symlink 不影响 worktree 隔离边界——worktree 是独立目录，子进程 cwd 被强制为 worktree path。
+
+**清理安全**：
+- `cleanup_worktree` 幂等——路径不存在时静默返回；`shutil.rmtree(ignore_errors=True)` 限制在 worktree 目录内。
+- git 模式清理：`git worktree remove --force` + `git branch -D`，仅作用于 `agent/*` 分支命名空间。
+- 清理不影响主 workspace（`.agenthub-data/workspaces/<conv_id>/`）和兄弟 worktree。
+
+**孤儿清理**：
+- 后端启动时调用 `prune_orphan_worktrees(WORKTREES_ROOT)` 扫描 `.agenthub-data/worktrees/`，移除无对应 active run 的目录。
+- 同时对每个 conversation workspace 仓库执行 `git worktree prune` 清理 git 层面过期元数据。
+- 清理完成后记录 summary log。

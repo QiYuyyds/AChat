@@ -489,6 +489,9 @@ class RunArgs:
     parent_cancel_event: asyncio.Event | None = None
     # resume: reuse existing run_id, load checkpoint, continue ReAct loop
     resume_from_checkpoint: bool = False
+    # worktree isolation: when set, this path overrides the workspace effective
+    # cwd so the child run (and its tools / CLI cwd) operate inside the worktree.
+    override_workspace_path: str | None = None
 
 
 @dataclass
@@ -1378,7 +1381,9 @@ async def execute_simple_run(
 
     adapter = agent_registry.get_adapter(agent)
     adapter_input = await build_adapter_input(
-        args, agent, run_id, prompt, workspace, tool_names, args.override_system_prompt, attachments
+        args, agent, run_id, prompt, workspace, tool_names,
+        args.override_system_prompt, attachments,
+        worktree_path=args.override_workspace_path,
     )
 
     # ── Persist effective_prompt for cache-stable history reconstruction ──
@@ -2180,15 +2185,17 @@ async def build_adapter_input(
     tool_names: list[str],
     system_prompt_override: str | None,
     attachments: list[AdapterAttachment],
+    worktree_path: str | None = None,
 ) -> AdapterInput:
-    effective_cwd = get_effective_cwd(workspace)
+    effective_cwd = worktree_path or get_effective_cwd(workspace)
     is_cli = agent.adapter_name in CLI_ADAPTERS
     is_sdk = agent.adapter_name in SDK_ADAPTERS
 
     # ── system prompt (shared by both paths) ──────────────────────────
     base_system_prompt = system_prompt_override or agent.system_prompt
     system_prompt_with_workspace = (
-        _build_workspace_context_block(workspace) + "\n\n" + base_system_prompt
+        _build_workspace_context_block(workspace, effective_cwd)
+        + "\n\n" + base_system_prompt
     )
 
     # ── tool guidance: SDK only (CLI agents bring their own tools) ────
@@ -2422,9 +2429,9 @@ def _pick_settings_key(settings: Any, agent: Agent) -> str | None:
     return None
 
 
-def _build_workspace_context_block(workspace: Workspace) -> str:
+def _build_workspace_context_block(workspace: Workspace, cwd_override: str | None = None) -> str:
     """Inject a `<workspace_info>` block so the LLM knows its real cwd / mode."""
-    cwd = get_effective_cwd(workspace)
+    cwd = cwd_override or get_effective_cwd(workspace)
     if workspace.mode == "local":
         return "\n".join(
             [

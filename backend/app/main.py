@@ -196,6 +196,9 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning("AgentLoadTracker init failed: %s", e)
 
+    # ─── Orphan worktree cleanup ───
+    await _cleanup_orphan_worktrees(settings)
+
     # ─── DocumentService ───
     try:
         from app.services.document_service import DocumentService
@@ -223,6 +226,34 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         except Exception:
             pass
     await close_db()
+
+
+async def _cleanup_orphan_worktrees(settings) -> None:
+    """Remove orphaned worktree dirs and prune stale git worktree metadata."""
+    import os
+
+    from app.services.worktree_service import (
+        get_worktrees_root,
+        git_worktree_prune,
+        is_git_repo,
+        prune_orphan_worktrees,
+    )
+
+    try:
+        worktrees_root = get_worktrees_root()
+        cleaned = await prune_orphan_worktrees(worktrees_root)
+        if cleaned:
+            logger.info("Worktree GC: cleaned %d orphan worktree(s)", len(cleaned))
+
+        # Prune stale git worktree metadata in each conversation workspace repo.
+        ws_root = str(settings.workspace_path)
+        if os.path.isdir(ws_root):
+            for name in os.listdir(ws_root):
+                conv_ws = os.path.join(ws_root, name)
+                if is_git_repo(conv_ws):
+                    await git_worktree_prune(conv_ws)
+    except Exception as e:
+        logger.warning("Orphan worktree cleanup failed: %s", e)
 
 
 def _log_startup_dashboard(settings) -> None:

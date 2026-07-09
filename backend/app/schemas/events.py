@@ -349,6 +349,19 @@ class AskUserResolvedEvent(BaseEvent):
     model_config = {"populate_by_name": True}
 
 
+# ─── Worktree Events ─────────────────────────────────────
+class WorktreeEvent(BaseEvent):
+    """Event when a dispatch task worktree is created/merged/cleaned."""
+
+    type: Literal["worktree.created", "worktree.merged", "worktree.cleaned"]
+    task_id: str = Field(alias="taskId")
+    branch_name: str | None = Field(default=None, alias="branchName")
+    path: str | None = None
+    merge_status: Literal["success", "conflict"] | None = Field(default=None, alias="mergeStatus")
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Heartbeat Event ─────────────────────────────────────
 class HeartbeatEvent(BaseEvent):
     """Heartbeat event to keep SSE connection alive."""
@@ -427,6 +440,8 @@ StreamEvent = Annotated[
         BashCommandResolvedEvent,
         AskUserPendingEvent,
         AskUserResolvedEvent,
+        # Worktree events
+        WorktreeEvent,
         # Heartbeat
         HeartbeatEvent,
         # Turn metrics
