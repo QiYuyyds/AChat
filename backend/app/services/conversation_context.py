@@ -189,6 +189,7 @@ async def _build_history_with_assembler(
             .where(
                 Message.conversation_id == conversation_id,
                 Message.status == "complete",
+                Message.hidden == False,  # noqa: E712 - SQLAlchemy filter
             )
             .order_by(Message.created_at.desc())
             .limit(max_turns)
@@ -278,6 +279,7 @@ async def _build_history_legacy(
             .where(
                 Message.conversation_id == conversation_id,
                 Message.status == "complete",
+                Message.hidden == False,  # noqa: E712 - SQLAlchemy filter
             )
             .order_by(Message.created_at.desc())
             .limit(max_turns)

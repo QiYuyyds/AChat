@@ -91,15 +91,22 @@ AChat 正是为这套工作流而生。它默认本地运行，使用 PostgreSQL
 
 ### Orchestrator 与任务调度
 
-Orchestrator 是一个带额外工具的普通 Agent。它可以：
+AChat 使用统一 Agent Loop：所有 Agent（solo / coordinated / subagent）走同一个 `run_agent_loop` while-loop，区别仅在于工具列表和 system prompt（详见 `specs/19`）。
 
-- 提出结构化的澄清问题
-- 制定任务计划（DAG 拓扑）
-- 等待计划被批准或修订
-- 把任务派发给子 Agent（并行调度 + 同波次冲突检测）
-- 跟踪子任务的完成、失败、阻塞和产物
-- 对子任务产物做验证（verify stage 门禁）
-- 把最终结果聚合回会话
+- **Solo 模式**：单聊会话默认。Agent 拥有自己的工具集，还可以通过 `task_dispatch` 克隆自己来处理子任务（递归深度上限 `MAX_DISPATCH_DEPTH = 3`）。
+- **Coordinated 模式**：群聊中 Orchestrator 的模式。除了 `task_dispatch`，还拥有 `dispatch_plan` 工具来声明结构化 DAG（拓扑排序 + 波调度并行执行 + 级联跳过）。
+- **Subagent 模式**：`task_dispatch` / `dispatch_plan` 触发的子 Agent 运行。使用隔离的任务提示，不注入对话历史；clone-self 派发的消息 `hidden=true`，不显示在聊天视图。
+
+Orchestrator 可以：
+
+- 提出结构化的澄清问题（`ask_user`）
+- 用 `task_dispatch` 即时派发单个子任务
+- 用 `dispatch_plan` 声明 DAG 计划（多任务 + 依赖关系 + 并行执行）
+- 等待计划被批准或修订（可选审批流程）
+- 跟踪子任务的完成和失败
+- 把最终结果聚合回会话（自然 `end_turn`，无单独聚合阶段）
+
+没有旧三阶段流程的验证门禁、重试 harness 或 LLM judge——Agent 根据子任务返回结果自行决策。
 
 ### RAG 混合检索与知识库
 

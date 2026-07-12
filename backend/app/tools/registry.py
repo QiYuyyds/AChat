@@ -23,6 +23,7 @@ from app.tools.deploy_workspace import (
     deploy_workspace_for_conversation,
     deploy_workspace_tool,
 )
+from app.tools.dispatch_plan import dispatch_plan_tool
 from app.tools.fs_edit import fs_edit_tool
 from app.tools.fs_glob import fs_glob_tool
 from app.tools.fs_grep import fs_grep_tool
@@ -155,6 +156,7 @@ def _build_registry() -> ToolRegistry:
     reg.register(deploy_workspace_tool)
     reg.register(read_attachment_tool)
     reg.register(task_dispatch_tool)
+    reg.register(dispatch_plan_tool)
     reg.register(fs_list_tool)
     reg.register(fs_read_tool)
     reg.register(fs_write_tool)

@@ -74,6 +74,8 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
     (a, b) => b[1].totalTokens - a[1].totalTokens,
   )
   const hasMultipleAgents = agentEntries.length > 1
+  const hasSubagentTokens = agentEntries.some(([, d]) => d.subagentTokens > 0)
+  const showAgentDetails = hasMultipleAgents || hasSubagentTokens
 
   return (
     <Popover>
@@ -162,7 +164,7 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
         </div>
 
         {/* ── 按 Agent 独立卡片 ── */}
-        {hasMultipleAgents && (
+        {showAgentDetails && (
           <div className="mt-3 space-y-2 border-t pt-2">
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
               按 Agent 明细
@@ -262,6 +264,13 @@ function AgentUsageCard({
             />
           </div>
           <span className="shrink-0 font-mono text-[10px]">{pct}%</span>
+        </div>
+      )}
+
+      {/* Subagent token roll-up annotation */}
+      {d.subagentTokens > 0 && (
+        <div className="mt-1 text-[10px] text-muted-foreground/80">
+          含 subagent: {formatTok(d.subagentTokens)} · {d.subagentRunCount} 次
         </div>
       )}
     </div>

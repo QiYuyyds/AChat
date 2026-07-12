@@ -1168,7 +1168,9 @@ import { useMemo } from 'react'
 export const useMessagesForConversation = (conversationId: string) =>
   useAppStore(
     useShallow((s) =>
-      (s.messageIdsByConv[conversationId] ?? []).map((id) => s.messages[id]).filter(Boolean),
+      (s.messageIdsByConv[conversationId] ?? [])
+        .map((id) => s.messages[id])
+        .filter((m) => m && !m.hidden),
     ),
   )
 
@@ -1397,6 +1399,10 @@ export interface AgentUsageDetail {
   runCount: number
   /** 最近使用的 model（从 run.usage 或 agent.modelId 推断） */
   model?: string
+  /** subagent runs 的 token 总量（rolled up to parent） */
+  subagentTokens: number
+  /** subagent runs 的数量 */
+  subagentRunCount: number
 }
 
 /** 累计该会话所有 run 的 token 用量 + 上次 run 的 input prompt 长度（用于 ctx 仪表）+ per-agent 拆分。 */
@@ -1455,43 +1461,70 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
     let lastInputTs = -1
 
     // Phase 1: 从有 run.usage 的 run 累加，记录这些 runId 以避免 Phase 2 重复计数
+    // Subagent runs (parentRunId set) roll up to the top-level parent agent.
     const runsWithUsage = new Set<string>()
     if (runs) {
+      // Build run map for parent chain walking
+      const runMap = new Map(Object.values(runs).map((r) => [r.id, r]))
       for (const run of Object.values(runs)) {
         const u = run.usage
         if (!u) continue
         runsWithUsage.add(run.id)
-        result.inputTokens += u.inputTokens
-        result.outputTokens += u.outputTokens
-        result.cacheCreationTokens += u.cacheCreationTokens
-        result.cacheReadTokens += u.cacheReadTokens
-        result.runCount++
-        const sub = u.inputTokens + u.outputTokens
-        result.byAgent[run.agentId] = (result.byAgent[run.agentId] ?? 0) + sub
-        if (u.model) result.byModel[u.model] = (result.byModel[u.model] ?? 0) + sub
-        const d = detail[run.agentId] ??= {
-          inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
-          cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+
+        // Walk parent chain to find top-level run
+        let topRun = run
+        while (topRun.parentRunId && runMap.has(topRun.parentRunId)) {
+          topRun = runMap.get(topRun.parentRunId)!
         }
-        d.inputTokens += u.inputTokens
-        d.outputTokens += u.outputTokens
-        d.cacheCreationTokens += u.cacheCreationTokens
-        d.cacheReadTokens += u.cacheReadTokens
-        d.runCount++
-        if (u.model) d.model = u.model
-        if (run.startedAt > lastInputTs) {
-          lastInputTs = run.startedAt
-          result.lastInputTokens = u.lastInputTokens ?? u.inputTokens
+        const isSubagent = topRun.id !== run.id
+        const targetAgentId = topRun.agentId
+        const sub = u.inputTokens + u.outputTokens
+
+        if (isSubagent) {
+          // Roll up: don't count in top-level totals, attribute to parent's subagent fields
+          const d = detail[targetAgentId] ??= {
+            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
+            cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+            subagentTokens: 0, subagentRunCount: 0,
+          }
+          d.subagentTokens += sub
+          d.subagentRunCount++
+          if (u.model) d.model = u.model
+        } else {
+          // Top-level run: count normally
+          result.inputTokens += u.inputTokens
+          result.outputTokens += u.outputTokens
+          result.cacheCreationTokens += u.cacheCreationTokens
+          result.cacheReadTokens += u.cacheReadTokens
+          result.runCount++
+          result.byAgent[run.agentId] = (result.byAgent[run.agentId] ?? 0) + sub
+          if (u.model) result.byModel[u.model] = (result.byModel[u.model] ?? 0) + sub
+          const d = detail[run.agentId] ??= {
+            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
+            cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+            subagentTokens: 0, subagentRunCount: 0,
+          }
+          d.inputTokens += u.inputTokens
+          d.outputTokens += u.outputTokens
+          d.cacheCreationTokens += u.cacheCreationTokens
+          d.cacheReadTokens += u.cacheReadTokens
+          d.runCount++
+          if (u.model) d.model = u.model
+          if (run.startedAt > lastInputTs) {
+            lastInputTs = run.startedAt
+            result.lastInputTokens = u.lastInputTokens ?? u.inputTokens
+          }
         }
       }
     }
 
-    // Phase 2: 从 messages 累加，跳过已在 Phase 1 计数的 runId
+    // Phase 2: 从 messages 累加，跳过已在 Phase 1 计数的 runId 和 hidden 消息
     if (messageIds) {
       const seenRunIds = new Set<string>()
       for (const mid of messageIds) {
         const m = messages[mid]
         if (!m || !m.usage || m.role !== 'agent') continue
+        if (m.hidden) continue
         if (m.runId && runsWithUsage.has(m.runId)) continue
 
         const u = m.usage
@@ -1510,6 +1543,7 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           const d = detail[m.agentId] ??= {
             inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
             cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+            subagentTokens: 0, subagentRunCount: 0,
           }
           d.inputTokens += u.inputTokens
           d.outputTokens += u.outputTokens

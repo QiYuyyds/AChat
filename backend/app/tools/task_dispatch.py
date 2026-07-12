@@ -1,12 +1,16 @@
-"""TaskDispatch tool — orchestrator uses it to launch sub-agents within its loop.
+"""TaskDispatch tool — any agent uses it to clone itself or dispatch to group members.
 
-Analogous to Claude Code's Agent tool. When the orchestrator calls task_dispatch,
-the system synchronously runs a sub-agent loop with the given agent and task
-description, then returns the sub-agent's final text output to the orchestrator's
-loop context.
+When called without ``agentId`` (or with the caller's own ``agent_id``), the tool
+clones the calling agent — a full copy with the same model, tools, and system
+prompt, running with an isolated task prompt. Clone-subagent messages are
+persisted with ``hidden=True`` to prevent context pollution.
 
-Only available in coordinated mode (dispatch_mode='orchestrated'). The tool name
-is included in the orchestrator's tool list by _run_coordinated_loop in agent_loop.py.
+When called with a different ``agentId`` in coordinated mode, it dispatches to
+a group member (existing behavior). Group-member dispatch messages are visible.
+
+The tool enforces:
+- ``MAX_DISPATCH_DEPTH`` limit (clone-self can recurse up to 3 levels)
+- Anti-loop: subagent runs can only clone themselves, not dispatch to other agents
 """
 
 from __future__ import annotations
@@ -26,20 +30,21 @@ TASK_DISPATCH_TOOL_NAME = "task_dispatch"
 
 _PARAMETERS: dict[str, Any] = {
     "type": "object",
-    "required": ["agentId", "taskDescription"],
+    "required": ["taskDescription"],
     "properties": {
         "agentId": {
             "type": "string",
             "description": (
-                "The ID of the agent to dispatch the task to. Must be an agent "
-                "in the current conversation."
+                "Optional: the ID of a group member to dispatch to (coordinated mode only). "
+                "When omitted, the calling agent clones itself for the subtask. "
+                "Clone-self is the default and works in all modes."
             ),
         },
         "taskDescription": {
             "type": "string",
             "description": (
                 "A clear, self-contained description of the task. The sub-agent "
-                "will not see the group chat context, so include all necessary "
+                "will not see the conversation context, so include all necessary "
                 "information."
             ),
         },
@@ -57,35 +62,67 @@ _PARAMETERS: dict[str, Any] = {
 
 
 async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
-    agent_id = args.get("agentId") if isinstance(args, dict) else None
+    agent_id_arg = args.get("agentId") if isinstance(args, dict) else None
     task_description = (
         args.get("taskDescription") if isinstance(args, dict) else None
     )
 
-    if not agent_id or not isinstance(agent_id, str):
-        return err("task_dispatch requires 'agentId' (string)")
     if not task_description or not isinstance(task_description, str):
         return err("task_dispatch requires 'taskDescription' (string)")
 
-    # Verify the target agent exists and is in the conversation
+    # Lazy import to avoid circular dependency at module load
+    from app.services.agent_loop import MAX_DISPATCH_DEPTH, spawn_subagent_loop
+
+    # Depth check: prevent excessive recursion
+    if ctx.dispatch_depth >= MAX_DISPATCH_DEPTH:
+        return err(
+            f"Max dispatch depth ({MAX_DISPATCH_DEPTH}) reached; "
+            "cannot dispatch further subagents"
+        )
+
+    # Determine dispatch mode: clone-self vs group-member
+    is_clone = (
+        agent_id_arg is None
+        or not isinstance(agent_id_arg, str)
+        or agent_id_arg == ctx.agent_id
+    )
+
+    # Anti-loop: non-coordinated mode can only clone itself
+    if not is_clone and ctx.dispatch_mode != "coordinated":
+        return err(
+            "Subagent can only clone itself; cannot dispatch to other agents"
+        )
+
+    if is_clone:
+        target_agent_id = ctx.agent_id
+        visibility = "hidden"
+    else:
+        target_agent_id = agent_id_arg
+        visibility = "visible"
+
+        # Verify the target agent exists and is in the conversation
+        async with get_db() as db:
+            agent = (
+                await db.execute(select(Agent).where(Agent.id == target_agent_id))
+            ).scalar_one_or_none()
+            if agent is None:
+                return err(f"Agent '{target_agent_id}' not found")
+
+            conv = (
+                await db.execute(
+                    select(Conversation).where(
+                        Conversation.id == ctx.conversation_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if conv is not None and target_agent_id not in conv.agent_ids_list:
+                return err(
+                    f"Agent '{target_agent_id}' is not in conversation "
+                    f"'{ctx.conversation_id}'"
+                )
+
+    # Get trigger_message_id from the parent run
     async with get_db() as db:
-        agent = (
-            await db.execute(select(Agent).where(Agent.id == agent_id))
-        ).scalar_one_or_none()
-        if agent is None:
-            return err(f"Agent '{agent_id}' not found")
-
-        conv = (
-            await db.execute(
-                select(Conversation).where(Conversation.id == ctx.conversation_id)
-            )
-        ).scalar_one_or_none()
-        if conv is not None and agent_id not in conv.agent_ids_list:
-            return err(
-                f"Agent '{agent_id}' is not in conversation '{ctx.conversation_id}'"
-            )
-
-        # Get trigger_message_id from the parent run
         parent_run = (
             await db.execute(
                 select(AgentRun).where(AgentRun.id == ctx.run_id)
@@ -95,22 +132,26 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
             parent_run.trigger_message_id if parent_run else ctx.conversation_id
         )
 
-    # Lazy import to avoid circular dependency at module load
-    from app.services.agent_loop import spawn_subagent_loop
-
     logger.info(
-        "[task_dispatch] orchestrator run=%s dispatching to agent=%s",
+        "[task_dispatch] run=%s agent=%s dispatching to agent=%s "
+        "mode=%s depth=%d visibility=%s",
         ctx.run_id,
-        agent_id,
+        ctx.agent_id,
+        target_agent_id,
+        ctx.dispatch_mode,
+        ctx.dispatch_depth,
+        visibility,
     )
 
     result = await spawn_subagent_loop(
-        agent_id=agent_id,
+        agent_id=target_agent_id,
         task_description=task_description,
         conversation_id=ctx.conversation_id,
         trigger_message_id=trigger_message_id,
         parent_run_id=ctx.run_id,
         parent_cancel_event=ctx.cancel_event,
+        dispatch_depth=ctx.dispatch_depth + 1,
+        dispatch_visibility=visibility,
     )
 
     if result.status == "aborted":
@@ -127,11 +168,12 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
 task_dispatch_tool = ToolDef(
     name=TASK_DISPATCH_TOOL_NAME,
     description=(
-        "Dispatch a task to another agent in the conversation. The sub-agent "
-        "will run independently and return its result. Multiple task_dispatch "
-        "calls in a single response will be executed in parallel. Use this "
-        "to leverage other agents' specialized capabilities, especially when "
-        "multiple independent tasks can run concurrently."
+        "Dispatch a task to a sub-agent. When called without agentId, clones "
+        "yourself for the subtask (messages hidden from conversation). When "
+        "called with a group member's agentId (coordinated mode only), "
+        "dispatches to that agent (messages visible). Multiple task_dispatch "
+        "calls in a single response run in parallel. Use this to split complex "
+        "tasks into independent subtasks."
     ),
     parameters=_PARAMETERS,
     handler=_handler,

@@ -127,6 +127,9 @@ export const messages = sqliteTable(
     /** 这条消息（单 LLM 响应）的 token 用量。null 表示 user 消息 / 不上报的 mock / 旧数据 */
     usage: text('usage', { mode: 'json' }).$type<MessageUsage>(),
 
+    /** Clone-subagent messages are hidden from conversation history and frontend */
+    hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
+
     createdAt: integer('created_at').notNull(),
   },
   (t) => [index('idx_messages_conv_created').on(t.conversationId, t.createdAt)],

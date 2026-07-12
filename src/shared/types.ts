@@ -526,6 +526,7 @@ export interface MessageRecord {
   mentionedAgentIds: string[]
   runId: string | null
   usage: MessageUsageEvent | null
+  hidden?: boolean
   createdAt: number
 }
 

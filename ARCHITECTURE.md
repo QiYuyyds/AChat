@@ -97,7 +97,7 @@
 - UI **永远不**直接调 LLM SDK，必须经过 L3
 - Adapter **永远不**写 DB，它只负责事件流翻译
 - 工具执行（ToolExecutor）属 L3，不是 Adapter 的事
-- Orchestrator 是特殊 Agent，走同一个 AgentRunner，只是多了 `plan_tasks` / `report_task_result` 工具与不同 system prompt
+- 所有 Agent 走统一 Agent Loop（`run_agent_loop`）：solo / coordinated / subagent 三种模式共用一个 while-loop，任何 Agent 都能通过 `task_dispatch` 克隆自己处理子任务，Orchestrator（coordinated 模式）额外拥有 `dispatch_plan`（DAG 派发）。旧三阶段流程已删除（详见 `specs/19`）
 
 ---
 
@@ -144,7 +144,7 @@ backend/
 │   ├── config.py           配置 (pydantic-settings) + .env key 桥接到 os.environ
 │   │
 │   ├── db/ (3)             【L1 持久化】
-│   │   ├── models.py        17 张表 SQLAlchemy 模型 (9 核心 + 6 AGI-memory + 2 Document)
+│   │   ├── models.py        18 张表 SQLAlchemy 模型 (10 核心 + 6 AGI-memory + 2 Document)
 │   │   └── engine.py        异步引擎 + PostgreSQL (外键 ON / 连接池)
 │   │
 │   ├── schemas/ (6)        【类型契约 Pydantic】
@@ -156,19 +156,20 @@ backend/
 │   │   └── requests.py      API 请求 / 响应模型
 │   │
 │   ├── services/ (34+)     【L3 业务逻辑 —— 核心大头】
-│   │   ├── agent_runner.py        ★ 执行器 (simple 路径 + 共享机制)
-│   │   ├── orchestrator.py        ★ 编排器三阶段调度 (PLAN / EXECUTE / AGGREGATE)
-│   │   ├── orchestrator_prompts.py编排 prompt / XML 构建
+│   │   ├── agent_runner.py        ★ 执行器 (execute_run 路由 + execute_simple_run ReAct loop)
+│   │   ├── agent_loop.py          ★ 统一 Agent Loop (run_agent_loop: solo/coordinated/subagent)
+│   │   │                          spawn_subagent_loop (递归子 Agent 派发) + prompt builders
+│   │   ├── dag_executor.py        ★ DAG 验证 / 波调度 / 并行执行 (validate_dag / topological_waves / execute_dag)
+│   │   ├── orchestrator.py        stub (旧三阶段已移除, 仅保留壳)
+│   │   ├── orchestrator_prompts.py工具函数 (extract_text_from_parts 等)
 │   │   ├── conversation_service.py会话 / 消息全生命周期
 │   │   ├── event_bus.py           SSE 事件总线 (asyncio.Queue 扇出)
-│   │   ├── dispatch_plan.py       计划校验 / DAG 拓扑
-│   │   ├── conversation_context.py跨 run 历史注入
+│   │   ├── conversation_context.py跨 run 历史注入 (hidden 消息过滤)
 │   │   ├── artifact_service.py    产物 CRUD / 版本链
 │   │   ├── deployment_service.py  产物部署 + 资源 / zip
 │   │   ├── settings_service.py    全局设置 / API key 解析
 │   │   ├── fs_service.py          workspace 文件读写 + 沙箱配额
 │   │   ├── search_service.py      消息全文搜索
-│   │   ├── task_result_report.py  子任务上报 + 完成度门禁
 │   │   ├── rag_service.py         ★ RAG 混合检索 (Milvus + ES + KG + RRF)
 │   │   ├── document_service.py    ★ Document + Version 知识库 CRUD
 │   │   ├── prompt_assembler.py    ★ 上下文组装 (Profile + Recall + Constraints)
@@ -179,7 +180,6 @@ backend/
 │   │   ├── usage_summary_service.py Token 分析聚合
 │   │   ├── checkpoint_service.py  SDK Agent turn 级检查点保存/恢复
 │   │   ├── hook_registry.py       ★ 生命周期 Hook 注册与分发
-│   │   ├── verify_stage.py        Orchestrator 子任务验证门禁
 │   │   ├── project_artifact.py    项目产物管理
 │   │   ├── agent_load_tracker.py  Agent 负载追踪
 │   │   ├── network_hints.py       移动端网络发现
@@ -202,13 +202,14 @@ backend/
 │   │   ├── mock_adapter.py  Mock (脚本流, 不烧 token)
 │   │   ├── custom_adapter.py OpenAI 兼容 (DeepSeek / 火山方舟等, SDK 路线, 工具循环 MAX_TURNS=8)
 │   │   └── custom_provider_client.py / registry.py / session_store.py
-│   ├── mcp_bridge.py      ★ AChat MCP Bridge: stdio MCP Server, 把平台工具暴露给 CLI agent
+│   ├── mcp_bridge.py      ★ AChat MCP Bridge: stdio MCP Server, 把 write_artifact/ask_user/task_dispatch 等平台工具暴露给 CLI agent
 │   │
-│   ├── tools/ (21)         【工具系统】23 个内置工具
+│   ├── tools/ (22)         【工具系统】24 个内置工具
 │   │   ├── base.py / registry.py  ToolContext (asyncio.Event 取消) + 注册表
 │   │   ├── write_artifact / read_artifact / deploy_artifact / deploy_workspace
 │   │   ├── fs_read / fs_write / fs_edit / fs_list / fs_glob / fs_grep / bash (黑名单 + 审批)
-│   │   ├── ask_user / plan_tasks / report_task_result
+│   │   ├── task_dispatch (子 Agent 克隆派发) / dispatch_plan (DAG 派发)
+│   │   ├── ask_user
 │   │   ├── read_attachment (PDF: pypdf)
 │   │   ├── web_search (Tavily API)
 │   │   ├── memory_rag (memory_recall + rag_search/ingest/list/delete)
@@ -276,8 +277,8 @@ backend/
 | 表 | 说明 |
 |---|---|
 | `agents` | AI 代理（name / adapter_name / system_prompt / tool_names / skill_names / hook_names / api_key / executable_path / protocol_family / custom_args） |
-| `conversations` | 会话（mode single/group / agent_ids / pinned / bookmarked / archived / rag_enabled / summary） |
-| `messages` | 消息（role / parts JSON / status / run_id / usage） |
+| `conversations` | 会话（mode single/group / agent_ids / pinned / bookmarked / archived / rag_enabled / summary / dispatch_mode） |
+| `messages` | 消息（role / parts JSON / status / run_id / usage / hidden） |
 | `artifacts` | 产物（type / content JSON / version / parent_artifact_id） |
 | `workspaces` | 工作区（mode sandbox/local / root_path / bound_path） |
 | `attachments` | 附件（kind image/file / file_path / mime_type） |
@@ -332,7 +333,12 @@ backend/
                                           └─ Zustand store.applyEvent()  → UI 实时更新
 ```
 
-**编排场景**：若目标 agent 是 Orchestrator，`execute_run` 转 `orchestrator.execute_orchestrator_run()` → **PLAN**（plan_tasks）→ 人工审批 → **EXECUTE**（DAG 调度 + 并发 + 子任务重试 + 冲突检测）→ **VERIFY**（子任务产物验证门禁）→ **AGGREGATE**。
+**编排场景**（统一 Agent Loop）：`execute_run` 根据 `conversation.dispatch_mode` 路由到 `run_agent_loop(mode=...)`：
+- **solo**：agent 工具 + `task_dispatch`（depth < MAX 时注入），base prompt + 软自检 + 派发指导
+- **coordinated**（Orchestrator）：agent 工具 + `task_dispatch` + `dispatch_plan`，base prompt + 协调者指导；`dispatch_plan` 声明 DAG → `dag_executor` 拓扑排序 + 波调度并行执行 → 可选计划审批
+- **subagent**（`task_dispatch` / `dispatch_plan` 触发）：agent 工具 + `task_dispatch`（depth < MAX），base prompt + 子 Agent 指导；clone-self 消息 `hidden=true`
+
+`MAX_DISPATCH_DEPTH = 3`，达到上限时 `task_dispatch` 不注入——该 Agent 为终端执行者。无验证 gate、无重试 harness、无自动重规划——LLM 可根据返回结果自行决定是否重新派发。
 
 ---
 
@@ -361,8 +367,8 @@ Agent 启动 (ON_RUN_START)
 运行结束:
   └─ ON_RUN_END / ON_STOP / ON_ERROR
 
-Orchestrator 子任务:
-  └─ ON_TASK_VERIFIED → verify_stage 门禁检查
+子任务派发 (task_dispatch / dispatch_plan):
+  └─ ON_TASK_VERIFIED → 事件保留, verify_stage 已删除 (无内置监听器)
 ```
 
 **Hook 控制流**：`deny` 立即终止；`modify` 修改参数/结果；`inject` 注入额外事件；`allow` 放行。Agent 通过 `hook_names` 字段启用特定 Hook 组。
@@ -436,7 +442,7 @@ Agent 运行时注入 (PromptAssembler):
 
 | 目录 | 说明 | 当前状态 |
 |---|---|---|
-| `specs/` | 18 份编号详细规格（实体 / 事件 / 适配器 / 工具 / 编排 / DB ...），**语言无关契约** | 有效 |
+| `specs/` | 19 份编号详细规格（实体 / 事件 / 适配器 / 工具 / 编排 / 统一 Agent Loop ...），**语言无关契约** | 有效 |
 | `openspec/` | OpenSpec 能力契约（14 个 capability spec）+ 变更提案（`changes/` 下 45+ 提案） | 有效 |
 | `electron/` | 桌面版（`main.ts` 启动内嵌 Next server） | ⚠️ 待改造：内嵌 Next 已无后端，需改启 Python |
 | `apps/mobile/` | 移动伴随 App（Capacitor / 远程审批，spec 14） | 独立模块 |
@@ -522,4 +528,4 @@ ENABLE_GRAPH=false           # true 才启用知识图谱
 
 ---
 
-*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-07 · 同步 Hooks 系统、Checkpoint、新增工具（fs_edit/glob/grep）、18 张表、新增服务。*
+*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-12 · 同步统一 Agent Loop（spec 19）、通用子任务派发、DAG 派发计划、工具列表更新、dispatch_mode/hidden 列。*

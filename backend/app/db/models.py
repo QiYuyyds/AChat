@@ -332,6 +332,11 @@ class Message(Base):
 
     usage: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # Clone-subagent messages are hidden from conversation history and frontend
+    hidden: Mapped[bool] = mapped_column(
+        Boolean, name="hidden", nullable=False, default=False
+    )
+
     created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
     # Relationships

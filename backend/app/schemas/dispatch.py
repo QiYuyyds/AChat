@@ -31,7 +31,7 @@ class DispatchPlanItem(BaseModel):
     """A single task in a dispatch plan."""
 
     id: str
-    agent_id: str = Field(alias="agentId")
+    agent_id: str | None = Field(default=None, alias="agentId")
     task: str
     task_kind: DispatchTaskKind | None = Field(default=None, alias="taskKind")
     depends_on: list[str] | None = Field(default=None, alias="dependsOn")

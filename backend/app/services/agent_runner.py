@@ -486,6 +486,12 @@ class RunArgs:
     # worktree isolation: when set, this path overrides the workspace effective
     # cwd so the child run (and its tools / CLI cwd) operate inside the worktree.
     override_workspace_path: str | None = None
+    # universal subagent dispatch: recursion depth (0 = top-level)
+    dispatch_depth: int = 0
+    # universal subagent dispatch: "visible" (group-member) or "hidden" (clone-self)
+    dispatch_visibility: str = "visible"
+    # universal subagent dispatch: effective loop mode ("solo" / "coordinated" / "subagent")
+    dispatch_mode: str = "solo"
 
 
 @dataclass
@@ -791,6 +797,8 @@ async def _run_react_loop(
     model_provider: str | None = None,
     resume_from_turn: int | None = None,
     mcp_manager: Any | None = None,
+    dispatch_depth: int = 0,
+    dispatch_mode: str = "solo",
 ) -> AsyncIterator[StreamEvent]:
     """ReAct loop for SDK adapters: call_once → yield events → execute tools → repeat.
 
@@ -836,6 +844,8 @@ async def _run_react_loop(
         cancel_event=cancel_event,
         hook_registry=hook_registry,
         tool_names=adapter_input.tool_names,
+        dispatch_depth=dispatch_depth,
+        dispatch_mode=dispatch_mode,
     )
 
     # O2 Step 5: per-run cache for read-only tool results
@@ -1398,17 +1408,20 @@ async def execute_run(
     try:
         from app.services.agent_loop import get_dispatch_mode, run_agent_loop
 
-        # Subagent runs (override_prompt set) always use solo mode.
+        # Subagent runs (override_prompt set) use subagent mode.
         # Top-level runs branch on conversation.dispatch_mode.
         if args.override_prompt:
-            result = await execute_simple_run(
-                run_id, cancel_event, args, prompt, attachments
+            subagent_args = replace(args, dispatch_mode="subagent")
+            result = await run_agent_loop(
+                run_id, cancel_event, subagent_args, prompt, attachments,
+                mode="subagent",
             )
         else:
             dispatch_mode = get_dispatch_mode(conv)
             if dispatch_mode == "coordinated" and is_orchestrator:
+                coord_args = replace(args, dispatch_mode="coordinated")
                 result = await run_agent_loop(
-                    run_id, cancel_event, args, prompt, attachments,
+                    run_id, cancel_event, coord_args, prompt, attachments,
                     mode="coordinated",
                 )
             else:
@@ -1621,9 +1634,12 @@ async def execute_simple_run(
                 model_provider=agent.model_provider,
                 resume_from_turn=resume_from_turn,
                 mcp_manager=mcp_manager,
+                dispatch_depth=args.dispatch_depth,
+                dispatch_mode=args.dispatch_mode,
             )
             result = await consume_stream(
                 stream, args.agent_id, run_id,
+                hidden=(args.dispatch_visibility == "hidden"),
             )
         finally:
             if mcp_manager is not None:
@@ -1634,6 +1650,7 @@ async def execute_simple_run(
 
         result = await consume_stream(
             stream, args.agent_id, run_id,
+            hidden=(args.dispatch_visibility == "hidden"),
         )
     if args.parent_run_id:
         return result
@@ -1736,11 +1753,23 @@ async def maybe_create_project_artifact(
 ToolCallControl = dict[str, Any] | None
 
 
+# Event types that produce visible UI content (messages, parts, tool calls, artifacts).
+# When hidden=True (clone-subagent runs), these are persisted to DB but NOT published
+# to the SSE bus — the frontend never sees them.
+_VISIBLE_EVENT_TYPES = frozenset({
+    "message.start", "message.end", "message.usage",
+    "part.start", "part.delta", "part.end",
+    "tool.call", "tool.result",
+    "artifact.create", "deploy.status",
+})
+
+
 async def consume_stream(
     stream: AsyncIterable[StreamEvent],
     agent_id: str,
     run_id: str,
     on_tool_call: Callable[[StreamEvent], ToolCallControl] | None = None,
+    hidden: bool = False,
 ) -> RunExecutionResult:
     parts_buffer: dict[str, list[dict]] = {}
     artifact_ids: list[str] = []
@@ -1762,9 +1791,13 @@ async def consume_stream(
                 tool_name_by_call_id[event.call_id] = event.tool_name
 
             await persist_event(
-                event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
+                event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
             )
-            publish(event)
+            # Hidden runs (clone-subagent): persist to DB but don't push visible
+            # content events to SSE. run.usage / turn.metric still go through
+            # so the frontend can track token usage.
+            if not (hidden and event.type in _VISIBLE_EVENT_TYPES):
+                publish(event)
 
             if event.type == "artifact.create":
                 output_key = output_key_by_artifact_id.get(event.artifact.id)
@@ -1779,15 +1812,16 @@ async def consume_stream(
                 parts.append(ref_part)
                 parts_buffer[current_message_id] = parts
                 await _update_message_parts(current_message_id, parts)
-                publish(
-                    PartStartEvent(
-                        conversation_id=event.conversation_id,
-                        timestamp=now_ms(),
-                        message_id=current_message_id,
-                        part_index=part_index,
-                        part=ref_part,
+                if not hidden:
+                    publish(
+                        PartStartEvent(
+                            conversation_id=event.conversation_id,
+                            timestamp=now_ms(),
+                            message_id=current_message_id,
+                            part_index=part_index,
+                            part=ref_part,
+                        )
                     )
-                )
 
             if event.type == "deploy.status":
                 parts = parts_buffer.get(event.message_id, [])
@@ -1799,15 +1833,16 @@ async def consume_stream(
                 parts.append(deploy_part)
                 parts_buffer[event.message_id] = parts
                 await _update_message_parts(event.message_id, parts)
-                publish(
-                    PartStartEvent(
-                        conversation_id=event.conversation_id,
-                        timestamp=now_ms(),
-                        message_id=event.message_id,
-                        part_index=part_index,
-                        part=deploy_part,
+                if not hidden:
+                    publish(
+                        PartStartEvent(
+                            conversation_id=event.conversation_id,
+                            timestamp=now_ms(),
+                            message_id=event.message_id,
+                            part_index=part_index,
+                            part=deploy_part,
+                        )
                     )
-                )
 
             if event.type == "message.end":
                 current_message_id = None
@@ -1834,9 +1869,10 @@ async def consume_stream(
                             is_error=bool(control.get("isError", False)),
                         )
                         await persist_event(
-                            result_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
+                            result_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
                         )
-                        publish(result_event)
+                        if not hidden:
+                            publish(result_event)
 
                     end_event = MessageEndEvent(
                         conversation_id=event.conversation_id,
@@ -1844,9 +1880,10 @@ async def consume_stream(
                         message_id=event.message_id,
                     )
                     await persist_event(
-                        end_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids
+                        end_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
                     )
-                    publish(end_event)
+                    if not hidden:
+                        publish(end_event)
                     current_message_id = None
                     break
     finally:
@@ -1886,6 +1923,7 @@ async def persist_event(
     agent_id: str,
     output_message_ids: list[str],
     artifact_ids: list[str],
+    hidden: bool = False,
 ) -> None:
     """Persist a stream event into the messages / runs tables (camelCase parts)."""
     etype = event.type
@@ -1918,6 +1956,7 @@ async def persist_event(
                 status="streaming",
                 run_id=run_id,
                 created_at=event.timestamp,
+                hidden=hidden,
             )
             msg.parts_list = []
             msg.mentioned_agent_ids_list = []

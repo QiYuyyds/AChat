@@ -168,7 +168,7 @@ function renderMessagePartForExport(part: MessageRow['parts'][number]): string {
       return ['```' + (part.language ?? ''), part.content, '```'].join('\n')
     case 'tool_use':
       return [
-        `Tool Use: ${getToolDisplayName(part.toolName)} (${part.toolName})`,
+        `Tool Use: ${getToolDisplayName(part.toolName, part.args)} (${part.toolName})`,
         '```json',
         stringifyForExport(part.args),
         '```',

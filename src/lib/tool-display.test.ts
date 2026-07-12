@@ -23,4 +23,17 @@ describe('tool display helpers', () => {
     expect(isBashToolName('mcp__agenthub__bash')).toBe(true)
     expect(isBashToolName('read_attachment')).toBe(false)
   })
+
+  it('shows subagent label for task_dispatch without agentId (clone-self)', () => {
+    expect(getToolDisplayName('task_dispatch', { taskDescription: 'do X' })).toBe('subagent 执行中')
+    expect(getToolDisplayName('task_dispatch', { taskDescription: 'do X', agentId: '' })).toBe('subagent 执行中')
+  })
+
+  it('shows dispatch label for task_dispatch with agentId (group-member)', () => {
+    expect(getToolDisplayName('task_dispatch', { taskDescription: 'do X', agentId: 'ag_front' })).toBe('安排工作中')
+  })
+
+  it('shows dispatch label for dispatch_plan', () => {
+    expect(getToolDisplayName('dispatch_plan', { tasks: [] })).toBe('安排工作中')
+  })
 })

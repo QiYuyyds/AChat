@@ -70,6 +70,7 @@ def test_build_coordinated_system_prompt_appends_suffix():
     result = build_coordinated_system_prompt(base)
     assert result.startswith(base)
     assert "task_dispatch" in result
+    assert "dispatch_plan" in result
     assert "协调者" in result
     assert "派发" in result
     # Without roster, the placeholder is replaced with empty string
@@ -77,8 +78,6 @@ def test_build_coordinated_system_prompt_appends_suffix():
 
 
 def test_build_coordinated_system_prompt_with_roster():
-    from types import SimpleNamespace
-
     base = "You are a coordinator."
     roster = (
         "- agentId: `ag_front` | 名称: 前端工程师 | "
@@ -94,6 +93,14 @@ def test_coordinated_prompt_has_dispatch_first_priority():
     """The prompt should emphasize dispatching as the primary behavior."""
     result = build_coordinated_system_prompt("base")
     assert "优先派发" in result
+
+
+def test_coordinated_prompt_has_dispatch_plan_guidance():
+    """The prompt should explain when to use dispatch_plan vs task_dispatch."""
+    result = build_coordinated_system_prompt("base")
+    assert "dispatch_plan" in result
+    assert "DAG" in result or "依赖" in result
+    assert "task_dispatch" in result
 
 
 def test_solo_prompt_does_not_contain_dispatch_guidance():
@@ -169,3 +176,24 @@ def test_loop_run_result_with_values():
     assert result.status == "failed"
     assert result.text == "something went wrong"
     assert "art_1" in result.artifact_ids
+
+
+def test_loop_run_result_has_run_id_field():
+    """LoopRunResult should have a run_id field for dispatch events."""
+    result = LoopRunResult(status="complete", run_id="run_child_1")
+    assert result.run_id == "run_child_1"
+    # Defaults to None
+    result2 = LoopRunResult(status="complete")
+    assert result2.run_id is None
+
+
+# ─── Coordinated mode tool injection ──────────────────────────────────────────
+
+
+def test_coordinated_mode_registers_both_dispatch_tools():
+    """Both task_dispatch and dispatch_plan must be in the global registry."""
+    from app.tools.registry import tool_registry
+
+    assert tool_registry.get("task_dispatch") is not None
+    assert tool_registry.get("dispatch_plan") is not None
+
