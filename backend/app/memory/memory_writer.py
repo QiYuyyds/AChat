@@ -168,6 +168,7 @@ async def extract_memory_from_reply(
     content: str,
     preference: Optional[_PreferenceLike] = None,
     existing_keys: Optional[List[str]] = None,
+    agent_id: str = "",
 ) -> None:
     """Extract k-v facts from assistant reply using LLM, classify, and store.
 
@@ -190,6 +191,8 @@ async def extract_memory_from_reply(
         existing_keys: Optional list of current preference keys. When provided,
             the LLM prompt includes the key list and instructs the model to
             reuse semantically equivalent existing keys.
+        agent_id: When non-empty, extracted LTM facts are written with
+            ``scope='agent'`` and ``agent_id`` so they are isolated per-agent.
     """
     if not content or not generate_fn:
         return
@@ -266,6 +269,7 @@ async def extract_memory_from_reply(
         importance = _IMPORTANCE_BY_CATEGORY.get(category, 0.3)
 
         # Store via store_classified (with cosine dedup)
+        write_scope = "agent" if agent_id else "global"
         try:
             inserted = await ltm.store_classified(
                 fact_content,
@@ -274,6 +278,8 @@ async def extract_memory_from_reply(
                 category,
                 tags,
                 slot_hint,
+                scope=write_scope,
+                agent_id=agent_id,
             )
             logger.info(
                 "Memory extracted: %s = %s (category=%s, importance=%.2f, inserted=%s)",

@@ -94,14 +94,24 @@ class GraphMemory:
             records = await result.data()
             return records
 
-    async def _upsert_memory_node(self, mem_id: int, content: str, importance: float) -> None:
+    async def _upsert_memory_node(
+        self, mem_id: int, content: str, importance: float,
+        scope: str = "global", agent_id: str = "",
+    ) -> None:
         if not self._available():
             return
         try:
             await self._run_cypher(
                 """MERGE (m:Memory {mem_id: $id})
-                   SET m.content = $content, m.importance = $importance""",
-                {"id": int(mem_id), "content": content, "importance": float(importance)},
+                   SET m.content = $content, m.importance = $importance,
+                       m.scope = $scope, m.agent_id = $agent_id""",
+                {
+                    "id": int(mem_id),
+                    "content": content,
+                    "importance": float(importance),
+                    "scope": scope,
+                    "agent_id": agent_id,
+                },
             )
         except Exception as e:
             logger.warning("Neo4j upsertMemoryNode failed (id=%s): %s", mem_id, e)
@@ -181,6 +191,38 @@ class GraphMemory:
                     continue
         return result
 
+    async def _expand_memory_neighbors_scoped(
+        self, seed_ids: List[int], hops: int, agent_id: str,
+    ) -> List[int]:
+        """Expand neighbors restricted to the same agent_id or global scope."""
+        if not self._available() or not seed_ids:
+            return []
+        hop_str = "1" if hops <= 1 else "1.." + str(hops)
+        query = (
+            "MATCH (m:Memory) WHERE m.mem_id IN $ids "
+            "MATCH (m)-[:FOLLOWS|SIMILAR_TO|CAUSES|BELONGS_TO*" + hop_str + "]-(n:Memory) "
+            "WHERE NOT n.mem_id IN $ids "
+            "AND (n.agent_id = $agent_id OR n.scope = 'global' OR n.agent_id IS NULL) "
+            "RETURN DISTINCT n.mem_id AS id"
+        )
+        try:
+            records = await self._run_cypher(
+                query,
+                {"ids": [int(i) for i in seed_ids], "agent_id": agent_id},
+            )
+        except Exception as e:
+            logger.warning("Neo4j expandMemoryNeighbors_scoped failed: %s", e)
+            return []
+        result: List[int] = []
+        for rec in records:
+            v = rec.get("id")
+            if v is not None:
+                try:
+                    result.append(int(v))
+                except (TypeError, ValueError):
+                    continue
+        return result
+
     async def _delete_memory_node(self, mem_id: int) -> None:
         if not self._available():
             return
@@ -235,6 +277,8 @@ class GraphMemory:
         mem_id = self._mem_id(item)
         content = getattr(item, "content", "")
         importance = float(getattr(item, "importance", 0.5) or 0.5)
+        scope = getattr(item, "scope", "global") or "global"
+        agent_id = getattr(item, "agent_id", "") or ""
         prev_id = self.prev_id
 
         neighbor_pairs: List[tuple] = []
@@ -253,7 +297,7 @@ class GraphMemory:
                     neighbor_pairs.append((old_id, old_emb, new_emb))
 
         async def _write() -> None:
-            await self._upsert_memory_node(mem_id, content, importance)
+            await self._upsert_memory_node(mem_id, content, importance, scope, agent_id)
             if prev_id >= 0 and prev_id != mem_id:
                 await self._add_memory_edge(prev_id, mem_id, "FOLLOWS", 1.0)
             for old_id, old_emb, new_emb in neighbor_pairs:
@@ -265,11 +309,22 @@ class GraphMemory:
         self.prev_id = mem_id
         return mem_id
 
-    async def find_related(self, item_id: int, max_hops: Optional[int] = None) -> List[int]:
-        """Expand from item_id along the graph for max_hops hops."""
+    async def find_related(
+        self, item_id: int, max_hops: Optional[int] = None, agent_id: str = "",
+    ) -> List[int]:
+        """Expand from item_id along the graph for max_hops hops.
+
+        When ``agent_id`` is provided, expansion is restricted to nodes with
+        the same ``agent_id`` (or global scope) so graph traversal never
+        crosses agent boundaries.
+        """
         if not self._available():
             return []
         hops = max_hops if (max_hops is not None and max_hops > 0) else self.settings.kg_max_hops
+        if agent_id:
+            return await self._expand_memory_neighbors_scoped(
+                [int(item_id)], int(hops), agent_id,
+            )
         return await self._expand_memory_neighbors([int(item_id)], int(hops))
 
     async def delete_from_graph(self, item_id: int) -> None:
@@ -281,24 +336,43 @@ class GraphMemory:
         await self._delete_memory_node(mid)
 
     async def bulk_index(self, items: Iterable) -> int:
-        """Bulk index items into the graph (restore from LTM at startup)."""
+        """Bulk index items into the graph (restore from LTM at startup).
+
+        Items are grouped by ``(scope, agent_id)`` so FOLLOWS edges only
+        connect temporally-adjacent items within the same scope group.
+        """
         if not self._available():
             return 0
         count = 0
-        prev_local = self.prev_id
         items_list = list(items)
+
+        # Group items by (scope, agent_id) to avoid cross-scope FOLLOWS edges
+        groups: dict[tuple[str, str], List[Any]] = {}
         for item in items_list:
-            mem_id = self._mem_id(item)
-            await self._upsert_memory_node(
-                mem_id,
-                getattr(item, "content", ""),
-                float(getattr(item, "importance", 0.5) or 0.5),
+            key = (
+                getattr(item, "scope", "global") or "global",
+                getattr(item, "agent_id", "") or "",
             )
-            if prev_local >= 0 and prev_local != mem_id:
-                await self._add_memory_edge(prev_local, mem_id, "FOLLOWS", 1.0)
-            prev_local = mem_id
-            count += 1
-        self.prev_id = prev_local
+            groups.setdefault(key, []).append(item)
+
+        for (scope, agent_id), group_items in groups.items():
+            prev_local = -1
+            for item in group_items:
+                mem_id = self._mem_id(item)
+                await self._upsert_memory_node(
+                    mem_id,
+                    getattr(item, "content", ""),
+                    float(getattr(item, "importance", 0.5) or 0.5),
+                    scope,
+                    agent_id,
+                )
+                if prev_local >= 0 and prev_local != mem_id:
+                    await self._add_memory_edge(prev_local, mem_id, "FOLLOWS", 1.0)
+                prev_local = mem_id
+                count += 1
+            # Track the last mem_id globally for add_to_graph's prev_id
+            if group_items:
+                self.prev_id = self._mem_id(group_items[-1])
         return count
 
     # ─── Centrality protection (for consolidate) ──────────────────────────
@@ -344,6 +418,8 @@ class GraphMemory:
             self._mem_id(item),
             getattr(item, "content", ""),
             float(getattr(item, "importance", 0.5) or 0.5),
+            getattr(item, "scope", "global") or "global",
+            getattr(item, "agent_id", "") or "",
         )
 
     async def graph_aware_consolidate(self):

@@ -553,6 +553,7 @@ def create_app() -> FastAPI:
         documents,
         fs,
         mcp,
+        memory,
         messages,
         pending,
         runs_misc,
@@ -577,6 +578,7 @@ def create_app() -> FastAPI:
     app.include_router(mobile_routes.router, prefix="/api", tags=["mobile"])
     app.include_router(stream.router, prefix="/api", tags=["stream"])
     app.include_router(documents.router, prefix="/api", tags=["documents"])
+    app.include_router(memory.router, prefix="", tags=["memory"])
     app.include_router(skills.router, prefix="/api", tags=["skills"])
     app.include_router(mcp.router, prefix="/api", tags=["mcp"])
     # deployment preview assets served at root /deployments/{id}/... (no /api prefix);

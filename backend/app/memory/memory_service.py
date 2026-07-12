@@ -18,6 +18,7 @@ from app.memory.consolidation import ConsolidationResult, Item
 from app.memory.graph_memory import GraphMemory
 from app.memory.long_term import LongTerm
 from app.memory.preference import Preference
+from app.memory.session_memory import SessionMemory
 from app.memory.short_term import ShortTerm
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,9 @@ class MemoryService:
         # Graph memory (Neo4j, optional — driver injected later)
         self.graph_memory: Optional[GraphMemory] = None
 
+        # Session memory (incremental conversation summary)
+        self.session_memory = SessionMemory()
+
         # Embedding function (injected by infrastructure factory)
         self._embed_fn: Optional[Callable] = None
 
@@ -65,6 +69,7 @@ class MemoryService:
     def set_generate_fn(self, fn: Callable) -> None:
         """Inject LLM generate function for memory extraction."""
         self._generate_fn = fn
+        self.session_memory.set_generate_fn(fn)
 
     def set_neo4j_driver(self, driver) -> None:
         """Inject Neo4j AsyncDriver and wire GraphMemory ↔ LTM."""
@@ -102,13 +107,22 @@ class MemoryService:
             "enabled" if self.graph_memory else "disabled",
         )
 
-    async def on_message_end(self, role: str, content: str) -> None:
+    async def on_message_end(
+        self, role: str, content: str, agent_id: str = "",
+        conversation_id: str = "",
+    ) -> None:
         """Post-conversation hook — called after each message exchange.
 
         1. Add to short-term memory (both user and assistant turns).
         2. Persist ChatHistory to PG (both roles).
         3. If user message: extract preferences, add to LTM, check consolidation.
         4. If assistant message: trigger LLM-based memory extraction (background).
+        5. If conversation_id provided: check Session Memory extraction trigger.
+
+        Args:
+            agent_id: When non-empty, extracted memories are written with
+                ``scope='agent'`` so they are isolated per-agent.
+            conversation_id: When non-empty, enables Session Memory extraction.
         """
         # Always add to STM
         self.stm.add(role, content)
@@ -128,7 +142,10 @@ class MemoryService:
         if role == "assistant":
             # Assistant message: trigger LLM-based memory extraction (background)
             if self._generate_fn and len(content) >= 10 and not self._is_trivial_reply(content):
-                asyncio.create_task(self._safe_extract_memory(content))
+                asyncio.create_task(self._safe_extract_memory(content, agent_id))
+            # Session Memory incremental extraction (background, after turn ends)
+            if conversation_id:
+                asyncio.create_task(self._safe_extract_session_memory(conversation_id))
             return
 
         if role != "user":
@@ -151,10 +168,12 @@ class MemoryService:
         if self.ltm.need_consolidation():
             asyncio.create_task(self._safe_consolidate())
 
-    async def recall(self, query: str, top_k: Optional[int] = None) -> List[Item]:
+    async def recall(
+        self, query: str, top_k: Optional[int] = None, agent_id: str = "",
+    ) -> List[Item]:
         """Semantic recall from LTM."""
         k = top_k or self.settings.memory_long_term_top_k
-        return await self.ltm.recall(query, top_k=k)
+        return await self.ltm.recall(query, top_k=k, agent_id=agent_id)
 
     async def graph_recall(self, item_id: int) -> List[int]:
         """Graph-based recall — expand from a seed memory."""
@@ -263,6 +282,8 @@ class MemoryService:
                                 category=item.category,
                                 slot_hint=item.slot_hint,
                                 last_accessed=item.last_accessed,
+                                scope=item.scope,
+                                agent_id=item.agent_id or None,
                             )
                         )
                         await session.execute(stmt)
@@ -339,7 +360,7 @@ class MemoryService:
         except Exception as e:
             logger.warning("Preference consolidation failed: %s", e)
 
-    async def _safe_extract_memory(self, content: str) -> None:
+    async def _safe_extract_memory(self, content: str, agent_id: str = "") -> None:
         """Extract memory facts from assistant reply using LLM (background task)."""
         try:
             from app.memory.memory_writer import extract_memory_from_reply
@@ -350,9 +371,18 @@ class MemoryService:
                 content=content,
                 preference=self.preference,
                 existing_keys=list(self.preference.data.keys()),
+                agent_id=agent_id,
             )
         except Exception as e:
             logger.warning("Memory extraction failed: %s", e)
+
+    async def _safe_extract_session_memory(self, conversation_id: str) -> None:
+        """Check and run Session Memory extraction (background task)."""
+        try:
+            if await self.session_memory.should_extract(conversation_id):
+                await self.session_memory.extract(conversation_id)
+        except Exception as e:
+            logger.warning("Session Memory extraction failed: %s", e)
 
     async def _safe_llm_extract_preference(self, content: str) -> None:
         """LLM overlay: refine rule-based preferences with a more precise extraction.

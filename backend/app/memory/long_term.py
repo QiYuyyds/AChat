@@ -14,6 +14,8 @@ from sqlalchemy import delete, select, update
 from app.config import Settings
 from app.db.engine import get_db
 from app.db.models import LongTermMemory
+from app.db.models import MemoryEdge as _MemoryEdge
+from app.db.models import MemoryNode as _MemoryNode
 from app.memory.consolidation import (
     ConsolidationConfig,
     ConsolidationResult,
@@ -82,6 +84,8 @@ class LongTerm:
                 tags=list(r.tags) if r.tags else [],
                 slot_hint=r.slot_hint or "",
                 score=r.score or 0.0,
+                scope=getattr(r, "scope", None) or "global",
+                agent_id=getattr(r, "agent_id", None) or "",
                 # Reset decay checkpoint to load time — persisted importance is
                 # already decayed; don't retroactively re-decay the idle period.
                 last_decay_ts=now_ts,
@@ -95,7 +99,13 @@ class LongTerm:
             except Exception as e:
                 logger.warning("graph_memory.bulk_index failed: %s", e)
 
-    async def add(self, content: str, importance: float = 0.5) -> None:
+    async def add(
+        self,
+        content: str,
+        importance: float = 0.5,
+        scope: str = "global",
+        agent_id: str = "",
+    ) -> None:
         """Add a new memory item, persist to PG, and sync to graph."""
         # Embedding is blocking I/O — run it off the event loop, outside the lock.
         embedding = None
@@ -115,6 +125,8 @@ class LongTerm:
                 id=self._next_id,
                 created_at=now_ts,
                 last_accessed=now_ts,
+                scope=scope,
+                agent_id=agent_id,
                 last_decay_ts=now_ts,
             )
             self._next_id += 1
@@ -136,6 +148,8 @@ class LongTerm:
                         tags=item.tags,
                         slot_hint=item.slot_hint,
                         score=item.score,
+                        scope=scope,
+                        agent_id=agent_id or None,
                     )
                     session.add(row)
                     await session.flush()
@@ -161,11 +175,14 @@ class LongTerm:
         category: str,
         tags: Optional[List[str]],
         slot_hint: str,
+        scope: str = "global",
+        agent_id: str = "",
     ) -> bool:
         """Schema-driven write with cosine dedup against existing items.
 
-        If embedding cosine similarity >= 0.95 against an existing item,
-        update that item's importance/tags/category/slot_hint (no new row).
+        If embedding cosine similarity >= 0.95 against an existing item
+        **in the same (scope, agent_id) group**, update that item's
+        importance/tags/category/slot_hint (no new row).
         Otherwise insert a new row via the full add path.
 
         Returns True if a new item was inserted, False if dedup hit (update only).
@@ -183,11 +200,14 @@ class LongTerm:
         prior: List[Item] = []
 
         async with self._lock:
-            # Cosine dedup: if highly similar to existing item, update instead of insert
+            # Cosine dedup: if highly similar to existing item in the same scope
+            # group, update instead of insert
             if emb and self.items:
                 best_idx = -1
                 best_sim = -1.0
                 for idx, existing in enumerate(self.items):
+                    if existing.scope != scope or existing.agent_id != agent_id:
+                        continue
                     if not existing.embedding or len(existing.embedding) != len(emb):
                         continue
                     sim = cosine_similarity(emb, existing.embedding)
@@ -248,6 +268,8 @@ class LongTerm:
                     tags=tags,
                     slot_hint=slot_hint,
                     score=0.0,
+                    scope=scope,
+                    agent_id=agent_id,
                     last_decay_ts=now_ts,
                 )
                 self._next_id += 1
@@ -268,6 +290,8 @@ class LongTerm:
                             tags=new_item.tags,
                             slot_hint=new_item.slot_hint,
                             score=new_item.score,
+                            scope=scope,
+                            agent_id=agent_id or None,
                         )
                         session.add(row)
                         await session.flush()
@@ -292,7 +316,9 @@ class LongTerm:
 
     # ─── Recall ───────────────────────────────────────────────────────────────
 
-    async def recall(self, query: str, top_k: int = 3) -> List[Item]:
+    async def recall(
+        self, query: str, top_k: int = 3, agent_id: str = "",
+    ) -> List[Item]:
         async with self._lock:
             if not self.items:
                 return []
@@ -305,26 +331,75 @@ class LongTerm:
                     logger.warning("Query embedding failed: %s", e)
 
             if not query_emb:
+                # No embedding: return agent-scoped first, then global fill
+                if agent_id:
+                    agent_items = [
+                        it for it in self.items
+                        if it.scope == "agent" and it.agent_id == agent_id
+                    ]
+                    global_items = [
+                        it for it in self.items if it.scope == "global"
+                    ]
+                    remaining = max(0, top_k - len(agent_items))
+                    return agent_items[:top_k] + global_items[:remaining]
                 return self.items[:top_k]
 
-            scored = []
-            for item in self.items:
+            # Phase 1: agent-scoped recall
+            if agent_id:
+                agent_pool = [
+                    it for it in self.items
+                    if it.scope == "agent" and it.agent_id == agent_id
+                ]
+            else:
+                agent_pool = []
+
+            agent_scored = []
+            for item in agent_pool:
                 if item.embedding:
                     sim = cosine_similarity(query_emb, item.embedding)
                     score = sim * 0.7 + item.importance * 0.3
-                    scored.append((item, score))
+                    agent_scored.append((item, score))
 
-            scored.sort(key=lambda x: x[1], reverse=True)
-            seed_items = [item for item, score in scored[:top_k] if score >= 0.4]
-            return await self._graph_expand(seed_items, top_k)
+            agent_scored.sort(key=lambda x: x[1], reverse=True)
+            agent_results = [
+                item for item, score in agent_scored[:top_k] if score >= 0.4
+            ]
+
+            # Phase 2: global recall (fill remaining slots)
+            remaining = max(0, top_k - len(agent_results))
+            global_results: List[Item] = []
+            if remaining > 0:
+                global_pool = [
+                    it for it in self.items if it.scope == "global"
+                ]
+                global_scored = []
+                for item in global_pool:
+                    if item.embedding:
+                        sim = cosine_similarity(query_emb, item.embedding)
+                        score = sim * 0.7 + item.importance * 0.3
+                        global_scored.append((item, score))
+
+                global_scored.sort(key=lambda x: x[1], reverse=True)
+                global_results = [
+                    item for item, score in global_scored[:remaining]
+                    if score >= 0.4
+                ]
+
+            seed_items = agent_results + global_results
+            return await self._graph_expand(seed_items, top_k, agent_id=agent_id)
 
     async def recall_by_filter(
         self,
         query: str,
         query_embedding: Optional[List[float]],
         filt: Any,
+        agent_id: str = "",
     ) -> List[Item]:
-        """Filtered semantic recall (async version)."""
+        """Filtered semantic recall (async version).
+
+        When ``agent_id`` is provided, recall first searches agent-scoped
+        memories, then fills remaining slots from global memories.
+        """
         async with self._lock:
             if not self.items:
                 return []
@@ -341,20 +416,20 @@ class LongTerm:
             use_tf = not query_embedding
             query_tokens = tokenize_zh(query) if use_tf else None
 
-            candidates: List[Item] = []
-            for item in self.items:
+            def _score_item(item: Item) -> Optional[float]:
+                """Score a single item; return None if it fails filters."""
                 if cat_set is not None:
                     item_cat = item.category or "general"
                     if item_cat not in cat_set:
-                        continue
+                        return None
                 if require_tags:
                     item_tags = set(item.tags or [])
                     if not all(t in item_tags for t in require_tags):
-                        continue
+                        return None
                 if max_age_hours > 0:
                     age_hours = (now - item.created_at) / 3600.0
                     if age_hours > float(max_age_hours):
-                        continue
+                        return None
 
                 use_tf_for_item = use_tf or (
                     not item.embedding
@@ -367,10 +442,12 @@ class LongTerm:
 
                 score = sim * 0.7 + item.importance * 0.3
                 if score < threshold:
-                    continue
+                    return None
+                return score
 
+            def _make_copy(item: Item, score: float) -> Item:
                 item.last_accessed = now
-                copy = Item(
+                return Item(
                     content=item.content,
                     importance=item.importance,
                     embedding=list(item.embedding) if item.embedding else None,
@@ -381,13 +458,41 @@ class LongTerm:
                     tags=list(item.tags),
                     slot_hint=item.slot_hint,
                     score=score,
+                    scope=item.scope,
+                    agent_id=item.agent_id,
                 )
-                candidates.append(copy)
 
-            candidates.sort(key=lambda it: it.score, reverse=True)
-            if top_k > 0 and len(candidates) > top_k:
-                candidates = candidates[:top_k]
-            return await self._graph_expand(candidates, top_k, cat_set)
+            # Phase 1: agent-scoped recall
+            agent_candidates: List[Item] = []
+            if agent_id:
+                for item in self.items:
+                    if item.scope != "agent" or item.agent_id != agent_id:
+                        continue
+                    score = _score_item(item)
+                    if score is not None:
+                        agent_candidates.append(_make_copy(item, score))
+                agent_candidates.sort(key=lambda it: it.score, reverse=True)
+                if top_k > 0 and len(agent_candidates) > top_k:
+                    agent_candidates = agent_candidates[:top_k]
+
+            # Phase 2: global recall (fill remaining slots)
+            remaining = top_k - len(agent_candidates) if top_k > 0 else 0
+            global_candidates: List[Item] = []
+            if remaining > 0 or top_k == 0:
+                for item in self.items:
+                    if item.scope != "global":
+                        continue
+                    score = _score_item(item)
+                    if score is not None:
+                        global_candidates.append(_make_copy(item, score))
+                global_candidates.sort(key=lambda it: it.score, reverse=True)
+                if remaining > 0 and len(global_candidates) > remaining:
+                    global_candidates = global_candidates[:remaining]
+                elif top_k > 0 and len(global_candidates) > top_k:
+                    global_candidates = global_candidates[:top_k]
+
+            candidates = agent_candidates + global_candidates
+            return await self._graph_expand(candidates, top_k, cat_set, agent_id=agent_id)
 
     # ─── Graph expansion ───────────────────────────────────────────────────
 
@@ -396,6 +501,7 @@ class LongTerm:
         seed_items: List[Item],
         top_k: int,
         cat_set: Optional[Set[str]] = None,
+        agent_id: str = "",
     ) -> List[Item]:
         """1-hop graph expansion from seed items.
 
@@ -406,6 +512,9 @@ class LongTerm:
 
         If *cat_set* is given, expanded items whose category is not in the set
         are excluded.
+
+        If *agent_id* is given, expanded items are restricted to the same
+        ``(scope, agent_id)`` group as the seeds — no cross-agent expansion.
 
         On any failure the method logs a warning and returns only the seeds.
         """
@@ -419,7 +528,7 @@ class LongTerm:
         try:
             expanded_ids: Set[int] = set()
             for sid in seed_id_set:
-                related = await self.graph_memory.find_related(sid)
+                related = await self.graph_memory.find_related(sid, agent_id=agent_id)
                 expanded_ids.update(related or [])
         except Exception as e:
             logger.warning("graph_memory.find_related failed during recall: %s", e)
@@ -430,6 +539,8 @@ class LongTerm:
             if it.id is None or it.id not in expanded_ids or it.id in seed_id_set:
                 continue
             if cat_set is not None and (it.category or "general") not in cat_set:
+                continue
+            if agent_id and it.scope == "agent" and it.agent_id != agent_id:
                 continue
             extra = Item(
                 content=it.content,
@@ -442,6 +553,8 @@ class LongTerm:
                 tags=list(it.tags),
                 slot_hint=it.slot_hint,
                 score=0.45,
+                scope=it.scope,
+                agent_id=it.agent_id,
             )
             extras.append(extra)
 
@@ -484,7 +597,7 @@ class LongTerm:
                     item.importance *= decay_rate ** days
                 item.last_decay_ts = now
 
-            # Phase 2: pairwise dedup + merge
+            # Phase 2: pairwise dedup + merge (within same scope+agent_id group only)
             removed = [False] * len(self.items)
             for i in range(len(self.items)):
                 if removed[i]:
@@ -494,6 +607,9 @@ class LongTerm:
                         continue
                     item_i = self.items[i]
                     item_j = self.items[j]
+                    # Never dedup/merge across scope or agent boundaries
+                    if item_i.scope != item_j.scope or item_i.agent_id != item_j.agent_id:
+                        continue
                     sim = self._compute_similarity(
                         item_i.content, item_j.content,
                         item_i.embedding, item_j.embedding,
@@ -605,6 +721,8 @@ class LongTerm:
             tags=tags,
             slot_hint=slot_hint,
             score=item_i.score,
+            scope=item_i.scope,
+            agent_id=item_i.agent_id,
         )
 
     def _compute_similarity(
@@ -632,6 +750,7 @@ class LongTerm:
                 created_at=it.created_at, last_accessed=it.last_accessed,
                 category=it.category, tags=it.tags,
                 slot_hint=it.slot_hint, score=it.score,
+                scope=it.scope, agent_id=it.agent_id,
             )
             for it in self.items
         ]
@@ -655,3 +774,117 @@ class LongTerm:
         if limit > 0 and len(matched) > limit:
             matched = matched[:limit]
         return matched
+
+    # ─── Management API (user-facing CRUD) ───────────────────────────────────
+
+    async def update_item(
+        self,
+        memory_id: int,
+        content: Optional[str] = None,
+        importance: Optional[float] = None,
+        category: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+    ) -> Optional[Item]:
+        """Update a single LTM item in memory + PG.
+
+        Returns the updated Item, or None if not found.
+        Only non-None fields are updated. Does NOT recompute embedding —
+        the API layer handles that asynchronously when content changes.
+        """
+        async with self._lock:
+            target: Optional[Item] = None
+            for it in self.items:
+                if it.id == memory_id:
+                    target = it
+                    break
+            if target is None:
+                return None
+
+            if content is not None:
+                target.content = content
+            if importance is not None:
+                target.importance = importance
+            if category is not None:
+                target.category = category
+            if tags is not None:
+                target.tags = list(tags)
+            target.last_accessed = time.time()
+
+            try:
+                async with get_db() as session:
+                    stmt = (
+                        update(LongTermMemory)
+                        .where(LongTermMemory.id == memory_id)
+                        .values(
+                            content=target.content,
+                            importance=target.importance,
+                            category=target.category,
+                            tags=target.tags,
+                            last_accessed=target.last_accessed,
+                        )
+                    )
+                    await session.execute(stmt)
+            except Exception as e:
+                logger.warning("LTM update_item PG write failed (id=%s): %s", memory_id, e)
+
+            return target
+
+    async def update_embedding(self, memory_id: int, embedding: Optional[List[float]]) -> None:
+        """Persist a recomputed embedding to PG and the in-memory Item."""
+        async with self._lock:
+            for it in self.items:
+                if it.id == memory_id:
+                    it.embedding = list(embedding) if embedding else None
+                    break
+        try:
+            async with get_db() as session:
+                stmt = (
+                    update(LongTermMemory)
+                    .where(LongTermMemory.id == memory_id)
+                    .values(embedding=list(embedding) if embedding else None)
+                )
+                await session.execute(stmt)
+        except Exception as e:
+            logger.warning("LTM update_embedding PG write failed (id=%s): %s", memory_id, e)
+
+    async def delete_item(self, memory_id: int) -> bool:
+        """Delete a single LTM item from memory, PG, and GraphMemory.
+
+        Returns True if the item was found and deleted, False otherwise.
+        """
+        target: Optional[Item] = None
+        async with self._lock:
+            for idx, it in enumerate(self.items):
+                if it.id == memory_id:
+                    target = it
+                    self.items.pop(idx)
+                    break
+            if target is None:
+                return False
+
+        # Delete PG mirror tables (MemoryNode + MemoryEdge)
+        try:
+            async with get_db() as session:
+                await session.execute(
+                    delete(_MemoryNode).where(_MemoryNode.mem_id == memory_id)
+                )
+                await session.execute(
+                    delete(_MemoryEdge).where(
+                        (_MemoryEdge.from_id == memory_id)
+                        | (_MemoryEdge.to_id == memory_id)
+                    )
+                )
+                await session.execute(
+                    delete(LongTermMemory).where(LongTermMemory.id == memory_id)
+                )
+        except Exception as e:
+            logger.warning("LTM delete_item PG delete failed (id=%s): %s", memory_id, e)
+
+        # Delete from Neo4j (if available)
+        if self.graph_memory is not None:
+            try:
+                await self.graph_memory.delete_from_graph(memory_id)
+            except Exception as e:
+                logger.warning("LTM delete_item graph delete failed (id=%s): %s", memory_id, e)
+
+        return True
