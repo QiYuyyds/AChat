@@ -137,6 +137,9 @@ class Agent(Base):
     supports_vision: Mapped[bool] = mapped_column(
         Boolean, name="supports_vision", nullable=False, default=False
     )
+    memory_enabled: Mapped[bool] = mapped_column(
+        Boolean, name="memory_enabled", nullable=False, default=False
+    )
 
     created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
@@ -584,6 +587,14 @@ class ContextSummary(Base):
     model_id: Mapped[str | None] = mapped_column(
         String, name="model_id", nullable=True
     )
+    # 'compaction' = Tier 2/3 LLM summary; 'session' = incremental Session Memory
+    summary_type: Mapped[str] = mapped_column(
+        String(16), name="summary_type", nullable=False, default="compaction"
+    )
+    # Session Memory: timestamp of the last message covered by the summary
+    covers_up_to: Mapped[float | None] = mapped_column(
+        Float, name="covers_up_to", nullable=True
+    )
     created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
     # Relationships
@@ -675,10 +686,13 @@ class LongTermMemory(Base):
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     slot_hint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="global")
+    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
     __table_args__ = (
         Index("idx_ltm_category", "category"),
         Index("idx_ltm_created", "created_at"),
+        Index("idx_ltm_scope_agent", "scope", "agent_id"),
     )
 
 

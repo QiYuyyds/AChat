@@ -102,6 +102,29 @@ class Preference:
         for k, v in (kvs or {}).items():
             await self.set(_normalize_key(str(k)), str(v))
 
+    async def delete(self, key: str) -> bool:
+        """Delete a preference key from memory and PG.
+
+        Returns True if the key existed and was deleted.
+        """
+        key = _normalize_key(key)
+        existed = False
+        with self._lock:
+            if key in self.preferences:
+                del self.preferences[key]
+                existed = True
+        try:
+            async with get_db() as session:
+                existing = await session.get(
+                    UserPreference, {"user_id": self.user_id, "key": key}
+                )
+                if existing:
+                    await session.delete(existing)
+                    existed = True
+        except Exception as e:
+            logger.warning("Preference delete failed (key=%s): %s", key, e)
+        return existed
+
     def get(self, key: str, default: str = "") -> str:
         with self._lock:
             return self.preferences.get(key, default)

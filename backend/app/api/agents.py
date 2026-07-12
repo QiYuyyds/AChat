@@ -73,6 +73,7 @@ def _serialize(row: Agent) -> dict[str, Any]:
         "isBuiltin": row.is_builtin,
         "isOrchestrator": row.is_orchestrator,
         "supportsVision": row.supports_vision,
+        "memoryEnabled": row.memory_enabled,
         "createdAt": row.created_at,
         # CLI fields
         "executablePath": row.executable_path,
@@ -175,6 +176,7 @@ async def _create_custom_agent(body: CreateAgentRequest) -> dict[str, Any]:
         is_builtin=False,
         is_orchestrator=body.is_orchestrator or False,
         supports_vision=body.supports_vision or False,
+        memory_enabled=body.memory_enabled or False,
         created_at=now_ms(),
     )
     agent.capabilities_list = body.capabilities or []
@@ -221,6 +223,7 @@ _PATCH_ALIASES: set[str] = {
     "mcpServerIds",
     "supportsVision",
     "isOrchestrator",
+    "memoryEnabled",
     "apiKey",
     "apiBaseUrl",
     # CLI fields
@@ -364,6 +367,9 @@ async def _update_custom_agent(
             updated = True
         if has_is_orchestrator and body.is_orchestrator is not None:
             agent.is_orchestrator = body.is_orchestrator
+            updated = True
+        if "memory_enabled" in provided and body.memory_enabled is not None:
+            agent.memory_enabled = body.memory_enabled
             updated = True
         if has_api_key:
             agent.api_key = _trim_or_none(body.api_key)

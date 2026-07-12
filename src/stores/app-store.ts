@@ -21,6 +21,18 @@ import type {
 
 enableMapSet()
 
+export type SidebarMode =
+  | 'conversations'
+  | 'artifacts'
+  | 'agents'
+  | 'analytics'
+  | 'knowledge'
+  | 'skills'
+  | 'mcp'
+  | 'memory'
+
+export type MemoryTab = 'long-term' | 'preferences' | 'session'
+
 export interface DispatchState {
   runId: string                                    // Orchestrator 的 runId
   messageId: string                                // 触发 plan 的 Orchestrator message id
@@ -109,6 +121,14 @@ interface AppState {
 
   // ─── 移动端 sidebar 抽屉开关 ──
   mobileSidebarOpen: boolean
+
+  // ─── 侧边栏当前模式（conversations / agents / memory 等）──
+  sidebarMode: SidebarMode
+  setSidebarMode(mode: SidebarMode): void
+
+  // ─── 记忆管理子 Tab（long-term / preferences / session）──
+  memoryTab: MemoryTab
+  setMemoryTab(tab: MemoryTab): void
 
   // ─── 流连接状态 ────────────────────────────────────
   streamConnected: boolean
@@ -217,6 +237,8 @@ export const useAppStore = create<AppState>()(
     pendingMcpCallsByConv: {},
     unreadByConv: {},
     mobileSidebarOpen: false,
+    sidebarMode: 'conversations',
+    memoryTab: 'long-term',
     pendingQuoteForInput: null,
     highlightedMessageId: null,
     streamConnected: false,
@@ -302,6 +324,16 @@ export const useAppStore = create<AppState>()(
     setMobileSidebarOpen: (open) =>
       set((s) => {
         s.mobileSidebarOpen = open
+      }),
+
+    setSidebarMode: (mode) =>
+      set((s) => {
+        s.sidebarMode = mode
+      }),
+
+    setMemoryTab: (tab) =>
+      set((s) => {
+        s.memoryTab = tab
       }),
 
     setPendingQuote: (quote) =>

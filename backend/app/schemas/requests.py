@@ -119,6 +119,7 @@ class CreateAgentRequest(BaseModel):
     mcp_server_ids: list[str] | None = Field(default=None, alias="mcpServerIds")
     supports_vision: bool | None = Field(default=None, alias="supportsVision")
     is_orchestrator: bool | None = Field(default=False, alias="isOrchestrator")
+    memory_enabled: bool | None = Field(default=None, alias="memoryEnabled")
 
     # ── CLI agent fields ──────────────────────────────────────
     executable_path: str | None = Field(default=None, alias="executablePath")
@@ -149,6 +150,7 @@ class UpdateAgentRequest(BaseModel):
     mcp_server_ids: list[str] | None = Field(default=None, alias="mcpServerIds")
     supports_vision: bool | None = Field(default=None, alias="supportsVision")
     is_orchestrator: bool | None = Field(default=None, alias="isOrchestrator")
+    memory_enabled: bool | None = Field(default=None, alias="memoryEnabled")
 
     # ── CLI agent fields ──────────────────────────────────────
     executable_path: str | None = Field(default=None, alias="executablePath")
@@ -175,6 +177,7 @@ class AgentResponse(BaseModel):
     is_builtin: bool = Field(alias="isBuiltin")
     is_orchestrator: bool = Field(alias="isOrchestrator")
     supports_vision: bool = Field(alias="supportsVision")
+    memory_enabled: bool = Field(default=False, alias="memoryEnabled")
     created_at: int = Field(alias="createdAt")
     # CLI fields
     executable_path: str | None = Field(default=None, alias="executablePath")

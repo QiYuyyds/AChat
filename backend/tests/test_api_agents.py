@@ -29,6 +29,7 @@ _AGENT_ROW_KEYS = {
     "isBuiltin",
     "isOrchestrator",
     "supportsVision",
+    "memoryEnabled",
     "createdAt",
 }
 

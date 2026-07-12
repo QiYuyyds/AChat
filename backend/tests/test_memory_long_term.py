@@ -169,7 +169,7 @@ class TestGraphExpandedRecall:
         ])
 
         mock_gm = AsyncMock()
-        mock_gm.find_related = AsyncMock(side_effect=lambda item_id: [1] if item_id == 0 else [])
+        mock_gm.find_related = AsyncMock(side_effect=lambda item_id, **kwargs: [1] if item_id == 0 else [])
         ltm.set_graph_memory(mock_gm)
 
         results = await ltm.recall("Python 特性", top_k=5)
@@ -239,7 +239,7 @@ class TestGraphExpandedRecall:
         ])
 
         mock_gm = AsyncMock()
-        mock_gm.find_related = AsyncMock(side_effect=lambda item_id: [1, 2] if item_id == 0 else [])
+        mock_gm.find_related = AsyncMock(side_effect=lambda item_id, **kwargs: [1, 2] if item_id == 0 else [])
         ltm.set_graph_memory(mock_gm)
 
         filt = MagicMock()

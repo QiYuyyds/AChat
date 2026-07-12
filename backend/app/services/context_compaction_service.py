@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from sqlalchemy import and_, asc, desc, select
 
 from app.db.engine import get_db
-from app.db.models import Agent, ContextSummary, Conversation, Message
+from app.db.models import Agent, AgentRun, Attachment, ContextSummary, Conversation, Message
 from app.schemas.events import MessageAddedEvent, MessageRecord
 from app.schemas.messages import ContextSummaryRecord
 from app.services.event_bus import event_bus
@@ -93,11 +93,21 @@ def _skip_silent(reason: str) -> CompactionSkipped:
 
 
 async def get_latest_context_summary(conversation_id: str) -> ContextSummary | None:
-    """Most recent stored summary for a conversation, or None."""
+    """Most recent compaction summary for a conversation, or None.
+
+    Only returns ``summary_type='compaction'`` records — Session Memory
+    records (``summary_type='session'``) are excluded because they have
+    a separate lifecycle and coverage tracking.
+    """
     async with get_db() as db:
         result = await db.execute(
             select(ContextSummary)
-            .where(ContextSummary.conversation_id == conversation_id)
+            .where(
+                and_(
+                    ContextSummary.conversation_id == conversation_id,
+                    ContextSummary.summary_type == "compaction",
+                )
+            )
             .order_by(desc(ContextSummary.created_at))
             .limit(1)
         )
@@ -247,14 +257,16 @@ async def compact_conversation(
             .all()
         )
 
-    # d) keep the most recent N; compact the rest
-    if len(rows) <= KEEP_RECENT_MESSAGES:
+    # d) breakpoint protection: find safe cut point (Phase 5)
+    cut = _find_safe_cut_point(rows)
+    if cut <= 0:
         raise (
             _skip_silent("conversation_too_short")
             if silent
             else _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE)
         )
-    to_compact = rows[:-KEEP_RECENT_MESSAGES]
+    to_compact = rows[:cut]
+    kept = rows[cut:]
     if len(to_compact) < MIN_COMPACTABLE:
         raise (
             _skip_silent("conversation_too_short")
@@ -262,45 +274,99 @@ async def compact_conversation(
             else _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE)
         )
 
-    # e) pick a summariser model: first Custom agent with model config
-    try:
-        model_provider, model_id, api_key, api_base_url, summariser_agent_id = await _pick_summary_model(agent_ids)
-    except ValueError:
-        raise (
-            _skip_silent("no_summariser_model")
-            if silent
-            else _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE)
-        ) from None
-
-    # f) render the messages to compact into a transcript
     agent_names = await _load_agent_names(agent_ids)
-    transcript = _render_transcript(to_compact, agent_names)
-
-    # size gate: only compact when the slice is big enough to be worth an LLM call
-    if estimate_tokens(transcript) < MIN_COMPACT_TOKENS:
-        raise (
-            _skip_silent("compactable_too_small")
-            if silent
-            else _skip(conversation_id, "compactable_too_small", _TOO_LITTLE_NOTICE)
-        )
-
     prior = latest.summary if latest else None
-    kept = rows[-KEEP_RECENT_MESSAGES:]
+    full_transcript = _render_transcript(to_compact, agent_names)
 
     # ctx-before: the full uncompacted tail that the next turn would otherwise
     # carry (prior summary block, if any, + every message after the cut-off).
-    ctx_before = estimate_tokens(transcript) + sum(
+    ctx_before = estimate_tokens(full_transcript) + sum(
         estimate_tokens(_message_text(m)) for m in kept
     )
     if prior:
         ctx_before += estimate_tokens(prior)
 
-    # g) call the LLM (reuse parent system prompt for cache prefix hit)
-    parent_system_prompt = await _get_agent_system_prompt(summariser_agent_id)
-    summary_text = await _summarise(
-        transcript, prior, model_provider, model_id, api_key, api_base_url,
-        parent_system_prompt=parent_system_prompt,
-    )
+    # e) three-way branching on Session Memory coverage (Phase 4)
+    session_mem = await get_session_memory(conversation_id)
+    model_provider: str | None = None
+    model_id: str | None = None
+
+    if (
+        session_mem
+        and session_mem.covers_up_to is not None
+        and session_mem.covers_up_to >= float(to_compact[-1].created_at)
+    ):
+        # Case 1: Full coverage — use session memory directly, zero LLM call
+        summary_text = session_mem.summary
+        logger.info(
+            "[compact] conv=%s full session memory coverage, skipping LLM",
+            conversation_id,
+        )
+
+    elif session_mem and session_mem.covers_up_to is not None:
+        # Case 2: Partial coverage — gap messages + session summary → LLM
+        gap_messages = [
+            m for m in to_compact
+            if float(m.created_at) > session_mem.covers_up_to
+        ]
+        gap_transcript = _render_transcript(gap_messages, agent_names)
+
+        if estimate_tokens(full_transcript) < MIN_COMPACT_TOKENS:
+            raise (
+                _skip_silent("compactable_too_small")
+                if silent
+                else _skip(conversation_id, "compactable_too_small", _TOO_LITTLE_NOTICE)
+            )
+
+        try:
+            model_provider, model_id, api_key, api_base_url, summariser_agent_id = (
+                await _pick_summary_model(agent_ids)
+            )
+        except ValueError:
+            raise (
+                _skip_silent("no_summariser_model")
+                if silent
+                else _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE)
+            ) from None
+
+        parent_system_prompt = await _get_agent_system_prompt(summariser_agent_id)
+        summary_text = await _summarise(
+            gap_transcript, session_mem.summary,
+            model_provider, model_id, api_key, api_base_url,
+            parent_system_prompt=parent_system_prompt,
+        )
+        logger.info(
+            "[compact] conv=%s partial session memory coverage, gap=%d msgs",
+            conversation_id, len(gap_messages),
+        )
+
+    else:
+        # Case 3: No session memory — original path (full transcript → LLM)
+        if estimate_tokens(full_transcript) < MIN_COMPACT_TOKENS:
+            raise (
+                _skip_silent("compactable_too_small")
+                if silent
+                else _skip(conversation_id, "compactable_too_small", _TOO_LITTLE_NOTICE)
+            )
+
+        try:
+            model_provider, model_id, api_key, api_base_url, summariser_agent_id = (
+                await _pick_summary_model(agent_ids)
+            )
+        except ValueError:
+            raise (
+                _skip_silent("no_summariser_model")
+                if silent
+                else _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE)
+            ) from None
+
+        parent_system_prompt = await _get_agent_system_prompt(summariser_agent_id)
+        summary_text = await _summarise(
+            full_transcript, prior,
+            model_provider, model_id, api_key, api_base_url,
+            parent_system_prompt=parent_system_prompt,
+        )
+
     if not summary_text:
         raise ValueError("摘要生成失败：模型返回为空")
 
@@ -313,7 +379,7 @@ async def compact_conversation(
     last = to_compact[-1]
     summary_id = new_context_summary_id()
     created_at = now_ms()
-    token_estimate = estimate_tokens(transcript)
+    token_estimate = estimate_tokens(full_transcript)
     async with get_db() as db:
         row = ContextSummary(
             id=summary_id,
@@ -325,6 +391,7 @@ async def compact_conversation(
             token_estimate=token_estimate,
             model_provider=model_provider,
             model_id=model_id,
+            summary_type="compaction",
             created_at=created_at,
         )
         db.add(row)
@@ -343,6 +410,7 @@ async def compact_conversation(
     )
 
     # i) insert a system message announcing the compaction (skipped in silent mode)
+    # Phase 6: append capability context restoration after the summary notice
     sys_record: MessageRecord | None = None
     if not silent:
         sys_msg_id = new_message_id()
@@ -356,6 +424,12 @@ async def compact_conversation(
             )
         else:
             content = f"已将 {len(to_compact)} 条历史消息压缩为上下文摘要。"
+
+        # Capability restoration: inject tool/attachment/dispatch context
+        cap_block = await _build_capability_context(conversation_id, agent_ids)
+        if cap_block:
+            content = f"{content}\n\n{cap_block}"
+
         sys_parts = [{"type": "text", "content": content}]
         async with get_db() as db:
             sys_msg = Message(
@@ -549,3 +623,153 @@ async def _summarise(
     )
     raw = response.choices[0].message.content
     return raw.strip() if raw else ""
+
+
+# ─── Session Memory helpers (Phase 4) ─────────────────────────────────────────
+
+
+async def get_session_memory(conversation_id: str):
+    """Load the active Session Memory record for a conversation.
+
+    Returns a SessionMemoryRecord (summary + covers_up_to) or None.
+    """
+    from app.memory.session_memory import SessionMemory
+
+    sm = SessionMemory()
+    return await sm.get(conversation_id)
+
+
+# ─── Breakpoint protection helpers (Phase 5) ──────────────────────────────────
+
+
+def _find_safe_cut_point(messages: list[Message]) -> int:
+    """Find a safe cut point that doesn't split tool_use/tool_result chains.
+
+    Starts at ``len(messages) - KEEP_RECENT_MESSAGES`` and moves backward
+    when the boundary would orphan a tool_result or leave a pending tool_use.
+    """
+    cut = len(messages) - KEEP_RECENT_MESSAGES
+    while cut > 0 and (
+        _is_orphan_tool_result(messages, cut)
+        or _is_pending_tool_use(messages, cut)
+    ):
+        cut -= 1
+    return cut
+
+
+def _is_orphan_tool_result(messages: list[Message], cut: int) -> bool:
+    """True when messages[cut] (first in kept) has tool_result whose tool_use is in to_compact."""
+    if cut <= 0 or cut >= len(messages):
+        return False
+    first_kept = messages[cut]
+    result_ids = {
+        p.get("callId", "")
+        for p in first_kept.parts_list
+        if p.get("type") == "tool_result"
+    }
+    if not result_ids:
+        return False
+    for msg in messages[:cut]:
+        for p in msg.parts_list:
+            if p.get("type") == "tool_use" and p.get("callId", "") in result_ids:
+                return True
+    return False
+
+
+def _is_pending_tool_use(messages: list[Message], cut: int) -> bool:
+    """True when messages[cut-1] (last in to_compact) has tool_use whose result is in kept."""
+    if cut <= 0 or cut >= len(messages):
+        return False
+    last_compact = messages[cut - 1]
+    use_ids = {
+        p.get("callId", "")
+        for p in last_compact.parts_list
+        if p.get("type") == "tool_use"
+    }
+    if not use_ids:
+        return False
+    for msg in messages[cut:]:
+        for p in msg.parts_list:
+            if p.get("type") == "tool_result" and p.get("callId", "") in use_ids:
+                return True
+    return False
+
+
+# ─── Capability restoration helpers (Phase 6) ────────────────────────────────
+
+
+async def _build_capability_context(
+    conversation_id: str, agent_ids: list[str]
+) -> str:
+    """Build a capability context block for post-compaction restoration.
+
+    Collects: current tool names, active attachments, active dispatch plan.
+    Returns a formatted string, or empty string when nothing to inject.
+    """
+    parts: list[str] = ["[能力上下文]"]
+
+    # Tool names from registry
+    try:
+        from app.tools.registry import tool_registry
+
+        tool_names = sorted(tool_registry._tools.keys())
+        if tool_names:
+            parts.append(f"- 当前可用工具: {', '.join(tool_names)}")
+    except Exception:
+        pass
+
+    # Active attachments
+    try:
+        async with get_db() as db:
+            atts = (
+                (
+                    await db.execute(
+                        select(Attachment).where(
+                            Attachment.conversation_id == conversation_id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if atts:
+                att_list = ", ".join(a.file_name for a in atts)
+                parts.append(f"- 活跃附件: {att_list}")
+    except Exception:
+        pass
+
+    # Active dispatch plan
+    try:
+        async with get_db() as db:
+            run = (
+                (
+                    await db.execute(
+                        select(AgentRun)
+                        .where(
+                            and_(
+                                AgentRun.conversation_id == conversation_id,
+                                AgentRun.dispatch_plan.isnot(None),
+                                AgentRun.status == "running",
+                            )
+                        )
+                        .order_by(desc(AgentRun.started_at))
+                        .limit(1)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if run and run.dispatch_plan:
+                plan = run.dispatch_plan
+                tasks = plan.get("tasks", []) if isinstance(plan, dict) else []
+                pending = sum(1 for t in tasks if t.get("status") == "pending")
+                done = sum(1 for t in tasks if t.get("status") == "done")
+                parts.append(
+                    f"- 进行中的派发计划: {done}/{len(tasks)} 完成, {pending} 待处理"
+                )
+    except Exception:
+        pass
+
+    if len(parts) == 1:
+        return ""
+    return "\n".join(parts)

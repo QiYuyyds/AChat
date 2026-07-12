@@ -28,7 +28,7 @@ class _MockLTM:
     def __init__(self):
         self.stored = []
 
-    async def store_classified(self, content, importance, emb, category, tags, slot_hint):
+    async def store_classified(self, content, importance, emb, category, tags, slot_hint, scope="global", agent_id=""):
         self.stored.append({
             "content": content,
             "importance": importance,

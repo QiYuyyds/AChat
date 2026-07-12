@@ -138,7 +138,7 @@ async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
         from app.main import _memory_service  # type: ignore[attr-defined]
         if _memory_service is None:
             return err("Memory service not initialized")
-        items = await _memory_service.recall(query, top_k=top_k)
+        items = await _memory_service.recall(query, top_k=top_k, agent_id=ctx.agent_id)
         memories = [
             {
                 "content": item.content,

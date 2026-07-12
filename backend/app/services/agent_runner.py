@@ -183,6 +183,7 @@ async def _post_run_memory_hook(
     prompt: str,
     result: RunExecutionResult,
     conversation_id: str,
+    agent_id: str = "",
 ) -> None:
     """Background hook: write user prompt + agent output into memory subsystem.
 
@@ -192,7 +193,7 @@ async def _post_run_memory_hook(
     if ms is None:
         return
     try:
-        await ms.on_message_end("user", prompt)
+        await ms.on_message_end("user", prompt, conversation_id=conversation_id)
         # Collect agent output text from output_message_ids
         if result.output_message_ids:
             async with get_db() as db:
@@ -242,7 +243,7 @@ async def _post_run_memory_hook(
                             )
 
                         if agent_text:
-                            await ms.on_message_end("assistant", agent_text)
+                            await ms.on_message_end("assistant", agent_text, agent_id, conversation_id=conversation_id)
     except Exception as e:
         logger.warning("_post_run_memory_hook error: %s", e)
 
@@ -1434,7 +1435,7 @@ async def execute_run(
         final_result = await finalize_ok(run_id, args, result)
         # ─── Post-run memory hook (Task 5.4) ───
         asyncio.create_task(
-            _post_run_memory_hook(prompt, result, args.conversation_id)
+            _post_run_memory_hook(prompt, result, args.conversation_id, args.agent_id)
         )
         # ─── Summary generation hook (first reply only) ───
         asyncio.create_task(
@@ -1527,6 +1528,16 @@ async def execute_simple_run(
             base_tool_names = ["memory_recall"] + list(base_tool_names)
             logger.info(
                 "[AgentRunner] Implicitly injected memory_recall tool for SDK agent %s",
+                args.agent_id,
+            )
+
+    # memory_store: only for SDK agents with memory_enabled=true.
+    # CLI agents skip this (they self-manage context and tools).
+    if agent.adapter_name in SDK_ADAPTERS and getattr(agent, "memory_enabled", False):
+        if "memory_store" not in base_tool_names:
+            base_tool_names = list(base_tool_names) + ["memory_store"]
+            logger.info(
+                "[AgentRunner] Injected memory_store for SDK agent %s (memory_enabled=true)",
                 args.agent_id,
             )
     # Inject load_skill when an SDK agent has equipped (and still-present) skills.
@@ -2435,7 +2446,7 @@ async def build_adapter_input(
                     mode = "tool"
                 else:
                     mode = "chat"
-                q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id)
+                q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id, agent_id=args.agent_id)
                 ctx = await assembler.assemble(q)
                 enriched = ctx.render_static()
                 if enriched:

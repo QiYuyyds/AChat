@@ -1,6 +1,6 @@
 'use client'
 
-import { Archive, ArchiveRestore, BarChart3, BookOpen, Bot, ChevronDown, ChevronRight, Ellipsis, Layers, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plug, Plus, Search, Sparkles, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, BarChart3, BookOpen, Bot, Brain, ChevronDown, ChevronRight, Ellipsis, Layers, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plug, Plus, Search, Sparkles, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { AgentLibrary } from '@/components/agent-library'
@@ -8,6 +8,7 @@ import { ConversationAvatar } from '@/components/agent-avatar'
 import { GlobalSearchTrigger } from '@/components/global-search-trigger'
 import { ArtifactLibrary } from '@/components/artifact-library'
 import { KnowledgeLibrary } from '@/components/knowledge-library'
+import { MemorySidebarNav } from '@/components/memory-library'
 import { McpServerLibrary } from '@/components/mcp-server-library'
 import { SkillLibrary } from '@/components/skill-library'
 import { NewConversationDialog } from '@/components/new-conversation-dialog'
@@ -44,8 +45,7 @@ import { subscribeUiCommand } from '@/lib/ui-command-events'
 import { cn } from '@/lib/utils'
 import type { AgentRow, ConversationRow } from '@/db/schema'
 import { useAppStore, useConversationList, useUnreadCount } from '@/stores/app-store'
-
-type Mode = 'conversations' | 'artifacts' | 'agents' | 'analytics' | 'knowledge' | 'skills' | 'mcp'
+import type { SidebarMode } from '@/stores/app-store'
 
 export function Sidebar() {
   const mobileOpen = useAppStore((s) => s.mobileSidebarOpen)
@@ -59,7 +59,8 @@ export function Sidebar() {
   const removeConversation = useAppStore((s) => s.removeConversation)
   const upsertConversation = useAppStore((s) => s.upsertConversation)
 
-  const [mode, setMode] = useState<Mode>('conversations')
+  const mode = useAppStore((s) => s.sidebarMode)
+  const setMode = useAppStore((s) => s.setSidebarMode)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
@@ -161,7 +162,7 @@ export function Sidebar() {
     }
   }
 
-  const pickMode = (m: Mode) => {
+  const pickMode = (m: SidebarMode) => {
     // 移动端：点轨上图标弹出对应面板；再点当前项则收起。桌面端 mobileOpen 不影响布局，无副作用
     if (mobileOpen && mode === m) {
       setMobileSidebarOpen(false)
@@ -191,6 +192,7 @@ export function Sidebar() {
           <RailButton mode={mode} self="knowledge" onClick={() => pickMode('knowledge')} icon={<BookOpen className="size-4" />} label="知识库" />
           <RailButton mode={mode} self="skills" onClick={() => pickMode('skills')} icon={<Sparkles className="size-4" />} label="技能" />
           <RailButton mode={mode} self="mcp" onClick={() => pickMode('mcp')} icon={<Plug className="size-4" />} label="MCP" />
+          <RailButton mode={mode} self="memory" onClick={() => pickMode('memory')} icon={<Brain className="size-4" />} label="记忆管理" />
           <div className="mt-auto flex flex-col items-center gap-1">
             <SettingsButton />
             <ThemeToggle />
@@ -363,6 +365,8 @@ export function Sidebar() {
               <SkillLibrary />
             ) : mode === 'mcp' ? (
               <McpServerLibrary />
+            ) : mode === 'memory' ? (
+              <MemorySidebarNav />
             ) : (
               <UsageDashboard />
             )}
@@ -626,8 +630,8 @@ function RailButton({
   icon,
   label,
 }: {
-  mode: Mode
-  self: Mode
+  mode: SidebarMode
+  self: SidebarMode
   onClick: () => void
   icon: React.ReactNode
   label: string
