@@ -82,6 +82,7 @@ class MessageRecord(BaseModel):
     mentioned_agent_ids: list[str] = Field(alias="mentionedAgentIds")
     run_id: str | None = Field(default=None, alias="runId")
     usage: MessageUsage | None = None
+    hidden: bool = False
     created_at: int = Field(alias="createdAt")
 
     model_config = {"populate_by_name": True}

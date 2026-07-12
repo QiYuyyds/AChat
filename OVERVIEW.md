@@ -29,7 +29,7 @@ L4 State + Transport                    src/stores/app-store.ts（Zustand+Immer�
    ↑↓
 L3 Application Services                  backend/app/services/
    ├ AgentRunner（per-run 生命周期）     backend/app/services/agent_runner.py ← 核心
-   ├ Orchestrator（三阶段调度）          backend/app/services/orchestrator.py
+   ├ AgentLoop（统一 Agent Loop）        backend/app/services/agent_loop.py ← 统一循环
    ├ ConversationService / EventBus
    ├ ToolExecutor（工具执行）            backend/app/tools/
    ├ RAGService（混合检索）              backend/app/services/rag_service.py
@@ -54,7 +54,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 - **`StreamEvent` 联合类型**是粘合全系统的事件协议（`specs/02`）。定义在 `backend/app/schemas/events.py` + `src/shared/`。
 - **Message = parts 数组**（text / thinking / tool_use / artifact_ref …），不是 markdown 字符串（`specs/03`）。
 - **Artifact 独立于 Message**，有自己的生命周期与版本链（`specs/04`）。
-- **Orchestrator 是特殊 Agent**，走同一个 AgentRunner，只是多了 `plan_tasks` / `report_task_result` 工具（`specs/06`）。
+- **所有 Agent 走统一 Agent Loop**（`specs/19`）：solo / coordinated / subagent 三种模式共用 `run_agent_loop`，任何 Agent 都能通过 `task_dispatch` 克隆自己处理子任务，Orchestrator 额外拥有 `dispatch_plan`（DAG 派发）。旧三阶段流程（plan_tasks / report_task_result / verify gate）已删除。
 - **工具执行经 HookRegistry 拦截**：`execute_with_hooks` 在 pre/post 阶段分发 Hook，支持 deny/modify/inject/allow 控制流。Agent 通过 `hook_names` 字段启用特定 Hook 组。
 
 ### 3. 功能现状矩阵
@@ -68,8 +68,8 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | CustomAgentAdapter | ✅ | OpenAI 兼容（DeepSeek/OpenAI/火山方舟）+ 自驱 tool loop（SDK 路线） |
 | MockAdapter | ✅ | 开发期不烧 token |
 | 自建 Agent | ✅ | 表单/对话式创建，自定义 prompt + 工具集 + Skills |
-| Orchestrator 编排 | ✅ | 三阶段规划 + DAG 调度 + 级联中止 + 同波次代码冲突检测 + 子任务验证门禁（verify stage） |
-| 工具系统（23 个） | ✅ | write/read/deploy_artifact · read_attachment · fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash · plan_tasks · ask_user · report_task_result · web_search · memory_recall · rag_search/ingest/list/delete · load_skill/write_skill |
+| Orchestrator 编排 | ✅ | 统一 Agent Loop（solo/coordinated/subagent）· `task_dispatch` 克隆派发 · `dispatch_plan` DAG 调度 · 递归深度限制 · 可选计划审批 |
+| 工具系统（24 个） | ✅ | write/read/deploy_artifact · read_attachment · fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash · task_dispatch · dispatch_plan · ask_user · web_search · memory_recall · rag_search/ingest/list/delete · load_skill/write_skill |
 | Agent Skills | ✅ | custom agent 装备 skill · 渐进式披露 · `load_skill` 按需读正文 |
 | Artifact 预览/编辑 | ✅ | web_app / document / image / ppt(真 .pptx 导出) / code_file / diff · 版本链 · 选区改写 · 面板内编辑 |
 | Workspace 沙箱 | ✅ | sandbox/local 双模式 · fs_write 审批 · 双平台 Bash 黑名单 |
@@ -151,8 +151,9 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 服务 | 文件 | 职责 |
 |---|---|---|
 | **AgentRunner** | `agent_runner.py` | per-run 生命周期、选 adapter、`build_adapter_input`、历史注入、token 预算 —— **L3 核心** |
-| **Orchestrator** | `orchestrator.py` · `orchestrator_prompts.py` | 三阶段调度（PLAN/EXECUTE/VERIFY/AGGREGATE）+ DAG + 冲突检测 |
-| 冲突检测 | `utils/dispatch_file_writes.py` | 子 run fs_write 写入追踪 + 冲突检测纯函数 |
+| **AgentLoop** | `agent_loop.py` | ★ `run_agent_loop`（solo/coordinated/subagent 三模式统一循环）· `spawn_subagent_loop`（递归子 Agent 派发）· prompt builders |
+| DAG 执行器 | `dag_executor.py` | ★ `validate_dag` / `topological_waves` / `execute_dag`（DAG 验证 + 波调度 + 并行执行） |
+| Orchestrator stub | `orchestrator.py` · `orchestrator_prompts.py` | 旧三阶段已移除，仅保留 stub 与工具函数 |
 | 会话服务 | `conversation_service.py` | 会话/消息持久化 |
 | 跨 run 上下文 | `conversation_context.py` | MessagePart → ChatMessage 序列化、pinned 注入 |
 | 上下文压缩 | `context_compaction_service.py` | 手动压缩历史为摘要 |
@@ -162,7 +163,6 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 审批中转 store | `pending_writes.py` · `pending_questions.py` · `pending_bash_commands.py` · `pending_dispatch_plans.py` | |
 | 设置 / Key | `settings_service.py` | 三层 key 优先级解析 |
 | 搜索 | `search_service.py` | 消息全文搜索 |
-| 子任务上报 | `task_result_report.py` | 子任务完成度门禁 |
 | runner 注册 | `runner_registry.py` | per-conversation runner 生命周期 |
 | 部署命令 | `deploy_command_service.py` | 部署斜杠命令 |
 | Token 分析 | `usage_summary_service.py` | Token 用量聚合 |
@@ -174,7 +174,6 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **HookRegistry** | `hook_registry.py` | ★ 生命周期 Hook 注册与分发（10 个事件） |
 | 内置 Hooks | `hooks/`（7 个） | audit_log · auto_compact · checkpoint · memory_persist · skill_auto_activator · summary_generate · tool_approval |
 | Checkpoint | `checkpoint_service.py` | SDK Agent turn 级检查点保存/恢复 |
-| 验证门禁 | `verify_stage.py` | Orchestrator 子任务产物验证 |
 | 项目产物 | `project_artifact.py` | 项目级产物管理 |
 | Agent 负载 | `agent_load_tracker.py` | Agent 负载追踪 |
 
@@ -190,10 +189,10 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `custom_adapter.py` | OpenAI 协议 stream + 自驱 tool loop（MAX_TURNS=8，SDK 路线） |
 | `custom_provider_client.py` / `session_store.py` | provider 客户端 / 会话存储 |
 | `mock_adapter.py` | 假事件流，开发用 |
-> MCP Bridge：`backend/app/mcp_bridge.py` — stdio MCP Server，把 `report_task_result`/`write_artifact`/`ask_user` 等 AChat 平台工具暴露给 CLI agent（Claude/Codex CLI 通过 `--mcp-config` 拉起）。
+> MCP Bridge：`backend/app/mcp_bridge.py` — stdio MCP Server，把 `write_artifact`/`ask_user`/`task_dispatch` 等 AChat 平台工具暴露给 CLI agent（Claude/Codex CLI 通过 `--mcp-config` 拉起）。
 
 ### 工具系统（`backend/app/tools/`）
-`base.py`（ToolContext + ToolDef） · `registry.py`（注册 23 个工具） · `write_artifact.py` · `read_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_edit.py` · `fs_list.py` · `fs_glob.py` · `fs_grep.py` · `bash.py` · `plan_tasks.py` · `ask_user.py` · `report_task_result.py` · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `skills.py`（load_skill/write_skill）。详见 `specs/07`。
+`base.py`（ToolContext + ToolDef） · `registry.py`（注册 24 个工具） · `write_artifact.py` · `read_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_edit.py` · `fs_list.py` · `fs_glob.py` · `fs_grep.py` · `bash.py` · `task_dispatch.py`（子 Agent 派发） · `dispatch_plan.py`（DAG 派发） · `ask_user.py` · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `skills.py`（load_skill/write_skill）。详见 `specs/07`。
 
 ### RAG 引擎（`backend/app/rag/`）
 | 文件 | 职责 |
@@ -255,9 +254,11 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 ## 附 · 当前现状（易过时，以 git 为准）
 
 ### ✅ 近期完成
+- **统一 Agent Loop**（spec 19）：solo / coordinated / subagent 三模式统一为 `run_agent_loop` while-loop，移除旧三阶段 Orchestrator（plan_tasks / report_task_result / verify gate / 重试 harness）
+- **通用子任务派发**：任何 Agent 都能通过 `task_dispatch` 克隆自己处理子任务（clone-self，`hidden` 消息），`MAX_DISPATCH_DEPTH=3` 递归深度限制，`dispatch_visibility` 控制消息可见性
+- **DAG 派发计划**：`dispatch_plan` 工具声明结构化 DAG，`dag_executor.py` 做拓扑排序 + 波调度 + 并行执行 + 级联跳过，可选计划审批
 - **生命周期 Hooks 系统**：7 个内置 Hook（审计/压缩/检查点/记忆/技能/摘要/审批）· 10 个生命周期事件 · Agent 按 `hook_names` 启用
 - **Checkpoint 检查点**：SDK Agent turn 级检查点保存与恢复（`agent_run_checkpoints` 表）
-- **Orchestrator 验证门禁**：子任务产物 verify stage 门禁检查
 - **新增文件工具**：`fs_edit`（文件编辑）· `fs_glob`（glob 搜索）· `fs_grep`（内容搜索）
 - **RAG 混合检索系统**：Milvus(向量) + Elasticsearch(全文) + Neo4j(KGStore) 三路召回 + RRF 融合 + Query Rewrite + Rerank
 - **分层记忆系统**：STM + LTM(embedding 召回) + Preference + GraphMemory + 自动固化/去重/衰减
@@ -266,7 +267,6 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 - **PostgreSQL 迁移**：从 SQLite 迁移到 PostgreSQL 16（asyncpg），18 张表
 - **基础设施层**：Docker Compose 编排（PG/Milvus/ES/Neo4j），独立降级策略
 - **Web 搜索工具**：Tavily API
-- **Orchestrator 同波次代码冲突检测**
 - **PPT 产物**：ppt 类型 + 真 .pptx 导出 + 完整 theme token
 
 ### 🔧 适配器接入路线图
@@ -283,6 +283,7 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 > 迁移方案见 `openspec/changes/migrate-claude-codex-to-cli/`。CLI 路线将厂商 CLI 作为子进程拉起，工具执行/沙箱/审批由 CLI 自管，AChat 仅翻译事件流。
 
 ### 📋 待办
+- OpenSpec 主 specs 同步（orchestrator / tools / stream-events / persistence / core-domain 需更新以反映统一 Agent Loop）
 - Electron 桌面版改为启动 Python 后端（当前内嵌 Next 已无后端）
 - 移动端伴随 App 配对通信打通
 - E2E 测试补充（产物预览/导出 + 群聊调度，需测试假 adapter）
@@ -290,6 +291,7 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 - Hermes / OpenClaw / OpenCode 适配器接入
 - 外部 MCP 接入（spec 15）
 - RAG 会话级开关细化（`conversations.rag_enabled` 字段已就位）
+- 旧编号 specs（01/07/08）逐步迁移到 OpenSpec 体系
 
 ### ⚠️ 关键约定（动手前必看）
 - 改实体字段 → 同步 `specs/01` + `backend/app/db/models.py`；改事件 → `specs/02` + `backend/app/schemas/events.py` + `src/shared/`；改 Bash 黑名单 → 同步 `specs/11` + `backend/app/utils/` 安全模块。
@@ -300,4 +302,4 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 
 ---
 
-*最后更新：2026-07-07 · 同步 Hooks 系统、Checkpoint、新增工具（fs_edit/glob/grep）、18 张表、新增服务（hook_registry/checkpoint_service/verify_stage 等）、Orchestrator 验证门禁。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*
+*最后更新：2026-07-12 · 同步统一 Agent Loop（spec 19）、通用子任务派发（clone-self + 递归深度 + hidden 消息）、DAG 派发计划（dispatch_plan + dag_executor）、工具列表更新（移除 plan_tasks/report_task_result，新增 task_dispatch/dispatch_plan）。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*

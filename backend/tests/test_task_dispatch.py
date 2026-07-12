@@ -34,7 +34,7 @@ def test_task_dispatch_tool_has_required_parameters():
 
     assert "agentId" in props
     assert "taskDescription" in props
-    assert "agentId" in required
+    assert "agentId" not in required  # agentId is now optional
     assert "taskDescription" in required
     # dependsOn is optional
     assert "dependsOn" in props
@@ -78,6 +78,7 @@ async def test_task_dispatch_nonexistent_agent_returns_error(db):
         run_id="run_test",
         cancel_event=asyncio.Event(),
         tool_names=[],
+        dispatch_mode="coordinated",
     )
     result = await task_dispatch_tool.handler(
         {"agentId": "ag_nonexistent", "taskDescription": "do something"},

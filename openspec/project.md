@@ -33,7 +33,7 @@ OpenSpec capability specs under `openspec/specs/` are the concise, testable cont
   - **CLI subprocess route** — Claude Code (`spawn claude -p --output-format stream-json`) and Codex (`spawn codex app-server --listen stdio://`, JSON-RPC 2.0). The CLI owns tool execution, sandbox, and approval; AChat translates CLI events into `StreamEvent`.
   - **SDK route** — Custom adapter uses the `openai` Python SDK (Chat Completions) with an AChat-managed tool loop. Covers DeepSeek / OpenAI / 火山方舟 / OpenRouter / SiliconFlow etc.
   - **Mock route** — scripted event stream for development without token cost.
-- AChat MCP Bridge (`backend/app/mcp_bridge.py`) exposes platform tools (`report_task_result`, `write_artifact`, `ask_user`, …) to CLI agents via stdio MCP.
+- AChat MCP Bridge (`backend/app/mcp_bridge.py`) exposes platform tools (`write_artifact`, `ask_user`, `task_dispatch`, …) to CLI agents via stdio MCP.
 - Infrastructure (Docker Compose, independently degradable): Milvus (vector) · Elasticsearch (BM25) · Neo4j (KG) · Kafka (optional)
 - Desktop shell: Electron 33; Mobile companion: Capacitor
 

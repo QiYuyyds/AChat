@@ -82,6 +82,7 @@ async def _migrate_columns(conn) -> None:  # type: ignore[no-untyped-def]
         "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary TEXT",
         "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS dispatch_mode VARCHAR NOT NULL DEFAULT 'solo'",
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS mcp_server_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE",
     ]
     for stmt in statements:
         # dialects without IF NOT EXISTS (sqlite) / pre-existing column → no-op

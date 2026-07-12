@@ -151,6 +151,7 @@ def _message_record(msg: Message) -> MessageRecord:
         mentioned_agent_ids=msg.mentioned_agent_ids_list,
         run_id=msg.run_id,
         usage=msg.usage_dict,
+        hidden=getattr(msg, "hidden", False),
         created_at=msg.created_at,
     )
 

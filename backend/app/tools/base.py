@@ -31,6 +31,10 @@ class ToolContext:
     last_post_hook_result: Any = None
     # O8: tool_names for the current run, passed to HookContext for skill checks
     tool_names: list[str] | None = None
+    # universal subagent dispatch: recursion depth (0 = top-level)
+    dispatch_depth: int = 0
+    # universal subagent dispatch: effective loop mode ("solo" / "coordinated" / "subagent")
+    dispatch_mode: str = "solo"
 
 
 @dataclass

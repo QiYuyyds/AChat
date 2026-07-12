@@ -126,9 +126,14 @@ message.parts = [
 
 产物有自己的生命周期、版本、二次编辑。**不要**把产物内容内联到 message 里。
 
-### 3.6 Orchestrator 是特殊 Agent，走统一 Agent Loop
+### 3.6 所有 Agent 都能派发子任务，走统一 Agent Loop
 
-Orchestrator 走同一个 `AgentRunner` + `run_agent_loop(mode='coordinated')`，通过 `task_dispatch` 工具派发子任务。**不要**为它写独立服务路径，也不要恢复旧的 `plan_tasks` / `report_task_result` / 验证 gate 三阶段流程。详见 `specs/19-unified-agent-loop.md`。
+任何 Agent（solo / coordinated / subagent）都可以通过 `task_dispatch` 克隆自己来处理子任务。Orchestrator 是特殊的 coordinated 模式 Agent，额外拥有 `dispatch_plan`（DAG 派发）。所有模式走同一个 `AgentRunner` + `run_agent_loop(mode=...)`，**不要**为任何模式写独立服务路径，也不要恢复旧的 `plan_tasks` / `report_task_result` / 验证 gate 三阶段流程。
+
+- `task_dispatch` 的 `agentId` 参数是可选的：省略时 clone-self（`hidden` 消息），指定时 group-member 派发（`visible` 消息）
+- 递归深度上限 `MAX_DISPATCH_DEPTH = 3`，达到上限时 `task_dispatch` 不注入
+- clone-subagent 消息 `hidden=true`，从 `build_history_for` 和前端渲染中排除
+- 详见 `specs/19-unified-agent-loop.md`
 
 ### 3.7 RAG / 记忆是可选增强，不是硬依赖
 

@@ -277,7 +277,7 @@ function ToolUsePart({
   completion?: { result: unknown; isError: boolean }
 }) {
   const [showDetails, setShowDetails] = useState(false)
-  const displayName = getToolDisplayName(toolName)
+  const displayName = getToolDisplayName(toolName, args)
   const command = isBashToolName(toolName) ? extractCommand(args) : null
   const remainingArgs = command ? omitCommand(args) : args
   const bashResult =
@@ -574,7 +574,7 @@ function ToolCluster({
   let errorCount = 0
   let successCount = 0
   for (const t of tools) {
-    const displayName = getToolDisplayName(t.part.toolName)
+    const displayName = getToolDisplayName(t.part.toolName, t.part.args)
     const c = resultByCallId.get(t.part.callId)
     if (!c) {
       runningCount++
