@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { deleteDocument, fetchDocuments, uploadDocument } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { useAppStore } from '@/stores/app-store'
 import type { DocumentRow } from '@/shared/types'
 
 function formatTime(ts: number): string {
@@ -39,11 +40,11 @@ const TYPE_COLORS: Record<string, string> = {
   other: 'bg-gray-500/10 text-gray-600 dark:text-gray-400',
 }
 
-export function KnowledgeLibrary() {
+/** 侧边栏导航：文档列表 + 搜索 + 上传入口 */
+export function KnowledgeSidebarNav() {
   const [documents, setDocuments] = useState<DocumentRow[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [uploadOpen, setUploadOpen] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -51,13 +52,16 @@ export function KnowledgeLibrary() {
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
 
+  const selectedId = useAppStore((s) => s.selectedKnowledgeDocId)
+  const setSelectedId = useAppStore((s) => s.setSelectedKnowledgeDocId)
+
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
       const list = await fetchDocuments()
       setDocuments(list)
     } catch (err) {
-      console.error('[KnowledgeLibrary] load failed', err)
+      console.error('[KnowledgeSidebarNav] load failed', err)
     } finally {
       setLoading(false)
     }
@@ -109,9 +113,10 @@ export function KnowledgeLibrary() {
     try {
       await deleteDocument(deleteTargetId)
       setDocuments((arr) => arr.filter((d) => d.id !== deleteTargetId))
+      if (selectedId === deleteTargetId) setSelectedId(null)
       setDeleteTargetId(null)
     } catch (err) {
-      console.error('[KnowledgeLibrary] delete failed', err)
+      console.error('[KnowledgeSidebarNav] delete failed', err)
     } finally {
       setDeleting(false)
     }
@@ -121,12 +126,6 @@ export function KnowledgeLibrary() {
     ? documents.find((d) => d.id === deleteTargetId)
     : null
 
-  // Detail view
-  if (selectedId) {
-    return <DocumentDetail documentId={selectedId} onBack={() => setSelectedId(null)} />
-  }
-
-  // List view
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* Header + upload */}
@@ -222,7 +221,10 @@ export function KnowledgeLibrary() {
               return (
                 <div
                   key={doc.id}
-                  className="group cursor-pointer rounded-md border border-transparent px-2 py-2 transition hover:border-border/60 hover:bg-accent"
+                  className={cn(
+                    'group cursor-pointer rounded-md border border-transparent px-2 py-2 transition hover:border-border/60 hover:bg-accent',
+                    selectedId === doc.id && 'border-primary/40 bg-primary/5',
+                  )}
                   onClick={() => setSelectedId(doc.id)}
                 >
                   <div className="flex items-start gap-2">
@@ -336,4 +338,21 @@ export function KnowledgeLibrary() {
       )}
     </div>
   )
+}
+
+/** 主区域内容：文档详情或空状态 */
+export function KnowledgeMainPanel() {
+  const selectedId = useAppStore((s) => s.selectedKnowledgeDocId)
+  const setSelectedId = useAppStore((s) => s.setSelectedKnowledgeDocId)
+
+  if (!selectedId) {
+    return (
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
+        <BookOpen className="size-12 opacity-20" />
+        <span className="text-sm">从左侧选择文档查看详情</span>
+      </div>
+    )
+  }
+
+  return <DocumentDetail documentId={selectedId} onBack={() => setSelectedId(null)} />
 }

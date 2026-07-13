@@ -7,9 +7,12 @@ Ports:
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, UploadFile
+from fastapi import APIRouter, Depends, UploadFile
 from fastapi.responses import JSONResponse, Response
 
+from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_attachment_ownership, verify_conversation_ownership
+from app.db.models import User
 from app.schemas import (
     AttachmentListResponse,
     AttachmentResponse,
@@ -34,12 +37,13 @@ def _to_response(row) -> AttachmentResponse:
 
 
 @router.get("/attachments/{attachment_id}")
-async def serve_attachment(attachment_id: str) -> Response:
+async def serve_attachment(attachment_id: str, user: User = Depends(get_current_user)) -> Response:
     """Serve the raw attachment bytes (inline for images, else download)."""
     row = await attachment_service.get_attachment(attachment_id)
     if row is None:
         return JSONResponse({"error": "Not found"}, status_code=404)
 
+    await verify_attachment_ownership(attachment_id, user.id)
     abs_path = await attachment_service.get_attachment_absolute_path(attachment_id)
     if not abs_path:
         return JSONResponse({"error": "File missing on disk"}, status_code=410)
@@ -63,9 +67,10 @@ async def serve_attachment(attachment_id: str) -> Response:
 
 
 @router.delete("/attachments/{attachment_id}")
-async def delete_attachment(attachment_id: str) -> JSONResponse:
+async def delete_attachment(attachment_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     """Remove an attachment from the file library."""
     try:
+        await verify_attachment_ownership(attachment_id, user.id)
         await attachment_service.delete_attachment(attachment_id)
     except ValueError as err:
         return JSONResponse({"error": str(err)}, status_code=404)
@@ -73,7 +78,8 @@ async def delete_attachment(attachment_id: str) -> JSONResponse:
 
 
 @router.get("/conversations/{conversation_id}/attachments")
-async def list_attachments(conversation_id: str) -> AttachmentListResponse:
+async def list_attachments(conversation_id: str, user: User = Depends(get_current_user)) -> AttachmentListResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     """List a conversation's attachments (newest first)."""
     rows = await attachment_service.list_attachments(conversation_id)
     return AttachmentListResponse(attachments=[_to_response(r) for r in rows])
@@ -81,8 +87,9 @@ async def list_attachments(conversation_id: str) -> AttachmentListResponse:
 
 @router.post("/conversations/{conversation_id}/attachments", status_code=201)
 async def upload_attachment(
-    conversation_id: str, file: UploadFile | None = None
+    conversation_id: str, user: User = Depends(get_current_user), file: UploadFile | None = None
 ) -> Response:
+    await verify_conversation_ownership(conversation_id, user.id)
     """Upload a file (multipart/form-data, field name ``file``)."""
     if file is None:
         return JSONResponse({"error": "Missing file"}, status_code=400)

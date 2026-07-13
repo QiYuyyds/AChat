@@ -116,6 +116,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         agent_id=ctx.agent_id,
         run_id=ctx.run_id,
         questions=questions,
+        user_id=ctx.user_id,
     )
 
     decision: dict[str, AskUserAnswer] | None = await await_pending_decision(

@@ -71,9 +71,17 @@ PIN_LIMIT_PER_CONVERSATION = 5
 _WIN_ABS_RE = re.compile(r"^([A-Za-z]:[\\/]|\\\\)")
 
 
-def _workspaces_root() -> str:
-    """Root dir holding per-conversation sandbox workspaces."""
-    return str(get_settings().workspace_path)
+def _workspaces_root(user_id: str | None = None) -> str:
+    """Root dir holding per-conversation sandbox workspaces.
+
+    When ``user_id`` is given, returns a user-scoped path:
+    ``<workspace_path>/users/<user_id>/workspaces/``.
+    Without ``user_id``, returns the legacy unscoped root for backward compat.
+    """
+    base = str(get_settings().workspace_path)
+    if user_id is not None:
+        return os.path.join(base, "users", user_id, "workspaces")
+    return base
 
 
 # ─── Result types (mirror the TS interfaces) ────────────────────────────────
@@ -283,7 +291,8 @@ async def maybe_generate_summary(
             conversation_id=conversation_id,
             timestamp=now_ms(),
             summary=summary,
-        )
+        ),
+        user_id=conv.user_id,
     )
     logger.info(
         "[maybe_generate_summary] Success! conv=%s summary=%s",
@@ -300,6 +309,7 @@ async def create_conversation(
     title: str | None = None,
     bound_path: str | None = None,
     dispatch_mode: str | None = None,
+    user_id: str | None = None,
 ) -> ConversationResponse:
     """Create a conversation + its workspace, validating agents and the bound path."""
     if len(agent_ids) == 0:
@@ -338,7 +348,7 @@ async def create_conversation(
     now = now_ms()
     conversation_id = new_conversation_id()
     workspace_id = new_workspace_id()
-    root_path = os.path.join(_workspaces_root(), conversation_id)
+    root_path = os.path.join(_workspaces_root(user_id), conversation_id)
 
     # Internal sandbox dir always exists (used for attachments etc.) regardless of mode.
     os.makedirs(root_path, exist_ok=True)
@@ -365,6 +375,7 @@ async def create_conversation(
 
         conv = Conversation(
             id=conversation_id,
+            user_id=user_id,
             title=resolved_title,
             mode=mode,
             archived=False,
@@ -410,14 +421,15 @@ async def create_conversation(
 
 
 # ─── List ───────────────────────────────────────────────────────────────────
-async def list_conversations() -> list[ConversationResponse]:
+async def list_conversations(user_id: str | None = None) -> list[ConversationResponse]:
     """Pinned first (by pinnedAt desc), then by updatedAt desc."""
     async with get_db() as db:
-        result = await db.execute(
-            select(Conversation).order_by(
-                Conversation.pinned_at.desc(), Conversation.updated_at.desc()
-            )
+        query = select(Conversation).order_by(
+            Conversation.pinned_at.desc(), Conversation.updated_at.desc()
         )
+        if user_id is not None:
+            query = query.where(Conversation.user_id == user_id)
+        result = await db.execute(query)
         convs = result.scalars().all()
         if not convs:
             return []
@@ -730,6 +742,7 @@ async def send_message(
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
+        conv_user_id = conv.user_id
 
         parts: list[dict] = []
         if content and content.strip():
@@ -787,7 +800,8 @@ async def send_message(
                 usage=None,
                 created_at=now,
             ),
-        )
+        ),
+        user_id=conv_user_id,
     )
 
     # Bare deploy command (only when it's a lone text message): handle inline.
@@ -864,7 +878,8 @@ async def send_message(
                 conversation_id=conversation_id,
                 timestamp=sys_now,
                 message=sys_record,
-            )
+            ),
+            user_id=conv_user_id,
         )
         return SendMessageResult(
             message_id=message_id, run_ids=[], messages=[sys_record]
@@ -877,6 +892,7 @@ async def send_message(
             agent_id=agent_id,
             conversation_id=conversation_id,
             trigger_message_id=message_id,
+            user_id=conv_user_id,
         )
         run_ids.append(handle.run_id)
 
@@ -951,7 +967,8 @@ async def revise_dispatch_plan(
                 usage=None,
                 created_at=now,
             ),
-        )
+        ),
+        user_id=conv.user_id,
     )
 
     ok = pending_dispatch_plans.revise(plan_id, feedback)
@@ -981,6 +998,9 @@ async def withdraw_latest_user_message(
         if msg.role != "user":
             raise ValueError("Only user messages can be withdrawn")
         msg_created_at = msg.created_at
+
+        conv = await _require_conversation(db, conversation_id)
+        conv_user_id = conv.user_id
 
         latest_user = await _latest_user_message(db, conversation_id)
         if latest_user is None or latest_user.id != message_id:
@@ -1016,7 +1036,8 @@ async def withdraw_latest_user_message(
             timestamp=now_ms(),
             message_ids=deleted_message_ids,
             artifact_ids=deleted_artifact_ids,
-        )
+        ),
+        user_id=conv_user_id,
     )
 
     return WithdrawResult(
@@ -1032,6 +1053,7 @@ async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
+        conv_user_id = conv.user_id
 
         latest_user = await _latest_user_message(db, conversation_id)
         if latest_user is None:
@@ -1069,7 +1091,8 @@ async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
             timestamp=now_ms(),
             message_ids=deleted_message_ids,
             artifact_ids=deleted_artifact_ids,
-        )
+        ),
+        user_id=conv_user_id,
     )
 
     async with get_db() as db:
@@ -1089,6 +1112,7 @@ async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
             agent_id=agent_id,
             conversation_id=conversation_id,
             trigger_message_id=trigger_id,
+            user_id=conv_user_id,
         )
         run_ids.append(handle.run_id)
 

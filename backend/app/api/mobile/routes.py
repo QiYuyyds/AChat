@@ -13,21 +13,25 @@ The aggregation + projection helpers below port ``src/server/mobile-service.ts``
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import re
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from app.auth.dependencies import get_current_user
 from app.db.engine import get_db
-from app.db.models import Agent, AgentRun, Artifact
+from app.db.models import Agent, AgentRun, Artifact, User
 from app.schemas.dispatch import AskUserAnswer, PendingQuestion, PendingWrite
 from app.services import conversation_service
 from app.services.pending_questions import pending_questions
 from app.services.pending_writes import pending_writes
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -98,7 +102,43 @@ def _read_bearer(header: str | None) -> str | None:
     return parts[1]
 
 
+async def _try_legacy_mobile_auth(req: Request) -> Optional[User]:
+    """Attempt legacy mobile token auth; return a synthetic User if successful.
+
+    Logs a deprecation warning on each use. Returns None if legacy token
+    is not configured or doesn't match.
+    """
+    expected = _expected_token()
+    if not expected:
+        return None
+    actual = _read_bearer(req.headers.get("authorization"))
+    if not actual or not hmac.compare_digest(actual, expected):
+        return None
+    logger.warning(
+        "Legacy AGENTHUB_MOBILE_TOKEN auth used — deprecated, migrate to JWT. "
+    )
+    # Return the first user as a fallback (legacy single-user compat)
+    async with get_db() as db:
+        result = await db.execute(select(User).order_by(User.created_at.asc()).limit(1))
+        return result.scalar_one_or_none()
+
+
+async def mobile_auth(req: Request) -> User:
+    """Primary JWT auth with legacy mobile token fallback."""
+    # Try JWT auth first
+    try:
+        return await get_current_user(req)
+    except Exception:
+        pass
+    # Fallback: legacy mobile token
+    user = await _try_legacy_mobile_auth(req)
+    if user is not None:
+        return user
+    raise _mobile_json(req, {"error": "Unauthorized"}, status=401)  # type: ignore
+
+
 def _require_mobile_auth(req: Request) -> JSONResponse | None:
+    """Legacy auth check — kept for backward compat, prefer mobile_auth dependency."""
     expected = _expected_token()
     if not expected:
         return _mobile_json(
@@ -237,15 +277,20 @@ async def _list_active_runs(conversation_ids: list[str]) -> list[AgentRun]:
         return list(result.scalars().all())
 
 
-async def _list_agents_ordered() -> list[Agent]:
+async def _list_agents_ordered(user_id: str | None = None) -> list[Agent]:
     async with get_db() as db:
-        result = await db.execute(select(Agent).order_by(Agent.created_at.asc()))
+        query = select(Agent).order_by(Agent.created_at.asc())
+        if user_id:
+            query = query.where(
+                (Agent.user_id == user_id) | (Agent.user_id.is_(None))
+            )
+        result = await db.execute(query)
         return list(result.scalars().all())
 
 
-async def _build_snapshot() -> dict[str, Any]:
-    conversations = await conversation_service.list_conversations()
-    agents = await _list_agents_ordered()
+async def _build_snapshot(user_id: str | None = None) -> dict[str, Any]:
+    conversations = await conversation_service.list_conversations(user_id=user_id)
+    agents = await _list_agents_ordered(user_id=user_id)
     conv_ids = [c.id for c in conversations]
     running_runs = await _list_active_runs(conv_ids)
 
@@ -321,8 +366,8 @@ async def _list_artifact_summaries(artifact_ids: list[str]) -> list[dict[str, An
     return summaries
 
 
-async def _build_conversation_detail(conversation_id: str) -> dict[str, Any]:
-    conversations = await conversation_service.list_conversations()
+async def _build_conversation_detail(conversation_id: str, user_id: str | None = None) -> dict[str, Any]:
+    conversations = await conversation_service.list_conversations(user_id=user_id)
     conversation = next((c for c in conversations if c.id == conversation_id), None)
     if conversation is None:
         raise ValueError(f"Conversation not found: {conversation_id}")
@@ -393,22 +438,16 @@ async def mobile_options(req: Request, rest: str) -> Response:
 
 # ─── GET /api/mobile/snapshot ───────────────────────────────────────────────
 @router.get("/mobile/snapshot")
-async def mobile_snapshot(req: Request) -> Response:
-    auth_error = _require_mobile_auth(req)
-    if auth_error:
-        return auth_error
-    snapshot = await _build_snapshot()
+async def mobile_snapshot(req: Request, user: User = Depends(mobile_auth)) -> Response:
+    snapshot = await _build_snapshot(user_id=user.id)
     return _mobile_json(req, snapshot)
 
 
 # ─── GET /api/mobile/conversations/{id} ─────────────────────────────────────
 @router.get("/mobile/conversations/{conversation_id}")
-async def mobile_conversation_detail(req: Request, conversation_id: str) -> Response:
-    auth_error = _require_mobile_auth(req)
-    if auth_error:
-        return auth_error
+async def mobile_conversation_detail(req: Request, conversation_id: str, user: User = Depends(mobile_auth)) -> Response:
     try:
-        detail = await _build_conversation_detail(conversation_id)
+        detail = await _build_conversation_detail(conversation_id, user_id=user.id)
     except Exception as err:  # noqa: BLE001
         return _mobile_json(req, {"error": str(err)}, status=404)
     return _mobile_json(req, detail)
@@ -416,10 +455,7 @@ async def mobile_conversation_detail(req: Request, conversation_id: str) -> Resp
 
 # ─── POST /api/mobile/conversations/{id}/messages ───────────────────────────
 @router.post("/mobile/conversations/{conversation_id}/messages")
-async def mobile_send_message(req: Request, conversation_id: str) -> Response:
-    auth_error = _require_mobile_auth(req)
-    if auth_error:
-        return auth_error
+async def mobile_send_message(req: Request, conversation_id: str, user: User = Depends(mobile_auth)) -> Response:
     raw = await _parse_json_body(req)
     try:
         body = _ContentBody.model_validate(raw)
@@ -441,11 +477,9 @@ async def mobile_send_message(req: Request, conversation_id: str) -> Response:
 # ─── POST /api/mobile/conversations/{id}/messages/{messageId}/edit ──────────
 @router.post("/mobile/conversations/{conversation_id}/messages/{message_id}/edit")
 async def mobile_edit_message(
-    req: Request, conversation_id: str, message_id: str
+    req: Request, conversation_id: str, message_id: str,
+    user: User = Depends(mobile_auth),
 ) -> Response:
-    auth_error = _require_mobile_auth(req)
-    if auth_error:
-        return auth_error
     raw = await _parse_json_body(req)
     try:
         body = _ContentBody.model_validate(raw)
@@ -474,11 +508,9 @@ async def mobile_edit_message(
 # ─── POST /api/mobile/conversations/{id}/messages/{messageId}/withdraw ──────
 @router.post("/mobile/conversations/{conversation_id}/messages/{message_id}/withdraw")
 async def mobile_withdraw_message(
-    req: Request, conversation_id: str, message_id: str
+    req: Request, conversation_id: str, message_id: str,
+    user: User = Depends(mobile_auth),
 ) -> Response:
-    auth_error = _require_mobile_auth(req)
-    if auth_error:
-        return auth_error
     try:
         result = await conversation_service.withdraw_latest_user_message(
             conversation_id, message_id
@@ -497,10 +529,7 @@ async def mobile_withdraw_message(
 
 # ─── POST /api/mobile/conversations/{id}/regenerate ─────────────────────────
 @router.post("/mobile/conversations/{conversation_id}/regenerate")
-async def mobile_regenerate(req: Request, conversation_id: str) -> Response:
-    auth_error = _require_mobile_auth(req)
-    if auth_error:
-        return auth_error
+async def mobile_regenerate(req: Request, conversation_id: str, user: User = Depends(mobile_auth)) -> Response:
     try:
         result = await conversation_service.regenerate_latest_response(conversation_id)
     except Exception as err:  # noqa: BLE001
@@ -519,10 +548,7 @@ async def mobile_regenerate(req: Request, conversation_id: str) -> Response:
 
 # ─── GET /api/mobile/artifacts/{id} ─────────────────────────────────────────
 @router.get("/mobile/artifacts/{artifact_id}")
-async def mobile_artifact(req: Request, artifact_id: str) -> Response:
-    auth_error = _require_mobile_auth(req)
-    if auth_error:
-        return auth_error
+async def mobile_artifact(req: Request, artifact_id: str, user: User = Depends(mobile_auth)) -> Response:
     try:
         artifact = await _get_mobile_artifact(artifact_id)
     except Exception as err:  # noqa: BLE001
@@ -532,10 +558,7 @@ async def mobile_artifact(req: Request, artifact_id: str) -> Response:
 
 # ─── POST /api/mobile/pending-questions/{id} ────────────────────────────────
 @router.post("/mobile/pending-questions/{pending_id}")
-async def mobile_answer_pending_question(req: Request, pending_id: str) -> Response:
-    auth_error = _require_mobile_auth(req)
-    if auth_error:
-        return auth_error
+async def mobile_answer_pending_question(req: Request, pending_id: str, user: User = Depends(mobile_auth)) -> Response:
     raw = await _parse_json_body(req)
     if not isinstance(raw, dict) or not isinstance(raw.get("answers"), dict):
         return _mobile_json(
@@ -563,10 +586,7 @@ async def mobile_answer_pending_question(req: Request, pending_id: str) -> Respo
 
 # ─── POST /api/mobile/pending-writes/{id} ───────────────────────────────────
 @router.post("/mobile/pending-writes/{pending_id}")
-async def mobile_resolve_pending_write(req: Request, pending_id: str) -> Response:
-    auth_error = _require_mobile_auth(req)
-    if auth_error:
-        return auth_error
+async def mobile_resolve_pending_write(req: Request, pending_id: str, user: User = Depends(mobile_auth)) -> Response:
     raw = await _parse_json_body(req)
     try:
         body = _PendingWriteActionBody.model_validate(raw)

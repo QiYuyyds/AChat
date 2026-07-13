@@ -33,6 +33,8 @@ class Item:
     score: float = 0.0
     scope: str = "global"
     agent_id: str = ""
+    # Multi-user isolation: owning user (None = legacy/global)
+    user_id: Optional[str] = None
     # Runtime-only decay checkpoint (not persisted). 0.0 → fall back to created_at.
     last_decay_ts: float = 0.0
 

@@ -30,17 +30,18 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.adapters.custom_provider_client import (
     validate_openai_compatible_api_key,
     validate_openai_compatible_base_url,
 )
+from app.auth.dependencies import get_current_user
 from app.db.engine import get_db
-from app.db.models import Agent
+from app.db.models import Agent, User
 from app.schemas import CreateAgentRequest, UpdateAgentRequest
 from app.utils.clock import now_ms
 from app.utils.ids import new_agent_id
@@ -91,11 +92,13 @@ def _invalid_body(exc: ValidationError) -> JSONResponse:
 
 # ─── GET /api/agents ────────────────────────────────────────────────
 @router.get("/agents")
-async def list_agents() -> JSONResponse:
+async def list_agents(user: User = Depends(get_current_user)) -> JSONResponse:
     """List agents: builtin first, then newest first (matches listAgentsOrdered)."""
     async with get_db() as db:
         result = await db.execute(
-            select(Agent).order_by(
+            select(Agent)
+            .where(or_(Agent.user_id.is_(None), Agent.user_id == user.id))
+            .order_by(
                 Agent.is_builtin.desc(),
                 Agent.created_at.desc(),
             )
@@ -106,7 +109,7 @@ async def list_agents() -> JSONResponse:
 
 # ─── POST /api/agents ───────────────────────────────────────────────
 @router.post("/agents")
-async def create_agent(request: Request) -> JSONResponse:
+async def create_agent(request: Request, user: User = Depends(get_current_user)) -> JSONResponse:
     """Create a user custom agent (ports createCustomAgent)."""
     try:
         raw = await request.json()
@@ -134,14 +137,14 @@ async def create_agent(request: Request) -> JSONResponse:
         )
 
     try:
-        row = await _create_custom_agent(body)
+        row = await _create_custom_agent(body, user.id)
     except ValueError as err:
         return JSONResponse({"error": str(err)}, status_code=400)
 
     return JSONResponse({"agent": row}, status_code=201)
 
 
-async def _create_custom_agent(body: CreateAgentRequest) -> dict[str, Any]:
+async def _create_custom_agent(body: CreateAgentRequest, user_id: str) -> dict[str, Any]:
     adapter_name = body.adapter_name
 
     if adapter_name == "custom":
@@ -164,6 +167,7 @@ async def _create_custom_agent(body: CreateAgentRequest) -> dict[str, Any]:
 
     agent = Agent(
         id=new_agent_id(),
+        user_id=user_id,
         name=body.name.strip(),
         avatar=avatar,
         description=body.description.strip(),
@@ -234,7 +238,7 @@ _PATCH_ALIASES: set[str] = {
 
 
 @router.patch("/agents/{agent_id}")
-async def update_agent(agent_id: str, request: Request) -> JSONResponse:
+async def update_agent(agent_id: str, request: Request, user: User = Depends(get_current_user)) -> JSONResponse:
     """Update an agent (ports updateCustomAgent)."""
     try:
         raw = await request.json()
@@ -276,7 +280,7 @@ async def update_agent(agent_id: str, request: Request) -> JSONResponse:
 
     try:
         row = await _update_custom_agent(
-            agent_id, body, has_adapter_name, adapter_name_patch
+            agent_id, body, has_adapter_name, adapter_name_patch, user.id
         )
     except ValueError as err:
         return JSONResponse({"error": str(err)}, status_code=400)
@@ -296,6 +300,7 @@ async def _update_custom_agent(
     body: UpdateAgentRequest,
     has_adapter_name: bool,
     adapter_name_patch: str | None,
+    user_id: str,
 ) -> dict[str, Any]:
     provided = body.model_fields_set
     has_api_key = "api_key" in provided
@@ -313,6 +318,8 @@ async def _update_custom_agent(
     async with get_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
+            raise ValueError(f"Agent not found: {agent_id}")
+        if agent.user_id is not None and agent.user_id != user_id:
             raise ValueError(f"Agent not found: {agent_id}")
         # Builtin agents may be reconfigured; only deletion is protected.
 
@@ -422,19 +429,21 @@ async def _update_custom_agent(
 
 # ─── DELETE /api/agents/{id} ────────────────────────────────────────
 @router.delete("/agents/{agent_id}")
-async def delete_agent(agent_id: str) -> JSONResponse:
+async def delete_agent(agent_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     """Delete a non-builtin agent (ports deleteCustomAgent)."""
     try:
-        await _delete_custom_agent(agent_id)
+        await _delete_custom_agent(agent_id, user.id)
     except ValueError as err:
         return JSONResponse({"error": str(err)}, status_code=400)
     return JSONResponse({"ok": True})
 
 
-async def _delete_custom_agent(agent_id: str) -> None:
+async def _delete_custom_agent(agent_id: str, user_id: str) -> None:
     async with get_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
+            raise ValueError(f"Agent not found: {agent_id}")
+        if agent.user_id is not None and agent.user_id != user_id:
             raise ValueError(f"Agent not found: {agent_id}")
         if agent.is_builtin:
             raise ValueError("Built-in agents cannot be deleted")
@@ -984,7 +993,7 @@ def build_heuristic_agent_config_draft(
 
 
 @router.post("/agents/draft")
-async def draft_agent(request: Request) -> JSONResponse:
+async def draft_agent(request: Request, user: User = Depends(get_current_user)) -> JSONResponse:
     """Build a heuristic agent-config draft (ports createAgentConfigDraft)."""
     try:
         raw = await request.json()

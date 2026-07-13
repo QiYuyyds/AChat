@@ -7,10 +7,13 @@ Pydantic models or dataclasses of Pydantic models, serialized via by_alias.
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
+from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_conversation_ownership
+from app.db.models import User
 from app.schemas import (
     CreateConversationRequest,
     SendMessageRequest,
@@ -51,13 +54,13 @@ async def _read_json(req: Request) -> Any:
 
 # ─── /conversations ──────────────────────────────────────────────────────────
 @router.get("/conversations")
-async def list_conversations() -> JSONResponse:
-    conversations = await conversation_service.list_conversations()
+async def list_conversations(user: User = Depends(get_current_user)) -> JSONResponse:
+    conversations = await conversation_service.list_conversations(user_id=user.id)
     return JSONResponse(content={"conversations": _model(conversations)})
 
 
 @router.post("/conversations")
-async def create_conversation(req: Request) -> JSONResponse:
+async def create_conversation(req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
     raw = await _read_json(req)
     try:
         body = CreateConversationRequest.model_validate(raw)
@@ -71,6 +74,7 @@ async def create_conversation(req: Request) -> JSONResponse:
             title=body.title,
             bound_path=body.bound_path,
             dispatch_mode=body.dispatch_mode,
+            user_id=user.id,
         )
     except ValueError as err:
         return _err(str(err), 400)
@@ -79,7 +83,8 @@ async def create_conversation(req: Request) -> JSONResponse:
 
 # ─── /conversations/{id} ─────────────────────────────────────────────────────
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str) -> JSONResponse:
+async def delete_conversation(conversation_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
         await conversation_service.delete_conversation(conversation_id)
     except ValueError as err:
@@ -88,7 +93,8 @@ async def delete_conversation(conversation_id: str) -> JSONResponse:
 
 
 @router.patch("/conversations/{conversation_id}")
-async def update_conversation(conversation_id: str, req: Request) -> JSONResponse:
+async def update_conversation(conversation_id: str, req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     raw = await _read_json(req)
     title = raw.get("title") if isinstance(raw, dict) else None
     summary = raw.get("summary") if isinstance(raw, dict) else None
@@ -186,7 +192,8 @@ async def update_conversation(conversation_id: str, req: Request) -> JSONRespons
 
 # ─── /conversations/{id}/rag-mode ────────────────────────────────────────────
 @router.patch("/conversations/{conversation_id}/rag-mode")
-async def set_rag_mode(conversation_id: str, req: Request) -> JSONResponse:
+async def set_rag_mode(conversation_id: str, req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     raw = await _read_json(req)
     try:
         body = SetRagModeRequest.model_validate(raw)
@@ -204,13 +211,15 @@ async def set_rag_mode(conversation_id: str, req: Request) -> JSONResponse:
 
 # ─── /conversations/{id}/messages ────────────────────────────────────────────
 @router.get("/conversations/{conversation_id}/messages")
-async def list_messages(conversation_id: str) -> JSONResponse:
+async def list_messages(conversation_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     messages = await conversation_service.list_messages(conversation_id)
     return JSONResponse(content={"messages": _model(messages)})
 
 
 @router.post("/conversations/{conversation_id}/messages")
-async def send_message(conversation_id: str, req: Request) -> JSONResponse:
+async def send_message(conversation_id: str, req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     raw = await _read_json(req)
     try:
         body = SendMessageRequest.model_validate(raw)
@@ -243,7 +252,8 @@ async def send_message(conversation_id: str, req: Request) -> JSONResponse:
 
 
 @router.delete("/conversations/{conversation_id}/messages")
-async def clear_conversation_history(conversation_id: str) -> JSONResponse:
+async def clear_conversation_history(conversation_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
         result = await conversation_service.clear_conversation_history(conversation_id)
     except ValueError as err:
@@ -267,7 +277,8 @@ async def clear_conversation_history(conversation_id: str) -> JSONResponse:
 
 # ─── /conversations/{id}/regenerate ──────────────────────────────────────────
 @router.post("/conversations/{conversation_id}/regenerate")
-async def regenerate(conversation_id: str) -> JSONResponse:
+async def regenerate(conversation_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
         result = await conversation_service.regenerate_latest_response(conversation_id)
     except ValueError as err:
@@ -284,7 +295,8 @@ async def regenerate(conversation_id: str) -> JSONResponse:
 
 # ─── /conversations/{id}/compact ─────────────────────────────────────────────
 @router.post("/conversations/{conversation_id}/compact")
-async def compact(conversation_id: str) -> JSONResponse:
+async def compact(conversation_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     import logging
 
     from app.services import context_compaction_service
@@ -318,7 +330,8 @@ async def compact(conversation_id: str) -> JSONResponse:
 
 # ─── /conversations/{id}/deploy ──────────────────────────────────────────────
 @router.get("/conversations/{conversation_id}/deploy")
-async def list_deploy(conversation_id: str) -> JSONResponse:
+async def list_deploy(conversation_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
         candidates = await deploy_command_service.list_deploy_candidates(
             conversation_id
@@ -329,7 +342,8 @@ async def list_deploy(conversation_id: str) -> JSONResponse:
 
 
 @router.post("/conversations/{conversation_id}/deploy")
-async def deploy(conversation_id: str, req: Request) -> JSONResponse:
+async def deploy(conversation_id: str, req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     raw = await _read_json(req)
     if not isinstance(raw, dict):
         raw = {}

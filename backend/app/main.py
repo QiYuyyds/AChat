@@ -13,10 +13,11 @@ from typing import Optional
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-from app.config import apply_env_overrides, get_settings
+from app.config import apply_env_overrides, ensure_jwt_secret, get_settings
 from app.db.engine import close_db, init_db
 
 # ── Logging configuration (AGI-memory style) ──────────────────────────────
@@ -48,6 +49,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     # Startup
     apply_env_overrides()
+    ensure_jwt_secret()
     import app.services.agent_runner  # noqa: F401
 
     await init_db()
@@ -246,12 +248,25 @@ async def _cleanup_orphan_worktrees(settings) -> None:
             logger.info("Worktree GC: cleaned %d orphan worktree(s)", len(cleaned))
 
         # Prune stale git worktree metadata in each conversation workspace repo.
+        # Supports both legacy flat layout and user-scoped layout.
         ws_root = str(settings.workspace_path)
         if os.path.isdir(ws_root):
             for name in os.listdir(ws_root):
-                conv_ws = os.path.join(ws_root, name)
-                if is_git_repo(conv_ws):
-                    await git_worktree_prune(conv_ws)
+                child = os.path.join(ws_root, name)
+                if is_git_repo(child):
+                    await git_worktree_prune(child)
+                elif name == "users" and os.path.isdir(child):
+                    for user_name in os.listdir(child):
+                        user_dir = os.path.join(child, user_name)
+                        if not os.path.isdir(user_dir):
+                            continue
+                        user_ws = os.path.join(user_dir, "workspaces")
+                        if not os.path.isdir(user_ws):
+                            continue
+                        for conv_name in os.listdir(user_ws):
+                            conv_ws = os.path.join(user_ws, conv_name)
+                            if is_git_repo(conv_ws):
+                                await git_worktree_prune(conv_ws)
     except Exception as e:
         logger.warning("Orphan worktree cleanup failed: %s", e)
 
@@ -396,15 +411,20 @@ def _wire_milvus_to_rag(rag_service, milvus_client, settings):
     collection_name = "rag_embeddings"
     dim = settings.rag_milvus_dim
 
-    def milvus_search(embedding, k):
+    def milvus_search(embedding, k, user_id=None):
         try:
             if not milvus_client.has_collection(collection_name):
                 return []
             milvus_client.load_collection(collection_name)
-            results = milvus_client.search(
-                collection_name, data=[embedding], limit=k,
-                output_fields=["content"],
-            )
+            search_kwargs = {
+                "collection_name": collection_name,
+                "data": [embedding],
+                "limit": k,
+                "output_fields": ["content"],
+            }
+            if user_id:
+                search_kwargs["filter"] = f'user_id == "{user_id}"'
+            results = milvus_client.search(**search_kwargs)
             return [
                 {"pg_id": hit["id"], "content": hit["entity"].get("content", ""), "score": hit["distance"]}
                 for hit in results[0]
@@ -413,7 +433,7 @@ def _wire_milvus_to_rag(rag_service, milvus_client, settings):
             logger.warning("Milvus search error: %s", e)
             return []
 
-    def milvus_insert(ids, contents, embeddings):
+    def milvus_insert(ids, contents, embeddings, user_id=None):
         try:
             if not milvus_client.has_collection(collection_name):
                 from pymilvus import DataType
@@ -421,6 +441,7 @@ def _wire_milvus_to_rag(rag_service, milvus_client, settings):
                 schema.add_field("id", DataType.INT64, is_primary=True)
                 schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=dim)
                 schema.add_field("content", DataType.VARCHAR, max_length=65535)
+                schema.add_field("user_id", DataType.VARCHAR, max_length=64, default_value="")
                 milvus_client.create_collection(
                     collection_name, schema=schema, metric_type="COSINE",
                 )
@@ -433,7 +454,7 @@ def _wire_milvus_to_rag(rag_service, milvus_client, settings):
                 )
                 milvus_client.create_index(collection_name, index_params)
             data = [
-                {"id": int(i), "embedding": emb, "content": txt}
+                {"id": int(i), "embedding": emb, "content": txt, "user_id": user_id or ""}
                 for i, txt, emb in zip(ids, contents, embeddings)
             ]
             milvus_client.insert(collection_name, data)
@@ -459,11 +480,43 @@ def _wire_es_to_rag(rag_service, es_client):
     """Wire AsyncElasticsearch into RAGService's HybridStore via callback functions."""
     index_name = "rag_chunks"
 
-    async def es_search(query_text, k):
+    async def _ensure_index():
         try:
+            exists = await es_client.indices.exists(index=index_name)
+            if not exists:
+                await es_client.indices.create(
+                    index=index_name,
+                    body={
+                        "mappings": {
+                            "properties": {
+                                "content": {"type": "text"},
+                                "doc_hash": {"type": "keyword"},
+                                "chunk_idx": {"type": "integer"},
+                                "user_id": {"type": "keyword"},
+                            }
+                        }
+                    },
+                )
+                logger.info("RAG: ES index '%s' created with user_id mapping", index_name)
+        except Exception as e:
+            logger.warning("RAG: ES ensure index error: %s", e)
+
+    async def es_search(query_text, k, user_id=None):
+        try:
+            query_body: dict = {"query": {"match": {"content": query_text}}, "size": k}
+            if user_id:
+                query_body = {
+                    "query": {
+                        "bool": {
+                            "must": [{"match": {"content": query_text}}],
+                            "filter": [{"term": {"user_id.keyword": user_id}}],
+                        }
+                    },
+                    "size": k,
+                }
             resp = await es_client.search(
                 index=index_name,
-                body={"query": {"match": {"content": query_text}}, "size": k},
+                body=query_body,
             )
             return [
                 {"pg_id": int(hit["_id"]), "content": hit["_source"].get("content", ""), "score": hit["_score"]}
@@ -473,7 +526,7 @@ def _wire_es_to_rag(rag_service, es_client):
             logger.warning("ES search error: %s", e)
             return []
 
-    async def es_index(pg_id, content, doc_hash, chunk_idx):
+    async def es_index(pg_id, content, doc_hash, chunk_idx, user_id=None):
         try:
             await es_client.index(
                 index=index_name,
@@ -482,6 +535,7 @@ def _wire_es_to_rag(rag_service, es_client):
                     "content": content,
                     "doc_hash": doc_hash,
                     "chunk_idx": chunk_idx,
+                    "user_id": user_id or "",
                 },
             )
         except Exception as e:
@@ -496,6 +550,10 @@ def _wire_es_to_rag(rag_service, es_client):
 
     rag_service.set_es_backend(es_search, es_index)
     rag_service.set_es_delete_fn(es_delete)
+
+    import asyncio
+    asyncio.ensure_future(_ensure_index())
+
     logger.info("RAG: Elasticsearch backend wired")
 
 
@@ -543,11 +601,27 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # CSRF: reject mutation requests from unallowed origins
+    _allowed_origins = set(settings.cors_origins_list)
+
+    @app.middleware("http")
+    async def csrf_origin_check(request: Request, call_next):
+        """Reject POST/PATCH/DELETE requests whose Origin header doesn't match allowed origins."""
+        if request.method in ("POST", "PATCH", "PUT", "DELETE"):
+            origin = request.headers.get("origin") or request.headers.get("referer")
+            if origin and origin not in _allowed_origins:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Origin not allowed"},
+                )
+        return await call_next(request)
+
     # Include routers
     from app.api import (
         agents,
         artifacts,
         attachments,
+        auth,
         conversations,
         deployments,
         documents,
@@ -556,6 +630,7 @@ def create_app() -> FastAPI:
         memory,
         messages,
         pending,
+        profile,
         runs_misc,
         skills,
         stream,
@@ -565,6 +640,8 @@ def create_app() -> FastAPI:
     )
     from app.api.mobile import routes as mobile_routes
 
+    app.include_router(auth.router, prefix="/api", tags=["auth"])
+    app.include_router(profile.router, prefix="/api", tags=["profile"])
     app.include_router(conversations.router, prefix="/api", tags=["conversations"])
     app.include_router(messages.router, prefix="/api", tags=["messages"])
     app.include_router(agents.router, prefix="/api", tags=["agents"])

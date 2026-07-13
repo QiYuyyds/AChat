@@ -97,6 +97,14 @@ class Settings(BaseSettings):
     memory_consolidation_min_importance: float = 0.3
     memory_consolidation_trigger: int = 5
 
+    # ─── Auth ───
+    jwt_secret: str = ""
+    jwt_access_token_expiry: int = 3600  # seconds (1 hour)
+    jwt_refresh_token_expiry: int = 604800  # seconds (7 days)
+    allow_registration: bool = True
+    default_user_email: str = "admin@local"
+    default_user_password: str = ""
+
     # ─── ReAct Loop ───
     # When True, SDK agents (Custom) use the AgentRunner ReAct loop (call_once).
     # Set to False to fall back to the legacy adapter.stream() path.
@@ -149,3 +157,26 @@ def apply_env_overrides() -> None:
     ):
         if value and not os.environ.get(name):
             os.environ[name] = value
+
+
+def ensure_jwt_secret() -> None:
+    """Validate that JWT_SECRET is set and sufficiently long (>= 32 chars).
+
+    Called at startup. In test mode (DEBUG=true with no secret) a dev secret is
+    generated so tests can run without configuration.
+    """
+    import secrets as _secrets
+
+    s = get_settings()
+    if not s.jwt_secret:
+        if s.debug:
+            s.jwt_secret = _secrets.token_urlsafe(48)
+            return
+        raise RuntimeError(
+            "JWT_SECRET is not set. Set it in backend/.env or as an environment "
+            "variable (must be at least 32 characters)."
+        )
+    if len(s.jwt_secret) < 32:
+        raise RuntimeError(
+            f"JWT_SECRET is too short ({len(s.jwt_secret)} chars); must be at least 32 characters."
+        )

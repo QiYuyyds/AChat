@@ -153,6 +153,8 @@ async def build_history_for(
     conversation_id: str,
     options: BuildHistoryOptions | None = None,
     assembler: ContextAssembler | None = None,
+    *,
+    user_id: str = "",
 ) -> list[ChatMessage]:
     """Serialize a conversation into OpenAI chat messages for the given agent.
     
@@ -162,7 +164,7 @@ async def build_history_for(
     """
     if assembler is not None:
         return await _build_history_with_assembler(
-            agent_id, conversation_id, options, assembler
+            agent_id, conversation_id, options, assembler, user_id=user_id,
         )
     return await _build_history_legacy(
         agent_id, conversation_id, options
@@ -174,6 +176,8 @@ async def _build_history_with_assembler(
     conversation_id: str,
     options: BuildHistoryOptions | None,
     assembler: ContextAssembler,
+    *,
+    user_id: str = "",
 ) -> list[ChatMessage]:
     """Build history using PromptAssembler for schema-driven context assembly."""
     opts = options or BuildHistoryOptions()
@@ -224,6 +228,7 @@ async def _build_history_with_assembler(
         text=query_text,
         mode=mode,
         conversation_id=conversation_id,
+        user_id=user_id,
     )
     ctx: RuntimeContext = await assembler.assemble(query)
 

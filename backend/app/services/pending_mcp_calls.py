@@ -26,6 +26,7 @@ McpCallResolver = Callable[[dict], None]
 @dataclass
 class _PendingEntry:
     call: PendingMcpCall
+    user_id: str | None = None
     resolver: McpCallResolver | None = field(default=None)
 
 
@@ -45,6 +46,7 @@ class PendingMcpCallsStore:
         tool_name: str,
         args: dict,
         server_trust: str,
+        user_id: str | None = None,
     ) -> PendingMcpCall:
         created_at = now_ms()
         call = PendingMcpCall(
@@ -57,14 +59,15 @@ class PendingMcpCallsStore:
             server_trust=server_trust,
             created_at=created_at,
         )
-        self._map[call.id] = _PendingEntry(call=call)
+        self._map[call.id] = _PendingEntry(call=call, user_id=user_id)
 
         event_bus.publish(
             McpCallPendingEvent(
                 conversation_id=conversation_id,
                 timestamp=created_at,
                 pending_call=call,
-            )
+            ),
+            user_id=user_id,
         )
         return call
 
@@ -133,7 +136,8 @@ class PendingMcpCallsStore:
                 timestamp=now_ms(),
                 pending_id=pending_id,
                 approved=approved,
-            )
+            ),
+            user_id=entry.user_id,
         )
 
 

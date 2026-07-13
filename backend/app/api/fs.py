@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_conversation_ownership
+from app.db.models import User
 from app.schemas import FsWriteRequest
 from app.services import fs_service
 from app.utils.platform import IS_WINDOWS
@@ -55,7 +58,8 @@ def _entry_to_dict(entry) -> dict:
 
 
 @router.get("/conversations/{conversation_id}/fs/read")
-async def read_file(conversation_id: str, request: Request) -> JSONResponse:
+async def read_file(conversation_id: str, request: Request, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     target = request.query_params.get("path")
     if not target:
         return JSONResponse({"error": "path required"}, status_code=400)
@@ -92,7 +96,8 @@ async def read_file(conversation_id: str, request: Request) -> JSONResponse:
 
 
 @router.post("/conversations/{conversation_id}/fs/write")
-async def write_file(conversation_id: str, request: Request) -> JSONResponse:
+async def write_file(conversation_id: str, request: Request, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
         raw = await request.json()
     except Exception:
@@ -132,7 +137,8 @@ async def write_file(conversation_id: str, request: Request) -> JSONResponse:
 
 
 @router.get("/conversations/{conversation_id}/fs/listdir")
-async def list_workspace_dir(conversation_id: str, request: Request) -> JSONResponse:
+async def list_workspace_dir(conversation_id: str, request: Request, user: User = Depends(get_current_user)) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     target = request.query_params.get("path") or ""
 
     workspace = await fs_service.get_workspace_for_conversation(conversation_id)
@@ -168,7 +174,7 @@ def _list_available_drives() -> list[str]:
 
 
 @router.get("/fs/listdir")
-async def list_global_dir(request: Request) -> JSONResponse:
+async def list_global_dir(request: Request, user: User = Depends(get_current_user)) -> JSONResponse:
     """List **subdirectories** of an absolute path (DirPickerDialog).
 
     Port of src/app/api/fs/listdir/route.ts. Returns the `{ path, parent,

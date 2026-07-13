@@ -10,7 +10,7 @@ import { EditMessageInput } from '@/components/edit-message-input'
 import { PartList } from '@/components/message-parts'
 import { QuotedMessage } from '@/components/quoted-message'
 import { TurnTimeline } from '@/components/turn-timeline'
-import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -21,6 +21,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { editAndResendMessage, regenerateLastResponse, toggleMessagePin, withdrawMessage } from '@/lib/api'
+import { API_BASE_URL } from '@/lib/config'
 import { cn } from '@/lib/utils'
 import type { MessageRow } from '@/db/schema'
 import { PIN_LIMIT_PER_CONVERSATION } from '@/shared/constants'
@@ -31,6 +32,7 @@ import {
   useLatestUserMessageId,
   useTurnMetrics,
 } from '@/stores/app-store'
+import { useAuthStore } from '@/stores/auth-store'
 
 function MessageItemImpl({ message, grouped = false }: { message: MessageRow; grouped?: boolean }) {
   const agentsMap = useAppStore((s) => s.agents)
@@ -57,6 +59,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
   const removeMessages = useAppStore((s) => s.removeMessages)
   const removeArtifacts = useAppStore((s) => s.removeArtifacts)
   const upsertMessage = useAppStore((s) => s.upsertMessage)
+  const userAvatarUrl = useAuthStore((s) => s.user?.avatarUrl)
 
   const isUser = message.role === 'user'
   const name = isUser ? '我' : message.role === 'system' ? '系统' : agent?.name ?? 'Unknown'
@@ -172,6 +175,9 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
         <div className="size-8 shrink-0" aria-hidden />
       ) : isUser ? (
         <Avatar className="size-8 shrink-0 bg-primary text-primary-foreground">
+          {userAvatarUrl && (
+            <AvatarImage src={`${API_BASE_URL}${userAvatarUrl}`} alt="我" />
+          )}
           <AvatarFallback className="bg-primary text-sm text-primary-foreground">
             我
           </AvatarFallback>

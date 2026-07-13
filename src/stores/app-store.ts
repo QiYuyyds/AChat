@@ -130,8 +130,16 @@ interface AppState {
   memoryTab: MemoryTab
   setMemoryTab(tab: MemoryTab): void
 
+  // ─── 知识库当前选中的文档 ID（主视图展示详情）──
+  selectedKnowledgeDocId: string | null
+  setSelectedKnowledgeDocId(id: string | null): void
+
   // ─── 流连接状态 ────────────────────────────────────
   streamConnected: boolean
+
+  // ─── 当前用户 ID（从 AuthStore 同步）──────────────
+  userId: string | null
+  setUserId(userId: string | null): void
 
   // ─── actions ───────────────────────────────────────
   setStreamConnected(connected: boolean): void
@@ -239,13 +247,20 @@ export const useAppStore = create<AppState>()(
     mobileSidebarOpen: false,
     sidebarMode: 'conversations',
     memoryTab: 'long-term',
+    selectedKnowledgeDocId: null,
     pendingQuoteForInput: null,
     highlightedMessageId: null,
     streamConnected: false,
+    userId: null,
 
     setStreamConnected: (connected) =>
       set((s) => {
         s.streamConnected = connected
+      }),
+
+    setUserId: (userId) =>
+      set((s) => {
+        s.userId = userId
       }),
 
     setConversations: (list) =>
@@ -334,6 +349,11 @@ export const useAppStore = create<AppState>()(
     setMemoryTab: (tab) =>
       set((s) => {
         s.memoryTab = tab
+      }),
+
+    setSelectedKnowledgeDocId: (id) =>
+      set((s) => {
+        s.selectedKnowledgeDocId = id
       }),
 
     setPendingQuote: (quote) =>

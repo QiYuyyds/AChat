@@ -17,9 +17,12 @@ contract byte-for-byte (the unchanged React frontend depends on it).
 from datetime import UTC, datetime
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
+from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_artifact_ownership
+from app.db.models import User
 from app.schemas import CreateArtifactVersionRequest
 from app.schemas.artifacts import ProjectFile
 from app.services import artifact_service
@@ -66,14 +69,14 @@ def _content_disposition(filename: str) -> str:
 
 
 @router.get("/artifacts")
-async def list_artifacts() -> dict:
+async def list_artifacts(user: User = Depends(get_current_user)) -> dict:
     """List all artifacts, newest first."""
     artifacts = await artifact_service.list_artifacts()
     return {"artifacts": [a.to_camel() for a in artifacts]}
 
 
 @router.get("/artifacts/{artifact_id}")
-async def get_artifact(artifact_id: str):
+async def get_artifact(artifact_id: str, user: User = Depends(get_current_user)):
     """Get an artifact by ID."""
     artifact = await artifact_service.get_artifact(artifact_id)
     if artifact is None:
@@ -82,9 +85,10 @@ async def get_artifact(artifact_id: str):
 
 
 @router.delete("/artifacts/{artifact_id}")
-async def delete_artifact(artifact_id: str):
+async def delete_artifact(artifact_id: str, user: User = Depends(get_current_user)):
     """Delete an artifact."""
     try:
+        await verify_artifact_ownership(artifact_id, user.id)
         await artifact_service.delete_artifact(artifact_id)
     except ValueError as err:
         return JSONResponse({"error": str(err)}, status_code=404)
@@ -92,7 +96,7 @@ async def delete_artifact(artifact_id: str):
 
 
 @router.get("/artifacts/{artifact_id}/versions")
-async def list_artifact_versions(artifact_id: str):
+async def list_artifact_versions(artifact_id: str, user: User = Depends(get_current_user)):
     """Return the full version chain (root → all descendants, ascending)."""
     versions = await artifact_service.list_artifact_versions(artifact_id)
     if versions is None:
@@ -101,7 +105,7 @@ async def list_artifact_versions(artifact_id: str):
 
 
 @router.post("/artifacts/{artifact_id}/versions")
-async def create_artifact_version(artifact_id: str, body: CreateArtifactVersionRequest):
+async def create_artifact_version(artifact_id: str, body: CreateArtifactVersionRequest, user: User = Depends(get_current_user)):
     """Submit edited content as a new version (version+1 off the given parent)."""
     result = await artifact_service.create_artifact_version(
         artifact_id, body.content, body.title
@@ -112,7 +116,7 @@ async def create_artifact_version(artifact_id: str, body: CreateArtifactVersionR
 
 
 @router.get("/artifacts/{artifact_id}/export")
-async def export_artifact(artifact_id: str, request: Request):
+async def export_artifact(artifact_id: str, request: Request, user: User = Depends(get_current_user)):
     """One-click export; dispatches on artifact type inside the service."""
     export_mode = request.query_params.get("mode") or "editable"
     export = await artifact_service.serialize_artifact_export(artifact_id, export_mode)
@@ -170,7 +174,7 @@ async def export_artifact(artifact_id: str, request: Request):
 
 
 @router.get("/artifacts/{artifact_id}/preview")
-async def preview_artifact(artifact_id: str):
+async def preview_artifact(artifact_id: str, user: User = Depends(get_current_user)):
     """Render a web_app artifact as a sandboxed, self-contained HTML document."""
     artifact = await artifact_service.get_artifact(artifact_id)
     if artifact is None:

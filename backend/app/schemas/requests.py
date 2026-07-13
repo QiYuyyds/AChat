@@ -489,6 +489,37 @@ class MobileSnapshotResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# ─── Auth Requests ─────────────────────────────────────
+class RegisterRequest(BaseModel):
+    """Request to register a new user."""
+
+    email: str = Field(min_length=3, max_length=320)
+    name: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    """Request to log in."""
+
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class RefreshRequest(BaseModel):
+    """Request to refresh access token."""
+
+    refresh_token: str = Field(alias="refreshToken")
+
+
+class ChangePasswordRequest(BaseModel):
+    """Request to change password."""
+
+    current_password: str = Field(alias="currentPassword", min_length=1, max_length=128)
+    new_password: str = Field(alias="newPassword", min_length=8, max_length=128)
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Error Response ─────────────────────────────────────
 class ErrorResponse(BaseModel):
     """Standard error response."""

@@ -13,12 +13,13 @@ import asyncio
 import os
 from urllib.parse import quote
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 
+from app.auth.dependencies import get_current_user
 from app.db.engine import get_db
-from app.db.models import AgentRun
+from app.db.models import AgentRun, User
 from app.schemas import (
     ConnectionHintsResponse,
     PlatformResponse,
@@ -29,7 +30,7 @@ from app.schemas import (
 from app.services import conversation_service, deployment_service
 from app.services.network_hints import get_connection_hints
 from app.services.search_service import search_messages
-from app.services.settings_service import DEFAULT_COMPANION_PORT, get_app_settings
+from app.services.settings_service import DEFAULT_COMPANION_PORT, get_user_settings
 from app.services.usage_summary_service import get_usage_summary
 from app.utils.platform import IS_WINDOWS
 
@@ -38,7 +39,7 @@ router = APIRouter()
 
 # ─── POST /api/runs/{id}/abort ───────────────────────────────────────────────
 @router.post("/runs/{run_id}/abort")
-async def abort_run(run_id: str) -> JSONResponse:
+async def abort_run(run_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     """Abort a running agent run."""
     ok = await conversation_service.abort_run(run_id)
     if not ok:
@@ -50,7 +51,7 @@ async def abort_run(run_id: str) -> JSONResponse:
 
 # ─── POST /api/runs/{id}/resume ──────────────────────────────────────────────
 @router.post("/runs/{run_id}/resume")
-async def resume_run(run_id: str) -> JSONResponse:
+async def resume_run(run_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     """Resume an SDK agent run from its latest checkpoint."""
     from app.services.agent_runner import RunArgs, execute_run
     from app.services.checkpoint_service import load_latest_checkpoint
@@ -83,6 +84,7 @@ async def resume_run(run_id: str) -> JSONResponse:
         conversation_id=conversation_id,
         trigger_message_id=trigger_message_id,
         resume_from_checkpoint=True,
+        user_id=user.id,
     )
     asyncio.create_task(execute_run(run_id, cancel_event, args))
     return JSONResponse({"ok": True, "runId": run_id, "resumedFromTurn": checkpoint.turn_number})
@@ -90,7 +92,7 @@ async def resume_run(run_id: str) -> JSONResponse:
 
 # ─── GET /api/runs/{id}/checkpoints ──────────────────────────────────────────
 @router.get("/runs/{run_id}/checkpoints")
-async def list_run_checkpoints(run_id: str) -> JSONResponse:
+async def list_run_checkpoints(run_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     """List available checkpoints for a run."""
     from app.services.checkpoint_service import list_checkpoints
 
@@ -110,6 +112,7 @@ async def list_run_checkpoints(run_id: str) -> JSONResponse:
 # ─── GET /api/search ─────────────────────────────────────────────────────────
 @router.get("/search")
 async def search(
+    user: User = Depends(get_current_user),
     q: str = Query(..., min_length=1, max_length=200),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -173,7 +176,7 @@ async def search(
 
 # ─── GET /api/usage/summary ──────────────────────────────────────────────────
 @router.get("/usage/summary")
-async def usage_summary() -> JSONResponse:
+async def usage_summary(user: User = Depends(get_current_user)) -> JSONResponse:
     """Global token usage summary."""
     summary = await get_usage_summary()
     # Round-trip through the schema to validate shape, then emit camelCase.
@@ -195,10 +198,10 @@ async def platform() -> JSONResponse:
 
 # ─── GET /api/connection-hints ───────────────────────────────────────────────
 @router.get("/connection-hints")
-async def connection_hints(request: Request) -> JSONResponse:
+async def connection_hints(request: Request, user: User = Depends(get_current_user)) -> JSONResponse:
     """LAN / tailscale / local connection hints for the companion app."""
     url = request.url
-    settings = await get_app_settings()
+    settings = await get_user_settings(user.id)
     local_port = str(url.port or os.environ.get("PORT") or "3000")
     remote_port = (
         local_port
@@ -218,7 +221,7 @@ async def connection_hints(request: Request) -> JSONResponse:
 
 # ─── GET /api/deployments/{id}/download/{kind} ───────────────────────────────
 @router.get("/deployments/{deployment_id}/download/{kind}")
-async def download_deployment(deployment_id: str, kind: str) -> Response:
+async def download_deployment(deployment_id: str, kind: str, user: User = Depends(get_current_user)) -> Response:
     """Download a deployment as a source or container zip."""
     if kind == "source":
         download = deployment_service.build_deployment_source_zip(deployment_id)

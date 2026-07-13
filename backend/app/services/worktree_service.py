@@ -36,9 +36,16 @@ WORKTREES_DIR_NAME = "worktrees"
 _SHORT_TASK_ID_LEN = 8
 
 
-def get_worktrees_root() -> str:
-    """Root dir holding per-conversation worktrees: ``<data_dir>/worktrees/``."""
-    return str(get_settings().data_path / WORKTREES_DIR_NAME)
+def get_worktrees_root(user_id: str | None = None) -> str:
+    """Root dir holding per-conversation worktrees.
+
+    When ``user_id`` is given, returns a user-scoped path:
+    ``<data_dir>/worktrees/users/<user_id>/``.
+    """
+    base = str(get_settings().data_path / WORKTREES_DIR_NAME)
+    if user_id is not None:
+        return os.path.join(base, "users", user_id)
+    return base
 
 
 # ─── dataclasses ────────────────────────────────────────────────────────────
@@ -52,6 +59,7 @@ class WorktreeRef:
     main_workspace_path: str
     is_git: bool
     conversation_id: str
+    user_id: str | None = None
 
 
 @dataclass
@@ -126,8 +134,8 @@ def _branch_name(agent_name: str, task_id: str) -> str:
     return f"agent/{sanitize_agent_name(agent_name)}/{task_id[:_SHORT_TASK_ID_LEN]}"
 
 
-def _worktree_path_for(conversation_id: str, task_id: str) -> str:
-    return os.path.join(get_worktrees_root(), conversation_id, task_id)
+def _worktree_path_for(conversation_id: str, task_id: str, user_id: str | None = None) -> str:
+    return os.path.join(get_worktrees_root(user_id), conversation_id, task_id)
 
 
 def _validate_worktree_path(path: str) -> bool:
@@ -211,6 +219,7 @@ async def create_worktree(
     task_id: str,
     agent_name: str,
     conversation_id: str,
+    user_id: str | None = None,
 ) -> WorktreeRef | None:
     """Create an isolated worktree for *task_id*.
 
@@ -219,7 +228,7 @@ async def create_worktree(
 
     Returns ``None`` on failure (caller degrades to no-worktree mode).
     """
-    wt_path = _worktree_path_for(conversation_id, task_id)
+    wt_path = _worktree_path_for(conversation_id, task_id, user_id)
     if not _validate_worktree_path(wt_path):
         logger.warning("worktree path escapes worktrees root: %s", wt_path)
         return None
@@ -256,6 +265,7 @@ async def create_worktree(
         main_workspace_path=main_workspace,
         is_git=is_git,
         conversation_id=conversation_id,
+        user_id=user_id,
     )
     _publish_worktree_event("worktree.created", ref)
     return ref
@@ -379,4 +389,4 @@ def _publish_worktree_event(
         path=wt.path if event_type == "worktree.created" else None,
         merge_status=merge_status,  # type: ignore[arg-type]
     )
-    event_bus.publish(event)
+    event_bus.publish(event, user_id=wt.user_id)

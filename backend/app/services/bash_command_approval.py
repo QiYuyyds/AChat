@@ -96,6 +96,7 @@ async def wait_for_bash_approval(
     cwd: str,
     reason: str,
     cancel_event: asyncio.Event,
+    user_id: str | None = None,
 ) -> bool:
     pending = pending_bash_commands.register(
         conversation_id=conversation_id,
@@ -104,6 +105,7 @@ async def wait_for_bash_approval(
         command=command,
         cwd=cwd,
         reason=reason,
+        user_id=user_id,
     )
 
     decision = await await_pending_decision(

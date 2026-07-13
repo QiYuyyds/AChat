@@ -1,17 +1,18 @@
 'use client'
 
-import { Archive, ArchiveRestore, BarChart3, BookOpen, Bot, Brain, ChevronDown, ChevronRight, Ellipsis, Layers, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plug, Plus, Search, Sparkles, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, BarChart3, BookOpen, Bot, Brain, ChevronDown, ChevronRight, Ellipsis, Layers, LogOut, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plug, Plus, Search, Sparkles, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { AgentLibrary } from '@/components/agent-library'
 import { ConversationAvatar } from '@/components/agent-avatar'
 import { GlobalSearchTrigger } from '@/components/global-search-trigger'
 import { ArtifactLibrary } from '@/components/artifact-library'
-import { KnowledgeLibrary } from '@/components/knowledge-library'
+import { KnowledgeSidebarNav } from '@/components/knowledge-library'
 import { MemorySidebarNav } from '@/components/memory-library'
 import { McpServerLibrary } from '@/components/mcp-server-library'
 import { SkillLibrary } from '@/components/skill-library'
 import { NewConversationDialog } from '@/components/new-conversation-dialog'
+import { ProfileButton } from '@/components/profile-dialog'
 import { SettingsButton } from '@/components/settings-dialog'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { UsageDashboard } from '@/components/usage-dashboard'
@@ -46,6 +47,7 @@ import { cn } from '@/lib/utils'
 import type { AgentRow, ConversationRow } from '@/db/schema'
 import { useAppStore, useConversationList, useUnreadCount } from '@/stores/app-store'
 import type { SidebarMode } from '@/stores/app-store'
+import { useAuthStore } from '@/stores/auth-store'
 
 export function Sidebar() {
   const mobileOpen = useAppStore((s) => s.mobileSidebarOpen)
@@ -61,6 +63,8 @@ export function Sidebar() {
 
   const mode = useAppStore((s) => s.sidebarMode)
   const setMode = useAppStore((s) => s.setSidebarMode)
+  const logout = useAuthStore((s) => s.logout)
+  const user = useAuthStore((s) => s.user)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
@@ -194,8 +198,19 @@ export function Sidebar() {
           <RailButton mode={mode} self="mcp" onClick={() => pickMode('mcp')} icon={<Plug className="size-4" />} label="MCP" />
           <RailButton mode={mode} self="memory" onClick={() => pickMode('memory')} icon={<Brain className="size-4" />} label="记忆管理" />
           <div className="mt-auto flex flex-col items-center gap-1">
+            <ProfileButton />
             <SettingsButton />
             <ThemeToggle />
+            <Button
+              size="icon"
+              variant="ghost"
+              className="group"
+              onClick={() => void logout()}
+              title={user ? `退出登录 (${user.email})` : '退出登录'}
+              aria-label="退出登录"
+            >
+              <LogOut className="size-4 motion-safe:transition-transform motion-safe:duration-200 motion-safe:group-hover:-translate-x-0.5 motion-safe:group-active:scale-90" />
+            </Button>
             <Button
               size="icon"
               variant="ghost"
@@ -359,9 +374,9 @@ export function Sidebar() {
               <ArtifactLibrary />
             ) : mode === 'agents' ? (
               <AgentLibrary />
-            ) : mode === 'knowledge' ? (
-              <KnowledgeLibrary />
-            ) : mode === 'skills' ? (
+) : mode === 'knowledge' ? (
+              <KnowledgeSidebarNav />
+) : mode === 'skills' ? (
               <SkillLibrary />
             ) : mode === 'mcp' ? (
               <McpServerLibrary />

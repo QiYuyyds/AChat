@@ -71,36 +71,40 @@ class Preference:
             self.preferences = dict(loaded)
         logger.info("Loaded %d preferences for user %s", len(loaded), self.user_id)
 
-    async def set(self, key: str, value: str) -> None:
+    async def set(self, key: str, value: str, source: str = "extracted") -> None:
         if not key or value is None:
             return
         key = _normalize_key(key)
         value = str(value)
-        if len(value) > _PREFERENCE_VALUE_MAX:
+        if source == "extracted" and len(value) > _PREFERENCE_VALUE_MAX:
             value = value[: _PREFERENCE_VALUE_MAX - 3] + "..."
-        with self._lock:
-            self.preferences[key] = value
         try:
             async with get_db() as session:
                 existing = await session.get(
                     UserPreference, {"user_id": self.user_id, "key": key}
                 )
                 if existing:
+                    if source == "extracted" and existing.source == "manual":
+                        return
                     existing.value = value
+                    existing.source = source
                     existing.updated_at = time.time()
                 else:
                     session.add(UserPreference(
                         user_id=self.user_id,
                         key=key,
                         value=value,
+                        source=source,
                         updated_at=time.time(),
                     ))
         except Exception as e:
             logger.warning("Preference save failed: %s", e)
+        with self._lock:
+            self.preferences[key] = value
 
-    async def save_batch(self, kvs: Dict[str, str]) -> None:
+    async def save_batch(self, kvs: Dict[str, str], source: str = "extracted") -> None:
         for k, v in (kvs or {}).items():
-            await self.set(_normalize_key(str(k)), str(v))
+            await self.set(_normalize_key(str(k)), str(v), source=source)
 
     async def delete(self, key: str) -> bool:
         """Delete a preference key from memory and PG.
@@ -141,6 +145,7 @@ class Preference:
 
         Returns (key, value, matched). Rules: "我喜欢" / "我爱" / "我叫".
         DB write is deferred — caller should call ``set()`` separately if needed.
+        Extracted values are always ``source='extracted'``.
         """
         if not msg:
             return "", "", False
@@ -168,7 +173,7 @@ class Preference:
         """Extract preference from user message and persist to PG."""
         key, value, matched = self.extract_and_save_sync(msg)
         if matched and key:
-            await self.set(key, value)
+            await self.set(key, value, source="extracted")
         return key, value, matched
 
     def build_context(self) -> str:

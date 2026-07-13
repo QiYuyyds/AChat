@@ -110,6 +110,8 @@ class MemoryService:
     async def on_message_end(
         self, role: str, content: str, agent_id: str = "",
         conversation_id: str = "",
+        *,
+        user_id: Optional[str] = None,
     ) -> None:
         """Post-conversation hook — called after each message exchange.
 
@@ -134,6 +136,7 @@ class MemoryService:
                     role=role,
                     content=content,
                     created_at=time.time(),
+                    user_id=user_id,
                 )
                 session.add(row)
         except Exception as e:
@@ -142,7 +145,7 @@ class MemoryService:
         if role == "assistant":
             # Assistant message: trigger LLM-based memory extraction (background)
             if self._generate_fn and len(content) >= 10 and not self._is_trivial_reply(content):
-                asyncio.create_task(self._safe_extract_memory(content, agent_id))
+                asyncio.create_task(self._safe_extract_memory(content, agent_id, user_id=user_id))
             # Session Memory incremental extraction (background, after turn ends)
             if conversation_id:
                 asyncio.create_task(self._safe_extract_session_memory(conversation_id))
@@ -170,10 +173,11 @@ class MemoryService:
 
     async def recall(
         self, query: str, top_k: Optional[int] = None, agent_id: str = "",
+        *, user_id: Optional[str] = None,
     ) -> List[Item]:
         """Semantic recall from LTM."""
         k = top_k or self.settings.memory_long_term_top_k
-        return await self.ltm.recall(query, top_k=k, agent_id=agent_id)
+        return await self.ltm.recall(query, top_k=k, agent_id=agent_id, user_id=user_id)
 
     async def graph_recall(self, item_id: int) -> List[int]:
         """Graph-based recall — expand from a seed memory."""
@@ -194,8 +198,16 @@ class MemoryService:
             lines.append(f"{prefix}: {content}")
         return "\n".join(lines)
 
-    def get_preference_context(self) -> str:
-        """Return preference block for prompt injection."""
+    def get_preference_context(self, *, user_id: Optional[str] = None) -> str:
+        """Return preference block for prompt injection.
+
+        For multi-user: when user_id is provided and differs from the default,
+        returns a synchronous snapshot from the in-memory cache if it matches,
+        or an empty string (async load not supported in sync context).
+        """
+        if user_id is not None and user_id != self.preference.user_id:
+            # Different user — return empty context (async load not possible here)
+            return ""
         return self.preference.build_context()
 
     async def close(self) -> None:
@@ -332,7 +344,8 @@ class MemoryService:
 
             # Save merged preferences (updates existing, inserts new)
             await self.preference.save_batch(
-                {str(k): str(v) for k, v in merged.items()}
+                {str(k): str(v) for k, v in merged.items()},
+                source="extracted",
             )
 
             # Delete removed keys from in-memory and PG
@@ -360,7 +373,7 @@ class MemoryService:
         except Exception as e:
             logger.warning("Preference consolidation failed: %s", e)
 
-    async def _safe_extract_memory(self, content: str, agent_id: str = "") -> None:
+    async def _safe_extract_memory(self, content: str, agent_id: str = "", *, user_id: Optional[str] = None) -> None:
         """Extract memory facts from assistant reply using LLM (background task)."""
         try:
             from app.memory.memory_writer import extract_memory_from_reply
@@ -372,6 +385,7 @@ class MemoryService:
                 preference=self.preference,
                 existing_keys=list(self.preference.data.keys()),
                 agent_id=agent_id,
+                user_id=user_id,
             )
         except Exception as e:
             logger.warning("Memory extraction failed: %s", e)
@@ -399,7 +413,7 @@ class MemoryService:
                 existing_keys=list(self.preference.data.keys()),
             )
             if prefs:
-                await self.preference.save_batch(prefs)
+                await self.preference.save_batch(prefs, source="extracted")
                 logger.info("LLM preference overlay: %d keys", len(prefs))
         except Exception as e:
             logger.warning("LLM preference extraction failed: %s", e)

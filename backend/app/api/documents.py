@@ -11,9 +11,12 @@ Routes:
   POST   /documents/upload           — upload file → parse → create → ingest
 """
 
-from fastapi import APIRouter, Form, UploadFile
+from fastapi import APIRouter, Depends, Form, UploadFile
 from fastapi.responses import JSONResponse
 
+from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_document_ownership
+from app.db.models import User
 from app.schemas import (
     DeleteDocumentResponse,
     DocumentDetailResponse,
@@ -71,7 +74,7 @@ def _ver_response(v: dict) -> VersionResponse:
 
 
 @router.get("/documents")
-async def list_documents() -> DocumentListResponse:
+async def list_documents(user: User = Depends(get_current_user)) -> DocumentListResponse:
     """List all active documents with latest-version metadata."""
     svc = _get_service()
     items = await svc.list_documents()
@@ -99,7 +102,7 @@ async def list_documents() -> DocumentListResponse:
 
 
 @router.post("/documents")
-async def write_document(req: WriteDocumentRequest) -> WriteDocumentResponse:
+async def write_document(req: WriteDocumentRequest, user: User = Depends(get_current_user)) -> WriteDocumentResponse:
     """Create a new document or update an existing one (creates a new version)."""
     svc = _get_service()
     try:
@@ -113,6 +116,7 @@ async def write_document(req: WriteDocumentRequest) -> WriteDocumentResponse:
             summary=req.summary,
             metadata=req.metadata,
             ingest_to_rag=req.ingest_to_rag,
+            user_id=user.id,
         )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=404)  # type: ignore
@@ -130,7 +134,8 @@ async def write_document(req: WriteDocumentRequest) -> WriteDocumentResponse:
 
 
 @router.get("/documents/{document_id}")
-async def get_document(document_id: str) -> DocumentDetailResponse:
+async def get_document(document_id: str, user: User = Depends(get_current_user)) -> DocumentDetailResponse:
+    await verify_document_ownership(document_id, user.id)
     """Get document + latest version."""
     svc = _get_service()
     result = await svc.get_document(document_id)
@@ -146,7 +151,8 @@ async def get_document(document_id: str) -> DocumentDetailResponse:
 
 
 @router.get("/documents/{document_id}/versions")
-async def list_versions(document_id: str) -> VersionListResponse:
+async def list_versions(document_id: str, user: User = Depends(get_current_user)) -> VersionListResponse:
+    await verify_document_ownership(document_id, user.id)
     """List all versions of a document."""
     svc = _get_service()
     versions = await svc.list_versions(document_id)
@@ -157,7 +163,8 @@ async def list_versions(document_id: str) -> VersionListResponse:
 
 
 @router.get("/documents/{document_id}/versions/{version_id}")
-async def get_version(document_id: str, version_id: str) -> VersionResponse:
+async def get_version(document_id: str, version_id: str, user: User = Depends(get_current_user)) -> VersionResponse:
+    await verify_document_ownership(document_id, user.id)
     """Get a specific version by ID."""
     svc = _get_service()
     ver = await svc.get_version(version_id)
@@ -170,7 +177,8 @@ async def get_version(document_id: str, version_id: str) -> VersionResponse:
 
 
 @router.delete("/documents/{document_id}")
-async def delete_document(document_id: str) -> DeleteDocumentResponse:
+async def delete_document(document_id: str, user: User = Depends(get_current_user)) -> DeleteDocumentResponse:
+    await verify_document_ownership(document_id, user.id)
     """Soft-delete document + clean up RAG chunks."""
     svc = _get_service()
     try:
@@ -185,12 +193,14 @@ async def delete_document(document_id: str) -> DeleteDocumentResponse:
 
 @router.post("/documents/{document_id}/ingest")
 async def ingest_document(
-    document_id: str, req: IngestVersionRequest
+    document_id: str,
+    req: IngestVersionRequest,
+    user: User = Depends(get_current_user),
 ) -> IngestResultResponse:
     """Ingest a specific version into RAG."""
     svc = _get_service()
     try:
-        result = await svc.ingest_version(document_id, req.version_id)
+        result = await svc.ingest_version(document_id, req.version_id, user_id=user.id)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=404)  # type: ignore
     return IngestResultResponse(
@@ -205,6 +215,7 @@ async def ingest_document(
 
 @router.post("/documents/upload")
 async def upload_document(
+    user: User = Depends(get_current_user),
     file: UploadFile | None = None,
     document_id: str = Form(default=""),
     title: str | None = Form(default=None),
@@ -230,6 +241,7 @@ async def upload_document(
             document_id=document_id,
             title=title,
             doc_type=doc_type or "upload",
+            user_id=user.id,
         )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)  # type: ignore

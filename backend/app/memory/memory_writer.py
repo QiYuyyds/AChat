@@ -36,7 +36,7 @@ _IMPORTANCE_BY_CATEGORY: Dict[str, float] = {
 class _PreferenceLike(Protocol):
     """Minimal contract for the preference store used during double-write."""
 
-    async def set(self, key: str, value: str) -> None: ...
+    async def set(self, key: str, value: str, source: str = "extracted") -> None: ...
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -72,6 +72,8 @@ def classify_memory_content(key: str, value: str) -> Tuple[str, List[str], str]:
         return "identity", ["name"], "profile"
     if _contains_any(combined, "所在地", "位于", "住在", "在城市", "在重庆", "在北京", "在上海", "在广州", "在深圳", "在成都"):
         return "identity", ["location"], "profile"
+    if _contains_any(combined, "家乡", "老家"):
+        return "identity", ["hometown"], "profile"
     if _contains_any(combined, "喜欢", "偏好", "习惯", "爱好", "讨厌", "不喜欢", "prefer"):
         return "preference", ["preference"], "profile"
     if _contains_any(combined, "工具", "失败", "错误", "报错", "异常", "error", "bug"):
@@ -169,6 +171,8 @@ async def extract_memory_from_reply(
     preference: Optional[_PreferenceLike] = None,
     existing_keys: Optional[List[str]] = None,
     agent_id: str = "",
+    *,
+    user_id: Optional[str] = None,
 ) -> None:
     """Extract k-v facts from assistant reply using LLM, classify, and store.
 
@@ -247,7 +251,7 @@ async def extract_memory_from_reply(
         if category in ("identity", "preference"):
             if preference is not None:
                 try:
-                    await preference.set(str(k), str(v))
+                    await preference.set(str(k), str(v), source="extracted")
                 except Exception as e:
                     logger.warning(
                         "Memory extraction preference.set failed for %s: %s", k, e,
@@ -280,6 +284,7 @@ async def extract_memory_from_reply(
                 slot_hint,
                 scope=write_scope,
                 agent_id=agent_id,
+                user_id=user_id,
             )
             logger.info(
                 "Memory extracted: %s = %s (category=%s, importance=%.2f, inserted=%s)",
@@ -350,6 +355,9 @@ def _extract_rule_based(msg: str) -> Dict[str, str]:
         ("我喜欢", "喜欢", "喜好", False),
         ("我爱", "爱", "喜好", False),
         ("我叫", "叫", "姓名", False),
+        ("我家乡在", "我家乡在", "家乡", True),
+        ("我老家在", "我老家在", "家乡", True),
+        ("老家是", "老家是", "家乡", True),
         ("我目前在", "我目前在", "所在地", True),
         ("我现在在", "我现在在", "所在地", True),
         ("我住在", "我住在", "所在地", True),

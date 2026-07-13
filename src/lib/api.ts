@@ -39,6 +39,82 @@ export interface ArtifactListItem {
   createdAt: number
 }
 
+// ─── authFetch: credentials + auto-refresh on 401 ───────────────────────────
+
+let _refreshInProgress: Promise<boolean> | null = null
+
+function _getStoredToken(): string | null {
+  try {
+    return localStorage.getItem('agenthub_access_token')
+  } catch {
+    return null
+  }
+}
+
+async function _doRefresh(): Promise<boolean> {
+  if (_refreshInProgress) return _refreshInProgress
+  _refreshInProgress = (async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const token = data.tokens?.access_token
+        if (token) {
+          try {
+            localStorage.setItem('agenthub_access_token', token)
+          } catch {
+            // best-effort
+          }
+        }
+        return true
+      }
+      return false
+    } catch {
+      return false
+    } finally {
+      _refreshInProgress = null
+    }
+  })()
+  return _refreshInProgress
+}
+
+export async function authFetch(
+  input: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const token = _getStoredToken()
+  const merged: RequestInit = {
+    ...init,
+    credentials: 'include',
+    headers: {
+      ...(init?.headers ?? {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  }
+
+  let res = await fetch(input, merged)
+
+  if (res.status === 401) {
+    const refreshed = await _doRefresh()
+    if (refreshed) {
+      const newToken = _getStoredToken()
+      const retryInit: RequestInit = {
+        ...merged,
+        headers: {
+          ...merged.headers,
+          ...(newToken ? { Authorization: `Bearer ${newToken}` } : {}),
+        },
+      }
+      res = await fetch(input, retryInit)
+    }
+  }
+
+  return res
+}
+
 async function json<T>(req: Promise<Response>): Promise<T> {
   const res = await req
   if (!res.ok) {
@@ -48,9 +124,13 @@ async function json<T>(req: Promise<Response>): Promise<T> {
   return res.json() as Promise<T>
 }
 
+async function authJson<T>(input: string, init?: RequestInit): Promise<T> {
+  return json<T>(Promise.resolve(authFetch(input, init)))
+}
+
 // ─── Agents ─────────────────────────────────────
 export async function fetchAgents(): Promise<AgentRow[]> {
-  const { agents } = await json<{ agents: AgentRow[] }>(fetch(API_BASE_URL + '/api/agents'))
+  const { agents } = await json<{ agents: AgentRow[] }>(authFetch(API_BASE_URL + '/api/agents'))
   return agents
 }
 
@@ -88,7 +168,7 @@ export interface CreateAgentBody {
 
 export async function createAgent(body: CreateAgentBody): Promise<AgentRow> {
   const { agent } = await json<{ agent: AgentRow }>(
-    fetch(API_BASE_URL + '/api/agents', {
+    authFetch(API_BASE_URL + '/api/agents', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -99,7 +179,7 @@ export async function createAgent(body: CreateAgentBody): Promise<AgentRow> {
 
 export async function createAgentDraft(body: AgentDraftRequest): Promise<AgentConfigDraft> {
   const { draft } = await json<{ draft: AgentConfigDraft }>(
-    fetch(API_BASE_URL + '/api/agents/draft', {
+    authFetch(API_BASE_URL + '/api/agents/draft', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -123,7 +203,7 @@ export type UpdateAgentBody = Partial<
 
 export async function updateAgent(agentId: string, patch: UpdateAgentBody): Promise<AgentRow> {
   const { agent } = await json<{ agent: AgentRow }>(
-    fetch(`${API_BASE_URL}/api/agents/${agentId}`, {
+    authFetch(`${API_BASE_URL}/api/agents/${agentId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -133,13 +213,13 @@ export async function updateAgent(agentId: string, patch: UpdateAgentBody): Prom
 }
 
 export async function deleteAgent(agentId: string): Promise<void> {
-  await json<{ ok: true }>(fetch(`${API_BASE_URL}/api/agents/${agentId}`, { method: 'DELETE' }))
+  await json<{ ok: true }>(authFetch(`${API_BASE_URL}/api/agents/${agentId}`, { method: 'DELETE' }))
 }
 
 // ─── Conversations ──────────────────────────────
 export async function fetchConversations(): Promise<ConversationWithMeta[]> {
   const { conversations } = await json<{ conversations: ConversationWithMeta[] }>(
-    fetch(API_BASE_URL + '/api/conversations'),
+    authFetch(API_BASE_URL + '/api/conversations'),
   )
   return conversations
 }
@@ -153,7 +233,7 @@ export interface CreateConversationBody {
 
 export async function createConversation(body: CreateConversationBody): Promise<ConversationWithMeta> {
   const { conversation } = await json<{ conversation: ConversationWithMeta }>(
-    fetch(API_BASE_URL + '/api/conversations', {
+    authFetch(API_BASE_URL + '/api/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -164,7 +244,7 @@ export async function createConversation(body: CreateConversationBody): Promise<
 
 export async function deleteConversation(conversationId: string): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}`, { method: 'DELETE' }),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}`, { method: 'DELETE' }),
   )
 }
 
@@ -173,7 +253,7 @@ export async function addAgentsToConversation(
   addAgentIds: string[],
 ): Promise<ConversationWithMeta> {
   const { conversation } = await json<{ conversation: ConversationWithMeta }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ addAgentIds }),
@@ -187,7 +267,7 @@ export async function renameConversation(
   title: string,
 ): Promise<ConversationWithMeta> {
   const { conversation } = await json<{ conversation: ConversationWithMeta }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title }),
@@ -201,7 +281,7 @@ export async function updateConversationSummary(
   summary: string | null,
 ): Promise<ConversationWithMeta> {
   const { conversation } = await json<{ conversation: ConversationWithMeta }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ summary }),
@@ -212,7 +292,7 @@ export async function updateConversationSummary(
 
 export async function togglePinConversation(conversationId: string): Promise<ConversationWithMeta> {
   const { conversation } = await json<{ conversation: ConversationWithMeta }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ togglePin: true }),
@@ -225,7 +305,7 @@ export async function toggleArchiveConversation(
   conversationId: string,
 ): Promise<ConversationWithMeta> {
   const { conversation } = await json<{ conversation: ConversationWithMeta }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ toggleArchive: true }),
@@ -239,7 +319,7 @@ export async function setFsWriteApprovalMode(
   mode: 'auto' | 'review',
 ): Promise<ConversationWithMeta> {
   const { conversation } = await json<{ conversation: ConversationWithMeta }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fsWriteApprovalMode: mode }),
@@ -254,7 +334,7 @@ export async function setRagMode(
   enabled: boolean,
 ): Promise<ConversationWithMeta> {
   const { conversation } = await json<{ conversation: ConversationWithMeta }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/rag-mode`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/rag-mode`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ragEnabled: enabled }),
@@ -266,7 +346,7 @@ export async function setRagMode(
 // ─── Pending writes (fs_write review mode) ─────
 export async function fetchPendingWrites(conversationId: string): Promise<PendingWrite[]> {
   const { pendingWrites } = await json<{ pendingWrites: PendingWrite[] }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-writes`),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-writes`),
   )
   return pendingWrites
 }
@@ -276,7 +356,7 @@ export async function approvePendingWrite(
   pendingId: string,
 ): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-writes/${pendingId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-writes/${pendingId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'approve' }),
@@ -289,7 +369,7 @@ export async function rejectPendingWrite(
   pendingId: string,
 ): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-writes/${pendingId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-writes/${pendingId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'reject' }),
@@ -302,7 +382,7 @@ export async function fetchPendingBashCommands(
   conversationId: string,
 ): Promise<PendingBashCommand[]> {
   const { pendingCommands } = await json<{ pendingCommands: PendingBashCommand[] }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-bash-commands`),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-bash-commands`),
   )
   return pendingCommands
 }
@@ -312,7 +392,7 @@ export async function approvePendingBashCommand(
   pendingId: string,
 ): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-bash-commands/${pendingId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-bash-commands/${pendingId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'approve' }),
@@ -325,7 +405,7 @@ export async function rejectPendingBashCommand(
   pendingId: string,
 ): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-bash-commands/${pendingId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-bash-commands/${pendingId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'reject' }),
@@ -336,7 +416,7 @@ export async function rejectPendingBashCommand(
 // ─── Pending questions (ask_user) ───────────────
 export async function fetchPendingQuestions(conversationId: string): Promise<PendingQuestion[]> {
   const { pendingQuestions } = await json<{ pendingQuestions: PendingQuestion[] }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-questions`),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-questions`),
   )
   return pendingQuestions
 }
@@ -347,7 +427,7 @@ export async function submitQuestionAnswers(
   answers: Record<string, AskUserAnswer>,
 ): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-questions/${questionId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-questions/${questionId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ answers }),
@@ -361,7 +441,7 @@ export async function fetchPendingDispatchPlans(
   conversationId: string,
 ): Promise<PendingDispatchPlan[]> {
   const { pendingDispatchPlans } = await json<{ pendingDispatchPlans: PendingDispatchPlan[] }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-dispatch-plans`),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-dispatch-plans`),
   )
   return pendingDispatchPlans
 }
@@ -371,7 +451,7 @@ export async function approvePendingDispatchPlan(
   planId: string,
 ): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-dispatch-plans/${planId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-dispatch-plans/${planId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'approve' }),
@@ -385,7 +465,7 @@ export async function reviseDispatchPlan(
   feedback: string,
 ): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-dispatch-plans/${planId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-dispatch-plans/${planId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'revise', feedback }),
@@ -398,7 +478,7 @@ export async function rejectPendingDispatchPlan(
   planId: string,
 ): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-dispatch-plans/${planId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-dispatch-plans/${planId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'reject' }),
@@ -408,7 +488,7 @@ export async function rejectPendingDispatchPlan(
 
 export async function fetchMessages(conversationId: string): Promise<MessageRow[]> {
   const { messages } = await json<{ messages: MessageRow[] }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/messages`),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/messages`),
   )
   return messages
 }
@@ -439,7 +519,7 @@ export async function searchMessagesApi(
   if (opts.conversationId) params.set('conversationId', opts.conversationId)
   if (opts.role) params.set('role', opts.role)
   const { data } = await json<{ ok: true; data: SearchApiResult }>(
-    fetch(`${API_BASE_URL}/api/search?${params}`),
+    authFetch(`${API_BASE_URL}/api/search?${params}`),
   )
   return data
 }
@@ -455,7 +535,7 @@ export async function clearConversationHistory(
   conversationId: string,
 ): Promise<ClearConversationHistoryResult> {
   return json<ClearConversationHistoryResult>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/messages`, { method: 'DELETE' }),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/messages`, { method: 'DELETE' }),
   )
 }
 
@@ -478,7 +558,7 @@ export async function sendMessage(
   body: SendMessageBody,
 ): Promise<SendMessageResult> {
   return json<SendMessageResult>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/messages`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -507,7 +587,7 @@ export async function fetchDeployCandidates(
   conversationId: string,
 ): Promise<DeployCandidateRecord[]> {
   const { candidates } = await json<{ candidates: DeployCandidateRecord[] }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/deploy`),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/deploy`),
   )
   return candidates
 }
@@ -517,7 +597,7 @@ export async function deployConversationArtifact(
   artifactId?: string,
 ): Promise<DeployConversationResult> {
   return json<DeployConversationResult>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/deploy`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/deploy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(artifactId ? { artifactId } : {}),
@@ -544,12 +624,12 @@ export async function compactConversation(
   conversationId: string,
 ): Promise<CompactConversationResult> {
   return json<CompactConversationResult>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/compact`, { method: 'POST' }),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/compact`, { method: 'POST' }),
   )
 }
 
 export async function abortRun(runId: string): Promise<void> {
-  await json<{ ok: true }>(fetch(`${API_BASE_URL}/api/runs/${runId}/abort`, { method: 'POST' }))
+  await json<{ ok: true }>(authFetch(`${API_BASE_URL}/api/runs/${runId}/abort`, { method: 'POST' }))
 }
 
 // ─── Messages: withdraw / edit ──────────────────
@@ -563,7 +643,7 @@ export async function withdrawMessage(
   conversationId: string,
 ): Promise<WithdrawResult> {
   return json<WithdrawResult>(
-    fetch(`${API_BASE_URL}/api/messages/${messageId}/withdraw`, {
+    authFetch(`${API_BASE_URL}/api/messages/${messageId}/withdraw`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversationId }),
@@ -583,7 +663,7 @@ export interface RegenerateResult extends WithdrawResult {
 
 export async function regenerateLastResponse(conversationId: string): Promise<RegenerateResult> {
   return json<RegenerateResult>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/regenerate`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/regenerate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversationId }),
@@ -597,7 +677,7 @@ export async function editAndResendMessage(
   content: string,
 ): Promise<EditAndResendResult> {
   return json<EditAndResendResult>(
-    fetch(`${API_BASE_URL}/api/messages/${messageId}/edit`, {
+    authFetch(`${API_BASE_URL}/api/messages/${messageId}/edit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversationId, content }),
@@ -615,7 +695,7 @@ export async function toggleMessageBookmark(
   conversationId: string,
 ): Promise<ToggleBookmarkResult> {
   return json<ToggleBookmarkResult>(
-    fetch(`${API_BASE_URL}/api/messages/${messageId}/bookmark`, {
+    authFetch(`${API_BASE_URL}/api/messages/${messageId}/bookmark`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversationId }),
@@ -633,7 +713,7 @@ export async function toggleMessagePin(
   conversationId: string,
 ): Promise<TogglePinResult> {
   return json<TogglePinResult>(
-    fetch(`${API_BASE_URL}/api/messages/${messageId}/pin`, {
+    authFetch(`${API_BASE_URL}/api/messages/${messageId}/pin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversationId }),
@@ -651,13 +731,13 @@ export interface ListDirResult {
 export type ServerPlatform = 'posix' | 'windows'
 
 export async function getServerPlatform(): Promise<ServerPlatform> {
-  const res = await json<{ platform: ServerPlatform }>(fetch(API_BASE_URL + '/api/platform'))
+  const res = await json<{ platform: ServerPlatform }>(authFetch(API_BASE_URL + '/api/platform'))
   return res.platform
 }
 
 export async function listDirectory(targetPath?: string): Promise<ListDirResult> {
   const qs = targetPath ? `?path=${encodeURIComponent(targetPath)}` : ''
-  return json<ListDirResult>(fetch(`${API_BASE_URL}/api/fs/listdir${qs}`))
+  return json<ListDirResult>(authFetch(`${API_BASE_URL}/api/fs/listdir${qs}`))
 }
 
 // ─── Filesystem (conversation-scoped, 文件浏览器面板用) ────────
@@ -673,7 +753,7 @@ export async function workspaceListDir(
   relPath = '',
 ): Promise<WorkspaceListResult> {
   const qs = relPath ? `?path=${encodeURIComponent(relPath)}` : ''
-  return json<WorkspaceListResult>(fetch(`${API_BASE_URL}/api/conversations/${conversationId}/fs/listdir${qs}`))
+  return json<WorkspaceListResult>(authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/fs/listdir${qs}`))
 }
 
 export interface WorkspaceReadResult {
@@ -690,7 +770,7 @@ export async function workspaceReadFile(
   relPath: string,
 ): Promise<WorkspaceReadResult> {
   return json<WorkspaceReadResult>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/fs/read?path=${encodeURIComponent(relPath)}`),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/fs/read?path=${encodeURIComponent(relPath)}`),
   )
 }
 
@@ -707,7 +787,7 @@ export async function workspaceWriteFile(
   content: string,
 ): Promise<WorkspaceWriteResult> {
   return json<WorkspaceWriteResult>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/fs/write`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/fs/write`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: relPath, content }),
@@ -717,20 +797,20 @@ export async function workspaceWriteFile(
 
 // ─── Artifacts ─────────────────────────────────
 export async function fetchArtifacts(): Promise<ArtifactListItem[]> {
-  const { artifacts } = await json<{ artifacts: ArtifactListItem[] }>(fetch(API_BASE_URL + '/api/artifacts'))
+  const { artifacts } = await json<{ artifacts: ArtifactListItem[] }>(authFetch(API_BASE_URL + '/api/artifacts'))
   return artifacts
 }
 
 export async function fetchArtifact(artifactId: string): Promise<ArtifactRow> {
   const { artifact } = await json<{ artifact: ArtifactRow }>(
-    fetch(`${API_BASE_URL}/api/artifacts/${artifactId}`),
+    authFetch(`${API_BASE_URL}/api/artifacts/${artifactId}`),
   )
   return artifact
 }
 
 export async function fetchArtifactVersions(artifactId: string): Promise<ArtifactRow[]> {
   const { versions } = await json<{ versions: ArtifactRow[] }>(
-    fetch(`${API_BASE_URL}/api/artifacts/${artifactId}/versions`),
+    authFetch(`${API_BASE_URL}/api/artifacts/${artifactId}/versions`),
   )
   return versions
 }
@@ -741,7 +821,7 @@ export async function createArtifactVersion(
   body: { content: unknown; title?: string },
 ): Promise<ArtifactRow> {
   const { artifact } = await json<{ artifact: ArtifactRow }>(
-    fetch(`${API_BASE_URL}/api/artifacts/${artifactId}/versions`, {
+    authFetch(`${API_BASE_URL}/api/artifacts/${artifactId}/versions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -752,14 +832,14 @@ export async function createArtifactVersion(
 
 export async function deleteArtifact(artifactId: string): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/artifacts/${artifactId}`, { method: 'DELETE' }),
+    authFetch(`${API_BASE_URL}/api/artifacts/${artifactId}`, { method: 'DELETE' }),
   )
 }
 
 // ─── Attachments ───────────────────────────────
 export async function fetchAttachments(conversationId: string): Promise<AttachmentRow[]> {
   const { attachments } = await json<{ attachments: AttachmentRow[] }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/attachments`),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/attachments`),
   )
   return attachments
 }
@@ -770,7 +850,7 @@ export async function uploadAttachment(
 ): Promise<AttachmentRow> {
   const form = new FormData()
   form.append('file', file)
-  const res = await fetch(`${API_BASE_URL}/api/conversations/${conversationId}/attachments`, {
+  const res = await authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/attachments`, {
     method: 'POST',
     body: form,
   })
@@ -783,7 +863,7 @@ export async function uploadAttachment(
 }
 
 export async function deleteAttachment(attachmentId: string): Promise<void> {
-  await json<{ ok: true }>(fetch(`${API_BASE_URL}/api/attachments/${attachmentId}`, { method: 'DELETE' }))
+  await json<{ ok: true }>(authFetch(`${API_BASE_URL}/api/attachments/${attachmentId}`, { method: 'DELETE' }))
 }
 
 export function attachmentDownloadUrl(attachmentId: string): string {
@@ -816,7 +896,7 @@ export interface UsageSummary {
 }
 
 export async function fetchUsageSummary(): Promise<UsageSummary> {
-  return json<UsageSummary>(fetch(API_BASE_URL + '/api/usage/summary'))
+  return json<UsageSummary>(authFetch(API_BASE_URL + '/api/usage/summary'))
 }
 
 // ─── Mobile companion connection hints ─────────────
@@ -829,13 +909,13 @@ export interface ConnectionHint {
 }
 
 export async function fetchConnectionHints(): Promise<ConnectionHint[]> {
-  const { hints } = await json<{ hints: ConnectionHint[] }>(fetch(API_BASE_URL + '/api/connection-hints'))
+  const { hints } = await json<{ hints: ConnectionHint[] }>(authFetch(API_BASE_URL + '/api/connection-hints'))
   return hints
 }
 
 // ─── App Settings (全局 API key) ───────────────
 export async function fetchAppSettings(): Promise<AppSettingsRow> {
-  const { settings } = await json<{ settings: AppSettingsRow }>(fetch(API_BASE_URL + '/api/settings'))
+  const { settings } = await json<{ settings: AppSettingsRow }>(authFetch(API_BASE_URL + '/api/settings'))
   return settings
 }
 
@@ -854,7 +934,7 @@ export interface AppSettingsPatchBody {
 
 export async function updateAppSettings(patch: AppSettingsPatchBody): Promise<AppSettingsRow> {
   const { settings } = await json<{ settings: AppSettingsRow }>(
-    fetch(API_BASE_URL + '/api/settings', {
+    authFetch(API_BASE_URL + '/api/settings', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
@@ -865,7 +945,7 @@ export async function updateAppSettings(patch: AppSettingsPatchBody): Promise<Ap
 
 export async function regenerateMobileDeviceToken(): Promise<AppSettingsRow> {
   const { settings } = await json<{ settings: AppSettingsRow }>(
-    fetch(API_BASE_URL + '/api/settings/mobile-token', { method: 'POST' }),
+    authFetch(API_BASE_URL + '/api/settings/mobile-token', { method: 'POST' }),
   )
   return settings
 }
@@ -873,14 +953,14 @@ export async function regenerateMobileDeviceToken(): Promise<AppSettingsRow> {
 // ─── Documents (知识库) ──────────────────────────
 export async function fetchDocuments(): Promise<DocumentRow[]> {
   const { documents } = await json<{ documents: DocumentRow[] }>(
-    fetch(API_BASE_URL + '/api/documents'),
+    authFetch(API_BASE_URL + '/api/documents'),
   )
   return documents
 }
 
 export async function createDocument(body: CreateDocumentRequest): Promise<WriteDocumentResponse> {
   return json<WriteDocumentResponse>(
-    fetch(API_BASE_URL + '/api/documents', {
+    authFetch(API_BASE_URL + '/api/documents', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -908,26 +988,26 @@ export async function ingestArtifactToKnowledgeBase(
 
 export async function getDocument(documentId: string): Promise<{ document: DocumentRow; version: VersionRow }> {
   return json<{ document: DocumentRow; version: VersionRow }>(
-    fetch(`${API_BASE_URL}/api/documents/${documentId}`),
+    authFetch(`${API_BASE_URL}/api/documents/${documentId}`),
   )
 }
 
 export async function listVersions(documentId: string): Promise<VersionRow[]> {
   const { versions } = await json<{ versions: VersionRow[] }>(
-    fetch(`${API_BASE_URL}/api/documents/${documentId}/versions`),
+    authFetch(`${API_BASE_URL}/api/documents/${documentId}/versions`),
   )
   return versions
 }
 
 export async function deleteDocument(documentId: string): Promise<{ ok: boolean; deletedChunks: number }> {
   return json<{ ok: boolean; deletedChunks: number }>(
-    fetch(`${API_BASE_URL}/api/documents/${documentId}`, { method: 'DELETE' }),
+    authFetch(`${API_BASE_URL}/api/documents/${documentId}`, { method: 'DELETE' }),
   )
 }
 
 export async function ingestDocument(documentId: string, versionId: string): Promise<IngestResult> {
   return json<IngestResult>(
-    fetch(`${API_BASE_URL}/api/documents/${documentId}/ingest`, {
+    authFetch(`${API_BASE_URL}/api/documents/${documentId}/ingest`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ versionId }),
@@ -944,7 +1024,7 @@ export async function uploadDocument(
   if (opts?.documentId) form.append('document_id', opts.documentId)
   if (opts?.title) form.append('title', opts.title)
   if (opts?.docType) form.append('doc_type', opts.docType)
-  const res = await fetch(`${API_BASE_URL}/api/documents/upload`, {
+  const res = await authFetch(`${API_BASE_URL}/api/documents/upload`, {
     method: 'POST',
     body: form,
   })
@@ -964,7 +1044,7 @@ export interface SkillSummary {
 }
 
 export async function listSkills(): Promise<SkillSummary[]> {
-  const { skills } = await json<{ skills: SkillSummary[] }>(fetch(API_BASE_URL + '/api/skills'))
+  const { skills } = await json<{ skills: SkillSummary[] }>(authFetch(API_BASE_URL + '/api/skills'))
   return skills
 }
 
@@ -976,7 +1056,7 @@ export async function uploadSkill(files: File[], paths: string[]): Promise<Skill
   const form = new FormData()
   for (const file of files) form.append('files', file)
   for (const path of paths) form.append('paths', path)
-  const res = await fetch(`${API_BASE_URL}/api/skills/upload`, {
+  const res = await authFetch(`${API_BASE_URL}/api/skills/upload`, {
     method: 'POST',
     body: form,
   })
@@ -990,7 +1070,7 @@ export async function uploadSkill(files: File[], paths: string[]): Promise<Skill
 
 export async function deleteSkill(slug: string): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/skills/${slug}`, { method: 'DELETE' }),
+    authFetch(`${API_BASE_URL}/api/skills/${slug}`, { method: 'DELETE' }),
   )
 }
 
@@ -1031,14 +1111,14 @@ export interface McpTestResult {
 
 export async function fetchMcpServers(): Promise<McpServerResponse[]> {
   const { servers } = await json<{ servers: McpServerResponse[] }>(
-    fetch(API_BASE_URL + '/api/mcp/servers'),
+    authFetch(API_BASE_URL + '/api/mcp/servers'),
   )
   return servers
 }
 
 export async function createMcpServer(body: McpServerCreateBody): Promise<McpServerResponse> {
   const { server } = await json<{ server: McpServerResponse }>(
-    fetch(API_BASE_URL + '/api/mcp/servers', {
+    authFetch(API_BASE_URL + '/api/mcp/servers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1049,7 +1129,7 @@ export async function createMcpServer(body: McpServerCreateBody): Promise<McpSer
 
 export async function updateMcpServer(serverId: string, body: McpServerUpdateBody): Promise<McpServerResponse> {
   const { server } = await json<{ server: McpServerResponse }>(
-    fetch(`${API_BASE_URL}/api/mcp/servers/${serverId}`, {
+    authFetch(`${API_BASE_URL}/api/mcp/servers/${serverId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1060,20 +1140,20 @@ export async function updateMcpServer(serverId: string, body: McpServerUpdateBod
 
 export async function deleteMcpServer(serverId: string): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/mcp/servers/${serverId}`, { method: 'DELETE' }),
+    authFetch(`${API_BASE_URL}/api/mcp/servers/${serverId}`, { method: 'DELETE' }),
   )
 }
 
 export async function testMcpServer(serverId: string): Promise<McpTestResult> {
   return json<McpTestResult>(
-    fetch(`${API_BASE_URL}/api/mcp/servers/${serverId}/test`, { method: 'POST' }),
+    authFetch(`${API_BASE_URL}/api/mcp/servers/${serverId}/test`, { method: 'POST' }),
   )
 }
 
 // ─── Pending MCP calls (ask-trust 审批) ──────────
 export async function fetchPendingMcpCalls(conversationId: string): Promise<PendingMcpCall[]> {
   const { pendingMcpCalls } = await json<{ pendingMcpCalls: PendingMcpCall[] }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-mcp-calls`),
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-mcp-calls`),
   )
   return pendingMcpCalls
 }
@@ -1083,7 +1163,7 @@ export async function approvePendingMcpCall(
   callId: string,
 ): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-mcp-calls/${callId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-mcp-calls/${callId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'approve' }),
@@ -1096,10 +1176,55 @@ export async function rejectPendingMcpCall(
   callId: string,
 ): Promise<void> {
   await json<{ ok: true }>(
-    fetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-mcp-calls/${callId}`, {
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-mcp-calls/${callId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'reject' }),
     }),
   )
+}
+
+// ─── Profile ──────────────────────────────────────
+
+export interface UserProfile {
+  name: string | null
+  location: string | null
+  hometown: string | null
+  preferences: string | null
+  bio: string | null
+  avatarUrl: string | null
+}
+
+export interface ProfileUpdateBody {
+  name?: string | null
+  location?: string | null
+  hometown?: string | null
+  preferences?: string | null
+  bio?: string | null
+}
+
+export async function fetchProfile(): Promise<UserProfile> {
+  return authJson<UserProfile>(API_BASE_URL + '/api/profile')
+}
+
+export async function updateProfile(body: ProfileUpdateBody): Promise<UserProfile> {
+  return authJson<UserProfile>(API_BASE_URL + '/api/profile', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function uploadAvatar(file: File): Promise<{ avatarUrl: string }> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const res = await authFetch(API_BASE_URL + '/api/profile/avatar', {
+    method: 'POST',
+    body: formData,
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+  }
+  return res.json()
 }

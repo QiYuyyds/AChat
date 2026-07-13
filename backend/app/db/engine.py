@@ -89,6 +89,23 @@ async def _migrate_columns(conn) -> None:  # type: ignore[no-untyped-def]
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE conversation_context_summaries ADD COLUMN IF NOT EXISTS summary_type VARCHAR(16) NOT NULL DEFAULT 'compaction'",
         "ALTER TABLE conversation_context_summaries ADD COLUMN IF NOT EXISTS covers_up_to FLOAT",
+        # ─── Multi-user auth migration ───
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+        "ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+        "ALTER TABLE long_term_memory ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+        "ALTER TABLE memory_nodes ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+        "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+        "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+        "CREATE INDEX IF NOT EXISTS idx_agents_user ON agents (user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations (user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_docs_user ON documents (user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mcp_user ON mcp_servers (user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_ltm_user ON long_term_memory (user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_rag_user ON rag_chunks (user_id)",
+        # ─── UserPreference source column ───
+        "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'extracted'",
     ]
     for stmt in statements:
         # dialects without IF NOT EXISTS (sqlite) / pre-existing column → no-op

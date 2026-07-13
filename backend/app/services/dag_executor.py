@@ -46,6 +46,7 @@ class DagExecContext:
     cancel_event: asyncio.Event
     dispatch_depth: int = 0
     dispatch_visibility: str = "visible"
+    user_id: str | None = None
 
 
 # ─── Validation ───────────────────────────────────────────────────────────────
@@ -168,17 +169,18 @@ async def execute_dag(
                 child_run_id=None,
             )
             failed_ids.add(t.id)
-            event_bus.publish(
-                DispatchEndEvent(
-                    conversation_id=ctx.conversation_id,
-                    timestamp=now_ms(),
-                    parent_run_id=ctx.parent_run_id,
-                    child_run_id=None,
-                    task_id=t.id,
-                    status="skipped",
-                    error=reason,
-                )
-            )
+        event_bus.publish(
+            DispatchEndEvent(
+                conversation_id=ctx.conversation_id,
+                timestamp=now_ms(),
+                parent_run_id=ctx.parent_run_id,
+                child_run_id=None,
+                task_id=t.id,
+                status="skipped",
+                error=reason,
+            ),
+            user_id=ctx.user_id,
+        )
 
         # Execute ready tasks in parallel
         if ready:
@@ -208,16 +210,17 @@ async def _execute_node(
 
     def on_start(run_id: str) -> None:
         child_run_id_holder.append(run_id)
-        event_bus.publish(
-            DispatchStartEvent(
-                conversation_id=ctx.conversation_id,
-                timestamp=now_ms(),
-                parent_run_id=ctx.parent_run_id,
-                child_run_id=run_id,
-                task_id=task.id,
-                agent_id=task.agent_id,
-            )
-        )
+    event_bus.publish(
+        DispatchStartEvent(
+            conversation_id=ctx.conversation_id,
+            timestamp=now_ms(),
+            parent_run_id=ctx.parent_run_id,
+            child_run_id=run_id,
+            task_id=task.id,
+            agent_id=task.agent_id,
+        ),
+        user_id=ctx.user_id,
+    )
 
     logger.info(
         "[dag_executor] executing node=%s agent=%s parent_run=%s",
@@ -236,6 +239,7 @@ async def _execute_node(
         on_start=on_start,
         dispatch_depth=ctx.dispatch_depth,
         dispatch_visibility=ctx.dispatch_visibility,
+        user_id=ctx.user_id,
     )
 
     child_run_id = child_run_id_holder[0] if child_run_id_holder else None
@@ -248,7 +252,8 @@ async def _execute_node(
             child_run_id=child_run_id,
             task_id=task.id,
             status=result.status,
-        )
+        ),
+        user_id=ctx.user_id,
     )
 
     return NodeResult(

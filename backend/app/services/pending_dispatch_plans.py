@@ -53,6 +53,7 @@ class PendingDispatchPlanResult:
 class _PendingEntry:
     pending_plan: PendingDispatchPlan
     validator: PlanValidator
+    user_id: str | None = None
     resolver: PlanResolver | None = field(default=None)
 
 
@@ -70,6 +71,7 @@ class PendingDispatchPlansStore:
         run_id: str,
         plan: list[DispatchPlanItem],
         validator: PlanValidator,
+        user_id: str | None = None,
     ) -> PendingDispatchPlan:
         """Park a plan, emit ``dispatch.plan.pending`` and return the record."""
         pending_id = new_pending_dispatch_plan_id()
@@ -83,7 +85,7 @@ class PendingDispatchPlansStore:
             created_at=created_at,
         )
         self._map[pending_id] = _PendingEntry(
-            pending_plan=pending_plan, validator=validator, resolver=None
+            pending_plan=pending_plan, validator=validator, resolver=None, user_id=user_id
         )
 
         event_bus.publish(
@@ -91,7 +93,8 @@ class PendingDispatchPlansStore:
                 conversation_id=conversation_id,
                 timestamp=created_at,
                 pending_plan=pending_plan,
-            )
+            ),
+            user_id=user_id,
         )
         return pending_plan
 
@@ -169,7 +172,8 @@ class PendingDispatchPlansStore:
                 run_id=entry.pending_plan.run_id,
                 approved=approved,
                 revising=True if revising else None,
-            )
+            ),
+            user_id=entry.user_id,
         )
 
 

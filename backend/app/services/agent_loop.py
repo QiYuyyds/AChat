@@ -429,6 +429,7 @@ async def spawn_subagent_loop(
     on_start: Callable[[str], None] | None = None,
     dispatch_depth: int = 0,
     dispatch_visibility: str = "visible",
+    user_id: str | None = None,
 ) -> LoopRunResult:
     """Spawn a subagent loop for a dispatched task.
 
@@ -453,6 +454,7 @@ async def spawn_subagent_loop(
         override_workspace_path=workspace_path,
         dispatch_depth=dispatch_depth,
         dispatch_visibility=dispatch_visibility,
+        user_id=user_id,
     )
 
     child_run_id, child_task, _child_cancel = run_with_args(args)

@@ -1,64 +1,71 @@
-"""Settings API routes.
+"""Settings API routes — per-user settings + global deployment config.
 
-Port of src/app/api/settings/route.ts and src/app/api/settings/mobile-token/route.ts.
+Multi-user refactor: per-user API keys and companion config are stored in
+``user_settings`` (PK = user_id). Deployment publish config is server-level
+and stored in ``global_settings`` (shared across all users).
 
-Wire contract (byte-for-byte with the unchanged React frontend, which types the
-response as ``AppSettingsRow``):
-- ``GET  /api/settings``               → 200 ``{ "settings": <full row> }``
-- ``PATCH /api/settings``              → 200 ``{ "settings": <full row> }``;
-                                          400 ``{ "error": "Invalid body", "issues": [...] }``
-- ``POST /api/settings/mobile-token``  → 200 ``{ "settings": <full row> }``
-
-The serialized row mirrors the Drizzle ``AppSettingsRow`` exactly (all columns,
-including ``id`` and ``updatedAt``). Key fields are returned VERBATIM — the TS
-source does not redact (see settings/route.ts: "key 字段会原样返回").
+Wire contract (camelCase, compatible with the React frontend):
+- ``GET  /api/settings``               → 200 ``{ "settings": <merged row> }``
+- ``PATCH /api/settings``              → 200 ``{ "settings": <merged row> }``
+- ``POST /api/settings/mobile-token``  → 200 ``{ "settings": <merged row> }``
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from app.db.models import AppSettings
+from app.auth.dependencies import get_current_user
+from app.db.models import GlobalSettings, User, UserSettings
 from app.schemas import UpdateSettingsRequest
 from app.services import settings_service
-from app.services.settings_service import AppSettingsPatch
+from app.services.global_settings_service import (
+    GlobalSettingsPatch,
+    get_global_settings,
+    update_global_settings,
+)
+from app.services.settings_service import (
+    UserSettingsPatch,
+    get_user_settings,
+    update_user_settings,
+)
 
 router = APIRouter()
 
 
-def _serialize(row: AppSettings) -> dict[str, Any]:
-    """Full AppSettingsRow wire shape (camelCase), matching the Drizzle select row."""
+def _serialize_user_settings(us: UserSettings) -> dict[str, Any]:
     return {
-        "id": row.id,
-        "anthropicApiKey": row.anthropic_api_key,
-        "anthropicBaseUrl": row.anthropic_base_url,
-        "openaiApiKey": row.openai_api_key,
-        "deepseekApiKey": row.deepseek_api_key,
-        "arkApiKey": row.ark_api_key,
-        "companionMode": row.companion_mode,
-        "mobileDeviceToken": row.mobile_device_token,
-        "deploymentPublishEnabled": row.deployment_publish_enabled,
-        "deploymentPublishDir": row.deployment_publish_dir,
-        "deploymentPublicBaseUrl": row.deployment_public_base_url,
-        "updatedAt": row.updated_at,
+        "anthropicApiKey": us.anthropic_api_key,
+        "anthropicBaseUrl": us.anthropic_base_url,
+        "openaiApiKey": us.openai_api_key,
+        "deepseekApiKey": us.deepseek_api_key,
+        "arkApiKey": us.ark_api_key,
+        "companionMode": us.companion_mode,
+        "mobileDeviceToken": us.mobile_device_token,
+        "updatedAt": us.updated_at,
     }
 
 
-@router.get("/settings")
-async def get_settings() -> JSONResponse:
-    """Return global app settings (keys returned verbatim, as the TS source does)."""
-    row = await settings_service.get_app_settings()
-    return JSONResponse({"settings": _serialize(row)})
+def _serialize_global_settings(gs: GlobalSettings) -> dict[str, Any]:
+    return {
+        "deploymentPublishEnabled": gs.deployment_publish_enabled,
+        "deploymentPublishDir": gs.deployment_publish_dir,
+        "deploymentPublicBaseUrl": gs.deployment_public_base_url,
+    }
 
 
-# Fields a PATCH may carry; only keys actually present in the body are applied
-# (matching the TS Object.entries(patch) semantics: undefined = leave untouched,
-# explicit null = clear).
-_PATCH_FIELDS: tuple[str, ...] = (
+def _serialize_merged(us: UserSettings, gs: GlobalSettings) -> dict[str, Any]:
+    """Merge per-user and global settings into a single wire shape (backward compat)."""
+    merged = _serialize_user_settings(us)
+    merged.update(_serialize_global_settings(gs))
+    return merged
+
+
+# Fields that belong to per-user settings
+_USER_FIELDS = frozenset({
     "anthropic_api_key",
     "anthropic_base_url",
     "openai_api_key",
@@ -66,15 +73,30 @@ _PATCH_FIELDS: tuple[str, ...] = (
     "ark_api_key",
     "companion_mode",
     "mobile_device_token",
+})
+
+# Fields that belong to global settings
+_GLOBAL_FIELDS = frozenset({
     "deployment_publish_enabled",
     "deployment_publish_dir",
     "deployment_public_base_url",
-)
+})
+
+
+@router.get("/settings")
+async def get_settings_endpoint(user: User = Depends(get_current_user)) -> JSONResponse:
+    """Return per-user settings merged with global deployment config."""
+    us = await get_user_settings(user.id)
+    gs = await get_global_settings()
+    return JSONResponse({"settings": _serialize_merged(us, gs)})
 
 
 @router.patch("/settings")
-async def update_settings(request: Request) -> JSONResponse:
-    """UPSERT a partial patch onto the singleton settings row."""
+async def update_settings_endpoint(
+    request: Request,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """UPSERT a partial patch: per-user fields → user_settings, global fields → global_settings."""
     try:
         raw = await request.json()
     except Exception:
@@ -94,32 +116,46 @@ async def update_settings(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    # Only forward keys the client actually sent, so an absent field stays
-    # untouched while an explicit null clears it. model_fields_set holds the
-    # canonical (snake_case) field names regardless of whether the input used
-    # the camelCase alias.
     sent = parsed.model_dump(by_alias=False)
     provided_fields = parsed.model_fields_set
 
-    patch: AppSettingsPatch = {
-        field: sent[field]  # type: ignore[literal-required]
-        for field in _PATCH_FIELDS
-        if field in provided_fields
-    }
+    # Split patch into per-user and global
+    user_patch: UserSettingsPatch = {}
+    global_patch: GlobalSettingsPatch = {}
 
-    row = await settings_service.update_app_settings(patch)
-    return JSONResponse({"settings": _serialize(row)})
+    for field in provided_fields:
+        if field in _USER_FIELDS:
+            user_patch[field] = sent[field]  # type: ignore[literal-required]
+        elif field in _GLOBAL_FIELDS:
+            global_patch[field] = sent[field]  # type: ignore[literal-required]
+
+    if user_patch:
+        us = await update_user_settings(user.id, user_patch)
+    else:
+        us = await get_user_settings(user.id)
+
+    if global_patch:
+        gs = await update_global_settings(global_patch)
+    else:
+        gs = await get_global_settings()
+
+    return JSONResponse({"settings": _serialize_merged(us, gs)})
 
 
 @router.post("/settings/mobile-token")
-async def regenerate_mobile_token() -> JSONResponse:
-    """Issue a fresh mobile pairing token, preserving the current companion mode."""
-    row = await settings_service.regenerate_mobile_device_token()
-    return JSONResponse({"settings": _serialize(row)})
+async def regenerate_mobile_token(
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """Issue a fresh mobile pairing token for the current user."""
+    us = await settings_service.regenerate_user_mobile_device_token(user.id)
+    gs = await get_global_settings()
+    return JSONResponse({"settings": _serialize_merged(us, gs)})
 
 
 @router.get("/cache-metrics")
-async def get_cache_metrics() -> JSONResponse:
+async def get_cache_metrics(
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
     """Return aggregate prompt cache hit rate metrics for monitoring."""
     from app.infra.cache_metrics import cache_metrics
 

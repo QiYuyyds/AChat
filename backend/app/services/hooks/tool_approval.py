@@ -83,6 +83,7 @@ async def _pre_tool_use(ctx: HookContext) -> HookResult | None:
                 cwd=cwd,
                 reason=approval.reason,
                 cancel_event=cancel_event,
+                user_id=ctx.user_id,
             )
             if not approved:
                 return HookResult(
