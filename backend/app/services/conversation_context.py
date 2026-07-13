@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from app.db.engine import get_db
 from app.db.models import Agent, Artifact, Conversation, Message
+from app.infra.cache_helpers import get_agent_cached
 from app.services.context_compaction_service import (
     get_latest_context_summary,
     render_conversation_summary_block,
@@ -207,10 +208,8 @@ async def _build_history_with_assembler(
         recent = (await db.execute(recent_stmt)).scalars().all()
         recent_asc = sorted(recent, key=lambda m: m.created_at)
 
-        # Load agent info for profile
-        agent = (
-            await db.execute(select(Agent).where(Agent.id == agent_id))
-        ).scalars().first()
+    # Ensure agent is in cache for downstream callers
+    await get_agent_cached(agent_id)
 
     # Build query text from recent messages
     query_text = "\n".join(

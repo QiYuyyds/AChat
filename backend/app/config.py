@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # ─── Kafka (optional) ───
     kafka_brokers: str = ""
 
+    # ─── Redis (optional, for metadata cache + async DB writes) ───
+    redis_url: str = ""
+
     # ─── Embedding ───
     embedding_api_key: str | None = None
     embedding_api_url: str | None = None

@@ -46,20 +46,11 @@ async def _pre_tool_use(ctx: HookContext) -> HookResult | None:
 
         approval = classify_bash_approval(command, _PLATFORM)
         if approval.required:
+            from app.infra.cache_helpers import get_workspace_cached
             from app.services.bash_command_approval import wait_for_bash_approval
-            from sqlalchemy import select
-
-            from app.db.engine import get_db
-            from app.db.models import Workspace
             from app.utils.workspace_utils import get_effective_cwd
 
-            async with get_db() as db:
-                result = await db.execute(
-                    select(Workspace).where(
-                        Workspace.conversation_id == ctx.conversation_id
-                    )
-                )
-                workspace = result.scalar_one_or_none()
+            workspace = await get_workspace_cached(ctx.conversation_id)
             if workspace is None:
                 return HookResult(action="deny", data="Workspace not found")
 

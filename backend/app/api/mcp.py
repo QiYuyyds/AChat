@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_db
 from app.db.models import Agent, McpServer, User
+from app.infra.cache_helpers import invalidate_agent_cache
 from app.mcp.client_manager import McpClientManager, McpServerConfig
 from app.utils.clock import now_ms
 from app.utils.ids import new_mcp_server_id
@@ -219,6 +220,7 @@ async def delete_mcp_server(server_id: str, user: User = Depends(get_current_use
             if server_id in ids:
                 ids.remove(server_id)
                 agent.mcp_server_ids_list = ids
+                await invalidate_agent_cache(agent.id)
 
         await db.commit()
     return JSONResponse({"ok": True})

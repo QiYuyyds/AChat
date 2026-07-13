@@ -9,10 +9,6 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
-
-from app.db.engine import get_db
-from app.db.models import Agent
 from app.services.checkpoint_service import clean_old_checkpoints, save_checkpoint
 from app.services.hook_registry import HookContext, HookEvent, HookRegistry, HookResult
 
@@ -25,10 +21,11 @@ async def _post_turn(ctx: HookContext) -> HookResult | None:
         return None
 
     try:
-        async with get_db() as db:
-            agent = await db.get(Agent, ctx.agent_id)
-            if agent is None or not agent.checkpoint_enabled:
-                return None
+        from app.infra.cache_helpers import get_agent_cached
+
+        agent = await get_agent_cached(ctx.agent_id)
+        if agent is None or not agent.checkpoint_enabled:
+            return None
 
         await save_checkpoint(
             run_id=ctx.run_id,

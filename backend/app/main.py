@@ -59,7 +59,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     # ─── Infrastructure factory ───
     try:
         from app.infra.factory import build_infrastructure, close_infrastructure
-        _infrastructure = build_infrastructure(settings)
+        _infrastructure = await build_infrastructure(settings)
     except Exception as e:
         logger.warning("Infrastructure build failed: %s", e)
 
@@ -213,9 +213,31 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     # ─── Startup Status Dashboard ───
     _log_startup_dashboard(settings)
 
+    # ─── Redis cache init + DB writer consumer ───
+    if _infrastructure and _infrastructure.redis_client:
+        from app.infra.cache import init_cache
+        init_cache(_infrastructure.redis_client)
+        try:
+            from app.services.async_db_writer import start_db_writer
+            await start_db_writer(_infrastructure.redis_client)
+        except Exception as e:
+            logger.warning("DBWriterConsumer start failed: %s", e)
+
+    # ─── Crash recovery scan ───
+    try:
+        from app.services.recovery_scan import scan_interrupted_messages
+        await scan_interrupted_messages()
+    except Exception as e:
+        logger.warning("Recovery scan failed: %s", e)
+
     yield
 
     # Shutdown
+    try:
+        from app.services.async_db_writer import stop_db_writer
+        await stop_db_writer()
+    except Exception:
+        pass
     if _memory_service:
         try:
             await _memory_service.close()
@@ -297,6 +319,10 @@ def _log_startup_dashboard(settings) -> None:
             infra_status.append("✓ Neo4j")
         else:
             infra_status.append("✗ Neo4j (degraded)")
+        if _infrastructure.redis_client:
+            infra_status.append("✓ Redis")
+        else:
+            infra_status.append("✗ Redis (degraded)")
     else:
         infra_status.append("✗ Infrastructure not initialized")
     

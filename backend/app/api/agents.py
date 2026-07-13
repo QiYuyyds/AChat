@@ -210,7 +210,11 @@ async def _create_custom_agent(body: CreateAgentRequest, user_id: str) -> dict[s
     async with get_db() as db:
         db.add(agent)
         await db.flush()
-        return _serialize(agent)
+        result = _serialize(agent)
+
+    from app.infra.cache_helpers import invalidate_agent_cache
+    await invalidate_agent_cache(agent.id)
+    return result
 
 
 # ─── PATCH /api/agents/{id} ─────────────────────────────────────────
@@ -424,7 +428,11 @@ async def _update_custom_agent(
 
         await db.flush()
         await db.refresh(agent)
-        return _serialize(agent)
+        result = _serialize(agent)
+
+    from app.infra.cache_helpers import invalidate_agent_cache
+    await invalidate_agent_cache(agent_id)
+    return result
 
 
 # ─── DELETE /api/agents/{id} ────────────────────────────────────────
@@ -449,6 +457,9 @@ async def _delete_custom_agent(agent_id: str, user_id: str) -> None:
             raise ValueError("Built-in agents cannot be deleted")
         await db.delete(agent)
         await db.flush()
+
+    from app.infra.cache_helpers import invalidate_agent_cache
+    await invalidate_agent_cache(agent_id)
 
 
 # ─── POST /api/agents/draft ─────────────────────────────────────────

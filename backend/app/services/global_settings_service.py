@@ -48,8 +48,17 @@ def get_global_settings_sync() -> GlobalSettings | None:
 
 
 async def get_global_settings() -> GlobalSettings:
-    """Return the singleton global settings row, or an all-default transient instance."""
+    """Return the singleton global settings row, or an all-default transient instance.
+
+    Uses Redis cache when available; falls back to in-memory cache then DB.
+    """
     global _global_cache
+    from app.infra.cache_helpers import get_global_settings_cached
+
+    cached = await get_global_settings_cached()
+    if cached is not None:
+        _global_cache = cached
+        return cached
     if _global_cache is not None:
         return _global_cache
     async with get_db() as db:
@@ -92,4 +101,6 @@ async def update_global_settings(patch: GlobalSettingsPatch) -> GlobalSettings:
         db.expunge(row)
 
     _global_cache = row
+    from app.infra.cache_helpers import invalidate_global_settings_cache
+    await invalidate_global_settings_cache()
     return row

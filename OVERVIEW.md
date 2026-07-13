@@ -14,7 +14,7 @@
 
 > 把多 Agent 协作做成 IM 群聊体验 —— Agent 是「联系人」，对话是「工作空间」，Orchestrator 是「群里的项目经理」。
 
-前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **RAG 混合检索**（Milvus + ES + Neo4j）、**分层记忆系统**、**Document + Version 知识库**，并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
+前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus + ES + Neo4j）、**分层记忆系统**、**Document + Version 知识库**、**Redis 元数据缓存 + 异步 DB 写入**，并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
 
 ### 2. 五层架构 + 数据流
 
@@ -43,7 +43,7 @@ L2 Agent Platform Adapters              backend/app/adapters/
 L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQL） + workspace 文件系统
    ↑↓
 ─── 基础设施层（可选, 独立降级） ───
-   Milvus(向量) · Elasticsearch(全文) · Neo4j(图谱) · Kafka(事件)
+   Milvus(向量) · Elasticsearch(全文) · Neo4j(图谱) · Kafka(事件) · Redis(缓存+异步写)
    backend/app/infra/ + rag/ + memory/ + graph/
 ```
 
@@ -87,7 +87,10 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **Checkpoint 检查点** | ✅ | SDK Agent turn 级检查点保存与恢复（`agent_run_checkpoints` 表）|
 | Electron 桌面版 | ⚠️ | 打包脚本就绪；内嵌 Next 已无后端，需改启 Python |
 | 移动端伴随 App | ⏳ | 响应式 Web 已适配；Capacitor 原生壳脚手架已建，配对通信待打通 |
-| 测试覆盖 | 🟡 | 后端 pytest（72+ 测试文件, ruff 全绿）；前端 Vitest 纯函数；E2E 待补 |
+| **用户认证与多用户隔离** | ✅ | JWT(access 1h + refresh 7d) + bcrypt · 登录/注册页 · auth-gate · 个人资料弹窗 · CSRF 防护 · 所有用户数据表 `user_id` 隔离 |
+| **Redis 元数据缓存 + 异步 DB** | ✅ | KV 缓存(Agent/Settings/Workspace/Preference) · Redis Stream write-behind(part.delta 等批量落 PG) · 启动恢复扫描 |
+| **记忆管理 UI** | ✅ | 记忆库面板 · 长期记忆/偏好/短期记忆三面板 · 查看/删除/固化 |
+| 测试覆盖 | 🟡 | 后端 pytest（85+ 测试文件, ruff 全绿）；前端 Vitest 纯函数；E2E 待补 |
 
 ---
 
@@ -99,6 +102,8 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 关注点 | 文件 |
 |---|---|
 | App 入口 / 布局 | `src/app/page.tsx` · `src/app/layout.tsx` |
+| 认证页面 | `src/app/login/page.tsx` · `src/app/register/page.tsx` |
+| 认证守卫 | `src/components/auth-gate.tsx` · `src/stores/auth-store.ts` |
 | SSE 全局连接（客户端） | `src/components/stream-provider.tsx` |
 | 前端状态总线（Zustand+Immer） | `src/stores/app-store.ts` |
 | API base 配置 | `src/lib/config.ts`（读 `NEXT_PUBLIC_API_BASE_URL`） |
@@ -126,6 +131,8 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | Agent 库 / 创建 | `agent-library.tsx` · `create-agent-dialog.tsx` · `add-agent-dialog.tsx` · `agent-create-wizard.tsx` · `agent-avatar.tsx` · `agent-info-popover.tsx` |
 | 会话创建 / 目录选择 | `new-conversation-dialog.tsx` · `dir-picker-dialog.tsx` |
 | 设置面板 | `settings-dialog.tsx` |
+| 个人资料 | `profile-dialog.tsx` |
+| 记忆管理 | `memory-library.tsx` · `memory-management/long-term-memory-panel.tsx` · `memory-management/preference-panel.tsx` · `memory-management/session-memory-panel.tsx` |
 | 斜杠命令 | `slash-command-menu.tsx` · `slash-command-help-dialog.tsx` |
 | 渲染基建 | `markdown.tsx` · `code-block.tsx` · `attachment-chip.tsx` · `ui/*`（shadcn） |
 
@@ -141,6 +148,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `fs.py` | workspace 文件 listdir/read/write |
 | `pending.py` | 审批中转（writes/questions/bash/dispatch） |
 | `settings.py` | 全局设置 / API key |
+| `auth.py` | ★ 用户认证（注册/登录/刷新/登出 · JWT HttpOnly cookie） |
 | `runs_misc.py` | run 中止 / usage summary |
 | `documents.py` | ★ Document + Version 知识库 CRUD |
 | `skills.py` | Skills 上传 / 列表 / 加载 |
@@ -161,7 +169,9 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 产物服务 | `artifact_service.py` · `deployment_service.py` | 产物 CRUD + 版本链 · 本地静态发布与下载包 |
 | Agent / 附件 / 文件 | `agent_runner` 内联 · `attachment_service.py` · `fs_service.py` | |
 | 审批中转 store | `pending_writes.py` · `pending_questions.py` · `pending_bash_commands.py` · `pending_dispatch_plans.py` | |
-| 设置 / Key | `settings_service.py` | 三层 key 优先级解析 |
+| 设置 / Key | `settings_service.py` · `global_settings_service.py` | 三层 key 优先级解析 · 全局设置缓存（Redis 优先） |
+| ★ 异步 DB 写入 | `async_db_writer.py` | Redis Stream 消费者：批量落 PG（part.delta/tool 等事件） |
+| ★ 崩溃恢复 | `recovery_scan.py` | 启动时扫描 `status=streaming` 的消息，重放 Stream 或标记 interrupted |
 | 搜索 | `search_service.py` | 消息全文搜索 |
 | runner 注册 | `runner_registry.py` | per-conversation runner 生命周期 |
 | 部署命令 | `deploy_command_service.py` | 部署斜杠命令 |
@@ -224,19 +234,21 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 ### 基础设施层（`backend/app/infra/`）
 | 文件 | 职责 |
 |---|---|
-| `factory.py` | `build_infrastructure()`：配置驱动，独立降级（Milvus/ES/Neo4j/Kafka） |
+| `factory.py` | `build_infrastructure()`：配置驱动，独立降级（Milvus/ES/Neo4j/Kafka/**Redis**） |
 | `hybrid.py` | HybridStore 抽象（向量 + 全文 + 图谱统一接口） |
+| `cache.py` | ★ Redis KV 元数据缓存（read-through + write-invalidation） |
+| `cache_helpers.py` | ★ 缓存实体查找（Agent/Settings/Workspace/GlobalSettings cached） |
 | `cache_metrics.py` | 嵌入缓存命中率指标 |
 | `status.py` | 基础设施连接状态面板 |
 
 ### L1 持久化（`backend/app/db/`）
 | 文件 | 说明 |
 |---|---|
-| `models.py` | **18 张表**：10 核心（agents/conversations/messages/artifacts/workspaces/attachments/agent_runs/agent_run_checkpoints/context_summaries/app_settings）+ 6 AGI-memory（long_term_memory/user_preferences/rag_chunks/chat_history/memory_nodes/memory_edges）+ 2 Document（documents/document_versions） |
+| `models.py` | **22 张表**：14 核心（users/agents/conversations/messages/artifacts/workspaces/attachments/agent_runs/agent_run_checkpoints/context_summaries/app_settings/global_settings/user_settings/mcp_servers）+ 6 AGI-memory（long_term_memory/user_preferences/rag_chunks/chat_history/memory_nodes/memory_edges）+ 2 Document（documents/document_versions） |
 | `engine.py` | 异步引擎 + PostgreSQL（连接池） |
 | `__init__.py` | 模块导出 |
 
-DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.agenthub-data/workspaces/<conv_xxx>/`。
+DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.agenthub-data/users/<user_id>/workspaces/<conv_xxx>/`（多用户隔离）。
 
 ### 共享类型（`src/shared/`）
 `types.ts`（**`StreamEvent` / `MessagePart` 等跨层类型，改动牵一发动全身**） · `constants.ts` · `model-registry.ts` · `ppt-theme.ts` · `codex-compat.ts` · `openai-compatible.ts` 等 15 个文件。前端纯类型，与后端 `backend/app/schemas/` 保持 camelCase 兼容。
@@ -246,7 +258,7 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 - 移动：`apps/mobile/`（Capacitor 伴随客户端，monorepo workspace `@agenthub/mobile`）。`specs/14`。
 
 ### 测试
-- 后端：`backend/tests/`（pytest，72+ 测试文件，`asyncio_mode = "auto"`，ruff 全绿）。
+- 后端：`backend/tests/`（pytest，85+ 测试文件，`asyncio_mode = "auto"`，ruff 全绿；含 auth/CSRF/SSE 认证/隔离/异步写入/恢复扫描测试）。
 - 前端单元：`src/**/*.test.ts`（Vitest 纯函数）。
 
 ---
@@ -254,6 +266,9 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 ## 附 · 当前现状（易过时，以 git 为准）
 
 ### ✅ 近期完成
+- **用户认证与多用户隔离**：JWT(access 1h + refresh 7d) + bcrypt 密码哈希 · 登录/注册页面 · auth-gate 路由保护 · 个人资料弹窗 · CSRF 防护(Origin header) · SSE 连接认证 · 所有用户数据表 `user_id` 隔离 · builtin agent `user_id IS NULL` 共享 · CLI Agent `HOME`/`USERPROFILE` 按用户隔离
+- **Redis 元数据缓存 + 异步 DB 写入**：Redis KV 缓存(Agent/UserSettings/Workspace/Preference/GlobalSettings, read-through + write-invalidation) · Redis Stream write-behind(part.delta/tool.call 等事件批量落 PG) · `DBWriterConsumer` 后台消费者 · 启动恢复扫描(streaming 消息重放或标记 interrupted) · 连接池优化(`pool_pre_ping` → `pool_recycle`)
+- **记忆管理 UI**：记忆库面板 · 长期记忆/偏好/短期记忆三面板 · 查看/删除/固化操作
 - **统一 Agent Loop**（spec 19）：solo / coordinated / subagent 三模式统一为 `run_agent_loop` while-loop，移除旧三阶段 Orchestrator（plan_tasks / report_task_result / verify gate / 重试 harness）
 - **通用子任务派发**：任何 Agent 都能通过 `task_dispatch` 克隆自己处理子任务（clone-self，`hidden` 消息），`MAX_DISPATCH_DEPTH=3` 递归深度限制，`dispatch_visibility` 控制消息可见性
 - **DAG 派发计划**：`dispatch_plan` 工具声明结构化 DAG，`dag_executor.py` 做拓扑排序 + 波调度 + 并行执行 + 级联跳过，可选计划审批
@@ -264,8 +279,8 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 - **分层记忆系统**：STM + LTM(embedding 召回) + Preference + GraphMemory + 自动固化/去重/衰减
 - **Document + Version 知识库**：全局文档版本化 · 解析入库 · 按需召回 · 版本刷新三能力
 - **PromptAssembler**：Profile + Recall + Constraints 上下文组装，注入 Agent system prompt
-- **PostgreSQL 迁移**：从 SQLite 迁移到 PostgreSQL 16（asyncpg），18 张表
-- **基础设施层**：Docker Compose 编排（PG/Milvus/ES/Neo4j），独立降级策略
+- **PostgreSQL 迁移**：从 SQLite 迁移到 PostgreSQL 16（asyncpg），22 张表
+- **基础设施层**：Docker Compose 编排（PG/Milvus/ES/Neo4j/Redis），独立降级策略
 - **Web 搜索工具**：Tavily API
 - **PPT 产物**：ppt 类型 + 真 .pptx 导出 + 完整 theme token
 
@@ -284,6 +299,8 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 
 ### 📋 待办
 - OpenSpec 主 specs 同步（orchestrator / tools / stream-events / persistence / core-domain 需更新以反映统一 Agent Loop）
+- OpenSpec 主 specs 同步（persistence / platform-security / frontend 需更新以反映用户认证与多用户隔离）
+- OpenSpec 主 specs 同步（persistence 需更新以反映 Redis 缓存 + 异步 DB 写入）
 - Electron 桌面版改为启动 Python 后端（当前内嵌 Next 已无后端）
 - 移动端伴随 App 配对通信打通
 - E2E 测试补充（产物预览/导出 + 群聊调度，需测试假 adapter）
@@ -302,4 +319,4 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 
 ---
 
-*最后更新：2026-07-12 · 同步统一 Agent Loop（spec 19）、通用子任务派发（clone-self + 递归深度 + hidden 消息）、DAG 派发计划（dispatch_plan + dag_executor）、工具列表更新（移除 plan_tasks/report_task_result，新增 task_dispatch/dispatch_plan）。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*
+*最后更新：2026-07-13 · 同步用户认证与多用户隔离（JWT + bcrypt + CSRF + 数据隔离）、Redis 元数据缓存 + 异步 DB 写入（KV cache + Stream write-behind + 恢复扫描）、记忆管理 UI、DB 表数更新（18→22）。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*

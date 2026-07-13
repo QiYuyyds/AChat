@@ -16,7 +16,8 @@ import re
 from sqlalchemy import desc, select
 
 from app.db.engine import get_db
-from app.db.models import Attachment, Workspace
+from app.db.models import Attachment
+from app.infra.cache_helpers import get_workspace_cached
 from app.utils.clock import now_ms
 from app.utils.ids import new_attachment_id
 from app.utils.workspace_utils import is_path_within
@@ -56,34 +57,31 @@ async def upload_attachment(
     if size > MAX_FILE_SIZE:
         raise ValueError(f"File too large (max {MAX_FILE_SIZE // 1024 // 1024}MB)")
 
+    workspace = await get_workspace_cached(conversation_id)
+    if workspace is None:
+        raise ValueError(f"Workspace not found for conversation: {conversation_id}")
+    root_path = workspace.root_path
+
+    upload_dir = os.path.join(root_path, "uploads")
+    os.makedirs(upload_dir, exist_ok=True)
+
+    attachment_id = new_attachment_id()
+    ext = _sanitize_ext(file_name)
+    stored_name = f"{attachment_id}{ext}"
+    abs_path = os.path.join(upload_dir, stored_name)
+
+    # Sandbox check: resolved path must still be inside the workspace.
+    resolved = os.path.abspath(abs_path)
+    if not is_path_within(resolved, root_path):
+        raise ValueError("Path traversal detected")
+
+    with open(abs_path, "wb") as f:
+        f.write(data)
+
+    mime_type = content_type or _guess_mime(ext)
+    kind = "image" if mime_type.startswith("image/") else "file"
+
     async with get_db() as db:
-        ws_result = await db.execute(
-            select(Workspace).where(Workspace.conversation_id == conversation_id)
-        )
-        workspace = ws_result.scalar_one_or_none()
-        if workspace is None:
-            raise ValueError(f"Workspace not found for conversation: {conversation_id}")
-        root_path = workspace.root_path
-
-        upload_dir = os.path.join(root_path, "uploads")
-        os.makedirs(upload_dir, exist_ok=True)
-
-        attachment_id = new_attachment_id()
-        ext = _sanitize_ext(file_name)
-        stored_name = f"{attachment_id}{ext}"
-        abs_path = os.path.join(upload_dir, stored_name)
-
-        # Sandbox check: resolved path must still be inside the workspace.
-        resolved = os.path.abspath(abs_path)
-        if not is_path_within(resolved, root_path):
-            raise ValueError("Path traversal detected")
-
-        with open(abs_path, "wb") as f:
-            f.write(data)
-
-        mime_type = content_type or _guess_mime(ext)
-        kind = "image" if mime_type.startswith("image/") else "file"
-
         row = Attachment(
             id=attachment_id,
             conversation_id=conversation_id,
@@ -165,13 +163,12 @@ async def get_attachment_absolute_path(attachment_id: str) -> str | None:
         row = result.scalar_one_or_none()
         if row is None:
             return None
-        ws_result = await db.execute(
-            select(Workspace).where(Workspace.conversation_id == row.conversation_id)
-        )
-        workspace = ws_result.scalar_one_or_none()
+        conversation_id = row.conversation_id
+        file_path = row.file_path
+    workspace = await get_workspace_cached(conversation_id)
     if workspace is None:
         return None
-    abs_path = os.path.join(workspace.root_path, row.file_path)
+    abs_path = os.path.join(workspace.root_path, file_path)
     resolved = os.path.realpath(abs_path)
     if not is_path_within(resolved, workspace.root_path):
         return None

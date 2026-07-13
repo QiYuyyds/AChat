@@ -13,6 +13,7 @@ class InfrastructureStatus:
     elasticsearch: str = "disconnected"
     neo4j: str = "disconnected"
     kafka: str = "disconnected"
+    redis: str = "disconnected"
 
     def summary(self) -> Dict[str, str]:
         return {
@@ -21,6 +22,7 @@ class InfrastructureStatus:
             "elasticsearch": self.elasticsearch,
             "neo4j": self.neo4j,
             "kafka": self.kafka,
+            "redis": self.redis,
         }
 
     def is_any_connected(self) -> bool:

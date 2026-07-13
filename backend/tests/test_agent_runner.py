@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 
 @pytest_asyncio.fixture
-async def simple_setup(db, agents, tmp_path):
+async def simple_setup(db, agents, test_user, tmp_path):
     """Create a conversation, sandbox workspace, and a trigger user message."""
     from app.db.engine import get_db
     from app.db.models import Conversation, Message, Workspace
@@ -29,6 +29,7 @@ async def simple_setup(db, agents, tmp_path):
     async with get_db() as session:
         conv = Conversation(
             id=conv_id,
+            user_id=test_user["id"],
             title="T",
             mode="single",
             archived=False,
@@ -67,6 +68,7 @@ async def simple_setup(db, agents, tmp_path):
         "conversation_id": conv_id,
         "agent_id": agents["alice"],
         "trigger_message_id": msg_id,
+        "user_id": test_user["id"],
     }
 
 
@@ -94,7 +96,7 @@ async def test_simple_run_end_to_end(simple_setup):
         except TimeoutError:
             return
 
-    async with event_bus.subscribe() as queue:
+    async with event_bus.subscribe(user_id=simple_setup["user_id"]) as queue:
         drainer = asyncio.create_task(_drain(queue))
 
         runner = AgentRunnerImpl()
@@ -170,7 +172,7 @@ async def test_simple_run_missing_workspace_finalizes_failed(simple_setup):
         except TimeoutError:
             return
 
-    async with event_bus.subscribe() as queue:
+    async with event_bus.subscribe(user_id=simple_setup["user_id"]) as queue:
         drainer = asyncio.create_task(_drain(queue))
         runner = AgentRunnerImpl()
         handle = runner.run(

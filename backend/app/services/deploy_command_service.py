@@ -27,7 +27,8 @@ from typing import Any
 from sqlalchemy import select
 
 from app.db.engine import get_db
-from app.db.models import Artifact, Conversation, Message, Workspace
+from app.db.models import Artifact, Conversation, Message
+from app.infra.cache_helpers import get_workspace_cached
 from app.schemas.events import MessageRecord
 from app.schemas.messages import DeployCandidateRecord, DeployStatusRecord
 from app.utils.clock import now_ms
@@ -213,11 +214,7 @@ async def _deploy_first_workspace_candidate(
 async def _find_workspace_deploy_candidate(
     conversation_id: str,
 ) -> dict[str, str] | None:
-    async with get_db() as db:
-        result = await db.execute(
-            select(Workspace).where(Workspace.conversation_id == conversation_id)
-        )
-        workspace = result.scalar_one_or_none()
+    workspace = await get_workspace_cached(conversation_id)
     if workspace is None:
         return None
     cwd = get_effective_cwd(workspace)
