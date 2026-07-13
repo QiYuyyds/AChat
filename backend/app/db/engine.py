@@ -31,7 +31,8 @@ async def init_db() -> None:
         future=True,
         pool_size=10,
         max_overflow=20,
-        pool_pre_ping=True,
+        pool_pre_ping=False,
+        pool_recycle=3600,
     )
 
     # SQLite needs per-connection PRAGMAs for FK cascade + WAL concurrency.

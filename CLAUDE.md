@@ -68,6 +68,7 @@
 | Elasticsearch 8.14 | 全文检索（RAG BM25） | 无全文检索 |
 | Neo4j 5 | 知识图谱（KGStore / GraphMemory） | GraphMemory no-op |
 | Kafka | 事件总线增强（可选） | 用 in-process EventBus |
+| Redis 7 | 元数据缓存 + 异步 DB 写入（KV cache / Stream write-behind） | 退化为同步 DB 读写 |
 
 > 代码风格上，前端用 TypeScript，后端用 Python。改前端代码遵守 TS 规范，改后端代码遵守 Python 规范。两端的共享契约是 `src/shared/` 里的纯类型定义（前端）和 `backend/app/schemas/` 里的 Pydantic 模型（后端），两者保持 camelCase 字段兼容。
 
@@ -85,14 +86,14 @@ L3 Application Services        backend/app/services/ (AgentRunner · Orchestrato
 L2 Agent Platform Adapters     backend/app/adapters/ (ClaudeCLI / CodexCLI / Custom / Mock) + mcp_bridge.py
 L1 Persistence                 backend/app/db/ (SQLAlchemy + PostgreSQL + workspace 文件系统)
 ─── 基础设施层 (可选, 独立降级) ───
-   Milvus · Elasticsearch · Neo4j · Kafka   backend/app/infra/ + rag/ + memory/ + graph/
+   Milvus · Elasticsearch · Neo4j · Kafka · Redis   backend/app/infra/ + rag/ + memory/ + graph/
 ```
 
 **铁律**：
 - UI **永远不**直接调 LLM SDK，必须经过 L3
 - Adapter **永远不**写 DB，它只负责事件流翻译
 - 工具执行（ToolExecutor）属 L3，不是 Adapter 的事
-- 基础设施服务（Milvus/ES/Neo4j）**永远不**在 L3 服务里直接 new 客户端，必须经过 `infra/factory.py` 统一构建并注入
+- 基础设施服务（Milvus/ES/Neo4j/Redis）**永远不**在 L3 服务里直接 new 客户端，必须经过 `infra/factory.py` 统一构建并注入
 
 ### 3.2 八个核心实体（详见 `specs/01-core-entities.md`）
 
@@ -230,7 +231,7 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 约束：
 
 - **绝不**在代码中硬编码 key
-- **不引入** keychain / safeStorage / 第三方加密存储 —— 本地单用户场景，DB 文件系统权限已经够
+- **不引入** keychain / safeStorage / 第三方加密存储 —— 本地运行场景，DB 文件系统权限已经够
 - 缺失 key 时，由 adapter 在 SDK 内抛错（不要在启动时拒绝服务，因为用户可能只用其中某些 provider）
 - **CLI 适配器**（Claude Code / Codex）走 CLI 自带认证（OAuth / 环境变量），`build_adapter_input` 对 CLI agent 跳过 API key 解析与工具注入；仅当 agent 显式设了 `api_key` 时才注入 `extra_env`
 - RAG / 记忆系统另有 `EMBEDDING_API_KEY` 和 `LLM_API_KEY` 配置（见 `backend/.env.example`）
@@ -361,10 +362,12 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `specs/desktop-electron/spec.md` — Electron 桌面版
 - `specs/conversation-context/spec.md` — 跨 run 上下文
 - `specs/mobile-companion/spec.md` — 移动伴随 App
+- `specs/user-auth/spec.md` — 用户认证与多用户隔离
+- `specs/user-profile/spec.md` — 用户资料管理
 
 ### `specs/`（编号版详细规格）
 
-- `01-core-entities.md` — 7 个核心实体的字段定义
+- `01-core-entities.md` — 8 个核心实体的字段定义
 - `02-stream-events.md` — StreamEvent 完整事件类型
 - `03-message-parts.md` — MessagePart 各类型详解
 - `04-artifacts.md` — Artifact 类型与渲染契约

@@ -10,10 +10,8 @@ import os
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
 
-from app.db.engine import get_db
-from app.db.models import Workspace
+from app.infra.cache_helpers import get_workspace_cached
 from app.schemas.messages import DeployStatusRecord
 from app.services.deployment_service import create_workspace_static_deployment
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
@@ -79,11 +77,7 @@ async def deploy_workspace_for_conversation(
     title_arg = args.get("title")
     entry = args.get("entry")
 
-    async with get_db() as db:
-        result = await db.execute(
-            select(Workspace).where(Workspace.conversation_id == conversation_id)
-        )
-        workspace = result.scalar_one_or_none()
+    workspace = await get_workspace_cached(conversation_id)
     if workspace is None:
         return _failed_workspace_deployment(path, "Workspace not found")
 

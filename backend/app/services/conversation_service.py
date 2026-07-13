@@ -198,6 +198,7 @@ async def maybe_generate_summary(
     from openai import AsyncOpenAI
 
     from app.adapters.custom_provider_client import resolve_custom_provider_client_config
+    from app.infra.cache_helpers import get_agent_cached
 
     # Step 1: Quick check — is summary already set? Does the agent have a model?
     async with get_db() as db:
@@ -210,23 +211,23 @@ async def maybe_generate_summary(
             )
             return
 
-        agent = await db.get(Agent, agent_id)
-        if agent is None:
-            logger.info("[maybe_generate_summary] Skipped: agent not found")
-            return
-        if not agent.model_provider or not agent.model_id:
-            logger.info(
-                "[maybe_generate_summary] Skipped: agent missing model config provider=%s model=%s",
-                agent.model_provider,
-                agent.model_id,
-            )
-            return
+    agent = await get_agent_cached(agent_id)
+    if agent is None:
+        logger.info("[maybe_generate_summary] Skipped: agent not found")
+        return
+    if not agent.model_provider or not agent.model_id:
+        logger.info(
+            "[maybe_generate_summary] Skipped: agent missing model config provider=%s model=%s",
+            agent.model_provider,
+            agent.model_id,
+        )
+        return
 
-        agent_name = agent.name
-        model_provider = agent.model_provider
-        model_id = agent.model_id
-        api_key = agent.api_key
-        api_base_url = agent.api_base_url
+    agent_name = agent.name
+    model_provider = agent.model_provider
+    model_id = agent.model_id
+    api_key = agent.api_key
+    api_base_url = agent.api_base_url
 
     logger.info(
         "[maybe_generate_summary] Calling LLM provider=%s model=%s",
@@ -648,6 +649,9 @@ async def delete_conversation(conversation_id: str) -> None:
 
     clear_claude_code_session(conversation_id)
     clear_codex_session(conversation_id)
+
+    from app.infra.cache_helpers import invalidate_workspace_cache
+    await invalidate_workspace_cache(conversation_id)
 
 
 async def _rmdir_with_retry(target: str) -> None:

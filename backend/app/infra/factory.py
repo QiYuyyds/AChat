@@ -4,9 +4,8 @@ Each service is wrapped in try/except; failure → no-op without affecting other
 Degradation chain: Milvus → TF cosine; ES → no full-text; Neo4j → no-op; Kafka → in-process.
 """
 
+import asyncio
 import logging
-import time
-from typing import Optional
 
 from app.config import Settings
 from app.infra.status import InfrastructureStatus
@@ -23,9 +22,18 @@ class Infrastructure:
         self.milvus_client = None
         self.es_client = None
         self.kafka_producer = None
+        self.redis_client = None
 
 
-def build_infrastructure(settings: Settings) -> Infrastructure:
+_infra_instance: Infrastructure | None = None
+
+
+def get_infrastructure() -> Infrastructure | None:
+    """Return the singleton Infrastructure built at startup (or None)."""
+    return _infra_instance
+
+
+async def build_infrastructure(settings: Settings) -> Infrastructure:
     """Build infrastructure with configuration-driven assembly.
 
     Each service is independently wrapped in try/except so that one failure
@@ -60,7 +68,7 @@ def build_infrastructure(settings: Settings) -> Infrastructure:
                 client = None
                 if attempt < 3:
                     logger.info("Milvus attempt %d/4 failed, retrying in %ds...", attempt + 1, wait)
-                    time.sleep(wait)
+                    await asyncio.sleep(wait)
                 else:
                     logger.warning("Milvus unavailable after 4 attempts (~85s): %s", e)
         if client is not None:
@@ -119,10 +127,34 @@ def build_infrastructure(settings: Settings) -> Infrastructure:
     else:
         logger.info("Kafka not configured (kafka_brokers is empty)")
 
+    # ─── Redis (optional) ───
+    if settings.redis_url:
+        try:
+            import redis.asyncio as aioredis
+
+            redis_client = aioredis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=3,
+                socket_timeout=3,
+            )
+            # Verify connectivity with a lightweight call
+            await redis_client.ping()
+            infra.redis_client = redis_client
+            infra.status.redis = "connected"
+            logger.info("Redis connected: %s", settings.redis_url)
+        except Exception as e:
+            infra.status.redis = "disconnected"
+            logger.warning("Redis unavailable: %s", e)
+    else:
+        logger.info("Redis not configured (REDIS_URL is empty)")
+
     # Log dashboard
     for line in infra.status.dashboard_lines():
         logger.info(line)
 
+    global _infra_instance
+    _infra_instance = infra
     return infra
 
 
@@ -143,6 +175,12 @@ async def close_infrastructure(infra: Infrastructure) -> None:
     if infra.kafka_producer:
         try:
             infra.kafka_producer.close(timeout=5)
+        except Exception:
+            pass
+
+    if infra.redis_client:
+        try:
+            await infra.redis_client.aclose()
         except Exception:
             pass
 

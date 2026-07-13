@@ -11,10 +11,8 @@ import contextlib
 import os
 from dataclasses import dataclass
 
-from sqlalchemy import select
-
-from app.db.engine import get_db
 from app.db.models import Workspace
+from app.infra.cache_helpers import get_workspace_cached
 from app.utils.workspace_utils import assert_path_within_workspace, get_effective_cwd
 
 MAX_READ_BYTES = 1_048_576  # 1 MB
@@ -25,11 +23,7 @@ SANDBOX_TOTAL_FILES = 1000
 
 
 async def get_workspace_for_conversation(conversation_id: str) -> Workspace | None:
-    async with get_db() as db:
-        result = await db.execute(
-            select(Workspace).where(Workspace.conversation_id == conversation_id)
-        )
-        return result.scalar_one_or_none()
+    return await get_workspace_cached(conversation_id)
 
 
 def read_if_exists(workspace: Workspace, target: str) -> str | None:

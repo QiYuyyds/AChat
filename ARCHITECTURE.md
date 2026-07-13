@@ -19,9 +19,11 @@
 - Orchestrator 自动拆任务、DAG 并行调度、聚合结果
 - 产物（代码 / 网页 / 文档 / PPT / 图片）内联预览与二次编辑
 - 每会话独立 workspace 沙箱（sandbox / local 双模式）
+- **用户认证与多用户隔离**（JWT + bcrypt · CSRF 防护 · 所有用户数据 `user_id` 隔离）
 - **RAG 混合检索**（Milvus 向量 + Elasticsearch 全文 + Neo4j 知识图谱，RRF 融合）
 - **分层记忆系统**（短期 / 长期 / 偏好 / 图谱记忆 + 自动固化与衰减）
 - **Document + Version 知识库**（全局文档版本化、解析入库、按需召回）
+- **Redis 元数据缓存 + 异步 DB 写入**（KV cache + Stream write-behind，可选降级）
 - 桌面打包（Electron）+ 移动伴随端（Capacitor）
 
 **运行形态**：前后端分离本地运行。前端 Next.js dev server（:3000），后端 FastAPI（:8000）；基础设施服务（PostgreSQL / Milvus / ES / Neo4j）通过 Docker Compose 启动，可全部容器化也可仅远端部署基础设施。
@@ -56,13 +58,14 @@
 
 | 服务 | 镜像 | 用途 |
 |---|---|---|
-| PostgreSQL | `postgres:16-alpine` | 关系型主库（18 张表） |
+| PostgreSQL | `postgres:16-alpine` | 关系型主库（22 张表） |
 | Milvus | `milvusdb/milvus:v2.4.17` | 向量检索（RAG 语义 + LTM recall） |
 | Elasticsearch | `elasticsearch:8.14.0` | 全文检索（RAG BM25） |
 | Neo4j | `neo4j:5-community` | 知识图谱（KGStore + GraphMemory） |
 | Kafka | 可选 | 事件总线增强（默认 in-process） |
+| Redis | `redis:7-alpine` | 元数据缓存 + 异步 DB 写入（KV cache / Stream write-behind） |
 
-> **降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op；Kafka 不配 → 用 in-process EventBus。启动时打印状态面板。
+> **降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op；Kafka 不配 → 用 in-process EventBus；Redis 不配 → 退化为同步 DB 读写。启动时打印状态面板。
 
 ---
 
@@ -86,6 +89,7 @@
 ├──────────────────────────────────────────────────────────────────┤
 │  Infrastructure Layer (可选, 独立降级)          backend/app/infra/   │
 │  Milvus(向量) · Elasticsearch(全文) · Neo4j(图谱) · Kafka(事件)     │
+│  Redis(元数据缓存 + 异步 DB 写入)                                    │
 │  └─ RAG 混合检索 (backend/app/rag/)  HybridStore + RRF              │
 │  └─ 记忆系统 (backend/app/memory/)  STM/LTM/Preference/Graph        │
 │  └─ 知识图谱 (backend/app/graph/)   KGStore + Extractor             │
@@ -144,7 +148,7 @@ backend/
 │   ├── config.py           配置 (pydantic-settings) + .env key 桥接到 os.environ
 │   │
 │   ├── db/ (3)             【L1 持久化】
-│   │   ├── models.py        18 张表 SQLAlchemy 模型 (10 核心 + 6 AGI-memory + 2 Document)
+│   │   ├── models.py        22 张表 SQLAlchemy 模型 (14 核心 + 6 AGI-memory + 2 Document)
 │   │   └── engine.py        异步引擎 + PostgreSQL (外键 ON / 连接池)
 │   │
 │   ├── schemas/ (6)        【类型契约 Pydantic】
@@ -168,6 +172,9 @@ backend/
 │   │   ├── artifact_service.py    产物 CRUD / 版本链
 │   │   ├── deployment_service.py  产物部署 + 资源 / zip
 │   │   ├── settings_service.py    全局设置 / API key 解析
+│   │   ├── global_settings_service.py 全局设置缓存 (Redis 优先)
+│   │   ├── async_db_writer.py     ★ Redis Stream 异步 DB 写入 (write-behind)
+│   │   ├── recovery_scan.py       ★ 启动崩溃恢复 (streaming 消息扫描)
 │   │   ├── fs_service.py          workspace 文件读写 + 沙箱配额
 │   │   ├── search_service.py      消息全文搜索
 │   │   ├── rag_service.py         ★ RAG 混合检索 (Milvus + ES + KG + RRF)
@@ -236,21 +243,24 @@ backend/
 │   │   ├── extractor.py     LLM 驱动的实体 / 关系抽取
 │   │   └── types.py         图谱类型定义
 │   │
-│   ├── infra/ (5)          【基础设施工厂】
+│   ├── infra/ (7)          【基础设施工厂】
 │   │   ├── factory.py       build_infrastructure(): 配置驱动, 独立降级
+│   │   │                   (Milvus/ES/Neo4j/Kafka/**Redis**)
 │   │   ├── hybrid.py        HybridStore 抽象 (向量 + 全文 + 图谱统一接口)
+│   │   ├── cache.py         ★ Redis KV 元数据缓存 (read-through + write-invalidation)
+│   │   ├── cache_helpers.py ★ 缓存实体查找 (Agent/Settings/Workspace/GlobalSettings cached)
 │   │   ├── cache_metrics.py 嵌入缓存命中率指标
 │   │   └── status.py        基础设施连接状态面板
 │   │
-│   ├── api/ (14)           【API 路由】
+│   ├── api/ (15)           【API 路由】
 │   │   ├── conversations / messages / agents / artifacts / attachments
 │   │   ├── fs / pending / settings / runs_misc / stream (SSE)
-│   │   ├── documents / skills / deployments
+│   │   ├── documents / skills / deployments / **auth**
 │   │   └── mobile/routes
 │   │
 │   └── utils/ (13)         跨平台 · 安全黑名单 · ID · token 估算 · 审批 helper · mermaid 规范化 ...
 │
-└── tests/ (72+)           pytest 测试; ruff 全绿
+└── tests/ (85+)           pytest 测试; ruff 全绿
 ```
 
 ### 关键技术映射（TS → Python）
@@ -270,14 +280,20 @@ backend/
 
 ---
 
-## 6. 数据库：18 张表
+## 6. 数据库：22 张表
+
+### 用户域（1 张）
+
+| 表 | 说明 |
+|---|---|
+| `users` | 用户（username / email / password_hash / token_version / display_name / avatar） |
 
 ### 核心域（10 张）
 
 | 表 | 说明 |
 |---|---|
-| `agents` | AI 代理（name / adapter_name / system_prompt / tool_names / skill_names / hook_names / api_key / executable_path / protocol_family / custom_args） |
-| `conversations` | 会话（mode single/group / agent_ids / pinned / bookmarked / archived / rag_enabled / summary / dispatch_mode） |
+| `agents` | AI 代理（name / adapter_name / system_prompt / tool_names / skill_names / hook_names / api_key / executable_path / protocol_family / custom_args / **user_id**） |
+| `conversations` | 会话（mode single/group / agent_ids / pinned / bookmarked / archived / rag_enabled / summary / dispatch_mode / **user_id**） |
 | `messages` | 消息（role / parts JSON / status / run_id / usage / hidden） |
 | `artifacts` | 产物（type / content JSON / version / parent_artifact_id） |
 | `workspaces` | 工作区（mode sandbox/local / root_path / bound_path） |
@@ -287,13 +303,21 @@ backend/
 | `conversation_context_summaries` | 上下文压缩摘要 |
 | `app_settings` | 全局设置单行表（各 provider API key + 部署配置 + companion） |
 
+### 设置域（3 张）
+
+| 表 | 说明 |
+|---|---|
+| `global_settings` | 全局部署配置（deployment_publish_enabled / deployment_publish_dir / deployment_public_base_url） |
+| `user_settings` | 用户级设置（user_id / 各 provider API key / companion_mode / mobile_device_token） |
+| `mcp_servers` | MCP Server 配置（user_id / name / command / args / env / transport_type） |
+
 ### AGI-memory 新增（6 张）
 
 | 表 | 说明 |
 |---|---|
-| `long_term_memory` | 长期记忆（content / importance / embedding / category / tags / score） |
-| `user_preferences` | 用户偏好 KV（user_id / key / value） |
-| `rag_chunks` | RAG 文档分块（doc_hash / chunk_idx / content / embedding / document_id / version_id / content_hash） |
+| `long_term_memory` | 长期记忆（content / importance / embedding / category / tags / score / **user_id**） |
+| `user_preferences` | 用户偏好 KV（**user_id** / key / value） |
+| `rag_chunks` | RAG 文档分块（doc_hash / chunk_idx / content / embedding / document_id / version_id / content_hash / **user_id**） |
 | `chat_history` | 短期记忆持久化（role / content） |
 | `memory_nodes` | 记忆图谱节点（Neo4j 镜像表） |
 | `memory_edges` | 记忆图谱边（from_id / to_id / rel_type / weight） |
@@ -311,7 +335,7 @@ backend/
 
 ```
 用户在 UI 输入并发送
-  └─ src/lib/api.ts  POST /api/conversations/{id}/messages
+  └─ src/lib/api.ts  POST /api/conversations/{id}/messages (JWT cookie 认证 + Origin CSRF 检查)
        └─ L3 conversation_service.send_message()
             ├─ 持久化用户 message
             ├─ 决策响应者 (单聊 / 群聊)
@@ -327,7 +351,10 @@ backend/
                       │       └─ post_tool_use hook (记忆持久化/技能激活/审计)
                       └─ consume_stream()
                            ├─ persist_event()  事件落 DB
-                           └─ event_bus.publish()  → SSE
+                           │   ├─ Redis 可用: part.delta/tool 等事件 XADD 到 Redis Stream
+                           │   │              → DBWriterConsumer 后台批量落 PG (write-behind)
+                           │   └─ Redis 不可用: 同步 _update_message_parts 直接落 PG
+                           └─ event_bus.publish()  → SSE (零延迟, 不经 Redis)
                                 └─ GET /api/stream (一条全局连接)
                                      └─ 前端 stream-provider.tsx onmessage
                                           └─ Zustand store.applyEvent()  → UI 实时更新
@@ -427,14 +454,14 @@ Agent 运行时注入 (PromptAssembler):
 
 | 目录 | 内容 |
 |---|---|
-| `app/` | `layout.tsx` / `page.tsx`（挂载 StreamProvider + 主界面） |
-| `components/` (65) | ChatPanel / MessageList / MessageParts / ArtifactPreviewPanel / ArtifactCodeEditor / AgentLibrary / AgentCreateWizard / CreateAgentDialog / DispatchPlanCard / KnowledgeLibrary / DocumentDetail / UploadDocumentDialog / SkillLibrary / GlobalSearch / SettingsDialog / TurnTimeline / MessageHighlightLayer ... |
-| `lib/` | `api.ts`（REST 客户端，统一 `API_BASE_URL` 前缀）· `config.ts`（读 `NEXT_PUBLIC_API_BASE_URL`）· `artifact-groups.ts` · `tool-display.ts` · 工具 |
-| `stores/` | `app-store.ts`（会话 / 消息 / 事件 reducer）· `search-store.ts` |
+| `app/` | `layout.tsx` / `page.tsx`（挂载 StreamProvider + AuthGate + 主界面） · `login/page.tsx` · `register/page.tsx` |
+| `components/` (75+) | ChatPanel / MessageList / MessageParts / ArtifactPreviewPanel / ArtifactCodeEditor / AgentLibrary / AgentCreateWizard / CreateAgentDialog / DispatchPlanCard / KnowledgeLibrary / DocumentDetail / UploadDocumentDialog / SkillLibrary / GlobalSearch / SettingsDialog / TurnTimeline / MessageHighlightLayer / **AuthGate / ProfileDialog / MemoryLibrary / LongTermMemoryPanel / PreferencePanel / SessionMemoryPanel** ... |
+| `lib/` | `api.ts`（REST 客户端，统一 `API_BASE_URL` 前缀）· `config.ts`（读 `NEXT_PUBLIC_API_BASE_URL`）· `api/memory.ts`（记忆管理 API）· `artifact-groups.ts` · `tool-display.ts` · 工具 |
+| `stores/` | `app-store.ts`（会话 / 消息 / 事件 reducer）· `search-store.ts` · **`auth-store.ts`**（认证状态 / 用户信息 / token 刷新） |
 | `shared/` (15) | StreamEvent / MessagePart / Artifact 等**前后端共享类型**（纯类型，无逻辑） · `codex-compat.ts` · `model-registry.ts` · `ppt-theme.ts` ... |
 | `db/schema.ts` | 仅保留前端 import 行类型（AgentRow 等） |
 
-**前后端边界**：前端只通过 `lib/api.ts`（REST）和 `stream-provider.tsx`（SSE EventSource）与 Python 后端通信，两者都加 `API_BASE_URL` 前缀；默认空串 = 同源，设环境变量即指向独立 Python 后端。
+**前后端边界**：前端只通过 `lib/api.ts`（REST）和 `stream-provider.tsx`（SSE EventSource）与 Python 后端通信，两者都加 `API_BASE_URL` 前缀；默认空串 = 同源，设环境变量即指向独立 Python 后端。认证通过 HttpOnly cookie 传递 JWT（同源自动携带），跨域 dev 时 SSE 连接通过 `?token=` query param 认证。
 
 ---
 
@@ -443,7 +470,7 @@ Agent 运行时注入 (PromptAssembler):
 | 目录 | 说明 | 当前状态 |
 |---|---|---|
 | `specs/` | 19 份编号详细规格（实体 / 事件 / 适配器 / 工具 / 编排 / 统一 Agent Loop ...），**语言无关契约** | 有效 |
-| `openspec/` | OpenSpec 能力契约（14 个 capability spec）+ 变更提案（`changes/` 下 45+ 提案） | 有效 |
+| `openspec/` | OpenSpec 能力契约（16 个 capability spec，含 **user-auth** / **user-profile**）+ 变更提案（`changes/` 下 50+ 提案） | 有效 |
 | `electron/` | 桌面版（`main.ts` 启动内嵌 Next server） | ⚠️ 待改造：内嵌 Next 已无后端，需改启 Python |
 | `apps/mobile/` | 移动伴随 App（Capacitor / 远程审批，spec 14） | 独立模块 |
 | `scripts/` | 构建 / Electron / SQLite ABI 辅助（`.mjs`） | 前端用 |
@@ -490,8 +517,8 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"; pnpm dev
 ### API Key 优先级
 
 1. **`agents.api_key`** — per-agent override（最高优先级）
-2. **`app_settings.<provider>_api_key`** — 设置面板全局自填
-3. **`backend/.env`** — 环境变量兜底
+2. **`user_settings.<provider>_api_key`** — 用户在「设置」面板全局自填，存 `user_settings` 表（按 `user_id` 分行）
+3. **`backend/.env`** — 环境变量兜底（dev / CI 友好；`config.py` 的 `apply_env_overrides()` 桥接到 `os.environ`）
 
 ```env
 # backend/.env
@@ -508,6 +535,7 @@ MILVUS_HOST=localhost        # 留空 = 禁用 Milvus
 ES_ADDRESSES=http://localhost:9200  # 留空 = 禁用 ES
 NEO4J_URI=bolt://localhost:7687     # 留空 = 禁用 Neo4j
 ENABLE_GRAPH=false           # true 才启用知识图谱
+REDIS_URL=                   # 留空 = 禁用 Redis (退化为同步 DB 读写)
 ```
 
 ---
@@ -521,6 +549,7 @@ ENABLE_GRAPH=false           # true 才启用知识图谱
 | Elasticsearch | `ES_ADDRESSES` 空 | RAG 无全文检索 |
 | Neo4j | `NEO4J_URI` 空 或 `ENABLE_GRAPH=false` | GraphMemory no-op；RAG 无图谱检索 |
 | Kafka | `KAFKA_BROKERS` 空 | 用 in-process EventBus（默认） |
+| Redis | `REDIS_URL` 空 | 退化为同步 DB 读写（无 KV 缓存，无 Stream write-behind） |
 | Embedding API | `EMBEDDING_API_KEY` 空 | RAG / LTM 无语义检索能力 |
 | LLM API (RAG 用) | 无任何 LLM key | RAG 无 rewrite / rerank；KG 无实体抽取 |
 
@@ -528,4 +557,4 @@ ENABLE_GRAPH=false           # true 才启用知识图谱
 
 ---
 
-*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-12 · 同步统一 Agent Loop（spec 19）、通用子任务派发、DAG 派发计划、工具列表更新、dispatch_mode/hidden 列。*
+*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-13 · 同步用户认证与多用户隔离、Redis 元数据缓存 + 异步 DB 写入、DB 表数更新（18→22）、API Key 优先级更新（app_settings → user_settings）。*

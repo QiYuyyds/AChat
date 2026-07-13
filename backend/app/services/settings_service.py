@@ -66,12 +66,12 @@ def _empty_settings() -> AppSettings:
 
 async def get_user_settings(user_id: str) -> UserSettings:
     """Return the per-user settings row, or an all-default transient instance."""
-    async with get_db() as db:
-        result = await db.execute(
-            select(UserSettings).where(UserSettings.user_id == user_id)
-        )
-        row = result.scalar_one_or_none()
-    return row if row is not None else _empty_user_settings(user_id)
+    from app.infra.cache_helpers import get_user_settings_cached
+
+    cached = await get_user_settings_cached(user_id)
+    if cached is not None:
+        return cached
+    return _empty_user_settings(user_id)
 
 
 class UserSettingsPatch(TypedDict, total=False):
@@ -122,6 +122,8 @@ async def update_user_settings(user_id: str, patch: UserSettingsPatch) -> UserSe
         await db.flush()
         db.expunge(row)
 
+    from app.infra.cache_helpers import invalidate_user_settings_cache
+    await invalidate_user_settings_cache(user_id)
     return row
 
 
@@ -313,6 +315,9 @@ async def update_app_settings(patch: AppSettingsPatch) -> AppSettings:
         row.updated_at = now_ms()
         await db.flush()
         db.expunge(row)
+
+    from app.infra.cache_helpers import invalidate_user_settings_cache
+    await invalidate_user_settings_cache(row.user_id)
 
     # Global fields
     global_patch: dict = {}

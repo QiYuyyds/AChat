@@ -16,7 +16,7 @@
 
 AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的多 Agent 协作工作空间，把 AI 协作做成 IM 群聊式的体验。
 
-它不把每次 agent 运行当成一段孤立的终端记录，而是围绕「会话」来组织工作：Agent 是联系人，会话是工作空间，文件与产物是共享上下文，Orchestrator 还能把一项工作拆给多个 Agent 并行完成。同时集成了 RAG 混合检索、分层记忆系统和 Document 知识库，让 Agent 拥有跨会话的知识与记忆能力。
+它不把每次 agent 运行当成一段孤立的终端记录，而是围绕「会话」来组织工作：Agent 是联系人，会话是工作空间，文件与产物是共享上下文，Orchestrator 还能把一项工作拆给多个 Agent 并行完成。同时集成了用户认证与多用户隔离、RAG 混合检索、分层记忆系统和 Document 知识库，让 Agent 拥有跨会话的知识与记忆能力。
 
 <p align="center">
     <img src="docs/images/agenthub-preview.png" alt="AChat 多 Agent 协作与产物预览" width="100%" />
@@ -29,6 +29,7 @@ AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的
 - [为什么选 AChat](#为什么选-agenthub)
 - [功能特性](#功能特性)
   - [IM 式 Agent 工作空间](#im-式-agent-工作空间)
+  - [用户认证与多用户隔离](#用户认证与多用户隔离)
   - [多 Agent 支持](#多-agent-支持)
   - [Orchestrator 与任务调度](#orchestrator-与任务调度)
   - [RAG 混合检索与知识库](#rag-混合检索与知识库)
@@ -75,6 +76,16 @@ AChat 正是为这套工作流而生。它默认本地运行，使用 PostgreSQL
 - 消息是结构化的 parts，而不是一整块 markdown：文本、代码、思考、工具调用、工具结果、附件、产物引用、部署卡片、调度计划各自有不同的渲染。
 - 工具调用在聊天流里可见，包括较长的 bash 命令及其输出。
 - 全局搜索、斜杠命令菜单、消息高亮。
+
+### 用户认证与多用户隔离
+
+- **注册 / 登录**：密码用 bcrypt（cost factor 12）哈希存储，JWT 分 access token（1h）和 refresh token（7d），存在 HttpOnly cookie 中。
+- **多用户隔离**：所有用户数据表通过 `user_id` 列隔离（Agent / Conversation / Document / McpServer / LongTermMemory / UserSettings / UserPreference 等）。builtin agent 的 `user_id IS NULL`，所有用户共享。
+- **CSRF 防护**：POST / PATCH / DELETE 请求必须携带匹配的 `Origin` header。
+- **SSE 认证**：同源时自动携带 cookie；跨域 dev 时 SSE 连接通过 `?token=` query param 认证。
+- **个人资料管理**：用户可以设置显示名称和头像。
+- **CLI Agent 隔离**：Claude Code / Codex 子进程的 `HOME` / `USERPROFILE` 按用户隔离，确保 CLI 认证状态独立。
+- **token_version 全局吊销**：改密码或 logout-all 时 +1，所有旧 token 立即失效。
 
 ### 多 Agent 支持
 
@@ -186,6 +197,7 @@ Agent 运行支持可插拔的生命周期 Hooks 系统：
 - SQLAlchemy 2.0 async + asyncpg
 - PostgreSQL 16
 - Pydantic v2 数据验证
+- 认证: bcrypt + PyJWT（JWT HttpOnly cookie）
 - AI 适配器: Claude Code / Codex 走 **CLI 子进程路线**（stream-json / JSON-RPC 2.0）；Custom 走 `openai` Python SDK（Chat Completions + 自驱 tool loop）；AChat MCP bridge 暴露平台工具给 CLI agent
 
 ### 基础设施（Docker Compose，可降级）
@@ -194,6 +206,7 @@ Agent 运行支持可插拔的生命周期 Hooks 系统：
 - Elasticsearch 8.14 — 全文检索（RAG BM25）
 - Neo4j 5 — 知识图谱（KGStore / GraphMemory）
 - Kafka（可选）— 事件总线增强
+- Redis 7 — 元数据缓存 + 异步 DB 写入（KV cache / Stream write-behind）
 
 Next.js 锁定在 `16.2.6`。如果你要改动框架层的行为，先读 `node_modules/next/dist/docs/` 下的本地 Next 文档。
 
@@ -233,7 +246,7 @@ pnpm install
 docker compose -f docker-compose.infra.yml up -d
 ```
 
-这会启动 PostgreSQL、Milvus、Elasticsearch、Neo4j。如果暂时不需要 RAG / 记忆 / 知识图谱，可以只启动 PostgreSQL：
+这会启动 PostgreSQL、Milvus、Elasticsearch、Neo4j、Redis。如果暂时不需要 RAG / 记忆 / 知识图谱 / Redis 缓存，可以只启动 PostgreSQL：
 
 ```powershell
 docker compose -f docker-compose.infra.yml up -d postgres
@@ -290,9 +303,9 @@ http://localhost:3000
 http://localhost:8000/docs
 ```
 
-首次启动时，后端会自动建表并 seed 内置 Agent。启动后查看后端终端的 **Startup Status** 面板，确认各服务连接状态。
+首次启动时，后端会自动建表并 seed 内置 Agent。启动后查看后端终端的 **Startup Status** 面板，确认各服务连接状态。首次访问需要注册一个账号。
 
-API key 既可以配在 `backend/.env`，也可以在应用的设置面板里配。Agent 级别的 key 会覆盖全局设置。
+API key 既可以配在 `backend/.env`，也可以在应用的设置面板里配（存入 `user_settings` 表，按用户隔离）。Agent 级别的 key 会覆盖用户级设置。
 
 > 更详细的启动指南见 [QUICKSTART.md](./QUICKSTART.md)。
 
@@ -304,7 +317,7 @@ AChat 的基础设施服务通过 Docker Compose 管理，提供两种编排文�
 
 | 文件 | 用途 |
 |---|---|
-| `docker-compose.infra.yml` | 仅基础设施（PG/Milvus/ES/Neo4j），前后端在本机运行 |
+| `docker-compose.infra.yml` | 仅基础设施（PG/Milvus/ES/Neo4j/Redis），前后端在本机运行 |
 | `docker-compose.yml` | 全栈容器化（前后端 + 基础设施） |
 
 常用命令：
@@ -320,7 +333,7 @@ docker compose -f docker-compose.infra.yml ps
 docker compose -f docker-compose.infra.yml down
 ```
 
-**降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op。不配任何基础设施（仅 PostgreSQL）时，核心对话功能完全正常。
+**降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op；Redis 挂 → 退化为同步 DB 读写。不配任何基础设施（仅 PostgreSQL）时，核心对话功能完全正常。
 
 | 服务 | 端口 | 不配时的影响 |
 |---|---|---|
@@ -328,6 +341,7 @@ docker compose -f docker-compose.infra.yml down
 | Milvus | 19530 | RAG 向量检索退化；LTM 退化为 TF cosine |
 | Elasticsearch | 9200 | RAG 无全文检索 |
 | Neo4j | 7474/7687 | GraphMemory no-op；RAG 无图谱检索 |
+| Redis | 6379 | 退化为同步 DB 读写（无 KV 缓存，无 Stream write-behind） |
 
 ---
 
@@ -453,14 +467,17 @@ AChat 采用前后端分离架构：
 │    ConversationService、EventBus、         │
 │    ToolExecutor、RAGService、              │
 │    DocumentService、PromptAssembler、      │
-│    HookRegistry (生命周期 Hooks)           │
+│    HookRegistry (生命周期 Hooks)、          │
+│    AuthMiddleware (JWT/CSRF)、              │
+│    AsyncDBWriter (Redis Stream write-behind)│
 │  L2 Agent Platform Adapters               │
 │    ClaudeCLI、CodexCLI、Custom、Mock       │
 │  L1 Persistence                           │
-│    SQLAlchemy、PostgreSQL(18表)、workspace FS │
+│    SQLAlchemy、PostgreSQL(22表)、workspace FS │
 ├──────────────────────────────────────────┤
 │  Infrastructure (可选, 独立降级)            │
 │    Milvus(向量) · ES(全文) · Neo4j(图谱)   │
+│    Redis(缓存+异步写) · Kafka(事件)         │
 │    RAG混合检索 · 分层记忆 · 知识图谱        │
 └──────────────────────────────────────────┘
 ```
@@ -490,7 +507,14 @@ AChat 假定 LLM 的输出是不可信输入。
 - 生成的 web app 产物在沙箱 iframe 里渲染（`sandbox="allow-scripts"`，不给 `allow-same-origin`）。
 - API key 是本地设置或环境变量；没有任何托管的 key 服务。
 
-这是一个本地单用户应用，不是多租户托管服务。
+系统支持多用户，基于 JWT + bcrypt 密码认证：
+
+- 密码用 bcrypt（cost factor 12）哈希存储。
+- JWT 分 access token（1h）和 refresh token（7d），存在 HttpOnly cookie 中。
+- `token_version` 字段用于全局吊销（改密码 / logout-all 时 +1）。
+- 所有用户数据表通过 `user_id` 列隔离。
+- POST / PATCH / DELETE 请求必须携带匹配的 `Origin` header（CSRF 防护）。
+- SSE 连接通过 cookie（同源）或 `?token=` query param（跨域 dev）认证。
 
 ---
 
@@ -501,7 +525,7 @@ AChat 假定 LLM 的输出是不可信输入。
 - Claude / Codex CLI 自带工具层可直接写文件；sandbox 配额只对 AChat 托管的文件工具生效。
 - Codex CLI 适配器代码就绪，端到端联调与测试待补；Hermes / OpenClaw / OpenCode 适配器待接入。
 - 移动端是伴随客户端，不是独立的 Agent 运行时。
-- 基础设施服务（Milvus / ES / Neo4j）不配时功能降级，但不影响核心对话。
+- 基础设施服务（Milvus / ES / Neo4j / Redis）不配时功能降级，但不影响核心对话。
 - Hooks 系统的 `tool_approval` Hook 对 CLI 自带工具不生效（CLI 自管审批），仅拦截 AChat 托管工具。
 
 ---

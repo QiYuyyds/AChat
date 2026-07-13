@@ -23,10 +23,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
 
-from app.db.engine import get_db
-from app.db.models import Workspace
+from app.infra.cache_helpers import get_workspace_cached
 from app.services.bash_command_approval import (
     classify_bash_approval,
     wait_for_bash_approval,
@@ -137,11 +135,7 @@ async def execute_bash_command(args: BashExecutionArgs, ctx: ToolContext) -> Too
     if banned:
         return err(f"Command rejected by safety policy: {banned}")
 
-    async with get_db() as db:
-        result = await db.execute(
-            select(Workspace).where(Workspace.conversation_id == ctx.conversation_id)
-        )
-        workspace = result.scalar_one_or_none()
+    workspace = await get_workspace_cached(ctx.conversation_id)
     if workspace is None:
         return err("Workspace not found")
 

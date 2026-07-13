@@ -29,6 +29,9 @@ neo4j>=5.0.0
 # Kafka (optional event bus)
 kafka-python>=2.0.0
 
+# Redis (optional, for metadata cache + async DB writes via Redis Streams)
+redis[hiredis]>=5.0.0
+
 # Utilities
 nanoid>=2.0.0
 httpx>=0.28.0

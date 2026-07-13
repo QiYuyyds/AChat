@@ -60,16 +60,23 @@ class Preference:
         return self.preferences
 
     async def load_from_storage(self) -> None:
-        """Load all preferences for this user from PG."""
-        async with get_db() as session:
-            stmt = select(UserPreference).where(UserPreference.user_id == self.user_id)
-            result = await session.execute(stmt)
-            rows = result.scalars().all()
+        """Load all preferences for this user from PG (with Redis cache when available)."""
+        from app.infra.cache import get_cache
 
-        loaded = {r.key: r.value for r in rows}
+        cache = get_cache()
+        cache_key = f"user_prefs:{self.user_id}"
+
+        async def _load_from_pg() -> dict[str, str]:
+            async with get_db() as session:
+                stmt = select(UserPreference).where(UserPreference.user_id == self.user_id)
+                result = await session.execute(stmt)
+                rows = result.scalars().all()
+            return {r.key: r.value for r in rows}
+
+        loaded = await cache.get_or_load(cache_key, 120, _load_from_pg)
         with self._lock:
-            self.preferences = dict(loaded)
-        logger.info("Loaded %d preferences for user %s", len(loaded), self.user_id)
+            self.preferences = dict(loaded) if loaded else {}
+        logger.info("Loaded %d preferences for user %s", len(self.preferences), self.user_id)
 
     async def set(self, key: str, value: str, source: str = "extracted") -> None:
         if not key or value is None:
@@ -105,6 +112,7 @@ class Preference:
     async def save_batch(self, kvs: Dict[str, str], source: str = "extracted") -> None:
         for k, v in (kvs or {}).items():
             await self.set(_normalize_key(str(k)), str(v), source=source)
+        await self._invalidate_cache()
 
     async def delete(self, key: str) -> bool:
         """Delete a preference key from memory and PG.
@@ -127,6 +135,7 @@ class Preference:
                     existed = True
         except Exception as e:
             logger.warning("Preference delete failed (key=%s): %s", key, e)
+        await self._invalidate_cache()
         return existed
 
     def get(self, key: str, default: str = "") -> str:
@@ -183,6 +192,13 @@ class Preference:
             return ""
         lines = [f"{k}: {v}" for k, v in snap.items()]
         return "【用户偏好】\n" + "\n".join(lines)
+
+    async def _invalidate_cache(self) -> None:
+        """Invalidate the Redis cache for this user's preferences."""
+        from app.infra.cache import get_cache
+
+        cache = get_cache()
+        await cache.delete(f"user_prefs:{self.user_id}")
 
     async def cleanup_oversized(self) -> int:
         """One-shot cleanup: drop preference rows whose value length exceeds the cap.

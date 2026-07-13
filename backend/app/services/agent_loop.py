@@ -26,6 +26,7 @@ from sqlalchemy import select
 from app.adapters.base import AdapterAttachment
 from app.db.engine import get_db
 from app.db.models import Agent, Conversation
+from app.infra.cache_helpers import get_agent_cached
 from app.services.agent_runner import (
     RunArgs,
     RunExecutionResult,
@@ -269,13 +270,9 @@ async def _run_solo_loop(
     attachments: list[AdapterAttachment],
 ) -> RunExecutionResult:
     """Solo mode: inject soft self-verify system prompt + optional task_dispatch."""
-    async with get_db() as db:
-        agent = (
-            await db.execute(select(Agent).where(Agent.id == args.agent_id))
-        ).scalar_one_or_none()
-        if agent is None:
-            raise RuntimeError(f"Agent not found: {args.agent_id}")
-        db.expunge(agent)
+    agent = await get_agent_cached(args.agent_id)
+    if agent is None:
+        raise RuntimeError(f"Agent not found: {args.agent_id}")
 
     # Inject task_dispatch when below max depth
     dispatch_enabled = args.dispatch_depth < MAX_DISPATCH_DEPTH
@@ -314,13 +311,9 @@ async def _run_subagent_loop(
 
     Delegates to execute_simple_run with overridden tools and system prompt.
     """
-    async with get_db() as db:
-        agent = (
-            await db.execute(select(Agent).where(Agent.id == args.agent_id))
-        ).scalar_one_or_none()
-        if agent is None:
-            raise RuntimeError(f"Agent not found: {args.agent_id}")
-        db.expunge(agent)
+    agent = await get_agent_cached(args.agent_id)
+    if agent is None:
+        raise RuntimeError(f"Agent not found: {args.agent_id}")
 
     dispatch_enabled = args.dispatch_depth < MAX_DISPATCH_DEPTH
     tool_names = list(args.override_tool_names or agent.tool_names_list)
@@ -359,14 +352,11 @@ async def _run_coordinated_loop(
     Loads the conversation's agent roster and injects it into the prompt so
     the orchestrator knows who it can dispatch to.
     """
-    async with get_db() as db:
-        agent = (
-            await db.execute(select(Agent).where(Agent.id == args.agent_id))
-        ).scalar_one_or_none()
-        if agent is None:
-            raise RuntimeError(f"Agent not found: {args.agent_id}")
-        db.expunge(agent)
+    agent = await get_agent_cached(args.agent_id)
+    if agent is None:
+        raise RuntimeError(f"Agent not found: {args.agent_id}")
 
+    async with get_db() as db:
         # Load conversation to get agent_ids
         conv = (
             await db.execute(

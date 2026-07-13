@@ -24,12 +24,11 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, update
 
 from app.adapters.base import AdapterAttachment, AdapterInput, CustomConfig
 from app.adapters.registry import agent_registry
 from app.config import get_settings
-from app.utils.platform import IS_WINDOWS
 from app.db.engine import get_db
 from app.db.models import Agent, AgentRun, Artifact, Conversation, Message, Workspace
 from app.schemas.artifacts import ArtifactRecord
@@ -74,6 +73,7 @@ from app.utils.dispatch_run_evidence import (
 )
 from app.utils.ids import new_artifact_id, new_run_id
 from app.utils.model_registry import estimate_tokens, get_model_limits
+from app.utils.platform import IS_WINDOWS
 from app.utils.workspace_utils import get_effective_cwd
 
 logger = logging.getLogger(__name__)
@@ -390,12 +390,13 @@ async def _maybe_auto_compact_hook(
 async def _get_agent_model_limit(agent_id: str) -> int | None:
     """Look up the context window for the agent's configured model."""
     try:
-        async with get_db() as db:
-            agent = await db.get(Agent, agent_id)
-            if agent is None:
-                return None
-            limits = get_model_limits(agent.model_provider, agent.model_id)
-            return limits.context_window
+        from app.infra.cache_helpers import get_agent_cached
+
+        agent = await get_agent_cached(agent_id)
+        if agent is None:
+            return None
+        limits = get_model_limits(agent.model_provider, agent.model_id)
+        return limits.context_window
     except Exception as e:
         logger.warning("[auto-compact] failed to get model limit for agent %s: %s", agent_id, e)
         return None
@@ -853,7 +854,7 @@ async def _run_react_loop(
         tool_names=adapter_input.tool_names,
         dispatch_depth=dispatch_depth,
         dispatch_mode=dispatch_mode,
-        user_id=args.user_id,
+        user_id=user_id,
     )
 
     # O2 Step 5: per-run cache for read-only tool results
@@ -1340,23 +1341,19 @@ async def execute_run(
     run_id: str, cancel_event: asyncio.Event, args: RunArgs
 ) -> RunResult:
     """Load prerequisites, dispatch to simple/orchestrator, always finalize."""
+    from app.infra.cache_helpers import get_agent_cached, get_workspace_cached
+
+    agent = await get_agent_cached(args.agent_id)
+    if not agent:
+        return await finalize_failed(run_id, args, f"Agent not found: {args.agent_id}")
+
+    workspace = await get_workspace_cached(args.conversation_id)
+    if not workspace:
+        return await finalize_failed(
+            run_id, args, f"Workspace not found for conversation: {args.conversation_id}"
+    )
+
     async with get_db() as db:
-        agent = (
-            await db.execute(select(Agent).where(Agent.id == args.agent_id))
-        ).scalar_one_or_none()
-        if not agent:
-            return await finalize_failed(run_id, args, f"Agent not found: {args.agent_id}")
-
-        workspace = (
-            await db.execute(
-                select(Workspace).where(Workspace.conversation_id == args.conversation_id)
-            )
-        ).scalar_one_or_none()
-        if not workspace:
-            return await finalize_failed(
-                run_id, args, f"Workspace not found for conversation: {args.conversation_id}"
-            )
-
         trigger_message = (
             await db.execute(
                 select(Message).where(
@@ -1515,17 +1512,14 @@ async def execute_simple_run(
     prompt: str,
     attachments: list[AdapterAttachment],
 ) -> RunExecutionResult:
-    async with get_db() as db:
-        agent = (
-            await db.execute(select(Agent).where(Agent.id == args.agent_id))
-        ).scalar_one()
-        workspace = (
-            await db.execute(
-                select(Workspace).where(Workspace.conversation_id == args.conversation_id)
-            )
-        ).scalar_one()
-        db.expunge(agent)
-        db.expunge(workspace)
+    from app.infra.cache_helpers import get_agent_cached, get_workspace_cached
+
+    agent = await get_agent_cached(args.agent_id)
+    if agent is None:
+        raise ValueError(f"Agent not found: {args.agent_id}")
+    workspace = await get_workspace_cached(args.conversation_id)
+    if workspace is None:
+        raise ValueError(f"Workspace not found for conversation: {args.conversation_id}")
 
     base_tool_names = args.override_tool_names or agent.tool_names_list
 
@@ -1713,25 +1707,21 @@ async def maybe_create_project_artifact(
     if len(evidence.file_writes) == 0:
         return None
 
-    async with get_db() as db:
-        workspace = (
-            await db.execute(
-                select(Workspace).where(Workspace.conversation_id == conversation_id)
-            )
-        ).scalar_one_or_none()
-        if not workspace:
-            return None
-        effective_cwd = get_effective_cwd(workspace)
+    from app.infra.cache_helpers import get_workspace_cached
+
+    workspace = await get_workspace_cached(conversation_id)
+    if not workspace:
+        return None
+    effective_cwd = get_effective_cwd(workspace)
 
     files = build_project_files(evidence.file_writes, effective_cwd)
     if len(files) == 0:
         return None
 
-    async with get_db() as db:
-        agent = (
-            await db.execute(select(Agent).where(Agent.id == agent_id))
-        ).scalar_one_or_none()
-        agent_name = agent.name if agent else agent_id
+    from app.infra.cache_helpers import get_agent_cached
+
+    agent = await get_agent_cached(agent_id)
+    agent_name = agent.name if agent else agent_id
     title = f"{agent_name} · 项目产物"
 
     # ArtifactContent stays camelCase on the wire / in the DB JSON column.
@@ -1813,6 +1803,12 @@ async def consume_stream(
     tool_name_by_call_id: dict[str, str] = {}
     current_message_id: str | None = None
 
+    from app.services.async_db_writer import register_parts_buffer, unregister_parts_buffer
+    register_parts_buffer(run_id, parts_buffer)
+
+    redis_client = _get_redis_client()
+    use_stream = redis_client is not None
+
     # Wrap the stream iteration in a try/finally so that the underlying async
     # generator is always properly closed — even when we break early on a
     # terminal tool call. Without this, CLI adapter subprocesses
@@ -1845,7 +1841,7 @@ async def consume_stream(
                 ref_part = {"type": "artifact_ref", "artifactId": event.artifact.id}
                 parts.append(ref_part)
                 parts_buffer[current_message_id] = parts
-                await _update_message_parts(current_message_id, parts)
+                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(
                         PartStartEvent(
@@ -1867,7 +1863,7 @@ async def consume_stream(
                 }
                 parts.append(deploy_part)
                 parts_buffer[event.message_id] = parts
-                await _update_message_parts(event.message_id, parts)
+                await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
                 if not hidden:
                     publish(
                         PartStartEvent(
@@ -1926,6 +1922,15 @@ async def consume_stream(
         # Ensure the underlying stream's async generator is closed so that
         # adapter cleanup (subprocess shutdown, connection close) runs.
         # aclose() is a no-op on an already-exhausted generator.
+        unregister_parts_buffer(run_id)
+        # Delete the Redis Stream for this run (all events flushed)
+        _redis = _get_redis_client()
+        if _redis is not None:
+            try:
+                from app.services.async_db_writer import stream_key
+                await _redis.delete(stream_key(run_id))
+            except Exception:
+                logger.debug("[consume_stream] failed to delete stream for run %s", run_id, exc_info=True)
         _aclose = getattr(stream, "aclose", None)
         if _aclose is not None:
             try:
@@ -1961,24 +1966,33 @@ async def persist_event(
     artifact_ids: list[str],
     hidden: bool = False,
 ) -> None:
-    """Persist a stream event into the messages / runs tables (camelCase parts)."""
+    """Persist a stream event into the messages / runs tables (camelCase parts).
+
+    When Redis is available, deferrable events (part.start/delta/end, tool.call/result,
+    deploy.status) are XADD'd to a per-run Redis Stream instead of writing to PG
+    synchronously. A background consumer flushes them in batches. Non-deferrable
+    events (message.start, message.end, run.usage, message.usage) remain synchronous.
+    """
     etype = event.type
+    redis_client = _get_redis_client()
+    use_stream = redis_client is not None
+
     if etype == "run.usage":
         # adapter-reported run token usage -> agent_runs.usage (latest wins)
         async with get_db() as db:
-            run = (
-                await db.execute(select(AgentRun).where(AgentRun.id == event.run_id))
-            ).scalar_one_or_none()
-            if run is not None:
-                run.usage_dict = event.usage.model_dump(by_alias=True)
+            await db.execute(
+                update(AgentRun)
+                .where(AgentRun.id == event.run_id)
+                .values(usage=event.usage.model_dump(by_alias=True))
+            )
         return
     if etype == "message.usage":
         async with get_db() as db:
-            msg = (
-                await db.execute(select(Message).where(Message.id == event.message_id))
-            ).scalar_one_or_none()
-            if msg is not None:
-                msg.usage_dict = event.usage.model_dump(by_alias=True)
+            await db.execute(
+                update(Message)
+                .where(Message.id == event.message_id)
+                .values(usage=event.usage.model_dump(by_alias=True))
+            )
         return
     if etype == "message.start":
         parts_buffer[event.message_id] = []
@@ -2005,7 +2019,7 @@ async def persist_event(
             parts.append({})
         parts[event.part_index] = event.part
         parts_buffer[event.message_id] = parts
-        await _update_message_parts(event.message_id, parts)
+        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
         return
     if etype == "part.delta":
         parts = parts_buffer.get(event.message_id)
@@ -2022,7 +2036,7 @@ async def persist_event(
         appendable = {"text.append": "text", "thinking.append": "thinking", "code.append": "code"}
         if appendable.get(dtype) == part.get("type"):
             part["content"] = part.get("content", "") + text
-        await _update_message_parts(event.message_id, parts)
+        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
         return
     if etype == "tool.call":
         parts = parts_buffer.get(event.message_id, [])
@@ -2035,7 +2049,7 @@ async def persist_event(
             }
         )
         parts_buffer[event.message_id] = parts
-        await _update_message_parts(event.message_id, parts)
+        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
         return
     if etype == "tool.result":
         parts = parts_buffer.get(event.message_id, [])
@@ -2048,29 +2062,74 @@ async def persist_event(
             }
         )
         parts_buffer[event.message_id] = parts
-        await _update_message_parts(event.message_id, parts)
+        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
         return
     if etype == "message.end":
+        # Synchronous final flush: write latest parts to PG, update status
+        final_parts = parts_buffer.get(event.message_id, [])
         async with get_db() as db:
-            msg = (
-                await db.execute(select(Message).where(Message.id == event.message_id))
-            ).scalar_one_or_none()
-            if msg is not None:
-                msg.status = "complete"
+            await db.execute(
+                update(Message)
+                .where(Message.id == event.message_id)
+                .values(status="complete", parts=final_parts)
+            )
         parts_buffer.pop(event.message_id, None)
+        # Delete the Redis Stream for this run (all events have been flushed)
+        if redis_client is not None:
+            try:
+                from app.services.async_db_writer import stream_key
+
+                await redis_client.delete(stream_key(run_id))
+            except Exception:
+                logger.debug(
+                    "[persist_event] failed to delete stream for run %s",
+                    run_id,
+                    exc_info=True,
+                )
         return
     if etype == "artifact.create":
         artifact_ids.append(event.artifact.id)
         return
 
 
+def _get_redis_client() -> Any | None:
+    """Return the Redis client from infrastructure, or None if unavailable."""
+    from app.infra.factory import get_infrastructure
+
+    infra = get_infrastructure()
+    if infra is None:
+        return None
+    return infra.redis_client
+
+
+async def _persist_or_stream(
+    redis_client: Any | None,
+    run_id: str,
+    event: StreamEvent,
+    parts: list[dict],
+    use_stream: bool,
+    *,
+    message_id: str | None = None,
+) -> None:
+    """Route a deferrable event to Redis Stream or fall back to synchronous DB write."""
+    if use_stream and redis_client is not None:
+        try:
+            from app.services.async_db_writer import xadd_event
+
+            event_json = event.model_dump_json(by_alias=True)
+            await xadd_event(redis_client, run_id, event_json)
+            return
+        except Exception as e:
+            logger.warning("[persist_event] XADD failed, falling back to sync: %s", e)
+    fallback_id = message_id if message_id is not None else event.message_id
+    await _update_message_parts(fallback_id, parts)
+
+
 async def _update_message_parts(message_id: str, parts: list[dict]) -> None:
     async with get_db() as db:
-        msg = (
-            await db.execute(select(Message).where(Message.id == message_id))
-        ).scalar_one_or_none()
-        if msg is not None:
-            msg.parts_list = parts
+        await db.execute(
+            update(Message).where(Message.id == message_id).values(parts=parts)
+        )
 
 
 # ─── DB / event helpers ──────────────────────────────────────────────────────

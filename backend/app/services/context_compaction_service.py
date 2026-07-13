@@ -540,11 +540,12 @@ async def _get_agent_system_prompt(agent_id: str) -> str:
     """Fetch the agent's system prompt from DB for cache-safe compaction."""
     if not agent_id:
         return ""
-    async with get_db() as db:
-        agent = await db.get(Agent, agent_id)
-        if agent is None:
-            return ""
-        return agent.system_prompt or ""
+    from app.infra.cache_helpers import get_agent_cached
+
+    agent = await get_agent_cached(agent_id)
+    if agent is None:
+        return ""
+    return agent.system_prompt or ""
 
 
 def _render_transcript(messages: list[Message], agent_names: dict[str, str]) -> str:
