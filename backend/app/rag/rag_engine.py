@@ -54,7 +54,7 @@ class RAGEngine:
 
     # ─── Ingest ───────────────────────────────────────────────────────────
 
-    async def ingest(self, doc: str) -> int:
+    async def ingest(self, doc: str, *, user_id: Optional[str] = None) -> int:
         """Split document, embed, and index to PG/Milvus/ES."""
         parents = self.parent_splitter.split(doc)
         chunks: List[Chunk] = []
@@ -115,6 +115,7 @@ class RAGEngine:
                 embeddings,
                 content_hashes=content_hashes,
                 cache_hit=cache_hit,
+                user_id=user_id,
             )
         else:
             logger.warning("No hybrid store configured, chunks not indexed")
@@ -169,13 +170,15 @@ class RAGEngine:
 
     # ─── Search ───────────────────────────────────────────────────────────
 
-    async def query(self, question: str) -> Tuple[str, List[dict]]:
-        return await self.query_with_history(question, [])
+    async def query(self, question: str, *, user_id: Optional[str] = None) -> Tuple[str, List[dict]]:
+        return await self.query_with_history(question, [], user_id=user_id)
 
     async def query_with_history(
         self,
         question: str,
         history: Optional[List[HistoryMessage]] = None,
+        *,
+        user_id: Optional[str] = None,
     ) -> Tuple[str, List[dict]]:
         if not self.loaded:
             return "Knowledge base is empty. Please upload documents first.", []
@@ -189,7 +192,7 @@ class RAGEngine:
             if rewritten:
                 queries = rewritten
 
-        hybrid_hits = await self._hybrid.search_multi(queries, top_k)
+        hybrid_hits = await self._hybrid.search_multi(queries, top_k, user_id=user_id)
         fused = [
             {
                 "pg_id": h.pg_id,

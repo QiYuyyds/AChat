@@ -56,6 +56,7 @@
 | AI 适配器 | Claude Code / Codex 走 **CLI 子进程**（stream-json / JSON-RPC 2.0）；Custom 走 `openai` Python SDK | CLI 路线：工具/沙箱/审批由 CLI 自管，AChat 仅翻译事件流 |
 | 包管理 | pip + venv（`pyproject.toml`） | 不用 poetry/uv（保持简单） |
 | Lint | ruff | 不用 flake8/black（ruff 集成） |
+| 认证 | bcrypt + PyJWT（JWT HttpOnly cookie） | 不用 session/cookie-session；JWT 无状态，`token_version` 做全局吊销 |
 | 测试 | pytest + pytest-asyncio | `asyncio_mode = "auto"` |
 
 ### 基础设施（Docker Compose，可降级）
@@ -93,9 +94,11 @@ L1 Persistence                 backend/app/db/ (SQLAlchemy + PostgreSQL + worksp
 - 工具执行（ToolExecutor）属 L3，不是 Adapter 的事
 - 基础设施服务（Milvus/ES/Neo4j）**永远不**在 L3 服务里直接 new 客户端，必须经过 `infra/factory.py` 统一构建并注入
 
-### 3.2 七个核心实体（详见 `specs/01-core-entities.md`）
+### 3.2 八个核心实体（详见 `specs/01-core-entities.md`）
 
-`Agent` / `Conversation` / `Message` / `Artifact` / `Workspace` / `Tool` / `AgentRun`
+`User` / `Agent` / `Conversation` / `Message` / `Artifact` / `Workspace` / `Tool` / `AgentRun`
+
+`User` 是多用户隔离的根实体：所有其他用户数据（`Agent` / `Conversation` / `Document` / `McpServer` / `LongTermMemory` / `UserSettings` 等）通过 `user_id` FK 关联到 `User`。builtin agent 的 `user_id IS NULL`（全局共享）。
 
 修改任一实体的字段时，**必须同步更新 spec 文档**和 `backend/app/db/models.py`。
 
@@ -221,7 +224,7 @@ RAG 混合检索和分层记忆系统通过 `PromptAssembler` 注入 Agent 上�
 Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `backend/app/services/agent_runner.py:buildAdapter_input`）：
 
 1. **`agents.api_key`** — per-agent override（最高优先级；agent 库里单独填）
-2. **`app_settings.<provider>_api_key`** — 用户在「设置」面板全局自填，存 `app_settings` 单行表
+2. **`user_settings.<provider>_api_key`** — 用户在「设置」面板全局自填，存 `user_settings` 表（按 `user_id` 分行）
 3. **`backend/.env`** — 环境变量兜底（dev / CI 友好；`config.py` 的 `apply_env_overrides()` 桥接到 `os.environ`）
 
 约束：
@@ -231,6 +234,29 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - 缺失 key 时，由 adapter 在 SDK 内抛错（不要在启动时拒绝服务，因为用户可能只用其中某些 provider）
 - **CLI 适配器**（Claude Code / Codex）走 CLI 自带认证（OAuth / 环境变量），`build_adapter_input` 对 CLI agent 跳过 API key 解析与工具注入；仅当 agent 显式设了 `api_key` 时才注入 `extra_env`
 - RAG / 记忆系统另有 `EMBEDDING_API_KEY` 和 `LLM_API_KEY` 配置（见 `backend/.env.example`）
+
+### 5.5 用户认证与数据隔离
+
+系统支持多用户，基于 JWT + bcrypt 密码认证。
+
+**认证流程**：
+- 密码用 bcrypt（cost factor 12）哈希存储
+- JWT 分 access token（1h）和 refresh token（7d），存在 HttpOnly cookie 中
+- `token_version` 字段用于全局吊销（改密码 / logout-all 时 +1）
+- SSE 连接通过 cookie（同源）或 `?token=` query param（跨域 dev）认证
+
+**CSRF 防护**：
+- POST / PATCH / DELETE 请求必须携带匹配的 `Origin` header，否则 403
+- `GET` 请求不需要 CSRF 检查（JWT 在 HttpOnly cookie 中，不会被 CSRF 读取）
+
+**数据隔离**：
+- 所有用户数据表通过 `user_id` 列隔离（`Agent` / `Conversation` / `Document` / `McpServer` / `LongTermMemory` / `MemoryNode` / `ChatHistory` / `RagChunk` / `UserSettings` / `UserPreference`）
+- builtin agent 的 `user_id IS NULL`，所有用户可见
+- RAG / 记忆系统通过 `user_id` 过滤 Milvus / ES / Neo4j 查询
+- Workspace 路径包含 `users/{user_id}/workspaces/` 段
+
+**CLI Agent 隔离**：
+- Claude Code / Codex 子进程的 `HOME` / `USERPROFILE` 环境变量设为用户独立目录，确保 CLI 认证状态（OAuth token、配置文件）按用户隔离
 
 ---
 

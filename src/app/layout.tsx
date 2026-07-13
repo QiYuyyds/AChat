@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 
+import { AuthGate } from '@/components/auth-gate'
 import { GlobalSearch } from '@/components/global-search'
 import { StreamProvider } from '@/components/stream-provider'
 import { ThemeProvider } from '@/components/theme-provider'
@@ -42,7 +43,9 @@ export default function RootLayout({
     >
       <body className="h-dvh overflow-hidden">
         <ThemeProvider>
-          <StreamProvider>{children}</StreamProvider>
+          <AuthGate>
+            <StreamProvider>{children}</StreamProvider>
+          </AuthGate>
         </ThemeProvider>
         <GlobalSearch />
       </body>

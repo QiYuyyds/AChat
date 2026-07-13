@@ -1,17 +1,17 @@
 """Pending approval API routes (bash commands, dispatch plans, questions, writes).
 
-Faithful port of the TS routes under
-``src/app/api/conversations/[id]/pending-*``. The pending stores are in-memory
-singletons (synchronous); these routes are thin wrappers that mirror the TS HTTP
-contract byte-for-byte: GET lists pending items for a conversation, POST on an
-item id resolves it (approve / reject / answer / revise).
+Auth: every endpoint requires authentication and verifies conversation ownership
+before resolving any pending item.
 """
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_conversation_ownership
+from app.db.models import User
 from app.schemas.dispatch import AskUserAnswer
 from app.services import conversation_service
 from app.services.pending_bash_commands import pending_bash_commands
@@ -24,10 +24,9 @@ router = APIRouter()
 
 
 async def _read_json(req: Request) -> Any:
-    """Mirror the TS ``req.json().catch(() => null)`` — never raise on bad JSON."""
     try:
         return await req.json()
-    except Exception:  # noqa: BLE001 - malformed body becomes null, like the TS route
+    except Exception:
         return None
 
 
@@ -40,7 +39,11 @@ def _invalid_body() -> JSONResponse:
 
 # ─── pending-writes ──────────────────────────────────────────────────────────
 @router.get("/api/conversations/{conversation_id}/pending-writes")
-async def list_pending_writes(conversation_id: str) -> JSONResponse:
+async def list_pending_writes(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     writes = pending_writes.list_by_conversation(conversation_id)
     return JSONResponse(
         {"pendingWrites": [w.model_dump(by_alias=True) for w in writes]}
@@ -49,8 +52,12 @@ async def list_pending_writes(conversation_id: str) -> JSONResponse:
 
 @router.post("/api/conversations/{conversation_id}/pending-writes/{pw_id}")
 async def resolve_pending_write(
-    conversation_id: str, pw_id: str, req: Request
+    conversation_id: str,
+    pw_id: str,
+    req: Request,
+    user: User = Depends(get_current_user),
 ) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     raw = await _read_json(req)
     if not isinstance(raw, dict) or raw.get("action") not in ("approve", "reject"):
         return _invalid_body()
@@ -73,7 +80,11 @@ async def resolve_pending_write(
 
 # ─── pending-questions ───────────────────────────────────────────────────────
 @router.get("/api/conversations/{conversation_id}/pending-questions")
-async def list_pending_questions(conversation_id: str) -> JSONResponse:
+async def list_pending_questions(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     questions = pending_questions.list_by_conversation(conversation_id)
     return JSONResponse(
         {"pendingQuestions": [q.model_dump(by_alias=True) for q in questions]}
@@ -82,8 +93,12 @@ async def list_pending_questions(conversation_id: str) -> JSONResponse:
 
 @router.post("/api/conversations/{conversation_id}/pending-questions/{qid}")
 async def answer_pending_question(
-    conversation_id: str, qid: str, req: Request
+    conversation_id: str,
+    qid: str,
+    req: Request,
+    user: User = Depends(get_current_user),
 ) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     raw = await _read_json(req)
     if not isinstance(raw, dict) or not isinstance(raw.get("answers"), dict):
         return _invalid_body()
@@ -96,7 +111,7 @@ async def answer_pending_question(
             return _invalid_body()
         try:
             answers[key] = AskUserAnswer.model_validate(value)
-        except Exception:  # noqa: BLE001 - shape mismatch is an invalid body
+        except Exception:
             return _invalid_body()
 
     existing = pending_questions.get(qid)
@@ -113,7 +128,11 @@ async def answer_pending_question(
 
 # ─── pending-bash-commands ───────────────────────────────────────────────────
 @router.get("/api/conversations/{conversation_id}/pending-bash-commands")
-async def list_pending_bash_commands(conversation_id: str) -> JSONResponse:
+async def list_pending_bash_commands(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     commands = pending_bash_commands.list_by_conversation(conversation_id)
     return JSONResponse(
         {"pendingCommands": [c.model_dump(by_alias=True) for c in commands]}
@@ -124,8 +143,12 @@ async def list_pending_bash_commands(conversation_id: str) -> JSONResponse:
     "/api/conversations/{conversation_id}/pending-bash-commands/{command_id}"
 )
 async def resolve_pending_bash_command(
-    conversation_id: str, command_id: str, req: Request
+    conversation_id: str,
+    command_id: str,
+    req: Request,
+    user: User = Depends(get_current_user),
 ) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     raw = await _read_json(req)
     if not isinstance(raw, dict) or raw.get("action") not in ("approve", "reject"):
         return _invalid_body()
@@ -150,7 +173,11 @@ async def resolve_pending_bash_command(
 
 # ─── pending-dispatch-plans ──────────────────────────────────────────────────
 @router.get("/api/conversations/{conversation_id}/pending-dispatch-plans")
-async def list_pending_dispatch_plans(conversation_id: str) -> JSONResponse:
+async def list_pending_dispatch_plans(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     plans = pending_dispatch_plans.list_by_conversation(conversation_id)
     return JSONResponse(
         {"pendingDispatchPlans": [p.model_dump(by_alias=True) for p in plans]}
@@ -161,8 +188,12 @@ async def list_pending_dispatch_plans(conversation_id: str) -> JSONResponse:
     "/api/conversations/{conversation_id}/pending-dispatch-plans/{plan_id}"
 )
 async def resolve_pending_dispatch_plan(
-    conversation_id: str, plan_id: str, req: Request
+    conversation_id: str,
+    plan_id: str,
+    req: Request,
+    user: User = Depends(get_current_user),
 ) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     raw = await _read_json(req)
     if not isinstance(raw, dict):
         return _invalid_body()
@@ -205,7 +236,11 @@ async def resolve_pending_dispatch_plan(
 
 # ─── pending-mcp-calls ────────────────────────────────────────────────────────
 @router.get("/api/conversations/{conversation_id}/pending-mcp-calls")
-async def list_pending_mcp_calls(conversation_id: str) -> JSONResponse:
+async def list_pending_mcp_calls(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     calls = pending_mcp_calls.list_by_conversation(conversation_id)
     return JSONResponse(
         {"pendingMcpCalls": [c.model_dump(by_alias=True) for c in calls]}
@@ -214,8 +249,12 @@ async def list_pending_mcp_calls(conversation_id: str) -> JSONResponse:
 
 @router.post("/api/conversations/{conversation_id}/pending-mcp-calls/{call_id}")
 async def resolve_pending_mcp_call(
-    conversation_id: str, call_id: str, req: Request
+    conversation_id: str,
+    call_id: str,
+    req: Request,
+    user: User = Depends(get_current_user),
 ) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
     raw = await _read_json(req)
     if not isinstance(raw, dict) or raw.get("action") not in ("approve", "reject"):
         return _invalid_body()

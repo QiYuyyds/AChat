@@ -29,6 +29,7 @@ from sqlalchemy import and_, select
 from app.adapters.base import AdapterAttachment, AdapterInput, CustomConfig
 from app.adapters.registry import agent_registry
 from app.config import get_settings
+from app.utils.platform import IS_WINDOWS
 from app.db.engine import get_db
 from app.db.models import Agent, AgentRun, Artifact, Conversation, Message, Workspace
 from app.schemas.artifacts import ArtifactRecord
@@ -61,7 +62,7 @@ from app.services.conversation_context import BuildHistoryOptions, build_history
 from app.services.event_bus import event_bus
 from app.services.project_artifact import build_project_files
 from app.services.runner_registry import RunHandle
-from app.services.settings_service import get_app_settings
+from app.services.settings_service import get_app_settings, get_user_settings
 from app.tools.base import ToolContext
 from app.tools.registry import (
     tool_registry,  # noqa: F401 - parity import (tool resolution lives in adapters)
@@ -184,6 +185,7 @@ async def _post_run_memory_hook(
     result: RunExecutionResult,
     conversation_id: str,
     agent_id: str = "",
+    user_id: str | None = None,
 ) -> None:
     """Background hook: write user prompt + agent output into memory subsystem.
 
@@ -193,7 +195,7 @@ async def _post_run_memory_hook(
     if ms is None:
         return
     try:
-        await ms.on_message_end("user", prompt, conversation_id=conversation_id)
+        await ms.on_message_end("user", prompt, conversation_id=conversation_id, user_id=user_id)
         # Collect agent output text from output_message_ids
         if result.output_message_ids:
             async with get_db() as db:
@@ -243,7 +245,7 @@ async def _post_run_memory_hook(
                             )
 
                         if agent_text:
-                            await ms.on_message_end("assistant", agent_text, agent_id, conversation_id=conversation_id)
+                            await ms.on_message_end("assistant", agent_text, agent_id, conversation_id=conversation_id, user_id=user_id)
     except Exception as e:
         logger.warning("_post_run_memory_hook error: %s", e)
 
@@ -493,6 +495,8 @@ class RunArgs:
     dispatch_visibility: str = "visible"
     # universal subagent dispatch: effective loop mode ("solo" / "coordinated" / "subagent")
     dispatch_mode: str = "solo"
+    # multi-user: owning user for SSE event filtering and data isolation
+    user_id: str | None = None
 
 
 @dataclass
@@ -654,6 +658,7 @@ async def _execute_tool_call_to_result(
                     tool_name=tc.name,
                     args=tc.args,
                     server_trust=trust,
+                    user_id=user_id,
                 )
                 decision = await await_pending_decision(
                     attach_resolver=lambda r, pid=pending.id: pending_mcp_calls.attach_resolver(pid, r),
@@ -800,6 +805,7 @@ async def _run_react_loop(
     mcp_manager: Any | None = None,
     dispatch_depth: int = 0,
     dispatch_mode: str = "solo",
+    user_id: str | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """ReAct loop for SDK adapters: call_once → yield events → execute tools → repeat.
 
@@ -847,6 +853,7 @@ async def _run_react_loop(
         tool_names=adapter_input.tool_names,
         dispatch_depth=dispatch_depth,
         dispatch_mode=dispatch_mode,
+        user_id=args.user_id,
     )
 
     # O2 Step 5: per-run cache for read-only tool results
@@ -1249,6 +1256,7 @@ class AgentRunnerImpl:
         conversation_id: str,
         trigger_message_id: str,
         parent_run_id: str | None = None,
+        user_id: str | None = None,
     ) -> RunHandle:
         run_id = new_run_id()
         cancel_event = asyncio.Event()
@@ -1268,6 +1276,7 @@ class AgentRunnerImpl:
             trigger_message_id=trigger_message_id,
             parent_run_id=parent_run_id,
             parent_cancel_event=parent_cancel_event,
+            user_id=user_id,
         )
         task = asyncio.create_task(execute_run(run_id, cancel_event, args))
         _active_runs[run_id] = (task, cancel_event)
@@ -1370,6 +1379,12 @@ async def execute_run(
             )
         ).scalar_one_or_none()
 
+        # Resolve user_id from conversation for SSE event filtering.
+        # Subagent runs inherit user_id from parent via args; top-level runs
+        # resolve it from the conversation record.
+        if args.user_id is None and conv is not None:
+            args = replace(args, user_id=conv.user_id)
+
         is_orchestrator = agent.is_orchestrator
         trigger_parts = trigger_message.parts_list
 
@@ -1403,7 +1418,8 @@ async def execute_run(
             trigger_message_id=args.trigger_message_id,
             parent_run_id=args.parent_run_id,
             is_resume=args.resume_from_checkpoint,
-        )
+        ),
+        user_id=args.user_id,
     )
 
     try:
@@ -1435,7 +1451,7 @@ async def execute_run(
         final_result = await finalize_ok(run_id, args, result)
         # ─── Post-run memory hook (Task 5.4) ───
         asyncio.create_task(
-            _post_run_memory_hook(prompt, result, args.conversation_id, args.agent_id)
+            _post_run_memory_hook(prompt, result, args.conversation_id, args.agent_id, user_id=args.user_id)
         )
         # ─── Summary generation hook (first reply only) ───
         asyncio.create_task(
@@ -1647,10 +1663,12 @@ async def execute_simple_run(
                 mcp_manager=mcp_manager,
                 dispatch_depth=args.dispatch_depth,
                 dispatch_mode=args.dispatch_mode,
+                user_id=args.user_id,
             )
             result = await consume_stream(
                 stream, args.agent_id, run_id,
                 hidden=(args.dispatch_visibility == "hidden"),
+                user_id=args.user_id,
             )
         finally:
             if mcp_manager is not None:
@@ -1662,6 +1680,7 @@ async def execute_simple_run(
         result = await consume_stream(
             stream, args.agent_id, run_id,
             hidden=(args.dispatch_visibility == "hidden"),
+            user_id=args.user_id,
         )
     if args.parent_run_id:
         return result
@@ -1672,6 +1691,7 @@ async def execute_simple_run(
             conversation_id=args.conversation_id,
             agent_id=args.agent_id,
             result=result,
+            user_id=args.user_id,
         )
     finally:
         clear_run_tool_evidence(run_id)
@@ -1685,6 +1705,7 @@ async def maybe_create_project_artifact(
     conversation_id: str,
     agent_id: str,
     result: RunExecutionResult,
+    user_id: str | None = None,
     task_id: str | None = None,
 ) -> str | None:
     """Auto-create a 'project' artifact from applied fs_write evidence."""
@@ -1754,7 +1775,8 @@ async def maybe_create_project_artifact(
                 created_by_agent_id=agent_id,
                 created_at=created_at,
             ),
-        )
+        ),
+        user_id=user_id,
     )
     return artifact_id
 
@@ -1781,6 +1803,7 @@ async def consume_stream(
     run_id: str,
     on_tool_call: Callable[[StreamEvent], ToolCallControl] | None = None,
     hidden: bool = False,
+    user_id: str | None = None,
 ) -> RunExecutionResult:
     parts_buffer: dict[str, list[dict]] = {}
     artifact_ids: list[str] = []
@@ -1808,7 +1831,7 @@ async def consume_stream(
             # content events to SSE. run.usage / turn.metric still go through
             # so the frontend can track token usage.
             if not (hidden and event.type in _VISIBLE_EVENT_TYPES):
-                publish(event)
+                publish(event, user_id=user_id)
 
             if event.type == "artifact.create":
                 output_key = output_key_by_artifact_id.get(event.artifact.id)
@@ -1831,7 +1854,8 @@ async def consume_stream(
                             message_id=current_message_id,
                             part_index=part_index,
                             part=ref_part,
-                        )
+                        ),
+                        user_id=user_id,
                     )
 
             if event.type == "deploy.status":
@@ -1852,7 +1876,8 @@ async def consume_stream(
                             message_id=event.message_id,
                             part_index=part_index,
                             part=deploy_part,
-                        )
+                        ),
+                        user_id=user_id,
                     )
 
             if event.type == "message.end":
@@ -1883,7 +1908,7 @@ async def consume_stream(
                             result_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
                         )
                         if not hidden:
-                            publish(result_event)
+                            publish(result_event, user_id=user_id)
 
                     end_event = MessageEndEvent(
                         conversation_id=event.conversation_id,
@@ -1894,7 +1919,7 @@ async def consume_stream(
                         end_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
                     )
                     if not hidden:
-                        publish(end_event)
+                        publish(end_event, user_id=user_id)
                     current_message_id = None
                     break
     finally:
@@ -2093,7 +2118,8 @@ async def finalize(
 
     if status in ("failed", "aborted"):
         await _persist_unresolved_tool_failures(
-            run_id, args.conversation_id, status, error, finished_at
+            run_id, args.conversation_id, status, error, finished_at,
+            user_id=args.user_id,
         )
 
     async with get_db() as db:
@@ -2134,7 +2160,8 @@ async def finalize(
             run_id=run_id,
             status=status,
             error=error,
-        )
+        ),
+        user_id=args.user_id,
     )
 
     return RunResult(
@@ -2174,7 +2201,8 @@ async def _emit_error_visualisation(
                         message_id=last_message_id,
                         part_index=len(parts) - 1,
                         part={"type": "text", "content": error_text},
-                    )
+                    ),
+                    user_id=args.user_id,
                 )
                 return
 
@@ -2200,7 +2228,8 @@ async def _emit_error_visualisation(
             message_id=error_message_id,
             agent_id=args.agent_id,
             run_id=run_id,
-        )
+        ),
+        user_id=args.user_id,
     )
     publish(
         PartStartEvent(
@@ -2209,14 +2238,16 @@ async def _emit_error_visualisation(
             message_id=error_message_id,
             part_index=0,
             part={"type": "text", "content": error_text},
-        )
+        ),
+        user_id=args.user_id,
     )
     publish(
         MessageEndEvent(
             conversation_id=args.conversation_id,
             timestamp=now,
             message_id=error_message_id,
-        )
+        ),
+        user_id=args.user_id,
     )
 
 
@@ -2226,6 +2257,7 @@ async def _persist_unresolved_tool_failures(
     status: str,  # 'failed' | 'aborted'
     error: str | None,
     timestamp: int,
+    user_id: str | None = None,
 ) -> None:
     """Close any tool_use parts with no matching tool_result (synthesize an error)."""
     result = _build_unresolved_tool_failure_result(status, error)
@@ -2270,7 +2302,8 @@ async def _persist_unresolved_tool_failures(
                 call_id=call_id,
                 result=result,
                 is_error=True,
-            )
+            ),
+            user_id=user_id,
         )
 
 
@@ -2292,8 +2325,8 @@ async def finalize_failed(run_id: str, args: RunArgs, error: str) -> RunResult:
     return await finalize(run_id, args, "failed", _empty_run_execution_result(), error)
 
 
-def publish(event: StreamEvent) -> None:
-    event_bus.publish(event)
+def publish(event: StreamEvent, user_id: str | None = None) -> None:
+    event_bus.publish(event, user_id=user_id)
 
 
 # ─── Adapter input construction (port of buildAdapterInput) ──────────────────
@@ -2377,6 +2410,19 @@ async def build_adapter_input(
         effective_api_key: str | None = None
         effective_api_base_url: str | None = None
         cli_extra_env: dict[str, str] = {}
+        # Per-user HOME isolation: CLI tools (claude, codex) store config and
+        # credentials under HOME/USERPROFILE. Override to a user-scoped directory
+        # so different users' CLI sessions don't share credentials.
+        if args.user_id:
+            import os as _os
+            user_home = _os.path.join(
+                str(get_settings().data_path), "users", args.user_id, "home"
+            )
+            _os.makedirs(user_home, exist_ok=True)
+            if IS_WINDOWS:
+                cli_extra_env["USERPROFILE"] = user_home
+            else:
+                cli_extra_env["HOME"] = user_home
         if agent.api_key:
             if agent.adapter_name == "claude-code":
                 cli_extra_env["ANTHROPIC_API_KEY"] = agent.api_key
@@ -2395,7 +2441,7 @@ async def build_adapter_input(
         if not effective_api_key or (
             not effective_api_base_url and agent.adapter_name == "claude-code"
         ):
-            settings = await get_app_settings()
+            settings = await get_user_settings(args.user_id) if args.user_id else await get_app_settings()
             if not effective_api_key:
                 effective_api_key = _pick_settings_key(settings, agent)
             if not effective_api_base_url and agent.adapter_name == "claude-code":
@@ -2427,6 +2473,7 @@ async def build_adapter_input(
                     exclude_message_id=args.trigger_message_id,
                     token_budget=history_budget,
                 ),
+                user_id=args.user_id or "",
             )
         except Exception as err:  # noqa: BLE001 - degrade to no-history rather than crash
             logger.warning(
@@ -2446,7 +2493,7 @@ async def build_adapter_input(
                     mode = "tool"
                 else:
                     mode = "chat"
-                q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id, agent_id=args.agent_id)
+                q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id, agent_id=args.agent_id, user_id=args.user_id or "")
                 ctx = await assembler.assemble(q)
                 enriched = ctx.render_static()
                 if enriched:

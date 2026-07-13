@@ -21,7 +21,7 @@ async def rag_search_handler(args: Any, ctx: ToolContext) -> ToolResult:
         from app.main import _rag_service  # type: ignore[attr-defined]
         if _rag_service is None:
             return err("RAG service not initialized")
-        answer, results = await _rag_service.search(query)
+        answer, results = await _rag_service.search(query, user_id=ctx.user_id)
         return ok({
             "answer": answer,
             "results": results[:5],  # Limit to top 5 for tool output
@@ -59,6 +59,7 @@ async def rag_ingest_handler(args: Any, ctx: ToolContext) -> ToolResult:
                 created_by=ctx.agent_id,
                 content_md=doc,
                 ingest_to_rag=True,
+                user_id=ctx.user_id,
             )
             ingest_info = result.get("ingest") or {}
             chunk_count = ingest_info.get("chunk_count", 0)
@@ -75,7 +76,7 @@ async def rag_ingest_handler(args: Any, ctx: ToolContext) -> ToolResult:
             from app.main import _rag_service  # type: ignore[attr-defined]
             if _rag_service is None:
                 return err("RAG service not initialized")
-            chunk_count = await _rag_service.ingest(doc)
+            chunk_count = await _rag_service.ingest(doc, user_id=ctx.user_id)
             return ok({"chunk_count": chunk_count, "message": f"Document indexed into {chunk_count} chunks"})
     except Exception as e:
         return err(f"RAG ingest failed: {e}")
@@ -138,7 +139,7 @@ async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
         from app.main import _memory_service  # type: ignore[attr-defined]
         if _memory_service is None:
             return err("Memory service not initialized")
-        items = await _memory_service.recall(query, top_k=top_k, agent_id=ctx.agent_id)
+        items = await _memory_service.recall(query, top_k=top_k, agent_id=ctx.agent_id, user_id=ctx.user_id)
         memories = [
             {
                 "content": item.content,
@@ -149,7 +150,7 @@ async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
             for item in items
         ]
         # Also get preference context
-        pref_context = _memory_service.get_preference_context()
+        pref_context = _memory_service.get_preference_context(user_id=ctx.user_id)
         return ok({"memories": memories, "preferences": pref_context})
     except Exception as e:
         return err(f"Memory recall failed: {e}")

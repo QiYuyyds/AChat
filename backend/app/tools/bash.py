@@ -164,6 +164,7 @@ async def execute_bash_command(args: BashExecutionArgs, ctx: ToolContext) -> Too
             cwd=cwd,
             reason=approval.reason,
             cancel_event=ctx.cancel_event,
+            user_id=ctx.user_id,
         )
         if not approved:
             return err(f"User rejected command execution: {approval.reason}")

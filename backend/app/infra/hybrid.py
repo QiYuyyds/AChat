@@ -132,12 +132,14 @@ class HybridStore:
         *,
         content_hashes: Optional[List[str]] = None,
         cache_hit: Optional[List[bool]] = None,
+        user_id: Optional[str] = None,
     ) -> List[int]:
         """Persist chunks to PG + Milvus + ES. KG indexing is best-effort async.
 
         Args:
             content_hashes: chunk-level sha256[:16] for embedding cache reuse.
             cache_hit: True = embedding reused from cache, skip KG entity extraction.
+            user_id: owner for multi-user isolation.
         """
         pg_ids: List[int] = []
 
@@ -155,6 +157,7 @@ class HybridStore:
                         embedding=embedding,
                         created_at=time.time(),
                         content_hash=ch,
+                        user_id=user_id,
                     )
                     session.add(row)
                     await session.flush()
@@ -177,7 +180,7 @@ class HybridStore:
                     milvus_embeddings.append(emb)
             if milvus_ids:
                 try:
-                    self._milvus_insert_fn(milvus_ids, milvus_contents, milvus_embeddings)
+                    self._milvus_insert_fn(milvus_ids, milvus_contents, milvus_embeddings, user_id=user_id)
                 except Exception as e:
                     logger.warning("Milvus insert failed: %s", e)
 
@@ -185,7 +188,7 @@ class HybridStore:
         if self._es_index_fn and self._es_ok():
             for i, pg_id in enumerate(pg_ids):
                 try:
-                    await self._es_index_fn(pg_id, contents[i], doc_hash, i)
+                    await self._es_index_fn(pg_id, contents[i], doc_hash, i, user_id=user_id)
                 except Exception as e:
                     logger.warning("ES index failed (pg_id=%s): %s", pg_id, e)
 
@@ -203,30 +206,30 @@ class HybridStore:
 
     # ─── Search (async with asyncio.gather for concurrent paths) ──────────
 
-    async def search(self, query: str, top_k: int) -> List[HybridResult]:
+    async def search(self, query: str, top_k: int, *, user_id: Optional[str] = None) -> List[HybridResult]:
         """Single-query search with auto mode detection."""
         mode = self.mode()
         if mode == "hybrid":
-            return await self._search_hybrid(query, top_k)
+            return await self._search_hybrid(query, top_k, user_id=user_id)
         if mode == "semantic":
-            return await self._search_semantic(query, top_k)
+            return await self._search_semantic(query, top_k, user_id=user_id)
         if mode == "keyword":
-            return await self._search_keyword(query, top_k)
+            return await self._search_keyword(query, top_k, user_id=user_id)
         logger.warning("Search infrastructure unavailable (Milvus and ES both disconnected)")
         return []
 
-    async def search_multi(self, queries: List[str], top_k: int) -> List[HybridResult]:
+    async def search_multi(self, queries: List[str], top_k: int, *, user_id: Optional[str] = None) -> List[HybridResult]:
         """Multi-query search with RRF fusion across query variants."""
         queries = [q for q in (queries or []) if q]
         if not queries:
             return []
         pool = self._rerank_pool(top_k)
         if len(queries) == 1:
-            results = await self.search(queries[0], pool)
+            results = await self.search(queries[0], pool, user_id=user_id)
             return self._finalize(queries[0], results, top_k)
 
         # Concurrent search for all query variants
-        tasks = [self.search(q, pool) for q in queries]
+        tasks = [self.search(q, pool, user_id=user_id) for q in queries]
         results_by_query = await asyncio.gather(*tasks, return_exceptions=True)
 
         k = self.settings.rag_rrf_constant_k or 60
@@ -256,12 +259,12 @@ class HybridStore:
 
     # ─── Internal: hybrid 3-way RRF ──────────────────────────────────────
 
-    async def _search_hybrid(self, query: str, top_k: int) -> List[HybridResult]:
+    async def _search_hybrid(self, query: str, top_k: int, *, user_id: Optional[str] = None) -> List[HybridResult]:
         fetch_k = max(top_k * 2, 10)
 
         # Concurrent fetch from all 3 paths
-        milvus_task = self._fetch_milvus(query, fetch_k)
-        es_task = self._fetch_es(query, fetch_k)
+        milvus_task = self._fetch_milvus(query, fetch_k, user_id=user_id)
+        es_task = self._fetch_es(query, fetch_k, user_id=user_id)
         kg_task = self._fetch_kg(query, fetch_k)
         milvus_path, es_path, kg_path = await asyncio.gather(
             milvus_task, es_task, kg_task,
@@ -275,9 +278,9 @@ class HybridStore:
         if not milvus_path.ok and not es_path.ok:
             return self._materialize_kg_only(kg_path.hits, top_k)
         if not milvus_path.ok:
-            return await self._search_keyword(query, top_k)
+            return await self._search_keyword(query, top_k, user_id=user_id)
         if not es_path.ok:
-            return await self._search_semantic(query, top_k)
+            return await self._search_semantic(query, top_k, user_id=user_id)
 
         # ── Weight normalisation: renormalise to 1.0 across AVAILABLE paths ──
         raw_sem = max(0.0, float(self.settings.rag_semantic_weight))
@@ -359,8 +362,8 @@ class HybridStore:
             ))
         return results
 
-    async def _search_semantic(self, query: str, top_k: int) -> List[HybridResult]:
-        path = await self._fetch_milvus(query, top_k)
+    async def _search_semantic(self, query: str, top_k: int, *, user_id: Optional[str] = None) -> List[HybridResult]:
+        path = await self._fetch_milvus(query, top_k, user_id=user_id)
         if not path.ok:
             return []
         ids = [h["pg_id"] for h in path.hits if h.get("pg_id") is not None]
@@ -381,8 +384,8 @@ class HybridStore:
             ))
         return results
 
-    async def _search_keyword(self, query: str, top_k: int) -> List[HybridResult]:
-        path = await self._fetch_es(query, top_k)
+    async def _search_keyword(self, query: str, top_k: int, *, user_id: Optional[str] = None) -> List[HybridResult]:
+        path = await self._fetch_es(query, top_k, user_id=user_id)
         if not path.ok:
             return []
         ids = [h["pg_id"] for h in path.hits if h.get("pg_id") is not None]
@@ -405,7 +408,7 @@ class HybridStore:
 
     # ─── 3-way fetch (each returns _PathHits) ────────────────────────────
 
-    async def _fetch_milvus(self, query: str, fetch_k: int) -> _PathHits:
+    async def _fetch_milvus(self, query: str, fetch_k: int, *, user_id: Optional[str] = None) -> _PathHits:
         if not self._milvus_ok():
             return _PathHits(ok=False)
         if self._embed_fn is None:
@@ -423,17 +426,23 @@ class HybridStore:
             logger.warning("Embedding dim %d != rag_milvus_dim=%d, skipping", len(query_emb), dim)
             return _PathHits(ok=False)
         try:
-            hits = self._milvus_search_fn(query_emb, fetch_k) or []
+            kwargs: dict = {}
+            if user_id is not None:
+                kwargs["user_id"] = user_id
+            hits = self._milvus_search_fn(query_emb, fetch_k, **kwargs) or []
             return _PathHits(hits=hits, ok=True)
         except Exception as e:
             logger.warning("Milvus search failed: %s", e)
             return _PathHits(ok=False)
 
-    async def _fetch_es(self, query: str, fetch_k: int) -> _PathHits:
+    async def _fetch_es(self, query: str, fetch_k: int, *, user_id: Optional[str] = None) -> _PathHits:
         if not self._es_ok():
             return _PathHits(ok=False)
         try:
-            hits = (await self._es_search_fn(query, fetch_k)) or []
+            kwargs: dict = {}
+            if user_id is not None:
+                kwargs["user_id"] = user_id
+            hits = (await self._es_search_fn(query, fetch_k, **kwargs)) or []
             return _PathHits(hits=hits, ok=True)
         except Exception as e:
             logger.warning("ES search failed: %s", e)

@@ -103,17 +103,19 @@ class RAGService:
             self.settings.rag_rerank_enabled,
         )
 
-    async def ingest(self, doc: str) -> int:
+    async def ingest(self, doc: str, *, user_id: Optional[str] = None) -> int:
         """Ingest a document: split → embed → index to PG/Milvus/ES."""
-        return await self._engine.ingest(doc)
+        return await self._engine.ingest(doc, user_id=user_id)
 
     async def search(
         self,
         query: str,
         history: Optional[List[HistoryMessage]] = None,
+        *,
+        user_id: Optional[str] = None,
     ) -> Tuple[str, List[dict]]:
         """Search the knowledge base with optional history-aware rewriting."""
-        return await self._engine.query_with_history(query, history)
+        return await self._engine.query_with_history(query, history, user_id=user_id)
 
     @property
     def engine(self) -> RAGEngine:

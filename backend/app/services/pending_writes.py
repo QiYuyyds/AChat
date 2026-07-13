@@ -33,6 +33,7 @@ class _PendingEntry:
     write: PendingWrite
     workspace: Workspace
     skip_write: bool
+    user_id: str | None = None
     resolver: WriteResolver | None = field(default=None)
 
 
@@ -52,6 +53,7 @@ class PendingWritesStore:
         new_content: str,
         workspace: Workspace,
         skip_write: bool = False,
+        user_id: str | None = None,
     ) -> PendingWrite:
         created_at = now_ms()
         write = PendingWrite(
@@ -66,7 +68,7 @@ class PendingWritesStore:
             created_at=created_at,
         )
         self._map[write.id] = _PendingEntry(
-            write=write, workspace=workspace, skip_write=skip_write
+            write=write, workspace=workspace, skip_write=skip_write, user_id=user_id
         )
 
         event_bus.publish(
@@ -74,7 +76,8 @@ class PendingWritesStore:
                 conversation_id=conversation_id,
                 timestamp=created_at,
                 pending_write=write,
-            )
+            ),
+            user_id=user_id,
         )
         return write
 
@@ -138,7 +141,8 @@ class PendingWritesStore:
                 timestamp=now_ms(),
                 pending_id=pending_id,
                 applied=applied,
-            )
+            ),
+            user_id=entry.user_id,
         )
 
 

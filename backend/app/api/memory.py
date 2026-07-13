@@ -11,13 +11,15 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import String, cast, select
 
+from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_conversation_ownership
 from app.db.engine import get_db
-from app.db.models import ContextSummary, Conversation, LongTermMemory
+from app.db.models import ContextSummary, Conversation, LongTermMemory, User, UserPreference
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,7 @@ async def list_ltm_memories(
     tag: str | None = None,
     page: int = 1,
     size: int = 20,
+    user: User = Depends(get_current_user),
 ) -> JSONResponse:
     """List long-term memory entries with optional filtering and pagination.
 
@@ -81,7 +84,9 @@ async def list_ltm_memories(
     size = max(1, min(100, size))
 
     async with get_db() as session:
-        stmt = select(LongTermMemory).order_by(LongTermMemory.id)
+        stmt = select(LongTermMemory).where(
+            LongTermMemory.user_id == user.id
+        ).order_by(LongTermMemory.id)
 
         if agent_id:
             stmt = stmt.where(
@@ -118,7 +123,11 @@ async def list_ltm_memories(
 
 
 @router.put("/api/memory/long-term/{memory_id}")
-async def update_ltm_memory(memory_id: int, body: LTMUpdateRequest) -> JSONResponse:
+async def update_ltm_memory(
+    memory_id: int,
+    body: LTMUpdateRequest,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
     """Edit a single LTM item's content/importance/category/tags.
 
     When content changes, an async task is triggered to recompute the embedding.
@@ -133,7 +142,7 @@ async def update_ltm_memory(memory_id: int, body: LTMUpdateRequest) -> JSONRespo
     old_content: str | None = None
     async with get_db() as session:
         row = await session.get(LongTermMemory, memory_id)
-        if row is None:
+        if row is None or row.user_id != user.id:
             return JSONResponse(
                 status_code=404,
                 content={"error": f"Memory {memory_id} not found"},
@@ -168,7 +177,10 @@ async def update_ltm_memory(memory_id: int, body: LTMUpdateRequest) -> JSONRespo
 
 
 @router.delete("/api/memory/long-term/{memory_id}")
-async def delete_ltm_memory(memory_id: int) -> JSONResponse:
+async def delete_ltm_memory(
+    memory_id: int,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
     """Delete a single LTM item from PG, in-memory, and GraphMemory."""
     svc = _get_memory_service()
     if svc is None or svc.ltm is None:
@@ -191,50 +203,65 @@ async def delete_ltm_memory(memory_id: int) -> JSONResponse:
 
 
 @router.get("/api/memory/preferences")
-async def list_preferences() -> JSONResponse:
+async def list_preferences(
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
     """List all user preference key-value pairs."""
-    svc = _get_memory_service()
-    if svc is None or svc.preference is None:
-        return JSONResponse(
-            status_code=503,
-            content={"error": "MemoryService not initialized"},
-        )
+    async with get_db() as session:
+        stmt = select(UserPreference).where(UserPreference.user_id == user.id)
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
 
-    prefs = svc.preference.get_all()
     return JSONResponse({
         "items": [
-            {"key": k, "value": v}
-            for k, v in prefs.items()
+            {"key": r.key, "value": r.value}
+            for r in rows
         ],
-        "total": len(prefs),
+        "total": len(rows),
     })
 
 
 @router.put("/api/memory/preferences/{key}")
-async def update_preference(key: str, body: PreferenceUpdateRequest) -> JSONResponse:
+async def update_preference(
+    key: str,
+    body: PreferenceUpdateRequest,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
     """Edit a preference value (upsert)."""
-    svc = _get_memory_service()
-    if svc is None or svc.preference is None:
-        return JSONResponse(
-            status_code=503,
-            content={"error": "MemoryService not initialized"},
+    import time as _time
+    async with get_db() as session:
+        existing = await session.get(
+            UserPreference, {"user_id": user.id, "key": key}
         )
-
-    await svc.preference.set(key, body.value)
+        if existing:
+            existing.value = body.value
+            existing.updated_at = _time.time()
+        else:
+            session.add(UserPreference(
+                user_id=user.id,
+                key=key,
+                value=body.value,
+                updated_at=_time.time(),
+            ))
     return JSONResponse({"ok": True})
 
 
 @router.delete("/api/memory/preferences/{key}")
-async def delete_preference(key: str) -> JSONResponse:
+async def delete_preference(
+    key: str,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
     """Delete a preference key."""
-    svc = _get_memory_service()
-    if svc is None or svc.preference is None:
-        return JSONResponse(
-            status_code=503,
-            content={"error": "MemoryService not initialized"},
+    from sqlalchemy import delete as sa_delete
+    async with get_db() as session:
+        result = await session.execute(
+            sa_delete(UserPreference).where(
+                (UserPreference.user_id == user.id)
+                & (UserPreference.key == key)
+            )
         )
+        deleted = (result.rowcount or 0) > 0
 
-    deleted = await svc.preference.delete(key)
     if not deleted:
         return JSONResponse(
             status_code=404,
@@ -248,7 +275,10 @@ async def delete_preference(key: str) -> JSONResponse:
 
 
 @router.get("/api/memory/session/{conversation_id}")
-async def get_session_memory(conversation_id: str) -> JSONResponse:
+async def get_session_memory(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
     """Return the Session Memory text for a given conversation (read-only)."""
     svc = _get_memory_service()
     if svc is None or svc.session_memory is None:
@@ -257,6 +287,7 @@ async def get_session_memory(conversation_id: str) -> JSONResponse:
             content={"error": "MemoryService not initialized"},
         )
 
+    await verify_conversation_ownership(conversation_id, user.id)
     record = await svc.session_memory.get(conversation_id)
     if record is None:
         return JSONResponse(
@@ -280,7 +311,9 @@ async def get_session_memory(conversation_id: str) -> JSONResponse:
 
 
 @router.get("/api/memory/sessions")
-async def list_session_memories() -> JSONResponse:
+async def list_session_memories(
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
     """List all conversations that have session memory summaries."""
     async with get_db() as session:
         stmt = (
@@ -293,6 +326,11 @@ async def list_session_memories() -> JSONResponse:
             .where(ContextSummary.summary_type == "session")
             .order_by(ContextSummary.created_at.desc())
         )
+        # Filter by user via conversation ownership
+        stmt = stmt.join(
+            Conversation,
+            ContextSummary.conversation_id == Conversation.id,
+        ).where(Conversation.user_id == user.id)
         result = await session.execute(stmt)
         rows = result.all()
 

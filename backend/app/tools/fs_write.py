@@ -116,6 +116,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         old_content=read_if_exists(workspace, parsed.path),
         new_content=parsed.content,
         workspace=workspace,
+        user_id=ctx.user_id,
     )
 
     decision = await await_pending_decision(

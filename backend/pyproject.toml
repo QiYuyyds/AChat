@@ -33,6 +33,10 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "pypdf>=5.1.0",  # read_attachment PDF text extraction (replaces TS pdf-parse)
 
+    # Auth
+    "bcrypt>=4.2.0",
+    "PyJWT>=2.10.0",
+
     # MCP client (external MCP server support for Custom adapter)
     "mcp>=1.0.0",
 ]

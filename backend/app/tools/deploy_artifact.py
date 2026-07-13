@@ -20,7 +20,7 @@ from app.services.deployment_service import (
     create_local_static_deployment,
     publish_deployment_to_static_directory,
 )
-from app.services.settings_service import get_app_settings
+from app.services.global_settings_service import get_global_settings
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
 from app.utils.artifact_preview import artifact_preview_path
 from app.utils.clock import now_ms
@@ -104,7 +104,7 @@ async def deploy_artifact_for_conversation(
 
 
 async def maybe_publish_externally(local: DeployStatusRecord) -> DeployStatusRecord:
-    settings = await get_app_settings()
+    settings = await get_global_settings()
     if not settings.deployment_publish_enabled:
         return local
 

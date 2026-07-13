@@ -11,14 +11,15 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 
+from app.auth.dependencies import get_current_user
 from app.db.engine import get_db
-from app.db.models import Agent, McpServer
+from app.db.models import Agent, McpServer, User
 from app.mcp.client_manager import McpClientManager, McpServerConfig
 from app.utils.clock import now_ms
 from app.utils.ids import new_mcp_server_id
@@ -115,7 +116,7 @@ def _validate_create(body: McpServerCreate) -> str | None:
 
 
 @router.get("/mcp/servers")
-async def list_mcp_servers() -> JSONResponse:
+async def list_mcp_servers(user: User = Depends(get_current_user)) -> JSONResponse:
     """List all MCP servers with sensitive fields masked."""
     async with get_db() as db:
         result = await db.execute(select(McpServer).order_by(McpServer.created_at))
@@ -124,7 +125,7 @@ async def list_mcp_servers() -> JSONResponse:
 
 
 @router.post("/mcp/servers")
-async def create_mcp_server(body: McpServerCreate) -> JSONResponse:
+async def create_mcp_server(body: McpServerCreate, user: User = Depends(get_current_user)) -> JSONResponse:
     """Create a new MCP server."""
     err = _validate_create(body)
     if err:
@@ -156,7 +157,7 @@ async def create_mcp_server(body: McpServerCreate) -> JSONResponse:
 
 
 @router.patch("/mcp/servers/{server_id}")
-async def update_mcp_server(server_id: str, body: McpServerUpdate) -> JSONResponse:
+async def update_mcp_server(server_id: str, body: McpServerUpdate, user: User = Depends(get_current_user)) -> JSONResponse:
     """Update an existing MCP server."""
     async with get_db() as db:
         result = await db.execute(select(McpServer).where(McpServer.id == server_id))
@@ -199,7 +200,7 @@ async def update_mcp_server(server_id: str, body: McpServerUpdate) -> JSONRespon
 
 
 @router.delete("/mcp/servers/{server_id}")
-async def delete_mcp_server(server_id: str) -> JSONResponse:
+async def delete_mcp_server(server_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     """Delete an MCP server and remove it from all agents' mcp_server_ids."""
     async with get_db() as db:
         result = await db.execute(select(McpServer).where(McpServer.id == server_id))
@@ -224,7 +225,7 @@ async def delete_mcp_server(server_id: str) -> JSONResponse:
 
 
 @router.post("/mcp/servers/{server_id}/test")
-async def test_mcp_server(server_id: str) -> JSONResponse:
+async def test_mcp_server(server_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     """Test connection: establish temporary connection, listTools, close."""
     async with get_db() as db:
         result = await db.execute(select(McpServer).where(McpServer.id == server_id))

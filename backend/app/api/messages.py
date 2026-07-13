@@ -13,10 +13,13 @@ default 422.
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_conversation_ownership
+from app.db.models import User
 from app.services import conversation_service
 
 router = APIRouter()
@@ -63,11 +66,12 @@ def _error_status(message: str) -> int:
 
 
 @router.post("/messages/{message_id}/edit")
-async def edit_message(message_id: str, req: Request) -> JSONResponse:
+async def edit_message(message_id: str, req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
     """Edit the latest user message and resend it with new content."""
     parsed = await _parse_body(req, _EditBody)
     if isinstance(parsed, JSONResponse):
         return parsed
+    await verify_conversation_ownership(parsed.conversation_id, user.id)
     try:
         result = await conversation_service.edit_and_resend_latest_user_message(
             parsed.conversation_id, message_id, parsed.content
@@ -86,11 +90,12 @@ async def edit_message(message_id: str, req: Request) -> JSONResponse:
 
 
 @router.post("/messages/{message_id}/withdraw")
-async def withdraw_message(message_id: str, req: Request) -> JSONResponse:
+async def withdraw_message(message_id: str, req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
     """Withdraw the latest user message and everything it triggered."""
     parsed = await _parse_body(req, _ConversationIdBody)
     if isinstance(parsed, JSONResponse):
         return parsed
+    await verify_conversation_ownership(parsed.conversation_id, user.id)
     try:
         result = await conversation_service.withdraw_latest_user_message(
             parsed.conversation_id, message_id
@@ -107,11 +112,12 @@ async def withdraw_message(message_id: str, req: Request) -> JSONResponse:
 
 
 @router.post("/messages/{message_id}/pin")
-async def toggle_pin(message_id: str, req: Request) -> JSONResponse:
+async def toggle_pin(message_id: str, req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
     """Toggle whether a message is pinned into the LLM long-term context."""
     parsed = await _parse_body(req, _ConversationIdBody)
     if isinstance(parsed, JSONResponse):
         return parsed
+    await verify_conversation_ownership(parsed.conversation_id, user.id)
     try:
         result = await conversation_service.toggle_pinned_message(
             parsed.conversation_id, message_id
@@ -122,11 +128,12 @@ async def toggle_pin(message_id: str, req: Request) -> JSONResponse:
 
 
 @router.post("/messages/{message_id}/bookmark")
-async def toggle_bookmark(message_id: str, req: Request) -> JSONResponse:
+async def toggle_bookmark(message_id: str, req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
     """Toggle a UI bookmark on a message (does not affect LLM context)."""
     parsed = await _parse_body(req, _ConversationIdBody)
     if isinstance(parsed, JSONResponse):
         return parsed
+    await verify_conversation_ownership(parsed.conversation_id, user.id)
     try:
         result = await conversation_service.toggle_bookmarked_message(
             parsed.conversation_id, message_id

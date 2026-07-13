@@ -15,17 +15,25 @@ subscriber:
   - :meth:`EventBus.subscribe` is an async context manager yielding the queue;
     the SSE layer drains it and serializes events to the wire.
 
+Multi-user isolation: each subscriber is tagged with a ``user_id``. Events
+published with a ``user_id`` are only delivered to the matching subscriber.
+Events published with ``user_id=None`` are broadcast to all subscribers
+(system events like heartbeats).
+
 Single-process and local-first, so at most a handful of concurrent subscribers
 (a desktop tab plus an occasional phone). Queues are bounded; on overflow we
 drop the oldest event for that one slow subscriber, which reconciles via REST on
 its next reconnect rather than wedging the whole bus.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 
 from app.schemas.events import StreamEvent
 
@@ -36,35 +44,55 @@ logger = logging.getLogger(__name__)
 _QUEUE_MAXSIZE = 1000
 
 
+@dataclass(eq=False)
+class _Subscriber:
+    """Internal subscriber handle — binds a user_id to its event queue."""
+
+    user_id: str | None
+    queue: asyncio.Queue[StreamEvent] = field(default_factory=lambda: asyncio.Queue(maxsize=_QUEUE_MAXSIZE))
+
+    def __hash__(self) -> int:
+        return id(self)
+
+
 class EventBus:
     """Fan-out hub between event producers and SSE subscribers."""
 
     def __init__(self) -> None:
-        self._subscribers: set[asyncio.Queue[StreamEvent]] = set()
+        self._subscribers: set[_Subscriber] = set()
 
-    def publish(self, event: StreamEvent) -> None:
-        """Broadcast an event to every current subscriber (non-blocking)."""
-        # Snapshot the set: a subscriber may unsubscribe concurrently.
-        for queue in list(self._subscribers):
-            _offer(queue, event)
+    def publish(self, event: StreamEvent, user_id: str | None = None) -> None:
+        """Broadcast an event to matching subscribers (non-blocking).
+
+        ``user_id=None`` means broadcast to every subscriber (system events).
+        A non-None ``user_id`` delivers only to subscribers with the same id.
+        """
+        for sub in list(self._subscribers):
+            if user_id is None or sub.user_id == user_id:
+                _offer(sub.queue, event)
 
     @asynccontextmanager
-    async def subscribe(self) -> AsyncIterator["asyncio.Queue[StreamEvent]"]:
+    async def subscribe(
+        self, user_id: str | None = None
+    ) -> AsyncIterator[asyncio.Queue[StreamEvent]]:
         """Register a subscriber queue for the duration of the context.
+
+        ``user_id`` tags this subscriber so only events belonging to that user
+        (or broadcast events with ``user_id=None``) are delivered.
 
         Usage (SSE layer)::
 
-            async with event_bus.subscribe() as queue:
+            async with event_bus.subscribe(user_id=current_user_id) as queue:
                 while True:
                     event = await queue.get()
                     yield serialize(event)
         """
-        queue: asyncio.Queue[StreamEvent] = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
-        self._subscribers.add(queue)
+        sub = _Subscriber(user_id=user_id)
+        self._subscribers.add(sub)
         try:
-            yield queue
+            yield sub.queue
         finally:
-            self._subscribers.discard(queue)
+            self._subscribers.discard(sub)
 
     @property
     def subscriber_count(self) -> int:
@@ -72,7 +100,7 @@ class EventBus:
         return len(self._subscribers)
 
 
-def _offer(queue: "asyncio.Queue[StreamEvent]", event: StreamEvent) -> None:
+def _offer(queue: asyncio.Queue[StreamEvent], event: StreamEvent) -> None:
     """put_nowait with oldest-drop overflow handling."""
     try:
         queue.put_nowait(event)

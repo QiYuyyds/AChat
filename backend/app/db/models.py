@@ -64,6 +64,32 @@ def _json_deserializer(s: str | None) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# User model (authentication & ownership root)
+# ---------------------------------------------------------------------------
+
+
+class User(Base):
+    """User model — authenticated person who owns agents, conversations, etc."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    password_hash: Mapped[str] = mapped_column(
+        String, name="password_hash", nullable=False
+    )
+    avatar_url: Mapped[str | None] = mapped_column(
+        String, name="avatar_url", nullable=True
+    )
+    token_version: Mapped[int] = mapped_column(
+        Integer, name="token_version", nullable=False, default=0
+    )
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+
+
+# ---------------------------------------------------------------------------
 # Core domain models (existing 9 tables, JSON columns upgraded to JSONB)
 # ---------------------------------------------------------------------------
 
@@ -74,6 +100,9 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("users.id"), name="user_id", nullable=True
+    )
     name: Mapped[str] = mapped_column(String, nullable=False)
     avatar: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=False)
@@ -214,6 +243,9 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id"), name="user_id", nullable=False
+    )
     title: Mapped[str] = mapped_column(String, nullable=False)
     mode: Mapped[str] = mapped_column(String, nullable=False)  # 'single' | 'group'
 
@@ -648,12 +680,68 @@ class AppSettings(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
 
 
+class GlobalSettings(Base):
+    """GlobalSettings model — server-level config shared across all users."""
+
+    __tablename__ = "global_settings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # Always 'singleton'
+    deployment_publish_enabled: Mapped[bool] = mapped_column(
+        Boolean, name="deployment_publish_enabled", nullable=False, default=False
+    )
+    deployment_publish_dir: Mapped[str | None] = mapped_column(
+        String, name="deployment_publish_dir", nullable=True
+    )
+    deployment_public_base_url: Mapped[str | None] = mapped_column(
+        String, name="deployment_public_base_url", nullable=True
+    )
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+
+
+class UserSettings(Base):
+    """UserSettings model — per-user API keys and companion config (PK = user_id)."""
+
+    __tablename__ = "user_settings"
+
+    user_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    anthropic_api_key: Mapped[str | None] = mapped_column(
+        String, name="anthropic_api_key", nullable=True
+    )
+    anthropic_base_url: Mapped[str | None] = mapped_column(
+        String, name="anthropic_base_url", nullable=True
+    )
+    openai_api_key: Mapped[str | None] = mapped_column(
+        String, name="openai_api_key", nullable=True
+    )
+    deepseek_api_key: Mapped[str | None] = mapped_column(
+        String, name="deepseek_api_key", nullable=True
+    )
+    ark_api_key: Mapped[str | None] = mapped_column(
+        String, name="ark_api_key", nullable=True
+    )
+    companion_mode: Mapped[str] = mapped_column(
+        String, name="companion_mode", nullable=False, default="off"
+    )
+    mobile_device_token: Mapped[str | None] = mapped_column(
+        String, name="mobile_device_token", nullable=True
+    )
+    settings: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+
+
 class McpServer(Base):
     """MCP server configuration — globally defined, per-agent opted-in."""
 
     __tablename__ = "mcp_servers"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id"), name="user_id", nullable=False
+    )
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     transport: Mapped[str] = mapped_column(String, nullable=False)  # 'stdio' | 'sse' | 'streamable_http'
     command: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -688,22 +776,35 @@ class LongTermMemory(Base):
     score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     scope: Mapped[str] = mapped_column(String(16), nullable=False, default="global")
     agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    user_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("users.id"), name="user_id", nullable=True
+    )
 
     __table_args__ = (
         Index("idx_ltm_category", "category"),
         Index("idx_ltm_created", "created_at"),
         Index("idx_ltm_scope_agent", "scope", "agent_id"),
+        Index("idx_ltm_user", "user_id"),
     )
 
 
 class UserPreference(Base):
-    """User preference key-value pairs extracted from conversation."""
+    """User preference key-value pairs — manually entered or LLM-extracted.
+
+    The ``source`` column distinguishes values entered by the user via the
+    profile UI (``source='manual'``) from values auto-extracted by the LLM
+    or rule-based system (``source='extracted'``). Manual values take
+    priority: LLM extraction cannot overwrite a manual row for the same key.
+    """
 
     __tablename__ = "user_preferences"
 
     user_id: Mapped[str] = mapped_column(String, primary_key=True, default="default_user")
     key: Mapped[str] = mapped_column(String, primary_key=True)
     value: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(16), name="source", nullable=False, default="extracted"
+    )
     updated_at: Mapped[float] = mapped_column(Float, nullable=False)
 
 
@@ -719,6 +820,7 @@ class RagChunk(Base):
     parent_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding: Mapped[Any] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    user_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     # Document traceability fields (nullable for bare-ingest chunks without a Document)
     document_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("documents.id", ondelete="SET NULL"), nullable=True
@@ -734,6 +836,7 @@ class RagChunk(Base):
     __table_args__ = (
         Index("idx_rag_doc_hash", "doc_hash"),
         Index("idx_rag_content_hash", "content_hash"),
+        Index("idx_rag_user", "user_id"),
     )
 
 
@@ -746,6 +849,9 @@ class ChatHistory(Base):
     role: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
+    user_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("users.id"), name="user_id", nullable=True
+    )
 
 
 class MemoryNode(Base):
@@ -756,6 +862,9 @@ class MemoryNode(Base):
     mem_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    user_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("users.id"), name="user_id", nullable=True
+    )
 
 
 class MemoryEdge(Base):
@@ -792,6 +901,9 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, ForeignKey("users.id"), name="user_id", nullable=False
+    )
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     doc_type: Mapped[str] = mapped_column(String(64), nullable=False, default="note")
     source: Mapped[str] = mapped_column(

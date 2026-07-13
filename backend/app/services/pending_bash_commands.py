@@ -24,6 +24,7 @@ BashResolver = Callable[[dict], None]
 @dataclass
 class _PendingEntry:
     command: PendingBashCommand
+    user_id: str | None = None
     resolver: BashResolver | None = field(default=None)
 
 
@@ -40,6 +41,7 @@ class PendingBashCommandsStore:
         command: str,
         cwd: str,
         reason: str,
+        user_id: str | None = None,
     ) -> PendingBashCommand:
         created_at = now_ms()
         cmd = PendingBashCommand(
@@ -52,13 +54,14 @@ class PendingBashCommandsStore:
             reason=reason,
             created_at=created_at,
         )
-        self._map[cmd.id] = _PendingEntry(command=cmd)
+        self._map[cmd.id] = _PendingEntry(command=cmd, user_id=user_id)
         event_bus.publish(
             BashCommandPendingEvent(
                 conversation_id=conversation_id,
                 timestamp=created_at,
                 pending_command=cmd,
-            )
+            ),
+            user_id=user_id,
         )
         return cmd
 
@@ -110,7 +113,8 @@ class PendingBashCommandsStore:
                 timestamp=now_ms(),
                 pending_id=pending_id,
                 approved=approved,
-            )
+            ),
+            user_id=entry.user_id,
         )
 
 

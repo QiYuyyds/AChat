@@ -88,6 +88,7 @@ class DocumentService:
         summary: str | None = None,
         metadata: dict | None = None,
         ingest_to_rag: bool = False,
+        user_id: str | None = None,
     ) -> dict:
         """Create a new document or update an existing one (creates a new version).
 
@@ -184,7 +185,7 @@ class DocumentService:
         ingest_info: dict | None = None
         if ingest_to_rag and self._rag:
             ingest_info = await self._ingest_content(
-                content_md, document_id, version.id
+                content_md, document_id, version.id, user_id=user_id
             )
 
         return {
@@ -325,7 +326,7 @@ class DocumentService:
 
     # ─── Ingest version to RAG ─────────────────────────────────────────────
 
-    async def ingest_version(self, document_id: str, version_id: str) -> dict:
+    async def ingest_version(self, document_id: str, version_id: str, *, user_id: str | None = None) -> dict:
         """Ingest a specific version's content into RAG, backfilling traceability fields."""
         async with self._get_db() as session:
             result = await session.execute(
@@ -339,7 +340,7 @@ class DocumentService:
 
         # Clean old RAG data for this document before re-ingesting
         await self.delete_versions_by_document(document_id)
-        return await self._ingest_content(content_md, document_id, version_id)
+        return await self._ingest_content(content_md, document_id, version_id, user_id=user_id)
 
     # ─── Upload file (one-stop) ────────────────────────────────────────────
 
@@ -352,6 +353,7 @@ class DocumentService:
         document_id: str = "",
         title: str | None = None,
         doc_type: str = "upload",
+        user_id: str | None = None,
     ) -> dict:
         """Parse file → create document → ingest to RAG (one-stop).
 
@@ -395,6 +397,7 @@ class DocumentService:
             content_md=result.content,
             metadata=meta,
             ingest_to_rag=True,
+            user_id=user_id,
         )
 
         ingest = write_result.get("ingest") or {}
@@ -415,7 +418,8 @@ class DocumentService:
     # ─── Internal: ingest content to RAG + backfill ────────────────────────
 
     async def _ingest_content(
-        self, content_md: str, document_id: str, version_id: str
+        self, content_md: str, document_id: str, version_id: str,
+        *, user_id: str | None = None,
     ) -> dict:
         """Ingest content to RAG and backfill document_id/version_id on chunks."""
         dh = _doc_hash(content_md)
@@ -427,7 +431,7 @@ class DocumentService:
         chunk_count = 0
         if self._rag:
             try:
-                chunk_count = await self._rag.ingest(content_md)
+                chunk_count = await self._rag.ingest(content_md, user_id=user_id)
             except Exception as e:
                 logger.warning("RAG ingest failed for doc %s: %s", document_id, e)
 
@@ -438,7 +442,7 @@ class DocumentService:
                     await session.execute(
                         update(RagChunk)
                         .where(RagChunk.doc_hash == dh)
-                        .values(document_id=document_id, version_id=version_id)
+                        .values(document_id=document_id, version_id=version_id, user_id=user_id)
                     )
             except Exception as e:
                 logger.warning(

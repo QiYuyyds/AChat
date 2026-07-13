@@ -60,7 +60,9 @@ class CompactionSkipped(Exception):
         self.message = message
 
 
-def _broadcast_ephemeral_notice(conversation_id: str, content: str) -> MessageRecord:
+def _broadcast_ephemeral_notice(
+    conversation_id: str, content: str, user_id: str | None = None
+) -> MessageRecord:
     """Broadcast a role=system notice WITHOUT persisting it (transient by design)."""
     record = MessageRecord(
         id=new_message_id(),
@@ -78,13 +80,16 @@ def _broadcast_ephemeral_notice(conversation_id: str, content: str) -> MessageRe
     event_bus.publish(
         MessageAddedEvent(
             conversation_id=conversation_id, timestamp=record.created_at, message=record
-        )
+        ),
+        user_id=user_id,
     )
     return record
 
 
-def _skip(conversation_id: str, reason: str, content: str) -> CompactionSkipped:
-    return CompactionSkipped(reason, _broadcast_ephemeral_notice(conversation_id, content))
+def _skip(
+    conversation_id: str, reason: str, content: str, user_id: str | None = None
+) -> CompactionSkipped:
+    return CompactionSkipped(reason, _broadcast_ephemeral_notice(conversation_id, content, user_id))
 
 
 def _skip_silent(reason: str) -> CompactionSkipped:
@@ -234,6 +239,7 @@ async def compact_conversation(
         if conv is None:
             raise ValueError("会话不存在")
         agent_ids = conv.agent_ids_list
+        conv_user_id = conv.user_id
 
     # b) incremental cut-off: only compact messages after the last summary
     latest = await get_latest_context_summary(conversation_id)
@@ -263,15 +269,16 @@ async def compact_conversation(
         raise (
             _skip_silent("conversation_too_short")
             if silent
-            else _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE)
+            else _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE, user_id=conv_user_id)
         )
+
     to_compact = rows[:cut]
     kept = rows[cut:]
     if len(to_compact) < MIN_COMPACTABLE:
         raise (
             _skip_silent("conversation_too_short")
             if silent
-            else _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE)
+            else _skip(conversation_id, "conversation_too_short", _TOO_SHORT_NOTICE, user_id=conv_user_id)
         )
 
     agent_names = await _load_agent_names(agent_ids)
@@ -315,7 +322,7 @@ async def compact_conversation(
             raise (
                 _skip_silent("compactable_too_small")
                 if silent
-                else _skip(conversation_id, "compactable_too_small", _TOO_LITTLE_NOTICE)
+                else _skip(conversation_id, "compactable_too_small", _TOO_LITTLE_NOTICE, user_id=conv_user_id)
             )
 
         try:
@@ -326,7 +333,7 @@ async def compact_conversation(
             raise (
                 _skip_silent("no_summariser_model")
                 if silent
-                else _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE)
+                else _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE, user_id=conv_user_id)
             ) from None
 
         parent_system_prompt = await _get_agent_system_prompt(summariser_agent_id)
@@ -346,7 +353,7 @@ async def compact_conversation(
             raise (
                 _skip_silent("compactable_too_small")
                 if silent
-                else _skip(conversation_id, "compactable_too_small", _TOO_LITTLE_NOTICE)
+                else _skip(conversation_id, "compactable_too_small", _TOO_LITTLE_NOTICE, user_id=conv_user_id)
             )
 
         try:
@@ -357,7 +364,7 @@ async def compact_conversation(
             raise (
                 _skip_silent("no_summariser_model")
                 if silent
-                else _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE)
+                else _skip(conversation_id, "no_summariser_model", _NO_MODEL_NOTICE, user_id=conv_user_id)
             ) from None
 
         parent_system_prompt = await _get_agent_system_prompt(summariser_agent_id)
@@ -464,7 +471,8 @@ async def compact_conversation(
                 conversation_id=conversation_id,
                 timestamp=sys_now,
                 message=sys_record,
-            )
+            ),
+            user_id=conv_user_id,
         )
 
     logger.info(

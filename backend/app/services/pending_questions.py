@@ -23,6 +23,7 @@ QuestionResolver = Callable[[dict[str, AskUserAnswer] | None], None]
 @dataclass
 class _PendingEntry:
     question: PendingQuestion
+    user_id: str | None = None
     resolver: QuestionResolver | None = field(default=None)
 
 
@@ -37,6 +38,7 @@ class PendingQuestionsStore:
         agent_id: str,
         run_id: str,
         questions: list[AskUserQuestionItem],
+        user_id: str | None = None,
     ) -> PendingQuestion:
         created_at = now_ms()
         question = PendingQuestion(
@@ -47,14 +49,15 @@ class PendingQuestionsStore:
             questions=questions,
             created_at=created_at,
         )
-        self._map[question.id] = _PendingEntry(question=question)
+        self._map[question.id] = _PendingEntry(question=question, user_id=user_id)
 
         event_bus.publish(
             AskUserPendingEvent(
                 conversation_id=conversation_id,
                 timestamp=created_at,
                 pending_question=question,
-            )
+            ),
+            user_id=user_id,
         )
         return question
 
@@ -89,7 +92,8 @@ class PendingQuestionsStore:
                 timestamp=now_ms(),
                 pending_id=pending_id,
                 answered=True,
-            )
+            ),
+            user_id=entry.user_id,
         )
         return True
 

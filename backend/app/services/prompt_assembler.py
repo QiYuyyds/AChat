@@ -254,6 +254,7 @@ class Query:
     mode: str = ""
     conversation_id: str = ""
     agent_id: str = ""
+    user_id: str = ""
 
 
 class ContextSource(ABC):
@@ -518,6 +519,7 @@ class RecallSource(ContextSource):
         try:
             items = await self._memory.recall(
                 q.text, top_k=slot.filter.top_k or 3, agent_id=q.agent_id,
+                user_id=q.user_id or None,
             )
             return [
                 ContextItem(

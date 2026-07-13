@@ -165,6 +165,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         old_content=old_content,
         new_content=new_content,
         workspace=workspace,
+        user_id=ctx.user_id,
     )
 
     decision = await await_pending_decision(

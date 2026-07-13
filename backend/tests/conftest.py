@@ -3,36 +3,16 @@
 Each test gets an isolated file-based SQLite DB and workspace root under a fresh
 tmp_path, with the FK pragma enabled (so cascade deletes work) and two seeded
 agents (a plain one and an orchestrator).
+
+Auth: the `db` fixture sets `JWT_SECRET` so JWT creation/verification works.
+The `api_client` fixture creates a test user and sets the auth cookie so all
+existing tests authenticate transparently. Tests that need an unauthenticated
+client can use `raw_client`.
 """
 
 import pytest_asyncio
 
-
-@pytest_asyncio.fixture
-async def api_client(db):
-    """An httpx AsyncClient bound to the FastAPI app over ASGITransport.
-
-    Shares the same isolated test DB/workspace as the `db` fixture (which sets the
-    DATABASE_URL/WORKSPACE_ROOT env and initialises the schema before the app is
-    built). The lifespan's only side effect besides init_db is importing
-    agent_runner to wire the real runner into runner_registry, so we import it
-    here explicitly and skip running the lifespan (init_db already ran via `db`).
-
-    Usage::
-
-        async def test_health(api_client):
-            resp = await api_client.get("/health")
-            assert resp.status_code == 200
-    """
-    import httpx
-
-    import app.services.agent_runner  # noqa: F401  wires runner into registry
-    from app.main import create_app
-
-    app = create_app()
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
+_TEST_JWT_SECRET = "test-secret-at-least-32-characters-long!!"
 
 
 @pytest_asyncio.fixture
@@ -41,6 +21,8 @@ async def db(tmp_path, monkeypatch):
     db_file = tmp_path / "test.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_file.as_posix()}")
     monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path / "workspaces"))
+    monkeypatch.setenv("JWT_SECRET", _TEST_JWT_SECRET)
+    monkeypatch.setenv("ALLOW_REGISTRATION", "true")
 
     from app.config import get_settings
 
@@ -57,6 +39,66 @@ async def db(tmp_path, monkeypatch):
         await _drain_active_runs()
         await engine_mod.close_db()
         get_settings.cache_clear()
+
+
+@pytest_asyncio.fixture
+async def test_user(db):
+    """Create a test user and return (user_id, email, access_token)."""
+    from app.auth.jwt_handler import create_access_token
+    from app.auth.password import hash_password
+    from app.db.engine import get_db
+    from app.db.models import User
+    from app.utils.clock import now_ms
+
+    now = now_ms()
+    async with get_db() as session:
+        user = User(
+            id="test_user_1",
+            email="test@example.com",
+            name="Test User",
+            password_hash=hash_password("testpass123"),
+            token_version=0,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(user)
+
+    token = create_access_token("test_user_1", "test@example.com", 0)
+    return {"id": "test_user_1", "email": "test@example.com", "token": token}
+
+
+@pytest_asyncio.fixture
+async def api_client(db, test_user):
+    """An httpx AsyncClient bound to the FastAPI app over ASGITransport.
+
+    Authenticated as the test user (auth cookie pre-set) so all existing
+    tests work transparently with the auth system.
+    """
+    import httpx
+
+    import app.services.agent_runner  # noqa: F401  wires runner into registry
+    from app.auth.dependencies import COOKIE_NAME
+    from app.main import create_app
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.headers["Authorization"] = f"Bearer {test_user['token']}"
+        yield client
+
+
+@pytest_asyncio.fixture
+async def raw_client(db):
+    """An httpx AsyncClient without authentication (for auth endpoint tests)."""
+    import httpx
+
+    import app.services.agent_runner  # noqa: F401
+    from app.main import create_app
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
 
 
 async def _drain_active_runs() -> None:
@@ -79,7 +121,7 @@ async def _drain_active_runs() -> None:
 
 
 @pytest_asyncio.fixture
-async def agents(db):
+async def agents(db, test_user):
     """Seed two agents and return their ids: a normal one and an orchestrator."""
     from app.db.engine import get_db
     from app.db.models import Agent
@@ -98,6 +140,7 @@ async def agents(db):
             is_orchestrator=False,
             supports_vision=False,
             created_at=now,
+            user_id=test_user["id"],
         )
         alice.capabilities_list = []
         alice.tool_names_list = []
@@ -113,6 +156,7 @@ async def agents(db):
             is_orchestrator=True,
             supports_vision=False,
             created_at=now,
+            user_id=None,
         )
         orch.capabilities_list = []
         orch.tool_names_list = []

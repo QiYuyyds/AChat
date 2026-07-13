@@ -190,6 +190,7 @@ async def _await_plan_approval(
         run_id=ctx.run_id,
         plan=items,
         validator=_revalidation_validator,
+        user_id=ctx.user_id,
     )
     pending_dispatch_plans.attach_resolver(
         pending_plan.id,
@@ -301,7 +302,8 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
             timestamp=now_ms(),
             run_id=ctx.run_id,
             plan=items,
-        )
+        ),
+        user_id=ctx.user_id,
     )
 
     # Determine visibility: clone-self if all tasks use caller's agent_id
@@ -315,6 +317,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         cancel_event=ctx.cancel_event,
         dispatch_depth=ctx.dispatch_depth + 1,
         dispatch_visibility=visibility,
+        user_id=ctx.user_id,
     )
 
     logger.info(

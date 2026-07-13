@@ -35,6 +35,8 @@ class ToolContext:
     dispatch_depth: int = 0
     # universal subagent dispatch: effective loop mode ("solo" / "coordinated" / "subagent")
     dispatch_mode: str = "solo"
+    # multi-user: owning user for SSE event filtering and data isolation
+    user_id: str | None = None
 
 
 @dataclass

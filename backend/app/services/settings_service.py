@@ -1,19 +1,10 @@
-"""Global API key / endpoint / deployment settings (single-row table).
+"""Per-user settings (API keys, companion config) + legacy singleton bridge.
 
-Full port of src/server/settings-service.ts. The read side is used by the
-deploy tools (publish config) and the adapters (effective API keys); the
-UPSERT + companion-runtime sync side backs 阶段 6's ``/api/settings`` and
-``/api/settings/mobile-token`` routes.
-
-Read semantics for adapters: ``get_effective_api_key(provider)`` returns the
-app_settings field, else the ``<PROVIDER>_API_KEY`` env var, else None.
-``agents.api_key`` (per-agent override, highest priority) is handled by the
-adapter layer.
-
-Redaction note: the TS ``GET /api/settings`` returns key fields VERBATIM
-(see src/app/api/settings/route.ts — "key 字段会原样返回；用户已自行选择填明文").
-There is no server-side redaction in the source, so this port does not redact
-either; the router stage must serialize the row as-is to stay byte-for-byte.
+Multi-user refactor: per-user API keys and companion config live in
+``user_settings`` (PK = user_id). Server-level deployment config lives in
+``global_settings`` (singleton). The legacy ``app_settings`` singleton is kept
+as a backward-compat bridge: ``get_app_settings()`` reads from the first
+available ``user_settings`` row, falling back to the old table.
 """
 
 from __future__ import annotations
@@ -28,18 +19,32 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db.engine import get_db
-from app.db.models import AppSettings
+from app.db.models import AppSettings, UserSettings
 from app.utils.clock import now_ms
 
 SINGLETON_ID = "singleton"
 
 CompanionMode = Literal["off", "lan", "tailnet"]
 
-# Mirrors companion-config.ts DEFAULT_COMPANION_PORT.
 DEFAULT_COMPANION_PORT = 60646
 
 
+def _empty_user_settings(user_id: str) -> UserSettings:
+    return UserSettings(
+        user_id=user_id,
+        anthropic_api_key=None,
+        anthropic_base_url=None,
+        openai_api_key=None,
+        deepseek_api_key=None,
+        ark_api_key=None,
+        companion_mode="off",
+        mobile_device_token=None,
+        updated_at=0,
+    )
+
+
 def _empty_settings() -> AppSettings:
+    """Legacy empty AppSettings for backward-compat callers."""
     return AppSettings(
         id=SINGLETON_ID,
         anthropic_api_key=None,
@@ -56,19 +61,91 @@ def _empty_settings() -> AppSettings:
     )
 
 
-async def get_app_settings() -> AppSettings:
-    """Return the singleton settings row, or an all-default transient instance."""
+# ─── Per-user settings ───────────────────────────────────────────────────────
+
+
+async def get_user_settings(user_id: str) -> UserSettings:
+    """Return the per-user settings row, or an all-default transient instance."""
     async with get_db() as db:
         result = await db.execute(
-            select(AppSettings).where(AppSettings.id == SINGLETON_ID)
+            select(UserSettings).where(UserSettings.user_id == user_id)
         )
         row = result.scalar_one_or_none()
-    return row if row is not None else _empty_settings()
+    return row if row is not None else _empty_user_settings(user_id)
 
 
-async def get_effective_api_key(provider: str) -> str | None:
-    """Effective key for a provider: app_settings → env var → None."""
-    settings = await get_app_settings()
+class UserSettingsPatch(TypedDict, total=False):
+    """Partial patch for per-user settings."""
+
+    anthropic_api_key: str | None
+    anthropic_base_url: str | None
+    openai_api_key: str | None
+    deepseek_api_key: str | None
+    ark_api_key: str | None
+    companion_mode: CompanionMode
+    mobile_device_token: str | None
+
+
+_USER_STRING_FIELDS = (
+    "anthropic_api_key",
+    "anthropic_base_url",
+    "openai_api_key",
+    "deepseek_api_key",
+    "ark_api_key",
+    "companion_mode",
+    "mobile_device_token",
+)
+
+
+async def update_user_settings(user_id: str, patch: UserSettingsPatch) -> UserSettings:
+    """UPSERT per-user settings: keys in patch are written (None clears), absent leaves untouched."""
+    async with get_db() as db:
+        result = await db.execute(
+            select(UserSettings).where(UserSettings.user_id == user_id)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            row = _empty_user_settings(user_id)
+            db.add(row)
+
+        for field in _USER_STRING_FIELDS:
+            if field in patch:
+                setattr(row, field, _normalize(patch[field]))  # type: ignore[literal-required]
+
+        if row.companion_mode is None:
+            row.companion_mode = "off"
+
+        if row.companion_mode != "off" and not row.mobile_device_token:
+            row.mobile_device_token = new_mobile_device_token()
+
+        row.updated_at = now_ms()
+        await db.flush()
+        db.expunge(row)
+
+    return row
+
+
+async def regenerate_user_mobile_device_token(user_id: str) -> UserSettings:
+    """Issue a fresh mobile pairing token for the user."""
+    current = await get_user_settings(user_id)
+    return await update_user_settings(
+        user_id,
+        {
+            "mobile_device_token": new_mobile_device_token(),
+            "companion_mode": current.companion_mode,  # type: ignore[typeddict-item]
+        },
+    )
+
+
+# ─── Effective key resolution (per-user) ─────────────────────────────────────
+
+
+async def get_effective_api_key(provider: str, user_id: str | None = None) -> str | None:
+    """Effective key for a provider: user_settings → env var → None."""
+    if user_id is not None:
+        settings = await get_user_settings(user_id)
+    else:
+        settings = await get_app_settings()
     if provider == "anthropic":
         return settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
     if provider == "openai":
@@ -80,16 +157,62 @@ async def get_effective_api_key(provider: str) -> str | None:
     return None
 
 
-async def get_effective_anthropic_base_url() -> str | None:
-    settings = await get_app_settings()
+async def get_effective_anthropic_base_url(user_id: str | None = None) -> str | None:
+    if user_id is not None:
+        settings = await get_user_settings(user_id)
+    else:
+        settings = await get_app_settings()
     return settings.anthropic_base_url or os.environ.get("ANTHROPIC_BASE_URL")
 
 
-# --- Companion config (port of src/server/companion-config.ts) ---------------
+# ─── Legacy singleton bridge (backward compat) ───────────────────────────────
+
+
+async def get_app_settings() -> AppSettings:
+    """Legacy bridge: read from the first user_settings row, fall back to app_settings.
+
+    Used by code paths that haven't been updated to pass user_id yet.
+    """
+    async with get_db() as db:
+        # Try the first user_settings row
+        result = await db.execute(select(UserSettings).limit(1))
+        user_row = result.scalar_one_or_none()
+        if user_row is not None:
+            return _user_settings_to_app_settings(user_row)
+        # Fall back to legacy app_settings table
+        result = await db.execute(
+            select(AppSettings).where(AppSettings.id == SINGLETON_ID)
+        )
+        row = result.scalar_one_or_none()
+    return row if row is not None else _empty_settings()
+
+
+def _user_settings_to_app_settings(us: UserSettings) -> AppSettings:
+    """Project a UserSettings row onto an AppSettings shape for backward compat."""
+    from app.services.global_settings_service import get_global_settings_sync
+
+    gs = get_global_settings_sync()
+    return AppSettings(
+        id=SINGLETON_ID,
+        anthropic_api_key=us.anthropic_api_key,
+        anthropic_base_url=us.anthropic_base_url,
+        openai_api_key=us.openai_api_key,
+        deepseek_api_key=us.deepseek_api_key,
+        ark_api_key=us.ark_api_key,
+        companion_mode=us.companion_mode,
+        mobile_device_token=us.mobile_device_token,
+        deployment_publish_enabled=gs.deployment_publish_enabled if gs else False,
+        deployment_publish_dir=gs.deployment_publish_dir if gs else None,
+        deployment_public_base_url=gs.deployment_public_base_url if gs else None,
+        updated_at=us.updated_at,
+    )
+
+
+# ─── Companion config ────────────────────────────────────────────────────────
 
 
 def new_mobile_device_token() -> str:
-    """24 random bytes, base64url (no padding) — matches randomBytes(24).toString('base64url')."""
+    """24 random bytes, base64url (no padding)."""
     return base64.urlsafe_b64encode(secrets.token_bytes(24)).rstrip(b"=").decode("ascii")
 
 
@@ -111,7 +234,7 @@ def write_companion_config(
         fh.write(json.dumps(config, ensure_ascii=False, indent=2))
 
 
-def sync_companion_runtime(settings: AppSettings) -> None:
+def sync_companion_runtime(settings: UserSettings | AppSettings) -> None:
     """Write companion.json and set/clear AGENTHUB_MOBILE_TOKEN env var."""
     write_companion_config(
         companion_mode=settings.companion_mode,  # type: ignore[arg-type]
@@ -124,11 +247,11 @@ def sync_companion_runtime(settings: AppSettings) -> None:
         os.environ.pop("AGENTHUB_MOBILE_TOKEN", None)
 
 
-# --- UPSERT (port of updateAppSettings / regenerateMobileDeviceToken) --------
+# ─── Legacy AppSettings UPSERT (backward compat) ────────────────────────────
 
 
 class AppSettingsPatch(TypedDict, total=False):
-    """Partial patch: a key set to None clears the field, an absent key is left untouched."""
+    """Legacy patch: covers both per-user and global fields."""
 
     anthropic_api_key: str | None
     anthropic_base_url: str | None
@@ -143,7 +266,6 @@ class AppSettingsPatch(TypedDict, total=False):
 
 
 def _normalize(value: str | bool | None) -> str | bool | None:
-    """Empty/whitespace-only strings collapse to None; strings are trimmed; bools pass through."""
     if value is None:
         return None
     if isinstance(value, bool):
@@ -167,42 +289,24 @@ _BOOL_FIELDS = ("deployment_publish_enabled",)
 
 
 async def update_app_settings(patch: AppSettingsPatch) -> AppSettings:
-    """UPSERT the singleton row: keys present in ``patch`` are written (None clears,
-    absent leaves untouched), then companion runtime is synced. Returns the new row.
+    """Legacy UPSERT: writes per-user fields to the first user_settings row,
+    and global fields to global_settings. Kept for callers not yet updated.
     """
+    from app.services.global_settings_service import update_global_settings
+
     async with get_db() as db:
-        result = await db.execute(
-            select(AppSettings).where(AppSettings.id == SINGLETON_ID)
-        )
+        result = await db.execute(select(UserSettings).limit(1))
         row = result.scalar_one_or_none()
         if row is None:
-            row = AppSettings(
-                id=SINGLETON_ID,
-                anthropic_api_key=None,
-                anthropic_base_url=None,
-                openai_api_key=None,
-                deepseek_api_key=None,
-                ark_api_key=None,
-                companion_mode="off",
-                mobile_device_token=None,
-                deployment_publish_enabled=False,
-                deployment_publish_dir=None,
-                deployment_public_base_url=None,
-                updated_at=0,
-            )
+            row = _empty_user_settings("legacy")
             db.add(row)
 
-        for field in (*_STRING_FIELDS, *_BOOL_FIELDS):
+        # Per-user fields
+        for field in _USER_STRING_FIELDS:
             if field in patch:
                 setattr(row, field, _normalize(patch[field]))  # type: ignore[literal-required]
-
-        # companion_mode is non-nullable; a cleared/empty value falls back to 'off'.
         if row.companion_mode is None:
             row.companion_mode = "off"
-        # deployment_publish_enabled is non-nullable; coerce a cleared value to False.
-        if row.deployment_publish_enabled is None:
-            row.deployment_publish_enabled = False
-
         if row.companion_mode != "off" and not row.mobile_device_token:
             row.mobile_device_token = new_mobile_device_token()
 
@@ -210,22 +314,29 @@ async def update_app_settings(patch: AppSettingsPatch) -> AppSettings:
         await db.flush()
         db.expunge(row)
 
+    # Global fields
+    global_patch: dict = {}
+    for field in (*_BOOL_FIELDS, "deployment_publish_dir", "deployment_public_base_url"):
+        if field in patch:
+            global_patch[field] = patch[field]  # type: ignore[literal-required]
+    if global_patch:
+        await update_global_settings(global_patch)  # type: ignore[arg-type]
+
     sync_companion_runtime(row)
-    return row
+    return _user_settings_to_app_settings(row)
 
 
 async def regenerate_mobile_device_token() -> AppSettings:
-    """Issue a fresh mobile pairing token, preserving the current companion mode."""
-    current = await get_app_settings()
-    return await update_app_settings(
-        {
-            "mobile_device_token": new_mobile_device_token(),
-            "companion_mode": current.companion_mode,  # type: ignore[typeddict-item]
-        }
-    )
+    """Legacy: issue a fresh mobile pairing token."""
+    async with get_db() as db:
+        result = await db.execute(select(UserSettings).limit(1))
+        row = result.scalar_one_or_none()
+    user_id = row.user_id if row is not None else "legacy"
+    await regenerate_user_mobile_device_token(user_id)
+    return await get_app_settings()
 
 
 async def get_mobile_device_token() -> str | None:
-    """Current mobile pairing token, or None if unset."""
+    """Legacy: current mobile pairing token."""
     settings = await get_app_settings()
     return settings.mobile_device_token

@@ -86,6 +86,7 @@ class LongTerm:
                 score=r.score or 0.0,
                 scope=getattr(r, "scope", None) or "global",
                 agent_id=getattr(r, "agent_id", None) or "",
+                user_id=getattr(r, "user_id", None),
                 # Reset decay checkpoint to load time — persisted importance is
                 # already decayed; don't retroactively re-decay the idle period.
                 last_decay_ts=now_ts,
@@ -105,6 +106,7 @@ class LongTerm:
         importance: float = 0.5,
         scope: str = "global",
         agent_id: str = "",
+        user_id: Optional[str] = None,
     ) -> None:
         """Add a new memory item, persist to PG, and sync to graph."""
         # Embedding is blocking I/O — run it off the event loop, outside the lock.
@@ -127,6 +129,7 @@ class LongTerm:
                 last_accessed=now_ts,
                 scope=scope,
                 agent_id=agent_id,
+                user_id=user_id,
                 last_decay_ts=now_ts,
             )
             self._next_id += 1
@@ -150,6 +153,7 @@ class LongTerm:
                         score=item.score,
                         scope=scope,
                         agent_id=agent_id or None,
+                        user_id=user_id,
                     )
                     session.add(row)
                     await session.flush()
@@ -177,6 +181,7 @@ class LongTerm:
         slot_hint: str,
         scope: str = "global",
         agent_id: str = "",
+        user_id: Optional[str] = None,
     ) -> bool:
         """Schema-driven write with cosine dedup against existing items.
 
@@ -270,6 +275,7 @@ class LongTerm:
                     score=0.0,
                     scope=scope,
                     agent_id=agent_id,
+                    user_id=user_id,
                     last_decay_ts=now_ts,
                 )
                 self._next_id += 1
@@ -292,6 +298,7 @@ class LongTerm:
                             score=new_item.score,
                             scope=scope,
                             agent_id=agent_id or None,
+                            user_id=user_id,
                         )
                         session.add(row)
                         await session.flush()
@@ -318,9 +325,18 @@ class LongTerm:
 
     async def recall(
         self, query: str, top_k: int = 3, agent_id: str = "",
+        *, user_id: Optional[str] = None,
     ) -> List[Item]:
         async with self._lock:
             if not self.items:
+                return []
+
+            # Filter by user_id for multi-user isolation
+            user_items = [
+                it for it in self.items
+                if user_id is None or it.user_id == user_id or it.user_id is None
+            ]
+            if not user_items:
                 return []
 
             query_emb = None
@@ -334,20 +350,20 @@ class LongTerm:
                 # No embedding: return agent-scoped first, then global fill
                 if agent_id:
                     agent_items = [
-                        it for it in self.items
+                        it for it in user_items
                         if it.scope == "agent" and it.agent_id == agent_id
                     ]
                     global_items = [
-                        it for it in self.items if it.scope == "global"
+                        it for it in user_items if it.scope == "global"
                     ]
                     remaining = max(0, top_k - len(agent_items))
                     return agent_items[:top_k] + global_items[:remaining]
-                return self.items[:top_k]
+                return user_items[:top_k]
 
             # Phase 1: agent-scoped recall
             if agent_id:
                 agent_pool = [
-                    it for it in self.items
+                    it for it in user_items
                     if it.scope == "agent" and it.agent_id == agent_id
                 ]
             else:
@@ -370,7 +386,7 @@ class LongTerm:
             global_results: List[Item] = []
             if remaining > 0:
                 global_pool = [
-                    it for it in self.items if it.scope == "global"
+                    it for it in user_items if it.scope == "global"
                 ]
                 global_scored = []
                 for item in global_pool:

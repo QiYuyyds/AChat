@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Form, UploadFile
+from fastapi import APIRouter, Depends, Form, UploadFile
 from fastapi.responses import JSONResponse
 
+from app.auth.dependencies import get_current_user
+from app.db.models import User
 from app.services.skill_service import (
     SKILL_MD,
     SkillError,
@@ -25,7 +27,7 @@ router = APIRouter()
 
 
 @router.get("/skills")
-async def list_skills_route() -> JSONResponse:
+async def list_skills_route(user: User = Depends(get_current_user)) -> JSONResponse:
     skills = [
         {
             "slug": m.slug,
@@ -42,6 +44,7 @@ async def list_skills_route() -> JSONResponse:
 async def upload_skill(
     files: list[UploadFile],
     paths: Annotated[list[str] | None, Form()] = None,
+    user: User = Depends(get_current_user),
 ) -> JSONResponse:
     """Create a skill from an uploaded file or folder.
 
