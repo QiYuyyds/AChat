@@ -21,7 +21,8 @@ async def _make_conversation(title: str = "Conv") -> str:
     async with get_db() as db:
         ts = now_ms()
         conv = Conversation(
-            id=conv_id, title=title, mode="single", created_at=ts, updated_at=ts
+            id=conv_id, title=title, mode="single", created_at=ts, updated_at=ts,
+            user_id="test_user_1",
         )
         conv.agent_ids_list = ["ag_alice"]
         conv.pinned_message_ids_list = []
@@ -327,3 +328,56 @@ async def test_export_code_file_json_fallback(conv):
     assert out.filename == "Code-v1.json"
     assert out.content_type == "application/json"
     assert json.loads(out.body.decode()) == content
+
+
+# ─── content key alias tests ─────────────────────────────────────────────────
+def test_build_web_app_src_alias():
+    result = svc.build_artifact_content("web_app", {"src": "<html>hi</html>"})
+    assert result is not None
+    assert result["files"] == {"index.html": "<html>hi</html>"}
+
+
+def test_build_web_app_body_alias():
+    result = svc.build_artifact_content("web_app", {"body": "<p>body</p>"})
+    assert result is not None
+    assert result["files"] == {"index.html": "<p>body</p>"}
+
+
+def test_build_document_body_alias():
+    result = svc.build_artifact_content("document", {"body": "# Title"})
+    assert result is not None
+    assert result["content"] == "# Title"
+
+
+def test_build_image_src_alias():
+    result = svc.build_artifact_content("image", {"src": "https://x.com/y.png"})
+    assert result is not None
+    assert result["url"] == "https://x.com/y.png"
+
+
+def test_build_image_link_alias():
+    result = svc.build_artifact_content("image", {"link": "https://x.com/z.png"})
+    assert result is not None
+    assert result["url"] == "https://x.com/z.png"
+
+
+def test_build_ppt_pages_alias():
+    result = svc.build_artifact_content("ppt", {"pages": [{"title": "S1"}]})
+    assert result is not None
+    assert len(result["slides"]) == 1
+    assert result["slides"][0]["title"] == "S1"
+
+
+def test_build_ppt_single_slide_dict_auto_wrap():
+    result = svc.build_artifact_content("ppt", {"slides": {"title": "Only Slide"}})
+    assert result is not None
+    assert isinstance(result["slides"], list)
+    assert len(result["slides"]) == 1
+    assert result["slides"][0]["title"] == "Only Slide"
+
+
+def test_build_diagram_graph_alias():
+    result = svc.build_artifact_content("diagram", {"graph": "flowchart TD\nA-->B"})
+    assert result is not None
+    assert result["syntax"] == "mermaid"
+    assert "flowchart TD" in result["source"]

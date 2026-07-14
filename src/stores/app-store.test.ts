@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MessageRow } from '@/db/schema'
 import type { DispatchPlanItem } from '@/shared/types'
@@ -178,6 +178,7 @@ describe('app-store run failure cleanup', () => {
       callId: 'call_bash',
       result: 'server fallback',
       isError: true,
+      endedAt: 3,
     })
   })
 
@@ -217,6 +218,117 @@ describe('app-store run failure cleanup', () => {
     const message = useAppStore.getState().messages.msg_tool
     expect(message.status).toBe('aborted')
     expect(message.parts.filter((part) => part.type === 'tool_result')).toHaveLength(1)
+  })
+})
+
+describe('app-store timestamp capture', () => {
+  beforeEach(() => {
+    resetStore()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('part.start captures startedAt for thinking parts', () => {
+    useAppStore.getState().applyEvent({
+      type: 'message.start',
+      conversationId: 'conv_1',
+      timestamp: 1000,
+      messageId: 'msg_ts',
+      agentId: 'ag_test',
+      runId: 'run_test',
+    })
+
+    useAppStore.getState().applyEvent({
+      type: 'part.start',
+      conversationId: 'conv_1',
+      timestamp: 2000,
+      messageId: 'msg_ts',
+      partIndex: 0,
+      part: { type: 'thinking', content: '' },
+    })
+
+    const msg = useAppStore.getState().messages.msg_ts
+    expect(msg.parts[0]).toMatchObject({ type: 'thinking', startedAt: 2000 })
+  })
+
+  it('part.end captures endedAt for thinking parts', () => {
+    useAppStore.setState({
+      messages: {
+        msg_ts: {
+          ...agentMessage('msg_ts', 'run_test', 1000),
+          status: 'streaming',
+          parts: [{ type: 'thinking', content: 'hello', startedAt: 2000 }],
+        },
+      },
+    })
+
+    useAppStore.getState().applyEvent({
+      type: 'part.end',
+      conversationId: 'conv_1',
+      timestamp: 5000,
+      messageId: 'msg_ts',
+      partIndex: 0,
+    })
+
+    const part = useAppStore.getState().messages.msg_ts.parts[0]
+    expect(part).toMatchObject({ type: 'thinking', endedAt: 5000 })
+  })
+
+  it('tool.call captures startedAt', () => {
+    useAppStore.setState({
+      messages: {
+        msg_ts: {
+          ...agentMessage('msg_ts', 'run_test', 1000),
+          status: 'streaming',
+          parts: [],
+        },
+      },
+    })
+
+    useAppStore.getState().applyEvent({
+      type: 'tool.call',
+      conversationId: 'conv_1',
+      timestamp: 3000,
+      messageId: 'msg_ts',
+      callId: 'call_1',
+      toolName: 'bash',
+      args: { command: 'ls' },
+    })
+
+    const part = useAppStore.getState().messages.msg_ts.parts[0]
+    expect(part).toMatchObject({ type: 'tool_use', startedAt: 3000 })
+  })
+
+  it('tool.result captures endedAt', () => {
+    useAppStore.setState({
+      messages: {
+        msg_ts: {
+          ...agentMessage('msg_ts', 'run_test', 1000),
+          status: 'streaming',
+          parts: [
+            { type: 'tool_use', callId: 'call_1', toolName: 'bash', args: {}, startedAt: 3000 },
+          ],
+        },
+      },
+    })
+
+    useAppStore.getState().applyEvent({
+      type: 'tool.result',
+      conversationId: 'conv_1',
+      timestamp: 6000,
+      messageId: 'msg_ts',
+      callId: 'call_1',
+      result: 'done',
+      isError: false,
+    })
+
+    const result = useAppStore
+      .getState()
+      .messages.msg_ts.parts.find((p) => p.type === 'tool_result')
+    expect(result).toMatchObject({ type: 'tool_result', endedAt: 6000 })
   })
 })
 

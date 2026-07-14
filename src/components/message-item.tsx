@@ -22,11 +22,13 @@ import {
 } from '@/components/ui/dialog'
 import { editAndResendMessage, regenerateLastResponse, toggleMessagePin, withdrawMessage } from '@/lib/api'
 import { API_BASE_URL } from '@/lib/config'
+import { formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { MessageRow } from '@/db/schema'
 import { PIN_LIMIT_PER_CONVERSATION } from '@/shared/constants'
 import {
   useAppStore,
+  useIsRunActive,
   useDispatchForMessage,
   useLatestAgentMessageId,
   useLatestUserMessageId,
@@ -65,6 +67,8 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
   const name = isUser ? '我' : message.role === 'system' ? '系统' : agent?.name ?? 'Unknown'
   const isLatestUser = isUser && latestUserId === message.id
   const isLatestAgent = !isUser && latestAgentId === message.id
+
+  const isRunActive = useIsRunActive(message.conversationId, message.runId)
 
   const turnMetrics = useTurnMetrics(message.conversationId, message.runId)
 
@@ -188,7 +192,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
           size="md"
           avatarClassName={cn(
             'transition-all',
-            message.status === 'streaming' && 'ring-2 ring-primary ring-offset-1',
+            isRunActive && 'ring-2 ring-primary ring-offset-1 animate-pulse',
           )}
         />
       ) : (
@@ -216,7 +220,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
                 </span>
               )}
               {message.status === 'streaming' && (
-                <Loader2 className="size-3 animate-spin text-muted-foreground/70" />
+                <Loader2 className="size-2.5 animate-spin text-muted-foreground/50" />
               )}
             </>
           )}
@@ -286,12 +290,36 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
                 </div>
               )}
 
-              <PartList parts={message.parts} conversationId={message.conversationId} />
+              <PartList parts={message.parts} conversationId={message.conversationId} messageStatus={message.status} />
               {dispatch && (
                 <div className="mt-3">
                   <DispatchPlanCard conversationId={message.conversationId} dispatch={dispatch} />
                 </div>
               )}
+              {!isUser && message.status !== 'streaming' && (() => {
+                let minStarted: number | undefined
+                let maxEnded: number | undefined
+                for (const p of message.parts) {
+                  if (p.type === 'thinking' || p.type === 'tool_use') {
+                    if (p.startedAt !== undefined) {
+                      if (minStarted === undefined || p.startedAt < minStarted) minStarted = p.startedAt
+                    }
+                  }
+                  if (p.type === 'thinking' || p.type === 'tool_result') {
+                    if (p.endedAt !== undefined) {
+                      if (maxEnded === undefined || p.endedAt > maxEnded) maxEnded = p.endedAt
+                    }
+                  }
+                }
+                if (minStarted !== undefined && maxEnded !== undefined) {
+                  return (
+                    <div className="mt-1 text-right text-[10px] text-muted-foreground/60">
+                      本次回答共耗时 {formatDuration(maxEnded - minStarted)}
+                    </div>
+                  )
+                }
+                return null
+              })()}
               {turnMetrics && Object.keys(turnMetrics).length > 0 && (
                 <TurnTimeline turnMetrics={turnMetrics} />
               )}

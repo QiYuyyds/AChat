@@ -7,9 +7,9 @@
 export type MessagePart =
   | { type: 'text'; content: string }
   | { type: 'code'; language: string; content: string }
-  | { type: 'thinking'; content: string }
-  | { type: 'tool_use'; callId: string; toolName: string; args: unknown }
-  | { type: 'tool_result'; callId: string; result: unknown; isError: boolean }
+  | { type: 'thinking'; content: string; startedAt?: number; endedAt?: number }
+  | { type: 'tool_use'; callId: string; toolName: string; args: unknown; startedAt?: number }
+  | { type: 'tool_result'; callId: string; result: unknown; isError: boolean; endedAt?: number }
   | { type: 'artifact_ref'; artifactId: string }
   | { type: 'deploy_status'; deployment: DeployStatusRecord }
   | { type: 'deploy_candidates'; candidates: DeployCandidateRecord[] }

@@ -30,19 +30,19 @@ DEFAULT_OUTPUT_RESERVE = 4096
 
 KNOWN_MODELS: dict[str, dict[str, int]] = {
     # DeepSeek
-    "deepseek-chat": {"context": 64_000},
-    "deepseek-v4-flash": {"context": 64_000},
-    "deepseek-v4": {"context": 64_000},
-    "deepseek-reasoner": {"context": 128_000, "outputReserve": 16_384},  # R1 thinking eats tokens
-    "deepseek-r1": {"context": 128_000, "outputReserve": 16_384},
+    "deepseek-chat": {"context": 64_000, "maxOutputTokens": 8_192},
+    "deepseek-v4-flash": {"context": 64_000, "maxOutputTokens": 8_192},
+    "deepseek-v4": {"context": 64_000, "maxOutputTokens": 8_192},
+    "deepseek-reasoner": {"context": 128_000, "outputReserve": 16_384, "maxOutputTokens": 8_192},  # R1 thinking eats tokens
+    "deepseek-r1": {"context": 128_000, "outputReserve": 16_384, "maxOutputTokens": 8_192},
     # OpenAI
-    "gpt-4o": {"context": 128_000},
-    "gpt-4o-mini": {"context": 128_000},
-    "gpt-4-turbo": {"context": 128_000},
-    "gpt-4": {"context": 8192},
-    "gpt-3.5-turbo": {"context": 16_385},
-    "o1": {"context": 200_000, "outputReserve": 32_768},
-    "o1-mini": {"context": 128_000, "outputReserve": 16_384},
+    "gpt-4o": {"context": 128_000, "maxOutputTokens": 16_384},
+    "gpt-4o-mini": {"context": 128_000, "maxOutputTokens": 16_384},
+    "gpt-4-turbo": {"context": 128_000, "maxOutputTokens": 4_096},
+    "gpt-4": {"context": 8192, "maxOutputTokens": 4_096},
+    "gpt-3.5-turbo": {"context": 16_385, "maxOutputTokens": 4_096},
+    "o1": {"context": 200_000, "outputReserve": 32_768, "maxOutputTokens": 100_000},
+    "o1-mini": {"context": 128_000, "outputReserve": 16_384, "maxOutputTokens": 65_536},
     # Anthropic
     "claude-opus-4-7": {"context": 200_000},
     "claude-opus-4-7[1m]": {"context": 1_000_000},
@@ -63,6 +63,7 @@ KNOWN_MODELS: dict[str, dict[str, int]] = {
 class ModelLimits:
     context_window: int  # total context window (tokens)
     output_reserve: int  # tokens reserved for output; input + output <= context_window
+    max_output_tokens: int | None = None  # provider hard cap on output tokens, if known
 
 
 def get_model_limits(
@@ -74,12 +75,14 @@ def get_model_limits(
         return ModelLimits(
             context_window=m["context"],
             output_reserve=m.get("outputReserve", DEFAULT_OUTPUT_RESERVE),
+            max_output_tokens=m.get("maxOutputTokens"),
         )
     # Provider fallback.
     if provider and provider in PROVIDER_FALLBACK_CONTEXT:
         return ModelLimits(
             context_window=PROVIDER_FALLBACK_CONTEXT[provider],
             output_reserve=DEFAULT_OUTPUT_RESERVE,
+            max_output_tokens=None,
         )
     # Final fallback (also used by ClaudeCode adapter — it has no modelProvider field).
     return ModelLimits(context_window=200_000, output_reserve=DEFAULT_OUTPUT_RESERVE)

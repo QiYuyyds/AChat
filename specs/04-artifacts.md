@@ -108,13 +108,34 @@ handler 接受 4 种 `content` 形状，归一化到标准 `ArtifactContent`：
 | `{ content: '<html>...' }` 或 `{ code: '...' }` | 单文件 `index.html` | LLM 喜欢用 `content` 键 |
 | 裸字符串 `'<html>...'` | 同上 | LLM 直接给 HTML |
 
-document 类似：`{ content }` / `{ markdown }` / `{ text }` / 裸字符串都接受。
+document 类似：`{ content }` / `{ markdown }` / `{ text }` / `{ body }` / 裸字符串都接受。
 
-image 接受 `{ url, alt? }` 或裸 URL 字符串。
+image 接受 `{ url, alt? }` / `{ src, alt? }` / `{ link, alt? }` 或裸 URL 字符串。
 
 ppt 接受旧版 `{ title, bullets, notes?, layout? }` slide，也接受新版 block DSL：`subtitle`、`layout: 'content'|'two-column'|'metrics'|'timeline'|'quote'` 等，以及 `blocks`。支持的 block 类型固定为 `heading` / `paragraph` / `bullets` / `metric` / `quote` / `timeline` / `columns` / `callout` / `divider` / `spacer`；`columns` 子 block 只允许 `paragraph` / `bullets` / `metric` / `callout`。旧版 bullets 在渲染/导出边界由 `src/shared/ppt-normalize.ts` 归一化为 `{ type: 'bullets', items }`，不迁移历史 DB 行。PPT JSON 不允许直接嵌入 `data:*;base64,...` 这类无界二进制 payload；图片等大资产必须走可安全解析的 URL / 附件 / workspace 引用（当前 PPT 首版不实现图片 block）。
 
 diff 解析逻辑仍保留在 `buildArtifactContent('diff', ...)`，用于旧 DB 行和内部兼容路径，但 `write_artifact` 的 zod schema / JSON Schema / LLM 描述不再接受 `diff`。
+
+**扩展 key 别名**（容错增强）：
+
+| 类型 | 现有 key | 新增 key |
+|---|---|---|
+| web_app | files, html, css, js, content, code | src, body |
+| document | content, markdown, text | body |
+| image | url, alt | src, link |
+| ppt | slides | pages（单个 slide dict 自动包成数组） |
+| diagram | source, mermaid, code, content | graph |
+
+### Mermaid 校验增强
+
+`normalise_mermaid_source` 增强以下自动修复能力：
+
+1. **自动补全 declaration**：当源码不以已知 declaration 开头时，根据内容推断图类型并前置 declaration
+   - 含 `-->` 或 `---` → 前置 `flowchart TD\n`
+   - 含 `->>` 且含 `Note`/`Participant` → 前置 `sequenceDiagram\n`
+   - 其他 → 仍返回错误
+2. **多行围栏剥离**：`_FENCE_RE` 支持围栏前后有空白字符
+3. **Unicode label 支持**：`_NODE_LABEL_RE` 匹配含中文、日文、韩文等 Unicode 字符的 label
 
 **为什么宽松**：LLM 即使按 JSON Schema 生成也会漂移。宁可在工具入口归一化，也不要因为参数键不对就直接 fail（用户感知是 agent「无故失败」）。
 

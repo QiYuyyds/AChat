@@ -69,6 +69,7 @@ export const toolRegistry = buildRegistry()
 | 名称 | 用途 | 副作用 | 谁该装备 |
 |---|---|---|---|
 | `write_artifact` | 创建聊天内可预览 / 可交接产物 | 写 DB | 需要交付 artifact、网页原型、文档、PPT 的 agent；不用于本地源码落盘 |
+| `update_artifact` | 向已有 web_app 产物追加 / 修改 / 删除文件 | 写 DB（修改 content_dict） | 需要分片写入大型 web 应用的 agent |
 | `deploy_artifact` | 为 web_app 生成部署发布状态 | 写 `.agenthub-data/deployments`；可选发布到用户配置的外部静态目录；返回 preview path 与下载路径 | 前端 / web app 产出 agent |
 | `deploy_workspace` | 为 workspace 内已构建的静态目录生成部署发布状态 | 复制 workspace 静态文件到 `.agenthub-data/deployments`；可选发布到用户配置的外部静态目录 | 本地项目 / 前端代码 agent |
 | `read_artifact` | 读已有产物的完整内容 | 读 DB | 跨任务复用产物的 agent（Orchestrator 派的子 agent 常用） |
@@ -117,6 +118,23 @@ write_artifact({
 ```
 
 **返回值**：`{ artifactId, title, type }`。**不发布 `artifact.create` 事件**，由 Adapter 在 tool_result 后统一发，AgentRunner 接住后注入 `artifact_ref` part（见 Spec 02 的「artifact_ref 注入路径」）。
+
+### update_artifact
+
+源文件：`backend/app/tools/update_artifact.py`
+
+**入参**：`{ artifactId: string, addFiles?: Record<string, string>, updateFiles?: Record<string, string>, removeFiles?: string[] }`
+
+**作用域**：只接受 `type == "web_app"` 的 artifact。直接修改当前 artifact 的 `content_dict`（不创建新版本行）。
+
+**约束**：
+- 每次调用最多 20 个文件操作（add + update + remove 总数）
+- 单文件最大 100KB
+- 文件路径必须为相对路径（不含 `..` 或绝对路径分隔符）
+
+**返回值**：`{ artifactId: string, updatedFiles: string[] }`
+
+**用途**：当大型 web 应用无法在单次 `write_artifact` 调用中完成时，先创建最小 web_app，再用 `update_artifact` 分片添加文件，避免 `max_tokens` 截断。
 
 ### deploy_artifact
 

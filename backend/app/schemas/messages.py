@@ -76,6 +76,10 @@ class ThinkingPart(BaseModel):
 
     type: Literal["thinking"] = "thinking"
     content: str
+    started_at: int | None = Field(default=None, alias="startedAt")
+    ended_at: int | None = Field(default=None, alias="endedAt")
+
+    model_config = {"populate_by_name": True}
 
 
 class ToolUsePart(BaseModel):
@@ -85,6 +89,7 @@ class ToolUsePart(BaseModel):
     call_id: str = Field(alias="callId")
     tool_name: str = Field(alias="toolName")
     args: dict | list | str | None = None
+    started_at: int | None = Field(default=None, alias="startedAt")
 
     model_config = {"populate_by_name": True}
 
@@ -96,6 +101,7 @@ class ToolResultPart(BaseModel):
     call_id: str = Field(alias="callId")
     result: dict | list | str | None = None
     is_error: bool = Field(alias="isError")
+    ended_at: int | None = Field(default=None, alias="endedAt")
 
     model_config = {"populate_by_name": True}
 

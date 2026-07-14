@@ -771,7 +771,11 @@ export const useAppStore = create<AppState>()(
           case 'part.start': {
             const msg = s.messages[event.messageId]
             if (!msg) return
-            msg.parts[event.partIndex] = event.part
+            const part = event.part
+            if (part.type === 'thinking' && part.startedAt === undefined) {
+              part.startedAt = event.timestamp
+            }
+            msg.parts[event.partIndex] = part
             return
           }
 
@@ -790,8 +794,15 @@ export const useAppStore = create<AppState>()(
             return
           }
 
-          case 'part.end':
+          case 'part.end': {
+            const msg = s.messages[event.messageId]
+            if (!msg) return
+            const part = msg.parts[event.partIndex]
+            if (part && part.type === 'thinking') {
+              part.endedAt = event.timestamp
+            }
             return
+          }
 
           case 'tool.call': {
             const msg = s.messages[event.messageId]
@@ -801,6 +812,7 @@ export const useAppStore = create<AppState>()(
               callId: event.callId,
               toolName: event.toolName,
               args: event.args,
+              startedAt: event.timestamp,
             })
             return
           }
@@ -814,6 +826,7 @@ export const useAppStore = create<AppState>()(
             if (existing?.type === 'tool_result') {
               existing.result = event.result
               existing.isError = event.isError
+              existing.endedAt = event.timestamp
               return
             }
             msg.parts.push({
@@ -821,6 +834,7 @@ export const useAppStore = create<AppState>()(
               callId: event.callId,
               result: event.result,
               isError: event.isError,
+              endedAt: event.timestamp,
             })
             return
           }
@@ -1162,7 +1176,7 @@ function areMessagePartsEquivalent(a: MessagePart, b: MessagePart): boolean {
     case 'text':
       return b.type === 'text' && a.content === b.content
     case 'thinking':
-      return b.type === 'thinking' && a.content === b.content
+      return b.type === 'thinking' && a.content === b.content && a.startedAt === b.startedAt && a.endedAt === b.endedAt
     case 'code':
       return b.type === 'code' && a.language === b.language && a.content === b.content
     case 'tool_use':
@@ -1170,6 +1184,7 @@ function areMessagePartsEquivalent(a: MessagePart, b: MessagePart): boolean {
         b.type === 'tool_use' &&
         a.callId === b.callId &&
         a.toolName === b.toolName &&
+        a.startedAt === b.startedAt &&
         areUnknownValuesEquivalent(a.args, b.args)
       )
     case 'tool_result':
@@ -1177,6 +1192,7 @@ function areMessagePartsEquivalent(a: MessagePart, b: MessagePart): boolean {
         b.type === 'tool_result' &&
         a.callId === b.callId &&
         a.isError === b.isError &&
+        a.endedAt === b.endedAt &&
         areUnknownValuesEquivalent(a.result, b.result)
       )
     case 'artifact_ref':
@@ -1335,6 +1351,60 @@ export const useTopLevelRunningRuns = (conversationId: string) =>
       return Object.values(runs).filter((r) => r.status === 'running' && !r.parentRunId)
     }),
   )
+
+/** 检查某个 run 是否处于 running 状态（用于 avatar 脉冲环）。 */
+export function useIsRunActive(
+  conversationId: string,
+  runId: string | null,
+): boolean {
+  return useAppStore((s) => {
+    if (!runId) return false
+    return s.runsByConv[conversationId]?.[runId]?.status === 'running'
+  })
+}
+
+/** 推断当前 run 的执行阶段（用于 AgentWorkingIndicator）。 */
+export function useRunPhase(
+  conversationId: string,
+  runId: string,
+): { phase: string; toolName?: string } {
+  return useAppStore(
+    useShallow((s) => {
+      const runs = s.runsByConv[conversationId]
+      if (!runs) return { phase: '正在工作...' }
+      const run = runs[runId]
+      if (!run || run.status !== 'running') return { phase: '正在工作...' }
+
+      // 找到该 run 最新的一条 agent message
+      const messageIds = s.messageIdsByConv[conversationId] ?? []
+      let latestMsg: MessageRow | null = null
+      for (let i = messageIds.length - 1; i >= 0; i--) {
+        const m = s.messages[messageIds[i]]
+        if (m && m.runId === runId && m.role === 'agent') {
+          latestMsg = m
+          break
+        }
+      }
+      if (!latestMsg) return { phase: '正在响应...' }
+
+      if (latestMsg.status === 'streaming') {
+        const parts = latestMsg.parts
+        const lastPart = parts[parts.length - 1]
+        if (lastPart) {
+          if (lastPart.type === 'thinking') return { phase: '深度思考中' }
+          if (lastPart.type === 'text') return { phase: '生成回答中' }
+          if (lastPart.type === 'tool_use') {
+            return { phase: '调用工具', toolName: lastPart.toolName }
+          }
+          if (lastPart.type === 'tool_result') return { phase: '准备下一轮...' }
+        }
+        return { phase: '正在响应...' }
+      }
+
+      return { phase: '准备下一轮...' }
+    }),
+  )
+}
 
 /** 获取某个 run 的 turn metrics（SDK agent ReAct 循环每轮数据）。CLI agent 无此数据。 */
 export function useTurnMetrics(

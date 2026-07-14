@@ -35,6 +35,7 @@ async def conversation(db, agents, tmp_path):
             fs_write_approval_mode="auto",
             created_at=now,
             updated_at=now,
+            user_id="test_user_1",
         )
         conv.agent_ids_list = [agents["alice"]]
         conv.pinned_message_ids_list = []
@@ -303,3 +304,174 @@ async def test_deploy_artifact_non_web_app(conversation, tmp_path, monkeypatch):
     assert deploy.ok, deploy.error
     assert deploy.value["status"] == "failed"
     assert "cannot be deployed" in deploy.value["error"]
+
+
+# ─── write_artifact error messages ──────────────────────────────────────────
+async def test_write_artifact_error_includes_format_and_preview(conversation):
+    from app.tools.registry import tool_registry
+
+    result = await tool_registry.execute(
+        "write_artifact",
+        {"type": "web_app", "title": "T", "content": {"nope": 1}},
+        _ctx(conversation),
+    )
+    assert result.ok is False
+    assert "Invalid content for type 'web_app'" in result.error
+    assert "Expected format:" in result.error
+    assert "files" in result.error
+    assert "Received (first 200 chars):" in result.error
+    assert "Tip:" in result.error
+
+
+async def test_write_artifact_missing_fields_error(conversation):
+    from app.tools.registry import tool_registry
+
+    result = await tool_registry.execute(
+        "write_artifact",
+        {"type": "web_app"},
+        _ctx(conversation),
+    )
+    assert result.ok is False
+    assert "Required fields" in result.error or "title" in result.error.lower()
+
+
+async def test_write_artifact_empty_args_shows_all_types(conversation):
+    from app.tools.registry import tool_registry
+
+    result = await tool_registry.execute(
+        "write_artifact",
+        {},
+        _ctx(conversation),
+    )
+    assert result.ok is False
+    assert "Required fields" in result.error
+    assert "type" in result.error.lower()
+    assert "web_app" in result.error
+    assert "document" in result.error
+    assert "diagram" in result.error
+    assert "ppt" in result.error
+
+
+# ─── update_artifact ────────────────────────────────────────────────────────
+async def test_update_artifact_add_files(conversation):
+    from app.tools.registry import tool_registry
+
+    ctx = _ctx(conversation)
+    write = await tool_registry.execute(
+        "write_artifact",
+        {"type": "web_app", "title": "App", "content": {"files": {"index.html": "<h1>Hi</h1>"}}},
+        ctx,
+    )
+    assert write.ok, write.error
+
+    result = await tool_registry.execute(
+        "update_artifact",
+        {"artifactId": write.value["artifactId"], "addFiles": {"style.css": "body {}"}},
+        ctx,
+    )
+    assert result.ok, result.error
+    assert "style.css" in result.value["updatedFiles"]
+
+    read = await tool_registry.execute(
+        "read_artifact", {"artifactId": write.value["artifactId"]}, ctx
+    )
+    assert "style.css" in read.value["content"]["files"]
+
+
+async def test_update_artifact_update_files(conversation):
+    from app.tools.registry import tool_registry
+
+    ctx = _ctx(conversation)
+    write = await tool_registry.execute(
+        "write_artifact",
+        {"type": "web_app", "title": "App", "content": {"files": {"index.html": "old"}}},
+        ctx,
+    )
+    assert write.ok, write.error
+
+    result = await tool_registry.execute(
+        "update_artifact",
+        {"artifactId": write.value["artifactId"], "updateFiles": {"index.html": "new"}},
+        ctx,
+    )
+    assert result.ok, result.error
+
+    read = await tool_registry.execute(
+        "read_artifact", {"artifactId": write.value["artifactId"]}, ctx
+    )
+    assert read.value["content"]["files"]["index.html"] == "new"
+
+
+async def test_update_artifact_remove_files(conversation):
+    from app.tools.registry import tool_registry
+
+    ctx = _ctx(conversation)
+    write = await tool_registry.execute(
+        "write_artifact",
+        {"type": "web_app", "title": "App", "content": {"files": {"index.html": "x", "old.js": "y"}}},
+        ctx,
+    )
+    assert write.ok, write.error
+
+    result = await tool_registry.execute(
+        "update_artifact",
+        {"artifactId": write.value["artifactId"], "removeFiles": ["old.js"]},
+        ctx,
+    )
+    assert result.ok, result.error
+
+    read = await tool_registry.execute(
+        "read_artifact", {"artifactId": write.value["artifactId"]}, ctx
+    )
+    assert "old.js" not in read.value["content"]["files"]
+
+
+async def test_update_artifact_non_web_app_rejected(conversation):
+    from app.tools.registry import tool_registry
+
+    ctx = _ctx(conversation)
+    write = await tool_registry.execute(
+        "write_artifact", {"type": "document", "title": "Doc", "content": "hi"}, ctx
+    )
+    assert write.ok, write.error
+
+    result = await tool_registry.execute(
+        "update_artifact",
+        {"artifactId": write.value["artifactId"], "addFiles": {"x.txt": "y"}},
+        ctx,
+    )
+    assert result.ok is False
+    assert "web_app" in result.error
+
+
+async def test_update_artifact_not_found(conversation):
+    from app.tools.registry import tool_registry
+
+    result = await tool_registry.execute(
+        "update_artifact",
+        {"artifactId": "art_nonexistent", "addFiles": {"x.txt": "y"}},
+        _ctx(conversation),
+    )
+    assert result.ok is False
+    assert "not found" in result.error.lower()
+
+
+async def test_update_artifact_too_many_files(conversation):
+    from app.tools.registry import tool_registry
+
+    ctx = _ctx(conversation)
+    write = await tool_registry.execute(
+        "write_artifact",
+        {"type": "web_app", "title": "App", "content": {"files": {"index.html": "x"}}},
+        ctx,
+    )
+    assert write.ok, write.error
+
+    add_files = {f"file_{i}.txt": str(i) for i in range(21)}
+    result = await tool_registry.execute(
+        "update_artifact",
+        {"artifactId": write.value["artifactId"], "addFiles": add_files},
+        ctx,
+    )
+    assert result.ok is False
+    assert "Too many" in result.error

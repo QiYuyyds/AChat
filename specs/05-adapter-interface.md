@@ -182,6 +182,40 @@ DeepSeek 等支持思考链的模型在 stream 中会单独输出 `delta.reasoni
 
 这是 DeepSeek 特殊协议要求；其它 provider 忽略此字段。
 
+### max_tokens 设置与截断检测
+
+CustomAdapter 的 `call_once` 和 `stream` 方法在调用 `client.chat.completions.create` 时 MUST 传入 `max_tokens` 参数。该值从 `get_model_limits(provider, model_id)` 动态推导：
+
+```
+limits = get_model_limits(model_provider, model_id)
+input_estimate = estimate_tokens(json.dumps(messages, ensure_ascii=False))
+max_tokens = max(limits.output_reserve, limits.context_window - input_estimate - 512)
+if limits.max_output_tokens is not None:
+    max_tokens = min(max_tokens, limits.max_output_tokens)
+```
+
+`ModelLimits.max_output_tokens` 记录 provider 硬上限（如 `gpt-3.5-turbo=4096, deepseek-chat=8192`），避免推导值超过 provider 限制导致 API 报错。
+
+**截断检测**：当 `json.loads(args_buffer)` 失败时，检查 `finish_reason`：
+
+- 若 `finish_reason == "length"`：判定为截断，不传空 `{}` 给工具执行，而是直接 emit `ToolResultEvent` 带截断错误消息（包含拆分内容、使用 `update_artifact` 分片写入的建议）
+- 若 `finish_reason` 不为 `"length"`：保持现有行为（`args = {}`），记录 warning 日志
+
+在 `call_once` 路径，截断时 adapter 同时 yield `ToolCallEvent` + `ToolResultEvent`；AgentRunner 的 `_run_react_loop` 识别预解决的 `tool.result` 事件后跳过工具执行，将截断错误消息写入 messages 供 LLM 下一轮自修复。
+
+**空参数恢复**：当 tool call 的 `args_buffer` 为空时（模型产生了 tool call id + name 但未在 `tool_calls` delta 中产生参数），adapter MUST 尝试从 `text_buffer` 和 `reasoning_buffer` 中恢复参数：
+
+1. `_try_extract_json(text)` — 三种策略依次尝试：
+   - 直接 JSON 解析（text 本身是 JSON 对象）
+   - 从 markdown 代码块提取（` ```json ... ``` ` 或 ` ``` ... ``` `）
+   - 扫描文本中第一个平衡的 JSON 对象（处理 JSON 前有文字前缀的情况）
+2. `_recover_tool_args(text_buffer, reasoning_buffer)` — 先试 `text_buffer`，再试 `reasoning_buffer`
+3. 恢复成功：将恢复的参数设为 `args_buffer`，清空 `text_buffer`（避免重复计入）
+4. 恢复失败 + `finish_reason == "length"`：emit 截断错误
+5. 恢复失败 + 非截断：emit `_EMPTY_ARGS_ERROR_MSG`（明确告知 LLM 参数未收到，需在同一调用中提供全部必需参数）
+
+`call_once` 和 `stream` 两条路径 MUST 都实现此恢复逻辑。
+
 ### Multimodal
 
 `buildMultimodalUserContent`（`custom-agent-adapter.ts:337-358`）：

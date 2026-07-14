@@ -42,6 +42,7 @@ from app.tools.read_artifact import read_artifact_tool
 from app.tools.read_attachment import read_attachment_tool
 from app.tools.skills import load_skill_tool, write_skill_tool
 from app.tools.task_dispatch import task_dispatch_tool
+from app.tools.update_artifact import update_artifact_tool
 from app.tools.web_search import web_search_tool
 from app.tools.write_artifact import write_artifact_tool
 
@@ -168,6 +169,7 @@ def _build_registry() -> ToolRegistry:
     reg = ToolRegistry()
     reg.register(write_artifact_tool)
     reg.register(read_artifact_tool)
+    reg.register(update_artifact_tool)
     reg.register(deploy_artifact_tool)
     reg.register(deploy_workspace_tool)
     reg.register(read_attachment_tool)

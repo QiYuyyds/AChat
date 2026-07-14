@@ -9,6 +9,7 @@ chain). Writes the DB row only and returns the artifactId; the adapter emits
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -25,6 +26,32 @@ from app.utils.clock import now_ms
 from app.utils.ids import new_artifact_id
 
 _WRITABLE_TYPES = {"web_app", "document", "image", "ppt", "diagram"}
+
+_TYPE_FORMAT_EXAMPLES: dict[str, str] = {
+    "web_app": '{ "files": { "index.html": "<html>...</html>" }, "entry": "index.html" }',
+    "document": '{ "format": "markdown", "content": "# Title\n\nText..." }',
+    "image": '{ "url": "https://...", "alt": "description" }',
+    "ppt": '{ "slides": [{ "title": "S1", "bullets": ["point"] }] }',
+    "diagram": '{ "syntax": "mermaid", "source": "flowchart TD\nA[Start] --> B[End]" }',
+}
+
+
+def _format_error(artifact_type: str, detail: str, raw_content: Any) -> str:
+    if artifact_type in _TYPE_FORMAT_EXAMPLES:
+        example = _TYPE_FORMAT_EXAMPLES[artifact_type]
+    else:
+        all_examples = "\n".join(
+            f"  {t}: {ex}" for t, ex in _TYPE_FORMAT_EXAMPLES.items()
+        )
+        example = f"(choose one of the following types)\n{all_examples}"
+    preview = json.dumps(raw_content, ensure_ascii=False)[:200] if raw_content is not None else "(none)"
+    return (
+        f"Invalid content for type '{artifact_type}'.\n"
+        f"Detail: {detail}\n"
+        f"Expected format: {example}\n"
+        f"Received (first 200 chars): {preview}\n"
+        "Tip: Pass content as a JSON object, not a stringified JSON string."
+    )
 
 
 class _Args(BaseModel):
@@ -45,22 +72,13 @@ _DESCRIPTION = (
 )
 
 _CONTENT_DESCRIPTION = (
-    "Artifact body — pass as a JSON OBJECT, do NOT JSON-stringify it into a quoted "
-    'string. For web_app: { files: { "index.html": "...", "style.css"?, '
-    '"script.js"? }, entry: "index.html" }. For document: { format: "markdown", '
-    'content: "...markdown text..." }. For image: { url: "...", alt: "..." }. For '
-    'diagram: { syntax: "mermaid", source: "flowchart TD\\nA[\\"中文 / formula '
-    'O(N^2)\\"] --> B[\\"结果\\"]", theme?: "default"|"base"|"dark"|"forest"|'
-    '"neutral" }. Diagram source is preflighted: quote labels with Chinese/math/'
-    'symbols as A["..."], use one edge per line, omit ```mermaid fences, and if '
-    "the tool returns Invalid Mermaid diagram, fix source and call again. For ppt: "
-    "{ title?, theme?: { primary?, background?, surface?, textBody?, textMuted?, "
-    "accentPositive?, accentNegative?, divider?, fontHeading?, fontBody? }, slides: "
-    "[{ title?, subtitle?, layout?, blocks?: [...] , notes? }] }. Legacy slides "
-    "with bullets are still accepted, but prefer blocks for polished decks. Hex "
-    'colors have no "#"; ppt JSON must not embed raw base64/data URI assets. Common '
-    'mistake to avoid: sending content as a string like "{\\"format\\":\\"markdown'
-    '\\",...}" — send the raw object, not its JSON text.'
+    "Pass as a JSON OBJECT, do NOT JSON-stringify it. Formats per type:\n"
+    'web_app: { files: { "index.html": "..." }, entry: "index.html" }\n'
+    'document: { content: "# markdown..." }\n'
+    'image: { url: "...", alt: "..." }\n'
+    'diagram: { source: "flowchart TD\\nA[\\"label\\"] --> B" }\n'
+    'ppt: { slides: [{ title: "...", bullets: ["..."] }] }\n'
+    "Common mistake: sending content as a stringified JSON string — send the raw object."
 )
 
 _PARAMETERS: dict[str, Any] = {
@@ -102,15 +120,32 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     try:
         parsed = _Args.model_validate(args)
     except ValidationError as e:
-        return err(f"Invalid args: {e}")
+        artifact_type = args.get("type", "") if isinstance(args, dict) else ""
+        missing = [field for field in ("type", "title", "content") if field not in args]
+        if missing:
+            detail = f"Required fields missing: {', '.join(missing)}."
+            if "type" in missing:
+                detail += (" type must be one of: "
+                           ", ".join(sorted(_WRITABLE_TYPES)) + ".")
+        else:
+            detail = str(e)
+        return err(_format_error(
+            artifact_type or "(missing)",
+            detail,
+            args,
+        ))
     if parsed.type not in _WRITABLE_TYPES:
         return err(f"Invalid args: unsupported type {parsed.type!r}")
 
     full_content = build_artifact_content(parsed.type, parsed.content)
     if not full_content:
         return err(
-            describe_artifact_content_error(parsed.type, parsed.content)
-            or f"Invalid content for type {parsed.type}"
+            _format_error(
+                parsed.type,
+                describe_artifact_content_error(parsed.type, parsed.content)
+                or f"Invalid content for type {parsed.type}",
+                parsed.content,
+            )
         )
 
     version = 1
