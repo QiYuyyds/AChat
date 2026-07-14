@@ -434,6 +434,7 @@ async def spawn_subagent_loop(
         dispatch_visibility: "visible" for group-member dispatch, "hidden" for
             clone-self dispatch.
     """
+    from app.observability import start_span
     args = RunArgs(
         agent_id=agent_id,
         conversation_id=conversation_id,
@@ -452,34 +453,40 @@ async def spawn_subagent_loop(
     if on_start is not None:
         on_start(child_run_id)
 
-    try:
-        run_result = await child_task
-    except asyncio.CancelledError:
-        return LoopRunResult(
-            status="aborted",
-            text="Subagent run was cancelled",
-            run_id=child_run_id,
-        )
-    except Exception as err:  # noqa: BLE001 - surface error to orchestrator
-        logger.exception("[agent_loop] subagent run failed: %s", err)
-        return LoopRunResult(
-            status="failed",
-            text=f"Subagent run failed: {err}",
-            run_id=child_run_id,
+    with start_span(
+        "tool.dispatch",
+        child_agent_id=agent_id,
+        dispatch_depth=dispatch_depth,
+        dispatch_visibility=dispatch_visibility,
+    ):
+        try:
+            run_result = await child_task
+        except asyncio.CancelledError:
+            return LoopRunResult(
+                status="aborted",
+                text="Subagent run was cancelled",
+                run_id=child_run_id,
+            )
+        except Exception as err:  # noqa: BLE001 - surface error to orchestrator
+            logger.exception("[agent_loop] subagent run failed: %s", err)
+            return LoopRunResult(
+                status="failed",
+                text=f"Subagent run failed: {err}",
+                run_id=child_run_id,
+            )
+
+        # Extract the final text from the run's output messages
+        text = await _extract_run_final_text(
+            child_run_id, conversation_id, run_result.output_message_ids
         )
 
-    # Extract the final text from the run's output messages
-    text = await _extract_run_final_text(
-        child_run_id, conversation_id, run_result.output_message_ids
-    )
-
-    return LoopRunResult(
-        status=run_result.status,
-        text=text or "(subagent produced no text output)",
-        artifact_ids=run_result.artifact_ids,
-        output_message_ids=run_result.output_message_ids,
-        run_id=child_run_id,
-    )
+        return LoopRunResult(
+            status=run_result.status,
+            text=text or "(subagent produced no text output)",
+            artifact_ids=run_result.artifact_ids,
+            output_message_ids=run_result.output_message_ids,
+            run_id=child_run_id,
+        )
 
 
 async def _extract_run_final_text(

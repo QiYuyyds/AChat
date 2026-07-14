@@ -120,6 +120,13 @@ class Settings(BaseSettings):
     enable_load_aware_routing: bool = True
     max_concurrent_tasks_per_agent: int = 2
 
+    # ─── Observability (OpenTelemetry + Arize Phoenix) ───
+    trace_enabled: bool = True
+    phoenix_endpoint: str = "http://localhost:4317"
+    phoenix_ui_url: str = "http://localhost:6006"
+    eval_rule_enabled: bool = True
+    eval_judge_enabled: bool = False
+
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse CORS origins from comma-separated string."""

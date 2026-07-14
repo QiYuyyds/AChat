@@ -13,6 +13,11 @@ services:
       ENABLE_GRAPH: "true"
       EMBEDDING_API_KEY: ${OPENAI_API_KEY}
       REDIS_URL: redis://redis:6379/0
+      TRACE_ENABLED: "true"
+      PHOENIX_ENDPOINT: http://phoenix:4317
+      PHOENIX_UI_URL: http://localhost:6006
+      EVAL_RULE_ENABLED: "true"
+      EVAL_JUDGE_ENABLED: "false"
     depends_on:
       postgres: { condition: service_healthy }
     restart: unless-stopped
@@ -30,7 +35,9 @@ services:
       POSTGRES_DB: agenthub
       POSTGRES_USER: agenthub
       POSTGRES_PASSWORD: agenthub
-    volumes: ["pgdata:/var/lib/postgresql/data"]
+    volumes:
+      - "pgdata:/var/lib/postgresql/data"
+      - "./docker/pg-init.sql:/docker-entrypoint-initdb.d/pg-init.sql:ro"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agenthub"]
       interval: 5s
@@ -105,6 +112,18 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    ports:
+      - "6006:6006"   # Web UI
+      - "4317:4317"   # OTLP gRPC
+    environment:
+      PHOENIX_SQL_DATABASE_URL: postgresql://agenthub:agenthub@postgres:5432/achat_observability
+      PHOENIX_HOST: 0.0.0.0
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
 
 volumes:
   pgdata:

@@ -1,6 +1,6 @@
 # AChat 快速启动指南
 
-> 本指南帮助你从零搭建 AChat 本地开发环境。项目为前后端分离架构：前端 Next.js + 后端 Python FastAPI + PostgreSQL 主库 + 可选基础设施（Milvus / Elasticsearch / Neo4j）。
+> 本指南帮助你从零搭建 AChat 本地开发环境。项目为前后端分离架构：前端 Next.js + 后端 Python FastAPI + PostgreSQL 主库 + 可选基础设施（Milvus / Elasticsearch / Neo4j / Redis / Phoenix 可观测性后端）。
 
 ## 环境要求
 
@@ -29,7 +29,7 @@ pnpm install
 
 ## 3. 启动基础设施服务（推荐）
 
-AChat 后端依赖 PostgreSQL 作为主库。RAG 混合检索和记忆系统还需要 Milvus、Elasticsearch、Neo4j（可降级，不配也能跑）。
+AChat 后端依赖 PostgreSQL 作为主库。RAG 混合检索和记忆系统还需要 Milvus、Elasticsearch、Neo4j；Redis 提供元数据缓存和异步 DB 写入；Phoenix 提供全链路追踪和评测（均可降级，不配也能跑）。
 
 ### 方式 A：一键启动全部基础设施（Docker Compose）
 
@@ -37,7 +37,7 @@ AChat 后端依赖 PostgreSQL 作为主库。RAG 混合检索和记忆系统还�
 docker compose -f docker-compose.infra.yml up -d
 ```
 
-这会启动 PostgreSQL（:5432）、Milvus（:19530）、Elasticsearch（:9200）、Neo4j（:7474/:7687）。
+这会启动 PostgreSQL（:5432）、Milvus（:19530）、Elasticsearch（:9200）、Neo4j（:7474/:7687）、Redis（:6379）、Phoenix（:6006 Web UI / :4317 OTLP gRPC）。
 
 ### 方式 B：仅启动 PostgreSQL（最小化）
 
@@ -125,9 +125,21 @@ ENABLE_GRAPH=true
 EMBEDDING_API_KEY=
 EMBEDDING_API_URL=
 EMBEDDING_MODEL=
+
+# ── Redis（元数据缓存 + 异步 DB 写入，留空=禁用退化为同步 DB 读写）──
+REDIS_URL=
+
+# ── 可观测性（OpenTelemetry + Arize Phoenix）──
+TRACE_ENABLED=true           # false = 禁用可观测性（OTel 全 no-op）
+PHOENIX_ENDPOINT=http://localhost:4317  # OTLP gRPC endpoint
+PHOENIX_UI_URL=http://localhost:6006    # Phoenix Web UI
+EVAL_RULE_ENABLED=true       # 在线规则评测（默认开启）
+EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge（默认关闭）
 ```
 
-> **降级说明**：Milvus / ES / Neo4j / Embedding 任一不配，后端仍能正常启动和对话，只是对应功能降级（向量检索退化为 TF cosine、无全文检索、无图谱、无语义召回）。启动时后端会打印状态面板，一目了然。
+> **降级说明**：Milvus / ES / Neo4j / Embedding / Redis / Phoenix 任一不配，后端仍能正常启动和对话，只是对应功能降级（向量检索退化为 TF cosine、无全文检索、无图谱、无语义召回、退化为同步 DB 读写、无 Trace/Eval 数据）。启动时后端会打印状态面板，一目了然。
+>
+> **Phoenix Web UI**：基础设施启动后访问 `http://localhost:6006` 可查看 Agent 运行的 Trace 瀑布流和 Eval 评分。`trace_enabled=false` 时可观测性全关闭。
 
 ## 7. 启动后端服务
 
@@ -152,7 +164,7 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"; pnpm dev
 
 访问：`http://localhost:3000`
 
-首次启动时，后端会自动建表并 seed 内置 Agent（Orchestrator / PM 小灰 / UI 设计师 / 前端工程师 / Reviewer）。
+首次启动时，后端会自动建表并 seed 内置 Agent（Orchestrator / PM 小灰 / UI 设计师 / 前端工程师 / Reviewer）。首次访问需要注册一个账号（注册页面 `http://localhost:3000/register`），登录后即可开始使用。
 
 ---
 

@@ -105,7 +105,9 @@ class RAGService:
 
     async def ingest(self, doc: str, *, user_id: Optional[str] = None) -> int:
         """Ingest a document: split → embed → index to PG/Milvus/ES."""
-        return await self._engine.ingest(doc, user_id=user_id)
+        from app.observability import start_span
+        with start_span("rag.ingest"):
+            return await self._engine.ingest(doc, user_id=user_id)
 
     async def search(
         self,
@@ -115,7 +117,10 @@ class RAGService:
         user_id: Optional[str] = None,
     ) -> Tuple[str, List[dict]]:
         """Search the knowledge base with optional history-aware rewriting."""
-        return await self._engine.query_with_history(query, history, user_id=user_id)
+        from app.observability import start_span
+        truncated_q = query[:100] if query else ""
+        with start_span("rag.search", query=truncated_q, mode=self._hybrid.mode(), rewrite_enabled=self.settings.rag_rewrite_enabled):
+            return await self._engine.query_with_history(query, history, user_id=user_id)
 
     @property
     def engine(self) -> RAGEngine:

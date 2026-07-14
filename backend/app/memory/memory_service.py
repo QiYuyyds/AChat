@@ -176,8 +176,10 @@ class MemoryService:
         *, user_id: Optional[str] = None,
     ) -> List[Item]:
         """Semantic recall from LTM."""
+        from app.observability import start_span
         k = top_k or self.settings.memory_long_term_top_k
-        return await self.ltm.recall(query, top_k=k, agent_id=agent_id, user_id=user_id)
+        with start_span("memory.recall", source="ltm"):
+            return await self.ltm.recall(query, top_k=k, agent_id=agent_id, user_id=user_id)
 
     async def graph_recall(self, item_id: int) -> List[int]:
         """Graph-based recall — expand from a seed memory."""

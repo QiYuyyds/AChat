@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -358,6 +359,7 @@ class CustomAdapter(AgentPlatformAdapter):
     async def stream(  # noqa: C901 - faithful port of the TS tool loop
         self, input: AdapterInput, cancel_event: asyncio.Event
     ) -> AsyncIterator[StreamEvent]:
+        from app.observability import start_span
         if not input.custom_config:
             raise ValueError("CustomAdapter requires custom_config")
         if not input.model_id:
@@ -432,13 +434,14 @@ class CustomAdapter(AgentPlatformAdapter):
                         model_id, len(messages), _sys_len,
                         len(api_tools), len(str(user_content)),
                     )
-                stream = await client.chat.completions.create(
-                    model=model_id,
-                    messages=messages,
-                    tools=api_tools if len(api_tools) > 0 else None,
-                    stream=True,
-                    stream_options={"include_usage": True},
-                )
+                with start_span("llm.generate", suffix=f"第{turn}轮", turn=turn):
+                    stream = await client.chat.completions.create(
+                        model=model_id,
+                        messages=messages,
+                        tools=api_tools if len(api_tools) > 0 else None,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                    )
             except Exception:
                 yield MessageEndEvent(
                     conversation_id=input.conversation_id,

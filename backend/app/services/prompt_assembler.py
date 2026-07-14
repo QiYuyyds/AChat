@@ -291,37 +291,60 @@ class ProfileSource(ContextSource):
         items: List[ContextItem] = []
         _pref_count = 0
 
-        if self._pref is not None:
+        # Resolve preferences: use in-memory provider only when the query
+        # targets the default user (the single-writer memory_service.preference).
+        # For any other user, query the UserPreference table directly so that
+        # multi-user deployments get each user's own profile data.
+        user_id = q.user_id or "default_user"
+        prefs: Dict[str, str] = {}
+
+        if self._pref is not None and user_id == "default_user":
+            prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
+        elif user_id != "default_user":
             try:
-                prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
-                _pref_count = len(prefs)
-                scored: List[ContextItem] = []
-                for k, v in prefs.items():
-                    category, _tags, _slot_hint = classify_memory_content(
-                        str(k), str(v),
-                    )
-                    score = _IMPORTANCE_BY_CATEGORY.get(category, 0.3)
-                    scored.append(
-                        ContextItem(
-                            text=f"{k}: {v}",
-                            score=score,
-                            source="profile",
-                            meta={"category": category},
-                        )
-                    )
-                    logger.info(
-                        "[cache-debug] Profile pref: %s=%s (cat=%s, score=%.2f)",
-                        k, str(v)[:80], category, score,
-                    )
-                # Sort by score descending (stable for equal scores)
-                scored.sort(key=lambda x: x.score, reverse=True)
-                items = scored
+                from sqlalchemy import select
+
+                from app.db.engine import get_db
+                from app.db.models import UserPreference as _UP
+
+                async with get_db() as session:
+                    stmt = select(_UP).where(_UP.user_id == user_id)
+                    rows = (await session.execute(stmt)).scalars().all()
+                    prefs = {r.key: r.value for r in rows}
             except Exception as e:
-                logger.warning("ProfileSource preference fetch failed: %s", e)
+                logger.warning(
+                    "ProfileSource DB query failed for user %s: %s", user_id, e
+                )
+
+        try:
+            _pref_count = len(prefs)
+            scored: List[ContextItem] = []
+            for k, v in prefs.items():
+                category, _tags, _slot_hint = classify_memory_content(
+                    str(k), str(v),
+                )
+                score = _IMPORTANCE_BY_CATEGORY.get(category, 0.3)
+                scored.append(
+                    ContextItem(
+                        text=f"{k}: {v}",
+                        score=score,
+                        source="profile",
+                        meta={"category": category},
+                    )
+                )
+                logger.info(
+                    "[cache-debug] Profile pref: %s=%s (cat=%s, score=%.2f)",
+                    k, str(v)[:80], category, score,
+                )
+            # Sort by score descending (stable for equal scores)
+            scored.sort(key=lambda x: x.score, reverse=True)
+            items = scored
+        except Exception as e:
+            logger.warning("ProfileSource scoring failed: %s", e)
 
         logger.info(
-            "[cache-debug] ProfileSource: pref=%d total=%d",
-            _pref_count, len(items),
+            "[cache-debug] ProfileSource: user=%s pref=%d total=%d",
+            user_id, _pref_count, len(items),
         )
         return items
 
@@ -567,6 +590,11 @@ class ContextAssembler:
         self.global_limit = global_limit
 
     async def assemble(self, q: Query) -> RuntimeContext:
+        from app.observability import start_span
+        with start_span("prompt.assemble", schema_mode=q.mode):
+            return await self._assemble_impl(q)
+
+    async def _assemble_impl(self, q: Query) -> RuntimeContext:
         schema = self.schemas.get(q.mode) or self.schemas.get("chat")
         if schema is None:
             return RuntimeContext(schema=RuntimeContextSchema(mode=q.mode))

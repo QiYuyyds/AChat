@@ -409,6 +409,7 @@ class HybridStore:
     # ─── 3-way fetch (each returns _PathHits) ────────────────────────────
 
     async def _fetch_milvus(self, query: str, fetch_k: int, *, user_id: Optional[str] = None) -> _PathHits:
+        from app.observability import start_span
         if not self._milvus_ok():
             return _PathHits(ok=False)
         if self._embed_fn is None:
@@ -429,30 +430,44 @@ class HybridStore:
             kwargs: dict = {}
             if user_id is not None:
                 kwargs["user_id"] = user_id
-            hits = self._milvus_search_fn(query_emb, fetch_k, **kwargs) or []
+            with start_span("rag.milvus_search", top_k=fetch_k) as span:
+                hits = self._milvus_search_fn(query_emb, fetch_k, **kwargs) or []
+                if span.is_recording():
+                    span.set_attribute("agenthub.hits", len(hits))
+                    span.set_attribute("agenthub.empty", not hits)
             return _PathHits(hits=hits, ok=True)
         except Exception as e:
             logger.warning("Milvus search failed: %s", e)
             return _PathHits(ok=False)
 
     async def _fetch_es(self, query: str, fetch_k: int, *, user_id: Optional[str] = None) -> _PathHits:
+        from app.observability import start_span
         if not self._es_ok():
             return _PathHits(ok=False)
         try:
             kwargs: dict = {}
             if user_id is not None:
                 kwargs["user_id"] = user_id
-            hits = (await self._es_search_fn(query, fetch_k, **kwargs)) or []
+            with start_span("rag.es_search", top_k=fetch_k) as span:
+                hits = (await self._es_search_fn(query, fetch_k, **kwargs)) or []
+                if span.is_recording():
+                    span.set_attribute("agenthub.hits", len(hits))
+                    span.set_attribute("agenthub.empty", not hits)
             return _PathHits(hits=hits, ok=True)
         except Exception as e:
             logger.warning("ES search failed: %s", e)
             return _PathHits(ok=False)
 
     async def _fetch_kg(self, query: str, fetch_k: int) -> _PathHits:
+        from app.observability import start_span
         if not self._kg_ok():
             return _PathHits(ok=False)
         try:
-            hits = (await self._kg_search_fn(query, fetch_k)) or []
+            with start_span("rag.kg_search", top_k=fetch_k) as span:
+                hits = (await self._kg_search_fn(query, fetch_k)) or []
+                if span.is_recording():
+                    span.set_attribute("agenthub.hits", len(hits))
+                    span.set_attribute("agenthub.skipped", not hits)
             return _PathHits(hits=hits, ok=True)
         except Exception as e:
             logger.warning("KG search failed: %s", e)
