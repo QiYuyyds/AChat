@@ -24,6 +24,7 @@
 - **分层记忆系统**（短期 / 长期 / 偏好 / 图谱记忆 + 自动固化与衰减）
 - **Document + Version 知识库**（全局文档版本化、解析入库、按需召回）
 - **Redis 元数据缓存 + 异步 DB 写入**（KV cache + Stream write-behind，可选降级）
+- **Agent 可观测性与评测系统**（OpenTelemetry 全链路追踪 · Arize Phoenix :6006 · 在线规则评测 · 离线 LLM-as-Judge · 5+4 维评测指标体系）
 - 桌面打包（Electron）+ 移动伴随端（Capacitor）
 
 **运行形态**：前后端分离本地运行。前端 Next.js dev server（:3000），后端 FastAPI（:8000）；基础设施服务（PostgreSQL / Milvus / ES / Neo4j）通过 Docker Compose 启动，可全部容器化也可仅远端部署基础设施。
@@ -58,14 +59,15 @@
 
 | 服务 | 镜像 | 用途 |
 |---|---|---|
-| PostgreSQL | `postgres:16-alpine` | 关系型主库（22 张表） |
+| PostgreSQL | `postgres:16-alpine` | 关系型主库（业务库 `agenthub` 22 张表 + Phoenix 专用库 `achat_observability`） |
+| Phoenix | `arizephoenix/phoenix:latest` | ★ Agent 可观测性后端（Trace 瀑布流 + Eval 评分 · :6006 Web UI · :4317 OTLP gRPC） |
 | Milvus | `milvusdb/milvus:v2.4.17` | 向量检索（RAG 语义 + LTM recall） |
 | Elasticsearch | `elasticsearch:8.14.0` | 全文检索（RAG BM25） |
 | Neo4j | `neo4j:5-community` | 知识图谱（KGStore + GraphMemory） |
 | Kafka | 可选 | 事件总线增强（默认 in-process） |
 | Redis | `redis:7-alpine` | 元数据缓存 + 异步 DB 写入（KV cache / Stream write-behind） |
 
-> **降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op；Kafka 不配 → 用 in-process EventBus；Redis 不配 → 退化为同步 DB 读写。启动时打印状态面板。
+> **降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op；Kafka 不配 → 用 in-process EventBus；Redis 不配 → 退化为同步 DB 读写；Phoenix 不可达 → OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路。启动时打印状态面板。
 
 ---
 
@@ -81,7 +83,8 @@
 │ L3  Application Services                      backend/app/services/ │  ← Python
 │     AgentRunner · Orchestrator · ConversationService ·             │
 │     EventBus · ToolExecutor · RAGService · DocumentService ·       │
-│     PromptAssembler · HookRegistry (生命周期 Hooks) · ...           │
+│     PromptAssembler · HookRegistry (生命周期 Hooks) ·                │
+│     Observability (OTel + Phoenix · Level 4 埋点 + 评测)            │
 │ L2  Agent Platform Adapters                   backend/app/adapters/ │  ← Python
 │     ClaudeCLI · CodexCLI (CLI 子进程) · Custom (SDK) · Mock         │
 │ L1  Persistence                               backend/app/db/       │  ← Python
@@ -250,13 +253,21 @@ backend/
 │   │   ├── cache.py         ★ Redis KV 元数据缓存 (read-through + write-invalidation)
 │   │   ├── cache_helpers.py ★ 缓存实体查找 (Agent/Settings/Workspace/GlobalSettings cached)
 │   │   ├── cache_metrics.py 嵌入缓存命中率指标
-│   │   └── status.py        基础设施连接状态面板
+│   │   └── status.py        基础设施连接状态面板 + 可观测性状态
 │   │
-│   ├── api/ (15)           【API 路由】
+│   ├── api/ (16)           【API 路由】
 │   │   ├── conversations / messages / agents / artifacts / attachments
 │   │   ├── fs / pending / settings / runs_misc / stream (SSE)
-│   │   ├── documents / skills / deployments / **auth**
+│   │   ├── documents / skills / deployments / **auth** / **eval**
 │   │   └── mobile/routes
+│   │
+│   ├── observability/ (7)   【Agent 可观测性与评测】★ OTel + Phoenix
+│   │   ├── tracer.py          OTel TracerProvider 生命周期 (BatchSpanProcessor + OTLP → Phoenix)
+│   │   ├── instrumentation.py @traced 装饰器 + 属性 key 常量 (agenthub.* 前缀)
+│   │   ├── span_names.py      中英文 span name 映射表 (agent.run · 代理运行)
+│   │   ├── eval_rules.py      在线规则评测 (14 指标：任务完成率/工具成功率/轮次效率/...)
+│   │   ├── eval_judge.py      离线 LLM-as-Judge (9 维度：工具选择/子任务粒度/聚合忠实度/...)
+│   │   └── eval_metrics.py    评测指标体系 (Agent 全过程 5 维度 + 多 Agent 协作 4 维度)
 │   │
 │   └── utils/ (13)         跨平台 · 安全黑名单 · ID · token 估算 · 审批 helper · mermaid 规范化 ...
 │
@@ -340,16 +351,20 @@ backend/
             ├─ 持久化用户 message
             ├─ 决策响应者 (单聊 / 群聊)
             └─ runner_registry → AgentRunner.run()  (起 asyncio.Task, 立即返回)
-                 └─ agent_runner.execute_run()
-                      ├─ build_adapter_input()  历史注入 + token 预算 + key 选择
+                 └─ agent_runner.execute_run()  ← 〔OTel Span: agent.run · 代理运行〕
+                      ├─ build_adapter_input()  ← 〔OTel Span: agent.build_context · 上下文组装〕
                       │   └─ (可选) PromptAssembler 注入 Profile + Recall + Constraints
-                      ├─ adapter.stream()  ← L2 (Claude / Codex / Custom / Mock)
+                      │       ← 〔OTel Span: prompt.assemble · 提示词组装〕
+                      ├─ adapter.stream()  ← 〔OTel Span: adapter.stream · 模型推理〕 ← L2
                       │     产出 StreamEvent: part.delta / tool.call / artifact.create ...
+                      │     每轮 LLM 生成 ← 〔OTel Span: llm.generate · LLM生成 (第N轮)〕
                       │     工具调用 → tool_registry.execute_with_hooks()
+                      │       ← 〔OTel Span: tool.call · 工具调用〕
                       │       ├─ pre_tool_use hook (审批/拦截/修改)
                       │       ├─ tool_registry.execute() (沙箱内)
                       │       └─ post_tool_use hook (记忆持久化/技能激活/审计)
-                      └─ consume_stream()
+                      │    子 Agent 派发 ← 〔OTel Span: tool.dispatch · 任务派发 → 嵌套 agent.run〕
+                      └─ consume_stream()  ← 〔OTel Span: agent.finalize · 运行收尾〕
                            ├─ persist_event()  事件落 DB
                            │   ├─ Redis 可用: part.delta/tool 等事件 XADD 到 Redis Stream
                            │   │              → DBWriterConsumer 后台批量落 PG (write-behind)
@@ -536,6 +551,11 @@ ES_ADDRESSES=http://localhost:9200  # 留空 = 禁用 ES
 NEO4J_URI=bolt://localhost:7687     # 留空 = 禁用 Neo4j
 ENABLE_GRAPH=false           # true 才启用知识图谱
 REDIS_URL=                   # 留空 = 禁用 Redis (退化为同步 DB 读写)
+TRACE_ENABLED=true           # false = 禁用可观测性 (OTel 全 no-op)
+PHOENIX_ENDPOINT=http://localhost:4317  # OTLP gRPC endpoint
+PHOENIX_UI_URL=http://localhost:6006    # Phoenix Web UI
+EVAL_RULE_ENABLED=true       # 在线规则评测 (默认开启)
+EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge (默认关闭)
 ```
 
 ---
@@ -550,6 +570,7 @@ REDIS_URL=                   # 留空 = 禁用 Redis (退化为同步 DB 读写)
 | Neo4j | `NEO4J_URI` 空 或 `ENABLE_GRAPH=false` | GraphMemory no-op；RAG 无图谱检索 |
 | Kafka | `KAFKA_BROKERS` 空 | 用 in-process EventBus（默认） |
 | Redis | `REDIS_URL` 空 | 退化为同步 DB 读写（无 KV 缓存，无 Stream write-behind） |
+| Phoenix | `TRACE_ENABLED=false` 或 Phoenix 不可达 | OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路 |
 | Embedding API | `EMBEDDING_API_KEY` 空 | RAG / LTM 无语义检索能力 |
 | LLM API (RAG 用) | 无任何 LLM key | RAG 无 rewrite / rerank；KG 无实体抽取 |
 
@@ -557,4 +578,4 @@ REDIS_URL=                   # 留空 = 禁用 Redis (退化为同步 DB 读写)
 
 ---
 
-*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-13 · 同步用户认证与多用户隔离、Redis 元数据缓存 + 异步 DB 写入、DB 表数更新（18→22）、API Key 优先级更新（app_settings → user_settings）。*
+*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-14 · 同步 Agent 可观测性与评测系统（OpenTelemetry + Arize Phoenix + Level 4 深度埋点 + 在线规则评测 + 离线 LLM-as-Judge + 5+4 维评测指标体系）。*

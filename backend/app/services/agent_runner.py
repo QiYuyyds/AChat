@@ -1419,59 +1419,71 @@ async def execute_run(
         user_id=args.user_id,
     )
 
-    try:
-        from app.services.agent_loop import get_dispatch_mode, run_agent_loop
+    from app.observability import start_span
+    with start_span(
+        "agent.run",
+        agent_id=args.agent_id,
+        run_id=run_id,
+        conversation_id=args.conversation_id,
+        dispatch_mode=args.dispatch_mode,
+    ) as root_span:
+        try:
+            from app.services.agent_loop import get_dispatch_mode, run_agent_loop
 
-        # Subagent runs (override_prompt set) use subagent mode.
-        # Top-level runs branch on conversation.dispatch_mode.
-        if args.override_prompt:
-            subagent_args = replace(args, dispatch_mode="subagent")
-            result = await run_agent_loop(
-                run_id, cancel_event, subagent_args, prompt, attachments,
-                mode="subagent",
-            )
-        else:
-            dispatch_mode = get_dispatch_mode(conv)
-            if dispatch_mode == "coordinated" and is_orchestrator:
-                coord_args = replace(args, dispatch_mode="coordinated")
+            # Subagent runs (override_prompt set) use subagent mode.
+            # Top-level runs branch on conversation.dispatch_mode.
+            if args.override_prompt:
+                subagent_args = replace(args, dispatch_mode="subagent")
                 result = await run_agent_loop(
-                    run_id, cancel_event, coord_args, prompt, attachments,
-                    mode="coordinated",
+                    run_id, cancel_event, subagent_args, prompt, attachments,
+                    mode="subagent",
                 )
             else:
-                result = await run_agent_loop(
-                    run_id, cancel_event, args, prompt, attachments,
-                    mode="solo",
+                dispatch_mode = get_dispatch_mode(conv)
+                if dispatch_mode == "coordinated" and is_orchestrator:
+                    coord_args = replace(args, dispatch_mode="coordinated")
+                    result = await run_agent_loop(
+                        run_id, cancel_event, coord_args, prompt, attachments,
+                        mode="coordinated",
+                    )
+                else:
+                    result = await run_agent_loop(
+                        run_id, cancel_event, args, prompt, attachments,
+                        mode="solo",
+                    )
+            if cancel_event.is_set():
+                return await finalize(run_id, args, "aborted", result)
+            final_result = await finalize_ok(run_id, args, result)
+            # ─── Post-run memory hook (Task 5.4) ───
+            asyncio.create_task(
+                _post_run_memory_hook(prompt, result, args.conversation_id, args.agent_id, user_id=args.user_id)
+            )
+            # ─── Summary generation hook (first reply only) ───
+            asyncio.create_task(
+                _maybe_generate_summary_hook(
+                    args.conversation_id, args.agent_id, prompt, result
                 )
-        if cancel_event.is_set():
-            return await finalize(run_id, args, "aborted", result)
-        final_result = await finalize_ok(run_id, args, result)
-        # ─── Post-run memory hook (Task 5.4) ───
-        asyncio.create_task(
-            _post_run_memory_hook(prompt, result, args.conversation_id, args.agent_id, user_id=args.user_id)
-        )
-        # ─── Summary generation hook (first reply only) ───
-        asyncio.create_task(
-            _maybe_generate_summary_hook(
-                args.conversation_id, args.agent_id, prompt, result
             )
-        )
-        # ─── Auto-compact hook (watermark + token based silent compaction) ───
-        asyncio.create_task(
-            _maybe_auto_compact_hook(
-                args.conversation_id, args.override_prompt, args.agent_id
+            # ─── Auto-compact hook (watermark + token based silent compaction) ───
+            asyncio.create_task(
+                _maybe_auto_compact_hook(
+                    args.conversation_id, args.override_prompt, args.agent_id
+                )
             )
-        )
-        return final_result
-    except asyncio.CancelledError:
-        return await finalize(run_id, args, "aborted", _empty_run_execution_result())
-    except Exception as err:  # noqa: BLE001 - faithful catch-all; surfaced via finalize
-        logger.exception("[AgentRunner] run failed: %s", err)
-        if cancel_event.is_set():
+            # ─── Online rule evaluation hook ───
+            asyncio.create_task(
+                _run_online_eval_hook(run_id)
+            )
+            return final_result
+        except asyncio.CancelledError:
             return await finalize(run_id, args, "aborted", _empty_run_execution_result())
-        return await finalize(
-            run_id, args, "failed", _empty_run_execution_result(), str(err)
-        )
+        except Exception as err:  # noqa: BLE001 - faithful catch-all; surfaced via finalize
+            logger.exception("[AgentRunner] run failed: %s", err)
+            if cancel_event.is_set():
+                return await finalize(run_id, args, "aborted", _empty_run_execution_result())
+            return await finalize(
+                run_id, args, "failed", _empty_run_execution_result(), str(err)
+            )
 
 
 # ─── Simple agent ────────────────────────────────────────────────────────────
@@ -1512,6 +1524,7 @@ async def execute_simple_run(
     prompt: str,
     attachments: list[AdapterAttachment],
 ) -> RunExecutionResult:
+    from app.observability import start_span
     from app.infra.cache_helpers import get_agent_cached, get_workspace_cached
 
     agent = await get_agent_cached(args.agent_id)
@@ -1583,11 +1596,12 @@ async def execute_simple_run(
     tool_names = base_tool_names
 
     adapter = agent_registry.get_adapter(agent)
-    adapter_input = await build_adapter_input(
-        args, agent, run_id, prompt, workspace, tool_names,
-        args.override_system_prompt, attachments,
-        worktree_path=args.override_workspace_path,
-    )
+    with start_span("agent.build_context", agent_id=args.agent_id, run_id=run_id):
+        adapter_input = await build_adapter_input(
+            args, agent, run_id, prompt, workspace, tool_names,
+            args.override_system_prompt, attachments,
+            worktree_path=args.override_workspace_path,
+        )
 
     # ── Persist effective_prompt for cache-stable history reconstruction ──
     # The effective_prompt (with dynamic_prefix + [current_time]) must be
@@ -2173,6 +2187,7 @@ async def finalize(
     result: RunExecutionResult,
     error: str | None = None,
 ) -> RunResult:
+    from app.observability import start_span
     finished_at = now_ms()
 
     if status in ("failed", "aborted"):
@@ -2377,15 +2392,44 @@ def _build_unresolved_tool_failure_result(status: str, error: str | None) -> str
 
 
 async def finalize_ok(run_id: str, args: RunArgs, result: RunExecutionResult) -> RunResult:
-    return await finalize(run_id, args, "complete", result)
+    from app.observability import start_span
+    with start_span(
+        "agent.finalize",
+        agent_id=args.agent_id,
+        run_id=run_id,
+        conversation_id=args.conversation_id,
+        total_turns=getattr(result, 'turns', 0),
+        total_tokens=getattr(result, 'total_tokens', 0),
+        duration_ms=getattr(result, 'duration_ms', 0),
+    ) as span:
+        return await finalize(run_id, args, "complete", result)
 
 
 async def finalize_failed(run_id: str, args: RunArgs, error: str) -> RunResult:
-    return await finalize(run_id, args, "failed", _empty_run_execution_result(), error)
+    from app.observability import start_span
+    with start_span(
+        "agent.finalize",
+        agent_id=args.agent_id,
+        run_id=run_id,
+        conversation_id=args.conversation_id,
+    ) as span:
+        if span.is_recording():
+            span.set_attribute("agenthub.success", False)
+            span.set_attribute("agenthub.error", str(error)[:500])
+        return await finalize(run_id, args, "failed", _empty_run_execution_result(), error)
 
 
 def publish(event: StreamEvent, user_id: str | None = None) -> None:
     event_bus.publish(event, user_id=user_id)
+
+
+async def _run_online_eval_hook(run_id: str) -> None:
+    """Background hook: run online rule evaluation after agent run completes."""
+    try:
+        from app.observability.eval_rules import run_eval_and_log
+        await run_eval_and_log(run_id, [])
+    except Exception as e:
+        logger.warning("Online eval hook failed: %s", e)
 
 
 # ─── Adapter input construction (port of buildAdapterInput) ──────────────────

@@ -188,20 +188,24 @@ class RAGEngine:
         top_k = max(1, self.settings.rag_top_k)
         queries = [question]
         if self._rewriter:
-            rewritten = self._rewriter.rewrite(question, history or [])
+            from app.observability import start_span
+            with start_span("rag.query_rewrite", original=question[:100]):
+                rewritten = self._rewriter.rewrite(question, history or [])
             if rewritten:
                 queries = rewritten
 
         hybrid_hits = await self._hybrid.search_multi(queries, top_k, user_id=user_id)
-        fused = [
-            {
-                "pg_id": h.pg_id,
-                "content": h.parent or h.content,
-                "score": h.score,
-                "source": h.source,
-            }
-            for h in hybrid_hits
-        ]
+        from app.observability import start_span
+        with start_span("rag.rrf_fuse", final_count=len(hybrid_hits), fusion_method="rrf"):
+            fused = [
+                {
+                    "pg_id": h.pg_id,
+                    "content": h.parent or h.content,
+                    "score": h.score,
+                    "source": h.source,
+                }
+                for h in hybrid_hits
+            ]
         ask_query = queries[0] if queries else question
         return self._compose_answer(ask_query, fused)
 

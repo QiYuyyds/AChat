@@ -74,13 +74,28 @@ class ToolRegistry:
         return resolved
 
     async def execute(self, tool_name: str, args: Any, ctx: ToolContext) -> ToolResult:
-        tool = self._tools.get(tool_name)
-        if tool is None:
-            return err(f"Unknown tool: {tool_name}")
-        try:
-            return await tool.handler(args, ctx)
-        except Exception as e:  # noqa: BLE001 - tool failures surface to the LLM
-            return err(str(e))
+        from app.observability import start_span
+        args_summary = str(args)[:200] if args else ""
+        with start_span("tool.call", tool_name=tool_name, args_summary=args_summary) as span:
+            tool = self._tools.get(tool_name)
+            if tool is None:
+                msg = f"Unknown tool: {tool_name}"
+                if span.is_recording():
+                    span.set_attribute("agenthub.success", False)
+                    span.set_attribute("agenthub.error", msg)
+                return err(msg)
+            try:
+                result = await tool.handler(args, ctx)
+                if span.is_recording():
+                    span.set_attribute("agenthub.success", result.ok)
+                    if not result.ok and result.error:
+                        span.set_attribute("agenthub.error", str(result.error)[:500])
+                return result
+            except Exception as e:  # noqa: BLE001 - tool failures surface to the LLM
+                if span.is_recording():
+                    span.set_attribute("agenthub.success", False)
+                    span.set_attribute("agenthub.error", str(e)[:500])
+                return err(str(e))
 
     async def execute_with_hooks(
         self,

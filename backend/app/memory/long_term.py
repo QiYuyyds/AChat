@@ -327,6 +327,14 @@ class LongTerm:
         self, query: str, top_k: int = 3, agent_id: str = "",
         *, user_id: Optional[str] = None,
     ) -> List[Item]:
+        from app.observability import start_span
+        with start_span("memory.ltm.query", top_k=top_k):
+            return await self._recall_impl(query, top_k, agent_id, user_id=user_id)
+
+    async def _recall_impl(
+        self, query: str, top_k: int = 3, agent_id: str = "",
+        *, user_id: Optional[str] = None,
+    ) -> List[Item]:
         async with self._lock:
             if not self.items:
                 return []

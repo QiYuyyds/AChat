@@ -29,8 +29,10 @@ class ShortTerm:
             self.messages.append({"role": role, "content": content, "timestamp": ts})
 
     def get(self) -> List[Dict[str, str]]:
-        with self._lock:
-            return [dict(m) for m in self.messages]
+        from app.observability import start_span
+        with start_span("memory.stm.get", window_size=self._max_turns):
+            with self._lock:
+                return [dict(m) for m in self.messages]
 
     def clear(self) -> None:
         with self._lock:

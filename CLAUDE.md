@@ -58,6 +58,7 @@
 | Lint | ruff | 不用 flake8/black（ruff 集成） |
 | 认证 | bcrypt + PyJWT（JWT HttpOnly cookie） | 不用 session/cookie-session；JWT 无状态，`token_version` 做全局吊销 |
 | 测试 | pytest + pytest-asyncio | `asyncio_mode = "auto"` |
+| 可观测性 | OpenTelemetry SDK + Arize Phoenix | 标准 OTel 语义，OTLP gRPC 发送至 Phoenix；`trace_enabled` 开关关闭后全 no-op |
 
 ### 基础设施（Docker Compose，可降级）
 
@@ -69,6 +70,7 @@
 | Neo4j 5 | 知识图谱（KGStore / GraphMemory） | GraphMemory no-op |
 | Kafka | 事件总线增强（可选） | 用 in-process EventBus |
 | Redis 7 | 元数据缓存 + 异步 DB 写入（KV cache / Stream write-behind） | 退化为同步 DB 读写 |
+| Phoenix | Agent 可观测性后端（OTel Trace + Eval 评分 · :6006 Web UI · :4317 OTLP gRPC） | OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路 |
 
 > 代码风格上，前端用 TypeScript，后端用 Python。改前端代码遵守 TS 规范，改后端代码遵守 Python 规范。两端的共享契约是 `src/shared/` 里的纯类型定义（前端）和 `backend/app/schemas/` 里的 Pydantic 模型（后端），两者保持 camelCase 字段兼容。
 
@@ -86,7 +88,7 @@ L3 Application Services        backend/app/services/ (AgentRunner · Orchestrato
 L2 Agent Platform Adapters     backend/app/adapters/ (ClaudeCLI / CodexCLI / Custom / Mock) + mcp_bridge.py
 L1 Persistence                 backend/app/db/ (SQLAlchemy + PostgreSQL + workspace 文件系统)
 ─── 基础设施层 (可选, 独立降级) ───
-   Milvus · Elasticsearch · Neo4j · Kafka · Redis   backend/app/infra/ + rag/ + memory/ + graph/
+   Milvus · Elasticsearch · Neo4j · Kafka · Redis · Phoenix   backend/app/infra/ + rag/ + memory/ + graph/ + observability/
 ```
 
 **铁律**：
@@ -142,6 +144,10 @@ message.parts = [
 ### 3.7 RAG / 记忆是可选增强，不是硬依赖
 
 RAG 混合检索和分层记忆系统通过 `PromptAssembler` 注入 Agent 上下文，但它们**降级时不应阻断核心对话流**。基础设施不可用时，Agent 仍能正常对话（只是没有知识增强）。
+
+### 3.8 可观测性是可选增强，不是硬依赖
+
+OpenTelemetry 全链路追踪和评测系统通过 `@traced` 装饰器包裹关键函数，但 `trace_enabled=False` 时全部变为 no-op，**不影响 Agent 运行**。Phoenix 不可达时 OTel SDK `BatchSpanProcessor` 缓冲后静默丢弃，不报错。可观测性模块代码在 `backend/app/observability/`，独立于业务逻辑（仅包裹 span + eval hook，不改被包裹函数的返回值与异常传播）。
 
 ---
 
@@ -364,6 +370,8 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `specs/mobile-companion/spec.md` — 移动伴随 App
 - `specs/user-auth/spec.md` — 用户认证与多用户隔离
 - `specs/user-profile/spec.md` — 用户资料管理
+- `specs/agent-trace-observability/spec.md` — Agent 全链路可观测能力（OTel SDK + Phoenix + Level 4 埋点）
+- `specs/agent-evaluation/spec.md` — Agent 评测能力（在线规则评测 + 离线 LLM-as-Judge + 5+4 维指标体系）
 
 ### `specs/`（编号版详细规格）
 

@@ -35,6 +35,8 @@ L3 Application Services                  backend/app/services/
    ├ RAGService（混合检索）              backend/app/services/rag_service.py
    ├ DocumentService（知识库）           backend/app/services/document_service.py
    └ PromptAssembler（上下文组装）       backend/app/services/prompt_assembler.py
+   ├ Observability（OTel + Phoenix）     backend/app/observability/ ← 全链路追踪 + 评测
+   └ EvalService（在线规则 + 离线Judge） backend/app/api/eval.py
    ↑↓
 L2 Agent Platform Adapters              backend/app/adapters/
    ├ ClaudeCLIAdapter / CodexCLIAdapter (CLI 子进程路线)
@@ -90,6 +92,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **用户认证与多用户隔离** | ✅ | JWT(access 1h + refresh 7d) + bcrypt · 登录/注册页 · auth-gate · 个人资料弹窗 · CSRF 防护 · 所有用户数据表 `user_id` 隔离 |
 | **Redis 元数据缓存 + 异步 DB** | ✅ | KV 缓存(Agent/Settings/Workspace/Preference) · Redis Stream write-behind(part.delta 等批量落 PG) · 启动恢复扫描 |
 | **记忆管理 UI** | ✅ | 记忆库面板 · 长期记忆/偏好/短期记忆三面板 · 查看/删除/固化 |
+| **Agent 可观测性与评测** | ✅ | OpenTelemetry 全链路追踪(Level 4 深度埋点) · Arize Phoenix(:6006) · 在线规则评测(默认开) · 离线 LLM-as-Judge(手动触发) · 5+4 维评测指标体系 |
 | 测试覆盖 | 🟡 | 后端 pytest（85+ 测试文件, ruff 全绿）；前端 Vitest 纯函数；E2E 待补 |
 
 ---
@@ -152,6 +155,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `runs_misc.py` | run 中止 / usage summary |
 | `documents.py` | ★ Document + Version 知识库 CRUD |
 | `skills.py` | Skills 上传 / 列表 / 加载 |
+| `eval.py` | ★ Agent 评测（`POST /api/eval/judge/{trace_id}` 手动触发 LLM-as-Judge） |
 | `deployments.py` | 本地静态发布预览 URL |
 | `mobile/routes.py` | 移动端伴随 API（配对 / 远程审批） |
 
@@ -172,6 +176,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 设置 / Key | `settings_service.py` · `global_settings_service.py` | 三层 key 优先级解析 · 全局设置缓存（Redis 优先） |
 | ★ 异步 DB 写入 | `async_db_writer.py` | Redis Stream 消费者：批量落 PG（part.delta/tool 等事件） |
 | ★ 崩溃恢复 | `recovery_scan.py` | 启动时扫描 `status=streaming` 的消息，重放 Stream 或标记 interrupted |
+| **★ 可观测性** | `observability/` | OTel 全链路追踪（Level 4 深度埋点）· span 中英文映射 · 在线规则评测 · 离线 LLM-as-Judge · shutdown 清理 |
 | 搜索 | `search_service.py` | 消息全文搜索 |
 | runner 注册 | `runner_registry.py` | per-conversation runner 生命周期 |
 | 部署命令 | `deploy_command_service.py` | 部署斜杠命令 |
@@ -241,6 +246,16 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `cache_metrics.py` | 嵌入缓存命中率指标 |
 | `status.py` | 基础设施连接状态面板 |
 
+### 可观测性层（`backend/app/observability/`）
+| 文件 | 职责 |
+|---|---|
+| `tracer.py` | ★ OTel TracerProvider 生命周期（BatchSpanProcessor + OTLPSpanExporter → Phoenix） |
+| `instrumentation.py` | ★ `@traced` 装饰器 + 属性 key 常量（`agenthub.` 前缀） |
+| `span_names.py` | ★ span 中英文映射表（`agent.run · 代理运行`） |
+| `eval_rules.py` | ★ 在线规则评测（14 指标：任务完成率/工具成功率/轮次效率/token 消耗/派发深度等） |
+| `eval_judge.py` | ★ 离线 LLM-as-Judge 评测（9 维度：工具选择/子任务粒度/聚合忠实度等） |
+| `eval_metrics.py` | 评测指标体系定义（Agent 全过程 5 维度 + 多 Agent 协作 4 维度） |
+
 ### L1 持久化（`backend/app/db/`）
 | 文件 | 说明 |
 |---|---|
@@ -266,6 +281,7 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 ## 附 · 当前现状（易过时，以 git 为准）
 
 ### ✅ 近期完成
+- **Agent 可观测性与评测系统**：OpenTelemetry SDK 全链路采集（FastAPI/httpx/openai 自动 instrumentation + Level 4 深度手动埋点 18 处）· OTLP gRPC 发送至 Arize Phoenix（独立 Docker :6006）· 在线规则评测（默认开启，14 指标自动从 trace 计算）· 离线 LLM-as-Judge（默认关闭，手动触发 `POST /api/eval/judge/{trace_id}`）· Agent 全过程评测（5 维度：任务完成/工具调用质量/步骤效率/提示词效果/回答质量）· 多 Agent 协作评测（4 维度：任务拆解/调度效率/子 Agent 质量/聚合质量）· `trace_enabled` 开关（关闭后全 no-op）
 - **用户认证与多用户隔离**：JWT(access 1h + refresh 7d) + bcrypt 密码哈希 · 登录/注册页面 · auth-gate 路由保护 · 个人资料弹窗 · CSRF 防护(Origin header) · SSE 连接认证 · 所有用户数据表 `user_id` 隔离 · builtin agent `user_id IS NULL` 共享 · CLI Agent `HOME`/`USERPROFILE` 按用户隔离
 - **Redis 元数据缓存 + 异步 DB 写入**：Redis KV 缓存(Agent/UserSettings/Workspace/Preference/GlobalSettings, read-through + write-invalidation) · Redis Stream write-behind(part.delta/tool.call 等事件批量落 PG) · `DBWriterConsumer` 后台消费者 · 启动恢复扫描(streaming 消息重放或标记 interrupted) · 连接池优化(`pool_pre_ping` → `pool_recycle`)
 - **记忆管理 UI**：记忆库面板 · 长期记忆/偏好/短期记忆三面板 · 查看/删除/固化操作
@@ -319,4 +335,4 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 
 ---
 
-*最后更新：2026-07-13 · 同步用户认证与多用户隔离（JWT + bcrypt + CSRF + 数据隔离）、Redis 元数据缓存 + 异步 DB 写入（KV cache + Stream write-behind + 恢复扫描）、记忆管理 UI、DB 表数更新（18→22）。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*
+*最后更新：2026-07-14 · 同步 Agent 可观测性与评测系统（OpenTelemetry + Arize Phoenix + Level 4 深度埋点 + 在线规则评测 + 离线 LLM-as-Judge + 5+4 维评测指标体系）。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*

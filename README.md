@@ -36,6 +36,7 @@ AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的
   - [分层记忆系统](#分层记忆系统)
   - [产物与部署预览](#产物与部署预览)
   - [生命周期 Hooks 与 Checkpoint](#生命周期-hooks-与-checkpoint)
+  - [Agent 可观测性与评测](#agent-可观测性与评测)
 - [技术栈](#技术栈)
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
@@ -171,6 +172,18 @@ Agent 运行支持可插拔的生命周期 Hooks 系统：
 - Agent 通过 `hook_names` 字段按需启用 Hook 组。
 - **Checkpoint**：SDK Agent 支持 turn 级检查点保存与恢复（`agent_run_checkpoints` 表）。
 
+### Agent 可观测性与评测
+
+AChat 集成了基于 OpenTelemetry 的全链路追踪和评测系统：
+
+- **OpenTelemetry SDK 采集**：FastAPI / httpx / openai 自动 instrumentation（零侵入覆盖 HTTP 请求与 LLM 外调）+ Level 4 深度手动埋点（18 处：agent run / 上下文组装 / 提示词组装 / 记忆召回 / RAG 三路检索子步骤 / 每轮 LLM 生成 / 工具调用 / 子 Agent 派发）。
+- **Arize Phoenix**：独立 Docker 部署的可观测性后端（:6006 Web UI + :4317 OTLP gRPC），提供 Trace 瀑布流可视化 + Eval 评分展示。存储复用 PostgreSQL 独立 database `achat_observability`。
+- **Span 中英文映射**：span name 采用「英文标识 · 中文描述」格式（如 `agent.run · 代理运行`），Phoenix UI 直接显示中文，测试人员可读。
+- **在线规则评测**（默认开启）：每次 agent run 结束后自动从 trace 数据计算 14 项指标（任务完成率 / 工具成功率 / 轮次效率 / token 消耗 / 派发深度 / 并行度等），eval score 挂在 trace 上，不调 LLM，耗时 < 10ms。
+- **离线 LLM-as-Judge 评测**（默认关闭，手动触发）：`POST /api/eval/judge/{trace_id}` 从 Phoenix 拉取指定 trace，调用 LLM 深度评判 9 个维度（工具选择准确性 / 子任务粒度 / 聚合忠实度 / 回答忠实度等）。
+- **评测指标体系**：Agent 全过程评测（5 维度：任务完成 / 工具调用质量 / 步骤效率 / 提示词效果 / 回答质量）+ 多 Agent 协作评测（4 维度：任务拆解 / 调度效率 / 子 Agent 质量 / 聚合质量）。
+- **`trace_enabled` 开关**：关闭时所有埋点变为 no-op，不影响主链路。Phoenix 不可达时 OTel SDK 缓冲后静默丢弃，不报错。
+
 ### 桌面与移动端
 
 - 支持 Electron 桌面打包（可选）。
@@ -207,6 +220,7 @@ Agent 运行支持可插拔的生命周期 Hooks 系统：
 - Neo4j 5 — 知识图谱（KGStore / GraphMemory）
 - Kafka（可选）— 事件总线增强
 - Redis 7 — 元数据缓存 + 异步 DB 写入（KV cache / Stream write-behind）
+- Phoenix — Agent 可观测性后端（OpenTelemetry Trace + Eval 评分，:6006 Web UI）
 
 Next.js 锁定在 `16.2.6`。如果你要改动框架层的行为，先读 `node_modules/next/dist/docs/` 下的本地 Next 文档。
 
@@ -317,7 +331,7 @@ AChat 的基础设施服务通过 Docker Compose 管理，提供两种编排文�
 
 | 文件 | 用途 |
 |---|---|
-| `docker-compose.infra.yml` | 仅基础设施（PG/Milvus/ES/Neo4j/Redis），前后端在本机运行 |
+| `docker-compose.infra.yml` | 仅基础设施（PG/Milvus/ES/Neo4j/Redis/**Phoenix**），前后端在本机运行 |
 | `docker-compose.yml` | 全栈容器化（前后端 + 基础设施） |
 
 常用命令：
@@ -333,7 +347,7 @@ docker compose -f docker-compose.infra.yml ps
 docker compose -f docker-compose.infra.yml down
 ```
 
-**降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op；Redis 挂 → 退化为同步 DB 读写。不配任何基础设施（仅 PostgreSQL）时，核心对话功能完全正常。
+**降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op；Redis 挂 → 退化为同步 DB 读写；Phoenix 不可达 → OTel 缓冲后静默丢弃，不阻断主链路。不配任何基础设施（仅 PostgreSQL）时，核心对话功能完全正常。
 
 | 服务 | 端口 | 不配时的影响 |
 |---|---|---|
@@ -342,6 +356,7 @@ docker compose -f docker-compose.infra.yml down
 | Elasticsearch | 9200 | RAG 无全文检索 |
 | Neo4j | 7474/7687 | GraphMemory no-op；RAG 无图谱检索 |
 | Redis | 6379 | 退化为同步 DB 读写（无 KV 缓存，无 Stream write-behind） |
+| Phoenix | 6006 / 4317 | 可观测性关闭（`trace_enabled=false`）；OTel 埋点 no-op，无 Trace/Eval 数据 |
 
 ---
 
@@ -469,7 +484,8 @@ AChat 采用前后端分离架构：
 │    DocumentService、PromptAssembler、      │
 │    HookRegistry (生命周期 Hooks)、          │
 │    AuthMiddleware (JWT/CSRF)、              │
-│    AsyncDBWriter (Redis Stream write-behind)│
+│    AsyncDBWriter (Redis Stream write-behind)、│
+│    Observability (OTel + Phoenix)         │
 │  L2 Agent Platform Adapters               │
 │    ClaudeCLI、CodexCLI、Custom、Mock       │
 │  L1 Persistence                           │
@@ -477,8 +493,9 @@ AChat 采用前后端分离架构：
 ├──────────────────────────────────────────┤
 │  Infrastructure (可选, 独立降级)            │
 │    Milvus(向量) · ES(全文) · Neo4j(图谱)   │
-│    Redis(缓存+异步写) · Kafka(事件)         │
-│    RAG混合检索 · 分层记忆 · 知识图谱        │
+│    Redis(缓存+异步写) · Phoenix(可观测性)   │
+│    Kafka(事件) · RAG混合检索 · 分层记忆     │
+│    知识图谱 · Agent 可观测性与评测           │
 └──────────────────────────────────────────┘
 ```
 

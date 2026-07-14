@@ -606,6 +606,69 @@ def generate_comparison_report(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Phoenix write-back
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _write_rag_evals_to_phoenix(mode_results: list[dict], settings) -> None:
+    """Write RAG evaluation results to Phoenix as eval annotations.
+
+    For each mode × metric, logs the mode-level average score to Phoenix
+    using a synthetic trace ID so results appear in the Evaluations page.
+    Silently skips if Phoenix SDK is not installed or unreachable.
+    """
+    try:
+        import phoenix as px
+        from phoenix.trace import SpanEvaluations
+    except ImportError:
+        logger.info("Phoenix SDK not installed — skipping Phoenix write-back")
+        return
+
+    phoenix_url = getattr(settings, "phoenix_ui_url", "http://localhost:6006")
+    try:
+        client = px.Client(endpoint=phoenix_url)
+    except Exception as e:
+        logger.warning("Phoenix client init failed: %s", e)
+        return
+
+    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    metrics_list = [
+        "recall_at_k", "precision_at_k", "mrr", "ndcg_at_k",
+        "faithfulness", "answer_relevance", "answer_quality",
+    ]
+
+    total_logged = 0
+    for mr in mode_results:
+        mode = mr["mode"]
+        for metric in metrics_list:
+            val = mr["averages"].get(metric, 0.0)
+            gen_entries = mr.get("generation_entries", 0)
+            total_entries = mr.get("total_entries", 0)
+            explanation = (
+                f"{metric}={val:.4f} (mode={mode}, "
+                f"entries={total_entries}, gen_entries={gen_entries})"
+            )
+            trace_id = f"rag_eval_{mode}_{run_ts}"
+            try:
+                client.log_evaluations(
+                    SpanEvaluations(
+                        eval_name=f"rag_eval_{mode}_{metric}",
+                        scores=[(trace_id, val, explanation)],
+                    ),
+                )
+                total_logged += 1
+            except Exception as e:
+                logger.warning(
+                    "Phoenix eval log failed (%s/%s): %s",
+                    mode, metric, e,
+                )
+
+    logger.info(
+        "Phoenix write-back: %d eval scores logged (run=%s)",
+        total_logged, run_ts,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Main entry point
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -719,6 +782,9 @@ async def main():
 
     # Generate comparison report
     generate_comparison_report(all_mode_results, settings, args.limit, RESULTS_DIR)
+
+    # ─── Write results to Phoenix (optional) ────────────────────────────────
+    _write_rag_evals_to_phoenix(all_mode_results, settings)
 
     # Print summary
     logger.info("=" * 60)

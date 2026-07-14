@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import apply_env_overrides, ensure_jwt_secret, get_settings
 from app.db.engine import close_db, init_db
+from app.observability import init_observability, shutdown_observability
 
 # ── Logging configuration (AGI-memory style) ──────────────────────────────
 logging.basicConfig(
@@ -55,6 +56,20 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     await init_db()
 
     settings = get_settings()
+
+    # ── Observability (OTel + auto instrumentation) ──
+    init_observability(settings)
+    if settings.trace_enabled:
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+            from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+            from openinference.instrumentation.openai import OpenAIInstrumentor
+            FastAPIInstrumentor.instrument_app(app_instance)
+            HTTPXClientInstrumentor().instrument()
+            OpenAIInstrumentor().instrument()
+            logger.info("Observability: auto-instrumentation enabled (FastAPI/httpx/openai)")
+        except ImportError as e:
+            logger.warning("Observability: auto-instrumentation skipped (%s)", e)
 
     # ─── Infrastructure factory ───
     try:
@@ -233,6 +248,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     yield
 
     # Shutdown
+    shutdown_observability()
     try:
         from app.services.async_db_writer import stop_db_writer
         await stop_db_writer()
@@ -348,6 +364,16 @@ def _log_startup_dashboard(settings) -> None:
     # RAG system
     rag_status = "✓ RAGService" if _rag_service else "✗ RAGService not initialized"
     logger.info("RAG System:      %s", rag_status)
+
+    # Observability
+    obs_status = "✓ OTel+Phoenix" if settings.trace_enabled else "✗ tracing disabled"
+    eval_flags = []
+    if settings.eval_rule_enabled:
+        eval_flags.append("RuleEval")
+    if settings.eval_judge_enabled:
+        eval_flags.append("JudgeEval")
+    eval_str = ", ".join(eval_flags) if eval_flags else "disabled"
+    logger.info("Observability:   %s (eval: %s)", obs_status, eval_str)
 
     # KG backend
     kg_status = "✓ wired" if _kg_wired else "✗ not wired"
@@ -651,6 +677,7 @@ def create_app() -> FastAPI:
         conversations,
         deployments,
         documents,
+        eval,
         fs,
         mcp,
         memory,
@@ -681,6 +708,7 @@ def create_app() -> FastAPI:
     app.include_router(mobile_routes.router, prefix="/api", tags=["mobile"])
     app.include_router(stream.router, prefix="/api", tags=["stream"])
     app.include_router(documents.router, prefix="/api", tags=["documents"])
+    app.include_router(eval.router, prefix="/api", tags=["eval"])
     app.include_router(memory.router, prefix="", tags=["memory"])
     app.include_router(skills.router, prefix="/api", tags=["skills"])
     app.include_router(mcp.router, prefix="/api", tags=["mcp"])
