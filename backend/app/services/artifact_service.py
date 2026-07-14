@@ -63,6 +63,7 @@ def describe_artifact_content_error(artifact_type: str, raw_input: Any) -> str |
             or _read_string(raw.get("mermaid"))
             or _read_string(raw.get("code"))
             or _read_string(raw.get("content"))
+            or _read_string(raw.get("graph"))
         )
     elif isinstance(raw, str):
         source = raw
@@ -123,6 +124,18 @@ def _build_web_app(raw: Any) -> dict[str, Any] | None:
                 "files": {"index.html": obj["code"]},
                 "entry": "index.html",
             }
+        if isinstance(obj.get("src"), str):
+            return {
+                "type": "web_app",
+                "files": {"index.html": obj["src"]},
+                "entry": "index.html",
+            }
+        if isinstance(obj.get("body"), str):
+            return {
+                "type": "web_app",
+                "files": {"index.html": obj["body"]},
+                "entry": "index.html",
+            }
 
     if isinstance(raw, str):
         return {"type": "web_app", "files": {"index.html": raw}, "entry": "index.html"}
@@ -131,7 +144,7 @@ def _build_web_app(raw: Any) -> dict[str, Any] | None:
 
 def _build_document(raw: Any) -> dict[str, Any] | None:
     if isinstance(raw, dict):
-        for key in ("content", "markdown", "text"):
+        for key in ("content", "markdown", "text", "body"):
             if isinstance(raw.get(key), str):
                 return {"type": "document", "format": "markdown", "content": raw[key]}
     if isinstance(raw, str):
@@ -149,6 +162,7 @@ def _build_diagram(raw: Any) -> dict[str, Any] | None:
             or _read_string(raw.get("mermaid"))
             or _read_string(raw.get("code"))
             or _read_string(raw.get("content"))
+            or _read_string(raw.get("graph"))
         )
         if not source:
             return None
@@ -169,9 +183,15 @@ def _build_diagram(raw: Any) -> dict[str, Any] | None:
 
 
 def _build_image(raw: Any) -> dict[str, Any] | None:
-    if isinstance(raw, dict) and isinstance(raw.get("url"), str):
-        alt = raw.get("alt")
-        return {"type": "image", "url": raw["url"], "alt": alt if isinstance(alt, str) else ""}
+    if isinstance(raw, dict):
+        url = (
+            _read_string(raw.get("url"))
+            or _read_string(raw.get("src"))
+            or _read_string(raw.get("link"))
+        )
+        if url:
+            alt = raw.get("alt")
+            return {"type": "image", "url": url, "alt": alt if isinstance(alt, str) else ""}
     if isinstance(raw, str):
         return {"type": "image", "url": raw, "alt": ""}
     return None
@@ -220,6 +240,12 @@ def _build_ppt(raw: Any) -> dict[str, Any] | None:
         raw_slides: list[Any] | None = raw
     elif obj is not None and isinstance(obj.get("slides"), list):
         raw_slides = obj["slides"]
+    elif obj is not None and isinstance(obj.get("pages"), list):
+        raw_slides = obj["pages"]
+    elif obj is not None and isinstance(obj.get("slides"), dict):
+        raw_slides = [obj["slides"]]
+    elif obj is not None and isinstance(obj.get("pages"), dict):
+        raw_slides = [obj["pages"]]
     else:
         raw_slides = None
     if raw_slides is None:
@@ -282,13 +308,13 @@ _CONTENT_WRAPPER_KEYS = [
     "format", "content", "markdown", "text", "files", "entry", "html", "css", "js",
     "code", "url", "source", "mermaid", "targetArtifactId", "targetId", "hunks",
     "diff", "patch", "workspacePath", "path", "language", "sizeBytes", "checksum",
-    "slides", "blocks", "subtitle",
+    "slides", "blocks", "subtitle", "src", "body", "graph", "pages", "link",
 ]
 
 _WRAPPER_SIGNATURE_RE = re.compile(
     r'"(?:format|content|markdown|text|files|entry|html|source|mermaid|'
     r"targetArtifactId|targetId|hunks|diff|patch|workspacePath|path|slides|"
-    r'blocks|subtitle)"\s*:'
+    r'blocks|subtitle|src|body|graph|pages|link)"\s*:'
 )
 
 

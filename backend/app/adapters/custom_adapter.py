@@ -14,6 +14,7 @@ import base64
 import contextlib
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
@@ -50,6 +51,7 @@ from app.tools.base import ToolContext, ToolDef
 from app.tools.registry import tool_registry
 from app.utils.clock import now_ms
 from app.utils.ids import new_message_id
+from app.utils.model_registry import estimate_tokens, get_model_limits
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +64,111 @@ MAX_TURNS = 8
 
 # guard against one user message carrying too many images (token blowup + provider caps)
 MAX_IMAGES_PER_MESSAGE = 5
+
+_TRUNCATION_ERROR_MSG = (
+    "Tool call arguments were truncated (finish_reason=length). The output hit "
+    "the max_tokens limit. Try one of:\n"
+    "1. Reduce content size and call write_artifact again.\n"
+    "2. Create the artifact with minimal content first, then use update_artifact "
+    "to add files incrementally.\n"
+    "3. Simplify the content (e.g. inline CSS instead of separate files)."
+)
+
+_EMPTY_ARGS_ERROR_MSG = (
+    "Tool call arguments were empty — the model produced a tool call with id and "
+    "name but no arguments in the tool_calls delta. This can happen with reasoning "
+    "models that emit arguments as text content or reasoning_content instead of in "
+    "the tool_calls stream. Re-call the tool with all required parameters (type, "
+    "title, content) in a single call."
+)
+
+_CODE_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
+
+
+def _try_extract_json(text: str) -> str | None:
+    """Try to extract a JSON object string from text using multiple strategies.
+
+    1. Direct parse (text is already JSON)
+    2. Extract from markdown code blocks (```json ... ``` or ``` ... ```)
+    3. Scan for the first balanced JSON object in the text
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    # Strategy 1: direct parse
+    if stripped.startswith("{"):
+        try:
+            json.loads(stripped)
+            return stripped
+        except (ValueError, TypeError):
+            pass
+
+    # Strategy 2: markdown code block
+    for match in _CODE_FENCE_RE.finditer(text):
+        block = match.group(1).strip()
+        if block.startswith("{"):
+            try:
+                json.loads(block)
+                return block
+            except (ValueError, TypeError):
+                pass
+
+    # Strategy 3: scan for first balanced JSON object
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start : i + 1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except (ValueError, TypeError):
+                        break
+        start = text.find("{", start + 1)
+
+    return None
+
+
+def _recover_tool_args(
+    text_buffer: str, reasoning_buffer: str
+) -> str | None:
+    """Try to recover tool call arguments from text or reasoning content.
+
+    Some models (e.g. deepseek-reasoner) emit tool call arguments as text content
+    or reasoning_content instead of in the tool_calls delta. This function tries
+    multiple strategies to extract a valid JSON object.
+    """
+    for source, label in [(text_buffer, "text_buffer"), (reasoning_buffer, "reasoning_buffer")]:
+        if not source:
+            continue
+        recovered = _try_extract_json(source)
+        if recovered is not None:
+            logger.info(
+                "[CustomAdapter] recovered tool args from %s (len=%d)",
+                label, len(recovered),
+            )
+            return recovered
+    return None
 
 
 @dataclass
@@ -169,6 +276,8 @@ class CustomAdapter(AgentPlatformAdapter):
         next_part_index = 0
         tool_call_buffer = _ToolCallBuffer()
 
+        max_tokens = _compute_max_tokens(model_provider, model_id, messages)
+
         try:
             stream = await client.chat.completions.create(
                 model=model_id,
@@ -176,6 +285,7 @@ class CustomAdapter(AgentPlatformAdapter):
                 tools=api_tools if len(api_tools) > 0 else None,
                 stream=True,
                 stream_options={"include_usage": True},
+                max_tokens=max_tokens,
             )
         except Exception:
             yield MessageEndEvent(
@@ -306,33 +416,77 @@ class CustomAdapter(AgentPlatformAdapter):
                 logger.warning(
                     "[CustomAdapter] tool_call id=%s name=%s has EMPTY args_buffer "
                     "(model=%s, finish_reason=%s, text_buffer_len=%d, "
-                    "text_buffer_preview=%r)",
+                    "reasoning_buffer_len=%d, text_buffer_preview=%r)",
                     tc.id, tc.name, model_id, finish_reason, len(text_buffer),
+                    len(reasoning_buffer),
                     text_buffer[:500] if text_buffer else "",
                 )
-                # Fallback: some models (e.g. deepseek-reasoner) emit tool call
-                # arguments as text content instead of in the tool_calls delta.
-                # Try to parse the text_buffer as JSON.
-                if text_buffer.strip().startswith("{"):
-                    try:
-                        fallback_args = json.loads(text_buffer)
-                        if isinstance(fallback_args, dict):
-                            logger.info(
-                                "[CustomAdapter] recovered tool args from text_buffer "
-                                "for tool=%s", tc.name,
-                            )
-                            tc.args_buffer = text_buffer
-                            text_buffer = ""  # consume it so it's not double-counted
-                    except (ValueError, TypeError):
-                        pass
+                recovered = _recover_tool_args(text_buffer, reasoning_buffer)
+                if recovered is not None:
+                    tc.args_buffer = recovered
+                    text_buffer = ""
+            if not tc.args_buffer:
+                if finish_reason == "length":
+                    yield ToolCallEvent(
+                        conversation_id=input.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        call_id=tc.id,
+                        tool_name=tc.name,
+                        args={},
+                    )
+                    yield ToolResultEvent(
+                        conversation_id=input.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        call_id=tc.id,
+                        result={"error": _TRUNCATION_ERROR_MSG},
+                        is_error=True,
+                    )
+                    continue
+                yield ToolCallEvent(
+                    conversation_id=input.conversation_id,
+                    timestamp=now_ms(),
+                    message_id=message_id,
+                    call_id=tc.id,
+                    tool_name=tc.name,
+                    args={},
+                )
+                yield ToolResultEvent(
+                    conversation_id=input.conversation_id,
+                    timestamp=now_ms(),
+                    message_id=message_id,
+                    call_id=tc.id,
+                    result={"error": _EMPTY_ARGS_ERROR_MSG},
+                    is_error=True,
+                )
+                continue
             try:
-                args = json.loads(tc.args_buffer) if tc.args_buffer else {}
+                args = json.loads(tc.args_buffer)
             except (ValueError, TypeError) as e:
                 logger.warning(
                     "[CustomAdapter] tool_call id=%s name=%s args_buffer JSON parse failed: %s "
                     "buffer=%r",
                     tc.id, tc.name, e, tc.args_buffer[:500],
                 )
+                if finish_reason == "length":
+                    yield ToolCallEvent(
+                        conversation_id=input.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        call_id=tc.id,
+                        tool_name=tc.name,
+                        args={},
+                    )
+                    yield ToolResultEvent(
+                        conversation_id=input.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        call_id=tc.id,
+                        result={"error": _TRUNCATION_ERROR_MSG},
+                        is_error=True,
+                    )
+                    continue
                 args = {}
             yield ToolCallEvent(
                 conversation_id=input.conversation_id,
@@ -434,6 +588,7 @@ class CustomAdapter(AgentPlatformAdapter):
                         model_id, len(messages), _sys_len,
                         len(api_tools), len(str(user_content)),
                     )
+                max_tokens = _compute_max_tokens(model_provider, model_id, messages)
                 with start_span("llm.generate", suffix=f"第{turn}轮", turn=turn):
                     stream = await client.chat.completions.create(
                         model=model_id,
@@ -441,6 +596,7 @@ class CustomAdapter(AgentPlatformAdapter):
                         tools=api_tools if len(api_tools) > 0 else None,
                         stream=True,
                         stream_options={"include_usage": True},
+                        max_tokens=max_tokens,
                     )
             except Exception:
                 yield MessageEndEvent(
@@ -615,9 +771,80 @@ class CustomAdapter(AgentPlatformAdapter):
 
             # execute tools
             for tc in tool_calls:
+                if not tc.args_buffer:
+                    logger.warning(
+                        "[CustomAdapter][stream] tool_call id=%s name=%s has EMPTY "
+                        "args_buffer (model=%s, finish_reason=%s, "
+                        "text_buffer_len=%d, reasoning_buffer_len=%d, "
+                        "text_buffer_preview=%r)",
+                        tc.id, tc.name, model_id, finish_reason, len(text_buffer),
+                        len(reasoning_buffer),
+                        text_buffer[:500] if text_buffer else "",
+                    )
+                    recovered = _recover_tool_args(text_buffer, reasoning_buffer)
+                    if recovered is not None:
+                        tc.args_buffer = recovered
+                        text_buffer = ""
+                if not tc.args_buffer:
+                    error_msg = (
+                        _TRUNCATION_ERROR_MSG
+                        if finish_reason == "length"
+                        else _EMPTY_ARGS_ERROR_MSG
+                    )
+                    yield ToolCallEvent(
+                        conversation_id=input.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        call_id=tc.id,
+                        tool_name=tc.name,
+                        args={},
+                    )
+                    error_value = {"error": error_msg}
+                    yield ToolResultEvent(
+                        conversation_id=input.conversation_id,
+                        timestamp=now_ms(),
+                        message_id=message_id,
+                        call_id=tc.id,
+                        result=error_value,
+                        is_error=True,
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(error_value),
+                        }
+                    )
+                    continue
                 try:
-                    args = json.loads(tc.args_buffer) if tc.args_buffer else {}
+                    args = json.loads(tc.args_buffer)
                 except (ValueError, TypeError):
+                    if finish_reason == "length":
+                        yield ToolCallEvent(
+                            conversation_id=input.conversation_id,
+                            timestamp=now_ms(),
+                            message_id=message_id,
+                            call_id=tc.id,
+                            tool_name=tc.name,
+                            args={},
+                        )
+                        truncation_value = {"error": _TRUNCATION_ERROR_MSG}
+                        yield ToolResultEvent(
+                            conversation_id=input.conversation_id,
+                            timestamp=now_ms(),
+                            message_id=message_id,
+                            call_id=tc.id,
+                            result=truncation_value,
+                            is_error=True,
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps(truncation_value),
+                            }
+                        )
+                        continue
                     args = {}
 
                 yield ToolCallEvent(
@@ -694,6 +921,18 @@ class CustomAdapter(AgentPlatformAdapter):
 
 
 # ─── helpers ──────────────────────────────────────────────
+
+
+def _compute_max_tokens(
+    model_provider: str, model_id: str, messages: list[dict]
+) -> int | None:
+    """Derive max_tokens from model context window minus estimated input tokens."""
+    limits = get_model_limits(model_provider, model_id)
+    input_estimate = estimate_tokens(json.dumps(messages, ensure_ascii=False))
+    computed = max(limits.output_reserve, limits.context_window - input_estimate - 512)
+    if limits.max_output_tokens is not None:
+        computed = min(computed, limits.max_output_tokens)
+    return max(computed, 256)
 
 
 def _build_client(

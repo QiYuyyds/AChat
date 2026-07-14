@@ -2,16 +2,18 @@
 
 import { Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, FileText, FolderGit2, Image as ImageIcon, Layers, Loader2, Package, Presentation, Rocket, Sparkles, Terminal, XCircle } from 'lucide-react'
 import type { KeyboardEvent, MouseEvent, ReactNode } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Card, CardContent } from '@/components/ui/card'
 import { AttachmentChip } from '@/components/attachment-chip'
 import { Button } from '@/components/ui/button'
 import { CodeBlock } from '@/components/code-block'
 import { Markdown } from '@/components/markdown'
+import { formatDuration } from '@/lib/format'
 import { artifactPreviewPath } from '@/lib/artifact-preview'
 import { deployConversationArtifact, fetchArtifact } from '@/lib/api'
 import { getToolDisplayName, isBashToolName } from '@/lib/tool-display'
+import { useElapsedTimer } from '@/lib/use-elapsed-timer'
 import { cn } from '@/lib/utils'
 import type { MessagePart } from '@/shared/types'
 import { useAppStore } from '@/stores/app-store'
@@ -20,15 +22,17 @@ import { useAppStore } from '@/stores/app-store'
 export function PartList({
   parts,
   conversationId,
+  messageStatus = 'complete',
 }: {
   parts: MessagePart[]
   conversationId: string
+  messageStatus?: 'streaming' | 'complete' | 'error' | 'aborted'
 }) {
   // 把 tool_result 按 callId 提前到对应 tool_use 的状态里
-  const resultByCallId = new Map<string, { result: unknown; isError: boolean }>()
+  const resultByCallId = new Map<string, { result: unknown; isError: boolean; endedAt?: number }>()
   for (const p of parts) {
     if (p.type === 'tool_result') {
-      resultByCallId.set(p.callId, { result: p.result, isError: p.isError })
+      resultByCallId.set(p.callId, { result: p.result, isError: p.isError, endedAt: p.endedAt })
     }
   }
 
@@ -52,11 +56,21 @@ export function PartList({
     }
   })
 
+  // 计算最后一个有 content 的 part index（用于判断 thinking 是否正在流式）
+  let lastContentPartIndex = -1
+  parts.forEach((p, i) => {
+    if (p.type === 'text' || p.type === 'thinking' || p.type === 'code') {
+      lastContentPartIndex = i
+    }
+  })
+
   return (
     <div className="space-y-2">
       {clusters.map((c, i) => {
         if (c.kind === 'part') {
-          return <PartRenderer key={`p-${c.index}`} part={c.part} conversationId={conversationId} />
+          const isLastContentPart = c.index === lastContentPartIndex
+          const isStreaming = messageStatus === 'streaming' && isLastContentPart
+          return <PartRenderer key={`p-${c.index}`} part={c.part} conversationId={conversationId} isStreaming={isStreaming} />
         }
         // tool cluster
         if (c.tools.length === 1) {
@@ -68,6 +82,7 @@ export function PartList({
               toolName={t.part.toolName}
               args={t.part.args}
               callId={t.part.callId}
+              startedAt={t.part.startedAt}
               completion={resultByCallId.get(t.part.callId)}
             />
           )
@@ -87,15 +102,17 @@ export function PartList({
 function PartRenderer({
   part,
   conversationId,
+  isStreaming = false,
 }: {
   part: MessagePart
   conversationId: string
+  isStreaming?: boolean
 }) {
   switch (part.type) {
     case 'text':
       return <TextPart content={part.content} />
     case 'thinking':
-      return <ThinkingPart content={part.content} />
+      return <ThinkingPart content={part.content} startedAt={part.startedAt} endedAt={part.endedAt} isStreaming={isStreaming} />
     case 'code':
       return <CodePart language={part.language} content={part.content} />
     case 'artifact_ref':
@@ -231,30 +248,78 @@ function QuotedSelectionCard({ source, artifactId, filePath, text }: QuotedSegme
   )
 }
 
-// ─── Thinking（可折叠）──────────────────────────────────
-function ThinkingPart({ content }: { content: string }) {
-  const [open, setOpen] = useState(false)
+// ─── Thinking（三态：streaming-open / completed-collapsed / user-expanded）──
+function ThinkingPart({
+  content,
+  startedAt,
+  endedAt,
+  isStreaming,
+}: {
+  content: string
+  startedAt?: number
+  endedAt?: number
+  isStreaming: boolean
+}) {
+  const [userOpened, setUserOpened] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll to bottom during streaming
+  useEffect(() => {
+    if (isStreaming && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [content, isStreaming])
+
   if (!content) return null
-  return (
-    <button
-      type="button"
-      onClick={() => setOpen((v) => !v)}
-      className="group flex w-full items-start gap-2 rounded-md border border-dashed border-muted-foreground/30 bg-muted/40 px-3 py-2 text-left text-xs text-muted-foreground transition hover:border-muted-foreground/50"
-    >
-      <ChevronRight
-        className={cn('mt-0.5 size-3.5 shrink-0 transition-transform', open && 'rotate-90')}
-      />
-      <div className="flex-1">
-        <div className="font-medium uppercase tracking-wide text-muted-foreground/70">思考</div>
+
+  const duration = startedAt && endedAt ? endedAt - startedAt : null
+
+  // STREAMING_OPEN: 流式中展开
+  if (isStreaming) {
+    return (
+      <div className="rounded-md border border-dashed border-muted-foreground/30 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+        <div className="flex items-center gap-1.5 font-medium">
+          <Loader2 className="size-3.5 animate-spin" />
+          <span>深度思考中...</span>
+        </div>
         <div
-          className={cn(
-            'mt-1 whitespace-pre-wrap italic leading-relaxed',
-            !open && 'line-clamp-1',
-          )}
+          ref={scrollRef}
+          className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap italic leading-relaxed text-muted-foreground/80"
         >
           {content}
         </div>
       </div>
+    )
+  }
+
+  // USER_EXPANDED: 用户手动展开
+  if (userOpened) {
+    return (
+      <div className="rounded-md border border-dashed border-muted-foreground/30 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+        <button
+          type="button"
+          onClick={() => setUserOpened(false)}
+          className="flex w-full items-center gap-1.5 text-left font-medium transition hover:text-foreground"
+        >
+          <ChevronDown className="size-3.5 shrink-0" />
+          <span>已深度思考{duration !== null ? ` · ${formatDuration(duration)}` : ''}</span>
+        </button>
+        <div className="mt-1 max-h-60 overflow-y-auto whitespace-pre-wrap italic leading-relaxed text-muted-foreground/80">
+          {content}
+        </div>
+      </div>
+    )
+  }
+
+  // COMPLETED_COLLAPSED: 完成后折叠
+  return (
+    <button
+      type="button"
+      onClick={() => setUserOpened(true)}
+      className="flex w-full items-center gap-1.5 rounded-md border border-dashed border-muted-foreground/30 bg-muted/40 px-3 py-1.5 text-left text-xs text-muted-foreground transition hover:border-muted-foreground/50"
+    >
+      <ChevronRight className="size-3.5 shrink-0" />
+      <span className="font-medium">已深度思考{duration !== null ? ` · ${formatDuration(duration)}` : ''}</span>
     </button>
   )
 }
@@ -269,12 +334,14 @@ function ToolUsePart({
   toolName,
   args,
   callId,
+  startedAt,
   completion,
 }: {
   toolName: string
   args: unknown
   callId: string
-  completion?: { result: unknown; isError: boolean }
+  startedAt?: number
+  completion?: { result: unknown; isError: boolean; endedAt?: number }
 }) {
   const [showDetails, setShowDetails] = useState(false)
   const displayName = getToolDisplayName(toolName, args)
@@ -294,6 +361,13 @@ function ToolUsePart({
       ? 'error'
       : 'success'
 
+  const isRunning = state === 'running'
+  const liveElapsed = useElapsedTimer(startedAt, isRunning)
+  const completedDuration =
+    startedAt && completion?.endedAt
+      ? completion.endedAt - startedAt
+      : null
+
   const styles = {
     running: 'border-warning/30 bg-warning/10',
     success: 'border-success/30 bg-success/10',
@@ -311,6 +385,14 @@ function ToolUsePart({
     success: '已完成',
     error: '失败',
   }[state]
+
+  const durationLabel = isRunning
+    ? liveElapsed !== null
+      ? ` · ${formatDuration(liveElapsed)}...`
+      : ''
+    : completedDuration !== null
+      ? ` · ${formatDuration(completedDuration)}`
+      : ''
 
   const toggleDetails = () => setShowDetails((v) => !v)
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -344,6 +426,9 @@ function ToolUsePart({
           </span>
           <span className="text-muted-foreground">·</span>
           <span className="shrink-0 font-medium">{label}</span>
+          {durationLabel && (
+            <span className="shrink-0 text-muted-foreground">{durationLabel}</span>
+          )}
           <ChevronDown
             className={cn(
               'ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform',
@@ -562,23 +647,34 @@ function ToolCluster({
   resultByCallId,
 }: {
   tools: Array<{ part: Extract<MessagePart, { type: 'tool_use' }>; index: number }>
-  resultByCallId: Map<string, { result: unknown; isError: boolean }>
+  resultByCallId: Map<string, { result: unknown; isError: boolean; endedAt?: number }>
 }) {
   const [expanded, setExpanded] = useState(false)
 
-  // 按状态分别统计工具名，避免“创建产物×5”把成功/失败混在一起。
+  // 按状态分别统计工具名，避免"创建产物×5"把成功/失败混在一起。
   const successCounts = new Map<string, number>()
   const errorCounts = new Map<string, number>()
   const runningCounts = new Map<string, number>()
   let runningCount = 0
   let errorCount = 0
   let successCount = 0
+
+  // 计算总耗时（所有工具的时间跨度）
+  let minStarted: number | undefined
+  let maxEnded: number | undefined
+  let earliestRunningStarted: number | undefined
+
   for (const t of tools) {
     const displayName = getToolDisplayName(t.part.toolName, t.part.args)
     const c = resultByCallId.get(t.part.callId)
     if (!c) {
       runningCount++
       runningCounts.set(displayName, (runningCounts.get(displayName) ?? 0) + 1)
+      if (t.part.startedAt !== undefined) {
+        if (earliestRunningStarted === undefined || t.part.startedAt < earliestRunningStarted) {
+          earliestRunningStarted = t.part.startedAt
+        }
+      }
     } else if (c.isError) {
       errorCount++
       errorCounts.set(displayName, (errorCounts.get(displayName) ?? 0) + 1)
@@ -586,7 +682,22 @@ function ToolCluster({
       successCount++
       successCounts.set(displayName, (successCounts.get(displayName) ?? 0) + 1)
     }
+    if (t.part.startedAt !== undefined) {
+      if (minStarted === undefined || t.part.startedAt < minStarted) minStarted = t.part.startedAt
+    }
+    if (c?.endedAt !== undefined) {
+      if (maxEnded === undefined || c.endedAt > maxEnded) maxEnded = c.endedAt
+    }
   }
+
+  const hasRunning = runningCount > 0
+  const liveElapsed = useElapsedTimer(earliestRunningStarted, hasRunning)
+  const totalDuration =
+    minStarted !== undefined && maxEnded !== undefined
+      ? maxEnded - minStarted
+      : hasRunning && liveElapsed !== null
+        ? liveElapsed
+        : null
   const successDistribution = formatToolDistribution(successCounts)
   const errorDistribution = formatToolDistribution(errorCounts)
   const runningDistribution = formatToolDistribution(runningCounts)
@@ -622,6 +733,9 @@ function ToolCluster({
           )}
           <span className="font-medium">工具调用 × {tools.length}</span>
           <span className="text-muted-foreground">·</span>
+          {totalDuration !== null && (
+            <span className="shrink-0 font-medium text-muted-foreground">{formatDuration(totalDuration)}</span>
+          )}
           <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
             {successDistribution && (
               <>
@@ -670,6 +784,7 @@ function ToolCluster({
                 toolName={t.part.toolName}
                 args={t.part.args}
                 callId={t.part.callId}
+                startedAt={t.part.startedAt}
                 completion={resultByCallId.get(t.part.callId)}
               />
             ))}

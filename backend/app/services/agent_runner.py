@@ -941,6 +941,8 @@ async def _run_react_loop(
             text_content = ""
             reasoning_content = ""
             tool_calls: list[ToolCallInfo] = []
+            pre_resolved: set[str] = set()
+            pre_resolved_messages: list[dict] = []
             message_id: str | None = None
             deferred_events: list[StreamEvent] = []
             turn_input_tokens = 0
@@ -964,6 +966,13 @@ async def _run_react_loop(
                             name=event.tool_name,
                             args=event.args if isinstance(event.args, dict) else {},
                         ))
+                    elif event.type == "tool.result":
+                        pre_resolved.add(event.call_id)
+                        pre_resolved_messages.append({
+                            "role": "tool",
+                            "tool_call_id": event.call_id,
+                            "content": json.dumps(event.result),
+                        })
                     elif event.type == "message.usage":
                         run_usage.input_tokens += event.usage.input_tokens
                         run_usage.output_tokens += event.usage.output_tokens
@@ -1000,6 +1009,7 @@ async def _run_react_loop(
             if reasoning_content:
                 assistant_msg["reasoning_content"] = reasoning_content
             messages.append(assistant_msg)
+            messages.extend(pre_resolved_messages)
 
             # If no tool calls → yield deferred events, dispatch on_stop, emit run.usage
             if len(tool_calls) == 0:
@@ -1053,7 +1063,9 @@ async def _run_react_loop(
             # When the model emits multiple tool_calls in a single turn, execute
             # them in parallel (asyncio.gather) so that e.g. two task_dispatch
             # calls run concurrently instead of sequentially.
-            if not cancel_event.is_set() and tool_calls:
+            # Skip tool calls already pre-resolved by the adapter (e.g. truncation).
+            executable = [tc for tc in tool_calls if tc.id not in pre_resolved]
+            if not cancel_event.is_set() and executable:
                 tasks = [
                     asyncio.create_task(
                         _execute_tool_call_to_result(
@@ -1065,16 +1077,16 @@ async def _run_react_loop(
                             cancel_event=cancel_event,
                             tool_call_cache=tool_call_cache,
                             mcp_manager=mcp_manager,
-                            ctx=replace(ctx) if len(tool_calls) > 1 else ctx,
+                            ctx=replace(ctx) if len(executable) > 1 else ctx,
                             hook_registry=hook_registry,
                         )
                     )
-                    for tc in tool_calls
+                    for tc in executable
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                # Yield results in original tool_calls order (not completion order)
-                for i, tc in enumerate(tool_calls):
+                # Yield results in original executable order (not completion order)
+                for i, tc in enumerate(executable):
                     if i >= len(results):
                         break
                     res = results[i]
@@ -1593,6 +1605,23 @@ async def execute_simple_run(
                         args.conversation_id,
                     )
 
+    # Auto-inject companion artifact tools when write_artifact is present.
+    # CLI agents get all hub tools via _build_agent_hub_tool_guidance; SDK (Custom)
+    # agents only have tools explicitly listed in tool_names. If write_artifact is
+    # configured, the agent also needs read_artifact and update_artifact to handle
+    # truncation recovery and incremental file writes.
+    if agent.adapter_name in SDK_ADAPTERS and "write_artifact" in base_tool_names:
+        companion_tools = ["read_artifact", "update_artifact", "deploy_artifact"]
+        existing = set(base_tool_names)
+        new_tools = [t for t in companion_tools if t not in existing]
+        if new_tools:
+            base_tool_names = list(base_tool_names) + new_tools
+            logger.info(
+                "[AgentRunner] Injected companion artifact tools %s for SDK agent %s",
+                new_tools,
+                args.agent_id,
+            )
+
     tool_names = base_tool_names
 
     adapter = agent_registry.get_adapter(agent)
@@ -2031,9 +2060,21 @@ async def persist_event(
         # grow the list so part_index lands in place (TS array index assignment)
         while len(parts) <= event.part_index:
             parts.append({})
-        parts[event.part_index] = event.part
+        part_dict = event.part
+        # Capture timestamp into startedAt for thinking/text/code parts
+        if isinstance(part_dict, dict) and part_dict.get("type") in ("thinking", "text", "code"):
+            part_dict["startedAt"] = event.timestamp
+        parts[event.part_index] = part_dict
         parts_buffer[event.message_id] = parts
         await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
+        return
+    if etype == "part.end":
+        parts = parts_buffer.get(event.message_id)
+        if parts is not None and event.part_index < len(parts):
+            part = parts[event.part_index]
+            if isinstance(part, dict) and part.get("type") == "thinking":
+                part["endedAt"] = event.timestamp
+        await _persist_or_stream(redis_client, run_id, event, parts or [], use_stream)
         return
     if etype == "part.delta":
         parts = parts_buffer.get(event.message_id)
@@ -2060,6 +2101,7 @@ async def persist_event(
                 "callId": event.call_id,
                 "toolName": event.tool_name,
                 "args": event.args,
+                "startedAt": event.timestamp,
             }
         )
         parts_buffer[event.message_id] = parts
@@ -2073,6 +2115,7 @@ async def persist_event(
                 "callId": event.call_id,
                 "result": event.result,
                 "isError": event.is_error,
+                "endedAt": event.timestamp,
             }
         )
         parts_buffer[event.message_id] = parts
@@ -2777,6 +2820,7 @@ def _build_agent_hub_tool_guidance(
         sdk_agent_hub_tools = [
             "write_artifact",
             "read_artifact",
+            "update_artifact",
             "deploy_artifact",
             "deploy_workspace",
             ASK_USER_TOOL_NAME,
@@ -2872,6 +2916,18 @@ def _build_agent_hub_tool_guidance(
                 "硬性要求：调用前必须已经准备好完整参数；严禁 write_artifact({})，严禁先空调用工具再补参数。",
                 "调用前自检：type 必须是工具 schema 允许的枚举值，title 必须是非空字符串，content 必须是对应类型的原始对象。",
                 "project 产物不能用 write_artifact 创建；代码任务通过 fs_write / bash 写入 workspace 文件后由 AChat 自动生成 project。",
+                "内容过大时的策略：如果 write_artifact 因内容过长被截断报错，不要重试同样的大内容。改用 update_artifact 分片写入：先创建最小 web_app，再逐个添加文件。",
+            ]
+        )
+
+    if "update_artifact" in tools:
+        add(
+            [
+                "### update_artifact",
+                "用途：向已有 web_app 产物追加、修改或删除文件，适用于大型 web 应用分片写入。",
+                '正确流程：先 write_artifact 创建最小 web_app 得到 artifactId，再 update_artifact({ artifactId: "art_123", addFiles: { "style.css": "..." } }) 逐个添加文件。',
+                "截断恢复：当 write_artifact 因内容过长报错时，立即改用 update_artifact 分片写入，不要重试大内容。",
+                "限制：只支持 web_app 类型；每次最多 20 个文件操作；单文件最大 100KB；路径必须为相对路径。",
             ]
         )
 

@@ -3,16 +3,12 @@
 import { ChevronDown, ChevronRight, Clock, FileCode, Terminal } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
+import { formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { TurnMetricData } from '@/shared/types'
 
 interface TurnTimelineProps {
   turnMetrics: Record<number, TurnMetricData>
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`
-  return `${(ms / 1000).toFixed(1)}s`
 }
 
 function formatTokens(tokens: number): string {

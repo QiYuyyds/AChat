@@ -19,7 +19,7 @@ _MERMAID_DECLARATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-_FENCE_RE = re.compile(r"^```(?:mermaid|mmd)?\s*\n([\s\S]*?)\n```$", re.IGNORECASE)
+_FENCE_RE = re.compile(r"^\s*```(?:mermaid|mmd)?\s*\n([\s\S]*?)\n```\s*$", re.IGNORECASE)
 _FLOWCHART_RE = re.compile(r"^(?:flowchart|graph)\b", re.IGNORECASE)
 _SUBGRAPH_RE = re.compile(r"^(\s*subgraph\s+)([A-Za-z][\w-]*)(\[)([^\]\"']+)(\]\s*)$")
 _NODE_LABEL_RE = re.compile(r"(^|[\s;&])([A-Za-z][\w-]*)(\[)([^\]\"'\n]+)(\])")
@@ -44,13 +44,17 @@ def normalise_mermaid_source(raw_source: str) -> MermaidNormaliseOutcome:
 
     first_line = _first_significant_line(source)
     if not first_line or not _MERMAID_DECLARATION_RE.search(first_line):
-        return MermaidNormaliseOutcome(
-            ok=False,
-            error=(
-                'Mermaid source must start with a supported diagram declaration '
-                'such as "flowchart TD", "sequenceDiagram", or "classDiagram".'
-            ),
-        )
+        inferred = _infer_diagram_type(source)
+        if inferred:
+            source = f"{inferred}\n{source}"
+        else:
+            return MermaidNormaliseOutcome(
+                ok=False,
+                error=(
+                    'Mermaid source must start with a supported diagram declaration '
+                    'such as "flowchart TD", "sequenceDiagram", or "classDiagram".'
+                ),
+            )
 
     normalised = (
         _normalise_flowchart_labels(source) if _is_flowchart(first_line) else source
@@ -66,6 +70,15 @@ def _strip_mermaid_fence(source: str) -> str:
     trimmed = source.strip()
     match = _FENCE_RE.match(trimmed)
     return match.group(1) if match else source
+
+
+def _infer_diagram_type(source: str) -> str | None:
+    """Infer diagram declaration from content when missing."""
+    if "-->" in source or "---" in source or "-.-" in source:
+        return "flowchart TD"
+    if "->>" in source and ("Note" in source or "Participant" in source or "participant" in source):
+        return "sequenceDiagram"
+    return None
 
 
 def _first_significant_line(source: str) -> str | None:

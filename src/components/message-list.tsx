@@ -3,6 +3,7 @@
 import { Loader2 } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 
+import { AgentWorkingIndicator } from '@/components/agent-working-indicator'
 import { MessageItem } from '@/components/message-item'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { WaveColumnHeader } from '@/components/wave-column-header'
@@ -10,7 +11,7 @@ import type { MessageRow } from '@/db/schema'
 import { fetchMessages } from '@/lib/api'
 import { buildSegments } from '@/lib/wave-utils'
 import { cn } from '@/lib/utils'
-import { useAppStore, useChildRunWaveMap, useMessagesForConversation } from '@/stores/app-store'
+import { useAppStore, useChildRunWaveMap, useMessagesForConversation, useTopLevelRunningRuns } from '@/stores/app-store'
 
 const STICKY_BOTTOM_THRESHOLD_PX = 120
 const STREAM_SCROLL_THROTTLE_MS = 80
@@ -18,6 +19,7 @@ const STREAM_SCROLL_THROTTLE_MS = 80
 export function MessageList({ conversationId }: { conversationId: string }) {
   const messages = useMessagesForConversation(conversationId)
   const childRunWaveMap = useChildRunWaveMap(conversationId)
+  const runningRuns = useTopLevelRunningRuns(conversationId)
   const segments = useMemo(
     () => buildSegments(messages, childRunWaveMap),
     [messages, childRunWaveMap],
@@ -38,6 +40,7 @@ export function MessageList({ conversationId }: { conversationId: string }) {
   const lastMessagePartCount = lastMessage?.parts.length ?? 0
   const lastMessageContentLength = getMessageContentLength(lastMessage)
   const hasMessages = messages.length > 0
+  const runningRunsCount = runningRuns.length
 
   const cancelScheduledScroll = useCallback(() => {
     if (scrollTimerRef.current !== null) {
@@ -138,6 +141,7 @@ export function MessageList({ conversationId }: { conversationId: string }) {
     lastMessageRole,
     lastMessageStatus,
     messages.length,
+    runningRunsCount,
     scheduleScrollToBottom,
   ])
 
@@ -195,6 +199,11 @@ export function MessageList({ conversationId }: { conversationId: string }) {
             </div>
           )
         })}
+        {runningRuns.map((run) => (
+          <div key={`indicator-${run.id}`} className="mt-2">
+            <AgentWorkingIndicator run={run} conversationId={conversationId} />
+          </div>
+        ))}
       </div>
     </ScrollArea>
   )
