@@ -85,7 +85,7 @@ async def invalidate_agent_cache(agent_id: str) -> None:
 _USER_SETTINGS_COLUMNS = [
     "user_id", "anthropic_api_key", "anthropic_base_url",
     "openai_api_key", "deepseek_api_key", "ark_api_key",
-    "companion_mode", "mobile_device_token", "updated_at",
+    "companion_mode", "mobile_device_token", "obsidian_vault_path", "updated_at",
 ]
 
 

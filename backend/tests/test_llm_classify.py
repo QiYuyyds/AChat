@@ -3,14 +3,10 @@
 import asyncio
 import json
 
-import pytest
-
 from app.memory.memory_writer import (
-    classify_memory_content,
     extract_memory_from_reply,
     llm_classify_memory,
 )
-
 
 # ─── llm_classify_memory direct tests ─────────────────────────────────────────
 

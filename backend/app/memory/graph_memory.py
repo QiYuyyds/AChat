@@ -15,14 +15,15 @@ Edge types:
 import asyncio
 import logging
 import math
-from typing import Any, Iterable, List, Optional
+from collections.abc import Iterable
+from typing import Any
 
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
 
-def _cosine(a: List[float], b: List[float]) -> float:
+def _cosine(a: list[float], b: list[float]) -> float:
     if not a or not b or len(a) != len(b):
         return 0.0
     dot = sum(x * y for x, y in zip(a, b))
@@ -60,9 +61,9 @@ class GraphMemory:
         self,
         settings: Settings,
         driver=None,  # neo4j.AsyncDriver | None
-        llm: Optional[Any] = None,
+        llm: Any | None = None,
         sim_threshold: float = 0.7,
-        ltm: Optional[Any] = None,
+        ltm: Any | None = None,
     ):
         self.settings = settings
         self._driver = driver
@@ -71,7 +72,7 @@ class GraphMemory:
         self.prev_id: int = -1
         self.ltm = ltm
 
-    def set_ltm(self, ltm: Optional[Any]) -> None:
+    def set_ltm(self, ltm: Any | None) -> None:
         self.ltm = ltm
 
     # ─── Availability ─────────────────────────────────────────────────────
@@ -166,7 +167,7 @@ class GraphMemory:
         except Exception as e:
             logger.warning("PG mirror MemoryEdge write failed (%s->%s): %s", from_id, to_id, e)
 
-    async def _expand_memory_neighbors(self, seed_ids: List[int], hops: int) -> List[int]:
+    async def _expand_memory_neighbors(self, seed_ids: list[int], hops: int) -> list[int]:
         if not self._available() or not seed_ids:
             return []
         hop_str = "1" if hops <= 1 else "1.." + str(hops)
@@ -181,7 +182,7 @@ class GraphMemory:
         except Exception as e:
             logger.warning("Neo4j expandMemoryNeighbors failed: %s", e)
             return []
-        result: List[int] = []
+        result: list[int] = []
         for rec in records:
             v = rec.get("id")
             if v is not None:
@@ -192,8 +193,8 @@ class GraphMemory:
         return result
 
     async def _expand_memory_neighbors_scoped(
-        self, seed_ids: List[int], hops: int, agent_id: str,
-    ) -> List[int]:
+        self, seed_ids: list[int], hops: int, agent_id: str,
+    ) -> list[int]:
         """Expand neighbors restricted to the same agent_id or global scope."""
         if not self._available() or not seed_ids:
             return []
@@ -213,7 +214,7 @@ class GraphMemory:
         except Exception as e:
             logger.warning("Neo4j expandMemoryNeighbors_scoped failed: %s", e)
             return []
-        result: List[int] = []
+        result: list[int] = []
         for rec in records:
             v = rec.get("id")
             if v is not None:
@@ -234,7 +235,7 @@ class GraphMemory:
         except Exception as e:
             logger.warning("Neo4j deleteMemoryNode failed (id=%s): %s", mem_id, e)
 
-    async def _get_high_centrality_ids(self, candidates: List[int], threshold: int) -> List[int]:
+    async def _get_high_centrality_ids(self, candidates: list[int], threshold: int) -> list[int]:
         if not self._available() or not candidates:
             return []
         query = (
@@ -251,7 +252,7 @@ class GraphMemory:
         except Exception as e:
             logger.warning("Neo4j getHighCentrality failed: %s", e)
             return []
-        result: List[int] = []
+        result: list[int] = []
         for rec in records:
             v = rec.get("id")
             if v is not None:
@@ -263,7 +264,7 @@ class GraphMemory:
 
     # ─── Public API (core 4 methods) ──────────────────────────────────────
 
-    async def add_to_graph(self, item, neighbors: Optional[Iterable] = None) -> int:
+    async def add_to_graph(self, item, neighbors: Iterable | None = None) -> int:
         """Sync a memory item into the graph asynchronously.
 
         Main path only computes mem_id and updates prev_id (so caller can
@@ -281,7 +282,7 @@ class GraphMemory:
         agent_id = getattr(item, "agent_id", "") or ""
         prev_id = self.prev_id
 
-        neighbor_pairs: List[tuple] = []
+        neighbor_pairs: list[tuple] = []
         if neighbors:
             new_emb = list(getattr(item, "embedding", None) or [])
             if new_emb:
@@ -310,8 +311,8 @@ class GraphMemory:
         return mem_id
 
     async def find_related(
-        self, item_id: int, max_hops: Optional[int] = None, agent_id: str = "",
-    ) -> List[int]:
+        self, item_id: int, max_hops: int | None = None, agent_id: str = "",
+    ) -> list[int]:
         """Expand from item_id along the graph for max_hops hops.
 
         When ``agent_id`` is provided, expansion is restricted to nodes with
@@ -347,7 +348,7 @@ class GraphMemory:
         items_list = list(items)
 
         # Group items by (scope, agent_id) to avoid cross-scope FOLLOWS edges
-        groups: dict[tuple[str, str], List[Any]] = {}
+        groups: dict[tuple[str, str], list[Any]] = {}
         for item in items_list:
             key = (
                 getattr(item, "scope", "global") or "global",
@@ -377,7 +378,7 @@ class GraphMemory:
 
     # ─── Centrality protection (for consolidate) ──────────────────────────
 
-    async def filter_protected(self, candidate_ids: List[int], indegree_threshold: int = 3) -> List[int]:
+    async def filter_protected(self, candidate_ids: list[int], indegree_threshold: int = 3) -> list[int]:
         """Return candidate_ids with in-degree >= threshold (should be exempt from deletion)."""
         return await self._get_high_centrality_ids(candidate_ids, indegree_threshold)
 

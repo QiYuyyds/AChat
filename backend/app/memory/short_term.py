@@ -7,7 +7,6 @@ Zero modification: pure in-memory deque + RLock, no DB I/O.
 import threading
 import time
 from collections import deque
-from typing import Deque, Dict, List
 
 
 class ShortTerm:
@@ -20,7 +19,7 @@ class ShortTerm:
 
     def __init__(self, max_turns: int = 10):
         self.max_turns = max(1, max_turns)
-        self.messages: Deque[Dict[str, str]] = deque(maxlen=self.max_turns * 2)
+        self.messages: deque[dict[str, str]] = deque(maxlen=self.max_turns * 2)
         self._lock = threading.RLock()
 
     def add(self, role: str, content: str) -> None:
@@ -28,11 +27,10 @@ class ShortTerm:
         with self._lock:
             self.messages.append({"role": role, "content": content, "timestamp": ts})
 
-    def get(self) -> List[Dict[str, str]]:
+    def get(self) -> list[dict[str, str]]:
         from app.observability import start_span
-        with start_span("memory.stm.get", window_size=self._max_turns):
-            with self._lock:
-                return [dict(m) for m in self.messages]
+        with start_span("memory.stm.get", window_size=self._max_turns), self._lock:
+            return [dict(m) for m in self.messages]
 
     def clear(self) -> None:
         with self._lock:

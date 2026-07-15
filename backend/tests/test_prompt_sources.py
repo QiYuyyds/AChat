@@ -1,13 +1,9 @@
 """Unit tests for PlannerSource, TaskMemSource, ToolStateSource, ProfileSource."""
 
 import asyncio
-import time
-
-import pytest
 
 from app.memory.consolidation import Item
 from app.services.prompt_assembler import (
-    ContextItem,
     PlannerSnapshot,
     PlannerSource,
     ProfileSource,
@@ -25,7 +21,6 @@ from app.services.prompt_assembler import (
     ToolStateSource,
     ToolStateTracker,
 )
-
 
 # ─── PlannerSource tests (Task 5.4) ───────────────────────────────────────────
 

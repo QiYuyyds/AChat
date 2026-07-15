@@ -1,19 +1,19 @@
 # extractor — 通过 LLM 从文本中抽取实体和关系
 import json
 import logging
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from .types import (
+    ENTITY_CONCEPT,
+    ENTITY_EVENT,
+    ENTITY_LOCATION,
+    ENTITY_ORG,
+    ENTITY_PERSON,
+    ENTITY_PRODUCT,
+    ENTITY_UNKNOWN,
     Entity,
     ExtractResult,
     Relation,
-    ENTITY_UNKNOWN,
-    ENTITY_PERSON,
-    ENTITY_ORG,
-    ENTITY_LOCATION,
-    ENTITY_CONCEPT,
-    ENTITY_EVENT,
-    ENTITY_PRODUCT,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,7 @@ _VALID_REL_TYPES = {
 class Extractor:
     """通过注入的 LLM 回调从文本中抽取实体和关系"""
 
-    def __init__(self, llm_fn: Optional[LLMFn]):
+    def __init__(self, llm_fn: LLMFn | None):
         self.llm_fn = llm_fn
 
     def extract(self, text: str) -> ExtractResult:

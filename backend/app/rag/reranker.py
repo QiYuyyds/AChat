@@ -6,7 +6,7 @@ Ported from AGI-memory ``internal/rag/reranker.py``. Zero modification.
 import json
 import logging
 import re
-from typing import Callable, List, Optional
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -16,11 +16,11 @@ GenerateFn = Callable[[str, str], str]
 class LLMReranker:
     """用一次 LLM listwise 调用对候选 chunk 精排，失败时回退原顺序。"""
 
-    def __init__(self, generate_fn: Optional[GenerateFn], preview_len: int = 200):
+    def __init__(self, generate_fn: GenerateFn | None, preview_len: int = 200):
         self.generate_fn = generate_fn
         self.preview_len = preview_len if preview_len > 0 else 200
 
-    def rerank(self, query: str, results: List, top_k: int) -> List:
+    def rerank(self, query: str, results: list, top_k: int) -> list:
         if not results:
             return []
         if self.generate_fn is None or len(results) == 1:
@@ -75,7 +75,7 @@ class LLMReranker:
             "- 不依赖你自己的知识，只看给出的段落"
         )
 
-    def _user_msg(self, query: str, results: List) -> str:
+    def _user_msg(self, query: str, results: list) -> str:
         lines = [f"用户问题：{query}", "", "候选段落："]
         for idx, result in enumerate(results):
             content = _result_content(result)
@@ -94,7 +94,7 @@ def _result_content(result) -> str:
     return ""
 
 
-def _parse_scores(raw: str) -> List[tuple]:
+def _parse_scores(raw: str) -> list[tuple]:
     raw = _strip_json_fence(raw)
     data = json.loads(raw)
     items = data.get("scores", []) if isinstance(data, dict) else []
@@ -115,7 +115,7 @@ def _strip_json_fence(raw: str) -> str:
     return raw.strip()
 
 
-def _truncate(results: List, top_k: int) -> List:
+def _truncate(results: list, top_k: int) -> list:
     if top_k > 0 and len(results) > top_k:
         return results[:top_k]
     return results

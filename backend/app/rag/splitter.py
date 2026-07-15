@@ -17,7 +17,6 @@ Ported from AGI-memory ``internal/rag/splitter.py``. Zero modification.
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
 
 
 @dataclass
@@ -26,9 +25,11 @@ class Chunk:
     content: str
 
 
-_DEFAULT_SEPARATORS: List[str] = ["\n\n", "\n", "。", "！", "？", "；", " ", ""]
+_DEFAULT_SEPARATORS: list[str] = ["\n\n", "\n", "。", "！", "？", "；", " ", ""]
 
 _FENCE_RE = re.compile(
+    r"^\$\$.*?^\$\$\n?"
+    r"|"
     r"^(```|~~~)[^\n]*\n.*?^\1[ \t]*$\n?",
     re.MULTILINE | re.DOTALL,
 )
@@ -40,7 +41,7 @@ class RecursiveSplitter:
     """递归分隔符栈 + Markdown 保护 + tail-rune overlap 的文本切分器。"""
 
     def __init__(self, chunk_size: int = 200, chunk_overlap: int = 50,
-                 separators: Optional[List[str]] = None):
+                 separators: list[str] | None = None):
         self.chunk_size = max(1, int(chunk_size or 1))
         overlap = max(0, int(chunk_overlap or 0))
         if overlap >= self.chunk_size:
@@ -48,13 +49,13 @@ class RecursiveSplitter:
         self.chunk_overlap = overlap
         self.separators = list(separators) if separators else list(_DEFAULT_SEPARATORS)
 
-    def split(self, text: str) -> List[Chunk]:
+    def split(self, text: str) -> list[Chunk]:
         if not text:
             return []
 
         atoms = self._protect_fences(text)
 
-        pieces: List[Tuple[bool, str]] = []
+        pieces: list[tuple[bool, str]] = []
         for is_atom, segment in atoms:
             if is_atom:
                 pieces.append((True, segment))
@@ -67,8 +68,8 @@ class RecursiveSplitter:
 
         return [Chunk(id=i, content=c) for i, c in enumerate(merged)]
 
-    def _protect_fences(self, text: str) -> List[Tuple[bool, str]]:
-        atoms: List[Tuple[bool, str]] = []
+    def _protect_fences(self, text: str) -> list[tuple[bool, str]]:
+        atoms: list[tuple[bool, str]] = []
         cursor = 0
         for m in _FENCE_RE.finditer(text):
             if m.start() > cursor:
@@ -81,7 +82,7 @@ class RecursiveSplitter:
             atoms = [(False, text)]
         return atoms
 
-    def _recursive_split(self, text: str, seps: List[str]) -> List[str]:
+    def _recursive_split(self, text: str, seps: list[str]) -> list[str]:
         if len(text) <= self.chunk_size:
             return [text] if text.strip() != "" else []
         if not seps:
@@ -95,7 +96,7 @@ class RecursiveSplitter:
         if len(parts) <= 1 and parts and parts[0] == text:
             return self._recursive_split(text, rest)
 
-        out: List[str] = []
+        out: list[str] = []
         for p in parts:
             if not p:
                 continue
@@ -107,7 +108,7 @@ class RecursiveSplitter:
         return out
 
     @staticmethod
-    def _split_keep_sep(text: str, sep: str) -> List[str]:
+    def _split_keep_sep(text: str, sep: str) -> list[str]:
         if sep == "":
             return [text]
         parts = text.split(sep)
@@ -118,8 +119,8 @@ class RecursiveSplitter:
             out.append(sep + p)
         return out
 
-    def _hard_split(self, text: str) -> List[str]:
-        out: List[str] = []
+    def _hard_split(self, text: str) -> list[str]:
+        out: list[str] = []
         size = self.chunk_size
         for i in range(0, len(text), size):
             piece = text[i:i + size]
@@ -127,8 +128,8 @@ class RecursiveSplitter:
                 out.append(piece)
         return out
 
-    def _merge(self, pieces: List[Tuple[bool, str]]) -> List[str]:
-        merged: List[str] = []
+    def _merge(self, pieces: list[tuple[bool, str]]) -> list[str]:
+        merged: list[str] = []
         buf = ""
         buf_heading_only = False
 
@@ -174,7 +175,7 @@ class RecursiveSplitter:
             merged.append(buf)
         return merged
 
-    def _apply_overlap(self, merged: List[str]) -> List[str]:
+    def _apply_overlap(self, merged: list[str]) -> list[str]:
         if self.chunk_overlap <= 0 or len(merged) <= 1:
             return merged
         out = [merged[0]]

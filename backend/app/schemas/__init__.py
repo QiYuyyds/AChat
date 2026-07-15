@@ -26,6 +26,24 @@ from app.schemas.dispatch import (
     PendingQuestion,
     PendingWrite,
 )
+from app.schemas.document import (
+    DeleteDocumentResponse,
+    DocumentDetailResponse,
+    DocumentFlatListResponse,
+    DocumentListItem,
+    DocumentListResponse,
+    DocumentResponse,
+    DocumentTreeResponse,
+    FileNode,
+    FolderNode,
+    IngestResultResponse,
+    IngestVersionRequest,
+    UploadDocumentResponse,
+    VersionListResponse,
+    VersionResponse,
+    WriteDocumentRequest,
+    WriteDocumentResponse,
+)
 from app.schemas.events import (
     ArtifactCreateEvent,
     HeartbeatEvent,
@@ -52,20 +70,6 @@ from app.schemas.messages import (
     ThinkingPart,
     ToolResultPart,
     ToolUsePart,
-)
-from app.schemas.document import (
-    DeleteDocumentResponse,
-    DocumentDetailResponse,
-    DocumentListItem,
-    DocumentListResponse,
-    DocumentResponse,
-    IngestResultResponse,
-    IngestVersionRequest,
-    UploadDocumentResponse,
-    VersionListResponse,
-    VersionResponse,
-    WriteDocumentRequest,
-    WriteDocumentResponse,
 )
 from app.schemas.requests import (
     AgentResponse,
@@ -219,4 +223,8 @@ __all__ = [
     "WriteDocumentResponse",
     "DeleteDocumentResponse",
     "UploadDocumentResponse",
+    "DocumentTreeResponse",
+    "DocumentFlatListResponse",
+    "FolderNode",
+    "FileNode",
 ]

@@ -9,9 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import pytest
-
-
 # ─── Task 9.6: CacheMetrics unit tests ──────────────────────────────────────
 
 

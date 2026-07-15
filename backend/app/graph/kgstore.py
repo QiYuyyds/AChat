@@ -7,7 +7,6 @@
 # - search 返回 List[dict]（含 pg_id 键）而非 List[GraphSearchResult]
 # - 与 GraphMemory 共享同一 AsyncDriver 实例
 import logging
-from typing import List, Optional
 
 from app.config import Settings
 
@@ -15,7 +14,6 @@ from .extractor import Extractor
 from .types import (
     ChunkRef,
     Entity,
-    GraphSearchResult,
     Relation,
 )
 
@@ -34,7 +32,7 @@ class KGStore:
         self,
         settings: Settings,
         driver=None,  # neo4j.AsyncDriver | None
-        extractor: Optional[Extractor] = None,
+        extractor: Extractor | None = None,
     ):
         self._driver = driver
         self.max_hops = settings.kg_max_hops
@@ -57,7 +55,7 @@ class KGStore:
 
     # ─────────────────────────────── 文档摄入 ──────────────────────────────
 
-    async def index_document(self, doc_hash: str, chunks: List[ChunkRef]) -> None:
+    async def index_document(self, doc_hash: str, chunks: list[ChunkRef]) -> None:
         """为一批 chunks 抽取实体关系并写入图（不阻塞主 Ingest 流程）。"""
         if not self.available():
             return
@@ -140,7 +138,7 @@ class KGStore:
 
     # ─────────────────────────────── 图检索 ────────────────────────────────
 
-    async def search(self, query_text: str, top_k: int) -> List[dict]:
+    async def search(self, query_text: str, top_k: int) -> list[dict]:
         """根据查询文本抽取实体，执行 1~2 跳子图遍历，返回关联的 pg_id 列表。
 
         返回格式对齐 HybridStore 期望：List[dict] with pg_id, content, score, entities 键。
@@ -189,7 +187,7 @@ class KGStore:
             return await self._search_direct(names, top_k)
 
         # 收集结果
-        raw: List[dict] = []
+        raw: list[dict] = []
         for rec in records or []:
             cid = _to_int(rec.get("cid"))
             if cid < 0:
@@ -204,7 +202,7 @@ class KGStore:
 
         # 计算分数：命中种子越多 + 图中心度越高 → 分越高
         seen: set = set()
-        results: List[dict] = []
+        results: list[dict] = []
         for r in raw:
             pg_id = r["pg_id"]
             if pg_id == 0 or pg_id in seen:  # 没有 pg_id 的节点（旧数据）跳过
@@ -224,7 +222,7 @@ class KGStore:
             results = results[:top_k]
         return results
 
-    async def _search_direct(self, names: List[str], top_k: int) -> List[dict]:
+    async def _search_direct(self, names: list[str], top_k: int) -> list[dict]:
         """APOC 不可用时的降级版本：直接匹配实体所在 chunk"""
         try:
             records = await self._run_cypher(
@@ -237,7 +235,7 @@ class KGStore:
             return []
 
         seen: set = set()
-        results: List[dict] = []
+        results: list[dict] = []
         for rec in records or []:
             cid = _to_int(rec.get("cid"))
             pg_id = _to_int64(rec.get("pgid"))
@@ -283,7 +281,7 @@ def _to_string(v) -> str:
     return ""
 
 
-def _to_string_list(v) -> List[str]:
+def _to_string_list(v) -> list[str]:
     if isinstance(v, list):
         return [a for a in v if isinstance(a, str)]
     return []

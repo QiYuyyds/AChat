@@ -1,16 +1,34 @@
 """Unit tests for Prompt Assembler — schema selection, source assembly, budget trimming."""
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 from app.services.prompt_assembler import (
-    CHAT_SCHEMA, TOOL_SCHEMA, REACT_SCHEMA, RAG_SCHEMA,
-    ContextAssembler, ContextItem, ConstraintsSource,
-    FilledSlot, ProfileSource, Query, RecallSource,
-    RuntimeContext, RuntimeContextSchema, SourceRegistry,
-    Slot, SlotConstraints, SlotFilter, SlotKind, SlotPlanner,
-    SlotProfile, SlotRecall, SlotTaskMem, SlotToolState,
-    default_schemas, slot_priority, _trim_by_budget,
+    CHAT_SCHEMA,
+    RAG_SCHEMA,
+    REACT_SCHEMA,
+    TOOL_SCHEMA,
+    ConstraintsSource,
+    ContextAssembler,
+    ContextItem,
+    FilledSlot,
+    ProfileSource,
+    Query,
+    RecallSource,
+    RuntimeContext,
+    Slot,
+    SlotConstraints,
+    SlotFilter,
+    SlotPlanner,
+    SlotProfile,
+    SlotRecall,
+    SlotTaskMem,
+    SlotToolState,
+    SourceRegistry,
+    _trim_by_budget,
+    default_schemas,
+    slot_priority,
 )
 
 
@@ -302,18 +320,14 @@ class TestSchemaStaticClassification:
         for slot in TOOL_SCHEMA.slots:
             if slot.kind == SlotConstraints:
                 assert slot.static is True, f"{slot.kind} should be static=True"
-            elif slot.kind == SlotProfile:
-                assert slot.static is False, f"{slot.kind} should be static=False"
-            elif slot.kind == SlotToolState:
+            elif slot.kind == SlotProfile or slot.kind == SlotToolState:
                 assert slot.static is False, f"{slot.kind} should be static=False"
 
     def test_react_schema_static_classification(self):
         for slot in REACT_SCHEMA.slots:
             if slot.kind == SlotConstraints:
                 assert slot.static is True, f"{slot.kind} should be static=True"
-            elif slot.kind == SlotProfile:
-                assert slot.static is False, f"{slot.kind} should be static=False"
-            elif slot.kind in (SlotPlanner, SlotTaskMem, SlotToolState):
+            elif slot.kind == SlotProfile or slot.kind in (SlotPlanner, SlotTaskMem, SlotToolState):
                 assert slot.static is False, f"{slot.kind} should be static=False"
 
     def test_rag_schema_static_classification(self):

@@ -530,7 +530,7 @@ async def test_react_loop_cancel(conversation, monkeypatch):
 
 async def test_react_loop_max_turns(conversation, monkeypatch):
     """ReAct loop stops at MAX_TURNS and emits run.usage."""
-    from app.services.agent_runner import _run_react_loop, REACT_LOOP_MAX_TURNS
+    from app.services.agent_runner import REACT_LOOP_MAX_TURNS, _run_react_loop
 
     # Each turn calls a tool, so the loop runs until MAX_TURNS
     scripts = [

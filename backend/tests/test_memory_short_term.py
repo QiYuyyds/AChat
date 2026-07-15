@@ -1,6 +1,5 @@
 """Unit tests for ShortTerm memory — pure in-memory deque, no DB."""
 
-import pytest
 from app.memory.short_term import ShortTerm
 
 

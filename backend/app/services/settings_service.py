@@ -39,6 +39,7 @@ def _empty_user_settings(user_id: str) -> UserSettings:
         ark_api_key=None,
         companion_mode="off",
         mobile_device_token=None,
+        obsidian_vault_path=None,
         updated_at=0,
     )
 
@@ -84,6 +85,7 @@ class UserSettingsPatch(TypedDict, total=False):
     ark_api_key: str | None
     companion_mode: CompanionMode
     mobile_device_token: str | None
+    obsidian_vault_path: str | None
 
 
 _USER_STRING_FIELDS = (
@@ -94,6 +96,7 @@ _USER_STRING_FIELDS = (
     "ark_api_key",
     "companion_mode",
     "mobile_device_token",
+    "obsidian_vault_path",
 )
 
 

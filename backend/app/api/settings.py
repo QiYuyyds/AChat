@@ -45,6 +45,7 @@ def _serialize_user_settings(us: UserSettings) -> dict[str, Any]:
         "arkApiKey": us.ark_api_key,
         "companionMode": us.companion_mode,
         "mobileDeviceToken": us.mobile_device_token,
+        "obsidianVaultPath": us.obsidian_vault_path,
         "updatedAt": us.updated_at,
     }
 
@@ -73,6 +74,7 @@ _USER_FIELDS = frozenset({
     "ark_api_key",
     "companion_mode",
     "mobile_device_token",
+    "obsidian_vault_path",
 })
 
 # Fields that belong to global settings

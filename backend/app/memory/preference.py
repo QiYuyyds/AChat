@@ -7,7 +7,6 @@ Ported from AGI-memory ``internal/memory/preference.py``.
 import logging
 import threading
 import time
-from typing import Dict, Tuple
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
@@ -24,7 +23,7 @@ _PREFERENCE_VALUE_MAX = 200
 # Synonym → canonical key mapping. Layer 1 of the three-layer dedup strategy:
 # common Chinese synonyms are collapsed to a single canonical key so that
 # "喜欢=Python" / "偏好=Python" / "偏爱=Python" all update the same row.
-_KEY_SYNONYMS: Dict[str, str] = {
+_KEY_SYNONYMS: dict[str, str] = {
     "喜欢": "喜好",
     "偏好": "喜好",
     "偏爱": "喜好",
@@ -52,11 +51,11 @@ class Preference:
 
     def __init__(self, user_id: str = "default_user"):
         self.user_id = user_id
-        self.preferences: Dict[str, str] = {}
+        self.preferences: dict[str, str] = {}
         self._lock = threading.RLock()
 
     @property
-    def data(self) -> Dict[str, str]:
+    def data(self) -> dict[str, str]:
         return self.preferences
 
     async def load_from_storage(self) -> None:
@@ -109,7 +108,7 @@ class Preference:
         with self._lock:
             self.preferences[key] = value
 
-    async def save_batch(self, kvs: Dict[str, str], source: str = "extracted") -> None:
+    async def save_batch(self, kvs: dict[str, str], source: str = "extracted") -> None:
         for k, v in (kvs or {}).items():
             await self.set(_normalize_key(str(k)), str(v), source=source)
         await self._invalidate_cache()
@@ -142,14 +141,14 @@ class Preference:
         with self._lock:
             return self.preferences.get(key, default)
 
-    def get_all(self) -> Dict[str, str]:
+    def get_all(self) -> dict[str, str]:
         with self._lock:
             return dict(self.preferences)
 
-    def snapshot(self) -> Dict[str, str]:
+    def snapshot(self) -> dict[str, str]:
         return self.get_all()
 
-    def extract_and_save_sync(self, msg: str) -> Tuple[str, str, bool]:
+    def extract_and_save_sync(self, msg: str) -> tuple[str, str, bool]:
         """Synchronous preference extraction (for use in non-async hooks).
 
         Returns (key, value, matched). Rules: "我喜欢" / "我爱" / "我叫".
@@ -178,7 +177,7 @@ class Preference:
             return key, value, True
         return "", "", False
 
-    async def extract_and_save(self, msg: str) -> Tuple[str, str, bool]:
+    async def extract_and_save(self, msg: str) -> tuple[str, str, bool]:
         """Extract preference from user message and persist to PG."""
         key, value, matched = self.extract_and_save_sync(msg)
         if matched and key:

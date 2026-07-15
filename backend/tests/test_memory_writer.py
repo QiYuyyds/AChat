@@ -357,7 +357,6 @@ async def test_7_8_consolidate_preferences_merges_duplicates():
     LLM to return a merged dict with fewer keys, and verifies that removed
     keys are deleted from the in-memory cache.
     """
-    from unittest.mock import MagicMock
 
     from app.memory.memory_service import MemoryService
 

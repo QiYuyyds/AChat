@@ -6,12 +6,12 @@ Adaptation: async indexing/search; infrastructure backends injected.
 
 import hashlib
 import logging
-from typing import Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
 
 from app.config import Settings
-from app.infra.hybrid import HybridResult, HybridStore
-from app.rag.rewriter import HistoryMessage, LLMRewriter
+from app.infra.hybrid import HybridStore
 from app.rag.reranker import LLMReranker
+from app.rag.rewriter import HistoryMessage, LLMRewriter
 from app.rag.splitter import Chunk, RecursiveSplitter
 
 logger = logging.getLogger(__name__)
@@ -20,18 +20,18 @@ logger = logging.getLogger(__name__)
 class RAGEngine:
     """RAG engine: split → index (PG/Milvus/ES) → search (RRF fusion) → LLM compose."""
 
-    def __init__(self, settings: Settings, hybrid: Optional[HybridStore] = None):
+    def __init__(self, settings: Settings, hybrid: HybridStore | None = None):
         self.settings = settings
         parent_size = max(settings.rag_chunk_size * 4, 600)
         parent_overlap = settings.rag_chunk_overlap * 2
         self.parent_splitter = RecursiveSplitter(parent_size, parent_overlap)
         self.child_splitter = RecursiveSplitter(settings.rag_chunk_size, settings.rag_chunk_overlap)
         self.loaded = False
-        self._generate_fn: Optional[Callable[[str, str], str]] = None
-        self._rewriter: Optional[LLMRewriter] = None
-        self._reranker: Optional[LLMReranker] = None
+        self._generate_fn: Callable[[str, str], str] | None = None
+        self._rewriter: LLMRewriter | None = None
+        self._reranker: LLMReranker | None = None
         self._hybrid = hybrid
-        self._embed_fn: Optional[Callable] = None
+        self._embed_fn: Callable | None = None
 
     def set_generate_fn(self, fn: Callable[[str, str], str]) -> None:
         self._generate_fn = fn
@@ -41,10 +41,10 @@ class RAGEngine:
         if self._hybrid:
             self._hybrid.set_embed_fn(fn)
 
-    def set_rewriter(self, rewriter: Optional[LLMRewriter]) -> None:
+    def set_rewriter(self, rewriter: LLMRewriter | None) -> None:
         self._rewriter = rewriter
 
-    def set_reranker(self, reranker: Optional[LLMReranker]) -> None:
+    def set_reranker(self, reranker: LLMReranker | None) -> None:
         self._reranker = reranker
         if self._hybrid:
             self._hybrid.set_reranker(reranker)
@@ -54,11 +54,11 @@ class RAGEngine:
 
     # ─── Ingest ───────────────────────────────────────────────────────────
 
-    async def ingest(self, doc: str, *, user_id: Optional[str] = None) -> int:
+    async def ingest(self, doc: str, *, user_id: str | None = None) -> int:
         """Split document, embed, and index to PG/Milvus/ES."""
         parents = self.parent_splitter.split(doc)
-        chunks: List[Chunk] = []
-        child_parents: List[str] = []
+        chunks: list[Chunk] = []
+        child_parents: list[str] = []
         for parent in parents:
             for child in self.child_splitter.split(parent.content):
                 child.id = len(chunks)
@@ -71,20 +71,20 @@ class RAGEngine:
         contents = [chunk.content for chunk in chunks]
 
         # Compute chunk-level content_hash for embedding cache reuse
-        content_hashes: List[str] = [
+        content_hashes: list[str] = [
             hashlib.sha256(c.encode("utf-8")).hexdigest()[:16] for c in contents
         ]
 
         # Build embedding cache: batch query PG for existing content_hash + embedding
-        cache_map: Dict[str, List[float]] = {}
+        cache_map: dict[str, list[float]] = {}
         if content_hashes:
             cache_map = await self._lookup_embedding_cache(content_hashes)
 
         # Determine expected embedding dimension from settings
         expected_dim = self.settings.rag_milvus_dim
 
-        embeddings: List[List[float]] = []
-        cache_hit: List[bool] = []  # True = skip embed_fn and KG extraction
+        embeddings: list[list[float]] = []
+        cache_hit: list[bool] = []  # True = skip embed_fn and KG extraction
         for i, chunk in enumerate(chunks):
             ch = content_hashes[i]
             cached_emb = cache_map.get(ch)
@@ -96,7 +96,7 @@ class RAGEngine:
                 cache_hit.append(True)
             else:
                 # Cache miss (or dim mismatch): generate new embedding
-                embedding: List[float] = []
+                embedding: list[float] = []
                 if self._embed_fn:
                     try:
                         embedding = self._embed_fn(chunk.content)
@@ -131,8 +131,8 @@ class RAGEngine:
         return len(chunks)
 
     async def _lookup_embedding_cache(
-        self, content_hashes: List[str]
-    ) -> Dict[str, List[float]]:
+        self, content_hashes: list[str]
+    ) -> dict[str, list[float]]:
         """Batch query PG for existing embeddings by content_hash.
 
         Returns a mapping content_hash -> embedding for all hits.
@@ -140,9 +140,10 @@ class RAGEngine:
         if not content_hashes:
             return {}
         try:
+            from sqlalchemy import select
+
             from app.db.engine import get_db
             from app.db.models import RagChunk
-            from sqlalchemy import select
 
             # Deduplicate hashes for the IN query
             unique_hashes = list(set(content_hashes))
@@ -157,7 +158,7 @@ class RAGEngine:
                 result = await session.execute(stmt)
                 rows = result.all()
 
-            cache: Dict[str, List[float]] = {}
+            cache: dict[str, list[float]] = {}
             for row in rows:
                 ch = row[0]
                 emb = row[1]
@@ -170,16 +171,16 @@ class RAGEngine:
 
     # ─── Search ───────────────────────────────────────────────────────────
 
-    async def query(self, question: str, *, user_id: Optional[str] = None) -> Tuple[str, List[dict]]:
+    async def query(self, question: str, *, user_id: str | None = None) -> tuple[str, list[dict]]:
         return await self.query_with_history(question, [], user_id=user_id)
 
     async def query_with_history(
         self,
         question: str,
-        history: Optional[List[HistoryMessage]] = None,
+        history: list[HistoryMessage] | None = None,
         *,
-        user_id: Optional[str] = None,
-    ) -> Tuple[str, List[dict]]:
+        user_id: str | None = None,
+    ) -> tuple[str, list[dict]]:
         if not self.loaded:
             return "Knowledge base is empty. Please upload documents first.", []
         if not self._hybrid:
@@ -209,7 +210,7 @@ class RAGEngine:
         ask_query = queries[0] if queries else question
         return self._compose_answer(ask_query, fused)
 
-    def _compose_answer(self, question: str, fused: List[dict]) -> Tuple[str, List[dict]]:
+    def _compose_answer(self, question: str, fused: list[dict]) -> tuple[str, list[dict]]:
         fused = self._dedupe_results(fused)
         if not fused:
             return "No relevant content found in knowledge base.", []
@@ -229,9 +230,9 @@ class RAGEngine:
         return f"[Knowledge Base Results]\n{context}", fused
 
     @staticmethod
-    def _dedupe_results(results: List[dict]) -> List[dict]:
+    def _dedupe_results(results: list[dict]) -> list[dict]:
         seen = set()
-        deduped: List[dict] = []
+        deduped: list[dict] = []
         for item in results:
             content = (item.get("content") or "").strip()
             if not content or content in seen:

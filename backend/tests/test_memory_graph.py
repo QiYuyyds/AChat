@@ -1,11 +1,12 @@
 """Unit tests for GraphMemory — degradation when Neo4j is unavailable."""
 
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.config import Settings
-from app.memory.graph_memory import GraphMemory, _cosine
 from app.memory.consolidation import Item
+from app.memory.graph_memory import GraphMemory, _cosine
 
 
 def _make_settings() -> Settings:

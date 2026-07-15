@@ -17,7 +17,7 @@ import time
 
 def resolve_windows_exe(exec_path: str) -> str:
     """Same logic as cli_base._resolve_windows_exe."""
-    if not os.sep in exec_path and os.altsep not in exec_path:
+    if os.sep not in exec_path and os.altsep not in exec_path:
         resolved = shutil.which(exec_path)
         if resolved and os.path.isfile(resolved):
             exec_path = resolved
@@ -81,7 +81,7 @@ async def main():
 
     # 4. Spawn process
     creationflags = 0x08000000 if sys.platform == "win32" else 0
-    print(f"[4] Spawning...")
+    print("[4] Spawning...")
     proc = await asyncio.create_subprocess_exec(
         *args,
         stdin=asyncio.subprocess.PIPE,
@@ -102,10 +102,10 @@ async def main():
     print(f"[5] Writing prompt: {prompt_payload[:80]}...")
     proc.stdin.write((prompt_payload + "\n").encode())
     await proc.stdin.drain()
-    print(f"    Prompt written, stdin kept open for control_response")
+    print("    Prompt written, stdin kept open for control_response")
 
     # 6. Read stdout line by line (mirrors claude_adapter._read_events + multica scanner)
-    print(f"[6] Reading stdout...")
+    print("[6] Reading stdout...")
     t_spawn = time.monotonic()
     line_count = 0
     stderr_chunks = []
@@ -178,16 +178,16 @@ async def main():
                             block = event.get("content_block", {})
                             summary += f" block_start={block.get('type','?')}"
                         elif etype == "content_block_stop":
-                            summary += f" block_stop"
+                            summary += " block_stop"
                         elif etype == "message_start":
                             summary += f" message_start model={event.get('message',{}).get('model','?')}"
                         elif etype == "message_delta":
                             delta = event.get("delta", {})
                             summary += f" stop_reason={delta.get('stop_reason','?')}"
                         elif etype == "message_stop":
-                            summary += f" message_stop"
+                            summary += " message_stop"
                         elif etype == "ping":
-                            summary += f" ping"
+                            summary += " ping"
                         else:
                             summary += f" event_type={etype}"
                     else:
@@ -203,15 +203,15 @@ async def main():
             except json.JSONDecodeError:
                 print(f"    [{line_count}] RAW: {decoded[:120]}")
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         print(f"    TIMEOUT after 120s, {line_count} lines read")
 
     # 7. Wait for process
-    print(f"[7] Waiting for process exit...")
+    print("[7] Waiting for process exit...")
     try:
         await asyncio.wait_for(proc.wait(), timeout=10.0)
-    except asyncio.TimeoutError:
-        print(f"    Process didn't exit, terminating...")
+    except TimeoutError:
+        print("    Process didn't exit, terminating...")
         proc.terminate()
         await proc.wait()
 
@@ -226,13 +226,13 @@ async def main():
         pass
 
     if stderr_chunks:
-        print(f"[8] Stderr tail (last 20 lines):")
+        print("[8] Stderr tail (last 20 lines):")
         for line in stderr_chunks[-20:]:
             print(f"    STDERR: {line[:200]}")
 
     # 9. Cleanup
     os.remove(sp_file)
-    print(f"[9] Cleaned up temp file")
+    print("[9] Cleaned up temp file")
 
     # 10. Summary
     print(f"\n{'='*60}")

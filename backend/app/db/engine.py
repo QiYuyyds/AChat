@@ -107,6 +107,11 @@ async def _migrate_columns(conn) -> None:  # type: ignore[no-untyped-def]
         "CREATE INDEX IF NOT EXISTS idx_rag_user ON rag_chunks (user_id)",
         # ─── UserPreference source column ───
         "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'extracted'",
+        # ─── Obsidian sync columns ───
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_path VARCHAR(1024) NOT NULL DEFAULT ''",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
+        "CREATE INDEX IF NOT EXISTS idx_documents_source_path ON documents (source_path)",
+        "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS obsidian_vault_path VARCHAR(1024)",
     ]
     for stmt in statements:
         # dialects without IF NOT EXISTS (sqlite) / pre-existing column → no-op

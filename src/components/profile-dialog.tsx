@@ -1,6 +1,6 @@
 'use client'
 
-import { Loader2, User } from 'lucide-react'
+import { BookOpen, Loader2, User } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -16,7 +16,9 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import {
+  fetchAppSettings,
   fetchProfile,
+  updateAppSettings,
   updateProfile,
   uploadAvatar,
   type ProfileUpdateBody,
@@ -30,6 +32,7 @@ interface ProfileForm {
   hometown: string
   preferences: string
   bio: string
+  obsidianVaultPath: string
 }
 
 export function ProfileDialog({
@@ -48,6 +51,7 @@ export function ProfileDialog({
     hometown: '',
     preferences: '',
     bio: '',
+    obsidianVaultPath: '',
   })
   const [initial, setInitial] = useState<ProfileForm | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -61,9 +65,9 @@ export function ProfileDialog({
     void Promise.resolve()
       .then(() => {
         if (!cancelled) setLoading(true)
-        return fetchProfile()
+        return Promise.all([fetchProfile(), fetchAppSettings()])
       })
-      .then((p) => {
+      .then(([p, settings]) => {
         if (cancelled) return
         const f: ProfileForm = {
           name: p.name ?? '',
@@ -71,6 +75,7 @@ export function ProfileDialog({
           hometown: p.hometown ?? '',
           preferences: p.preferences ?? '',
           bio: p.bio ?? '',
+          obsidianVaultPath: (settings as Record<string, unknown>).obsidianVaultPath as string ?? '',
         }
         setForm(f)
         setInitial(f)
@@ -103,26 +108,44 @@ export function ProfileDialog({
     if (busy || !initial) return
     setBusy(true)
     try {
+      // Profile fields go through the profile API
       const patch: ProfileUpdateBody = {}
-      ;(Object.keys(form) as Array<keyof ProfileForm>).forEach((key) => {
+      const profileKeys: Array<keyof ProfileForm> = ['name', 'location', 'hometown', 'preferences', 'bio']
+      for (const key of profileKeys) {
         const current = form[key].trim()
         const original = initial[key].trim()
         if (current !== original) {
           patch[key] = current || null
         }
-      })
+      }
       if (Object.keys(patch).length > 0) {
         const updated = await updateProfile(patch)
-        const f: ProfileForm = {
+        setForm((f) => ({
+          ...f,
           name: updated.name ?? '',
           location: updated.location ?? '',
           hometown: updated.hometown ?? '',
           preferences: updated.preferences ?? '',
           bio: updated.bio ?? '',
-        }
-        setForm(f)
-        setInitial(f)
+        }))
       }
+
+      // Vault path is saved separately via settings API (NOT profile — avoids preference extraction)
+      const currentVault = form.obsidianVaultPath.trim()
+      const originalVault = initial.obsidianVaultPath.trim()
+      if (currentVault !== originalVault) {
+        const settingsResult = await updateAppSettings({
+          obsidianVaultPath: currentVault || null,
+        })
+        const newVaultPath = (settingsResult as Record<string, unknown>).obsidianVaultPath as string ?? ''
+        setForm((f) => ({ ...f, obsidianVaultPath: newVaultPath }))
+      }
+
+      // Update initial to reflect saved state
+      setInitial({
+        ...form,
+        obsidianVaultPath: form.obsidianVaultPath,
+      })
       onOpenChange(false)
     } catch (err) {
       console.error('[ProfileDialog] save failed', err)
@@ -230,6 +253,24 @@ export function ProfileDialog({
                     placeholder="介绍一下自己…"
                     rows={3}
                   />
+                </div>
+
+                {/* ─── Obsidian Vault ─── */}
+                <div className="mt-1 grid gap-1.5 rounded-md border bg-background/50 p-2.5">
+                  <div className="flex items-center gap-1.5">
+                    <BookOpen className="size-3.5 text-muted-foreground" />
+                    <label className="text-xs font-medium">Obsidian Vault 路径</label>
+                  </div>
+                  <Input
+                    value={form.obsidianVaultPath}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, obsidianVaultPath: e.target.value }))
+                    }
+                    placeholder="C:\Users\用户\Obsidian\MyVault"
+                  />
+                  <p className="text-[10px] leading-4 text-muted-foreground">
+                    填写本地 Vault 目录路径，配置后可在知识库页面点击「同步」导入笔记。留空则禁用同步。
+                  </p>
                 </div>
               </div>
             )}

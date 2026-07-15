@@ -1536,8 +1536,8 @@ async def execute_simple_run(
     prompt: str,
     attachments: list[AdapterAttachment],
 ) -> RunExecutionResult:
-    from app.observability import start_span
     from app.infra.cache_helpers import get_agent_cached, get_workspace_cached
+    from app.observability import start_span
 
     agent = await get_agent_cached(args.agent_id)
     if agent is None:
@@ -2230,7 +2230,6 @@ async def finalize(
     result: RunExecutionResult,
     error: str | None = None,
 ) -> RunResult:
-    from app.observability import start_span
     finished_at = now_ms()
 
     if status in ("failed", "aborted"):

@@ -60,7 +60,7 @@ STDERR = sys.stderr.buffer
 def _log(msg: str) -> None:
     """Write to stderr so Claude CLI can surface errors in its logs."""
     try:
-        STDERR.write(f"[achat-mcp] {msg}\n".encode("utf-8"))
+        STDERR.write(f"[achat-mcp] {msg}\n".encode())
         STDERR.flush()
     except Exception:
         pass

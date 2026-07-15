@@ -233,6 +233,7 @@ class UpdateSettingsRequest(BaseModel):
     deployment_public_base_url: str | None = Field(
         default=None, alias="deploymentPublicBaseUrl"
     )
+    obsidian_vault_path: str | None = Field(default=None, alias="obsidianVaultPath")
 
     model_config = {"populate_by_name": True}
 
@@ -247,6 +248,7 @@ class SettingsResponse(BaseModel):
     ark_api_key: str | None = Field(alias="arkApiKey")
     companion_mode: str = Field(alias="companionMode")
     mobile_device_token: str | None = Field(alias="mobileDeviceToken")
+    obsidian_vault_path: str | None = Field(default=None, alias="obsidianVaultPath")
     deployment_publish_enabled: bool = Field(alias="deploymentPublishEnabled")
     deployment_publish_dir: str | None = Field(alias="deploymentPublishDir")
     deployment_public_base_url: str | None = Field(alias="deploymentPublicBaseUrl")

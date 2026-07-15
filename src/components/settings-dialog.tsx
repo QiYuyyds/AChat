@@ -367,6 +367,7 @@ export function SettingsDialog({
                   }
                 />
               </TabsContent>
+
             </div>
           </Tabs>
         )}

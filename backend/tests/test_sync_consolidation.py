@@ -1,9 +1,7 @@
 """Unit tests for MemoryService._sync_consolidation_to_db."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from app.memory.consolidation import ConsolidationResult, Item
 from app.memory.memory_service import MemoryService

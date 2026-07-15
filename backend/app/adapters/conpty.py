@@ -25,7 +25,6 @@ import ctypes
 import logging
 import os
 import subprocess
-import sys
 from ctypes import wintypes
 from ctypes.wintypes import BOOL, DWORD, HANDLE
 

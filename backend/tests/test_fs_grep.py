@@ -10,13 +10,12 @@ from __future__ import annotations
 import asyncio
 import os
 
-import pytest
 import pytest_asyncio
 
 from app.services import conversation_service
 from app.services.fs_service import get_workspace_for_conversation
-from app.tools.base import ToolContext
 from app.tools import fs_grep as fs_grep_mod
+from app.tools.base import ToolContext
 from app.tools.fs_grep import fs_grep_tool
 
 
@@ -128,7 +127,7 @@ async def test_grep_result_truncation(ctx):
     ws = await get_workspace_for_conversation(ctx.conversation_id)
     # Per-file cap is 50, so create multiple files to exceed total max_results (100)
     for i in range(3):
-        lines = "\n".join(f"matchline" for _ in range(60))
+        lines = "\n".join("matchline" for _ in range(60))
         await _write_file(ws, f"batch/file_{i}.txt", lines + "\n")
 
     result = await fs_grep_tool.handler({"pattern": "matchline"}, ctx)
@@ -141,7 +140,7 @@ async def test_grep_result_truncation(ctx):
 
 async def test_grep_custom_max_results(ctx):
     ws = await get_workspace_for_conversation(ctx.conversation_id)
-    lines = "\n".join(f"hit" for _ in range(20))
+    lines = "\n".join("hit" for _ in range(20))
     await _write_file(ws, "small.txt", lines + "\n")
 
     result = await fs_grep_tool.handler({"pattern": "hit", "max_results": 5}, ctx)
@@ -156,7 +155,7 @@ async def test_grep_custom_max_results(ctx):
 async def test_grep_per_file_cap(ctx):
     ws = await get_workspace_for_conversation(ctx.conversation_id)
     # Create a file with 60 matches — per-file cap is 50
-    lines = "\n".join(f"captest" for _ in range(60))
+    lines = "\n".join("captest" for _ in range(60))
     await _write_file(ws, "caps.txt", lines + "\n")
 
     result = await fs_grep_tool.handler({"pattern": "captest"}, ctx)

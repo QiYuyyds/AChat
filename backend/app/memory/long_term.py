@@ -7,7 +7,8 @@ Ported from AGI-memory ``internal/memory/memory.py`` LongTerm class.
 import asyncio
 import logging
 import time
-from typing import Any, Callable, List, Optional, Set, TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import delete, select, update
 
@@ -20,7 +21,6 @@ from app.memory.consolidation import (
     ConsolidationConfig,
     ConsolidationResult,
     Item,
-    RecallFilter,
     cosine_similarity,
     tf_cosine,
     tokenize_zh,
@@ -42,11 +42,11 @@ class LongTerm:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.cfg = ConsolidationConfig.from_settings(settings)
-        self.items: List[Item] = []
-        self._embed_fn: Optional[Callable] = None
+        self.items: list[Item] = []
+        self._embed_fn: Callable | None = None
         self._last_consolidate_ts: float = 0.0
         self._items_since_last: int = 0
-        self.graph_memory: Optional["GraphMemory"] = None
+        self.graph_memory: GraphMemory | None = None
         self._next_id: int = 0
         self._lock = asyncio.Lock()
 
@@ -106,7 +106,7 @@ class LongTerm:
         importance: float = 0.5,
         scope: str = "global",
         agent_id: str = "",
-        user_id: Optional[str] = None,
+        user_id: str | None = None,
     ) -> None:
         """Add a new memory item, persist to PG, and sync to graph."""
         # Embedding is blocking I/O — run it off the event loop, outside the lock.
@@ -175,13 +175,13 @@ class LongTerm:
         self,
         content: str,
         importance: float,
-        emb: Optional[List[float]],
+        emb: list[float] | None,
         category: str,
-        tags: Optional[List[str]],
+        tags: list[str] | None,
         slot_hint: str,
         scope: str = "global",
         agent_id: str = "",
-        user_id: Optional[str] = None,
+        user_id: str | None = None,
     ) -> bool:
         """Schema-driven write with cosine dedup against existing items.
 
@@ -200,9 +200,9 @@ class LongTerm:
 
         # In-memory dedup/insert bookkeeping is guarded by the lock; graph I/O
         # (Neo4j) is deferred until after the lock is released.
-        target: Optional[Item] = None
-        new_item: Optional[Item] = None
-        prior: List[Item] = []
+        target: Item | None = None
+        new_item: Item | None = None
+        prior: list[Item] = []
 
         async with self._lock:
             # Cosine dedup: if highly similar to existing item in the same scope
@@ -226,7 +226,7 @@ class LongTerm:
                     if importance > target.importance:
                         target.importance = importance
                     if tags:
-                        merged_tags: List[str] = []
+                        merged_tags: list[str] = []
                         seen = set()
                         for t in list(target.tags) + list(tags):
                             if not t or t in seen:
@@ -325,16 +325,16 @@ class LongTerm:
 
     async def recall(
         self, query: str, top_k: int = 3, agent_id: str = "",
-        *, user_id: Optional[str] = None,
-    ) -> List[Item]:
+        *, user_id: str | None = None,
+    ) -> list[Item]:
         from app.observability import start_span
         with start_span("memory.ltm.query", top_k=top_k):
             return await self._recall_impl(query, top_k, agent_id, user_id=user_id)
 
     async def _recall_impl(
         self, query: str, top_k: int = 3, agent_id: str = "",
-        *, user_id: Optional[str] = None,
-    ) -> List[Item]:
+        *, user_id: str | None = None,
+    ) -> list[Item]:
         async with self._lock:
             if not self.items:
                 return []
@@ -391,7 +391,7 @@ class LongTerm:
 
             # Phase 2: global recall (fill remaining slots)
             remaining = max(0, top_k - len(agent_results))
-            global_results: List[Item] = []
+            global_results: list[Item] = []
             if remaining > 0:
                 global_pool = [
                     it for it in user_items if it.scope == "global"
@@ -415,10 +415,10 @@ class LongTerm:
     async def recall_by_filter(
         self,
         query: str,
-        query_embedding: Optional[List[float]],
+        query_embedding: list[float] | None,
         filt: Any,
         agent_id: str = "",
-    ) -> List[Item]:
+    ) -> list[Item]:
         """Filtered semantic recall (async version).
 
         When ``agent_id`` is provided, recall first searches agent-scoped
@@ -440,7 +440,7 @@ class LongTerm:
             use_tf = not query_embedding
             query_tokens = tokenize_zh(query) if use_tf else None
 
-            def _score_item(item: Item) -> Optional[float]:
+            def _score_item(item: Item) -> float | None:
                 """Score a single item; return None if it fails filters."""
                 if cat_set is not None:
                     item_cat = item.category or "general"
@@ -487,7 +487,7 @@ class LongTerm:
                 )
 
             # Phase 1: agent-scoped recall
-            agent_candidates: List[Item] = []
+            agent_candidates: list[Item] = []
             if agent_id:
                 for item in self.items:
                     if item.scope != "agent" or item.agent_id != agent_id:
@@ -501,7 +501,7 @@ class LongTerm:
 
             # Phase 2: global recall (fill remaining slots)
             remaining = top_k - len(agent_candidates) if top_k > 0 else 0
-            global_candidates: List[Item] = []
+            global_candidates: list[Item] = []
             if remaining > 0 or top_k == 0:
                 for item in self.items:
                     if item.scope != "global":
@@ -522,11 +522,11 @@ class LongTerm:
 
     async def _graph_expand(
         self,
-        seed_items: List[Item],
+        seed_items: list[Item],
         top_k: int,
-        cat_set: Optional[Set[str]] = None,
+        cat_set: set[str] | None = None,
         agent_id: str = "",
-    ) -> List[Item]:
+    ) -> list[Item]:
         """1-hop graph expansion from seed items.
 
         For each seed item, calls ``graph_memory.find_related(id)`` to discover
@@ -550,7 +550,7 @@ class LongTerm:
             return seed_items
 
         try:
-            expanded_ids: Set[int] = set()
+            expanded_ids: set[int] = set()
             for sid in seed_id_set:
                 related = await self.graph_memory.find_related(sid, agent_id=agent_id)
                 expanded_ids.update(related or [])
@@ -558,7 +558,7 @@ class LongTerm:
             logger.warning("graph_memory.find_related failed during recall: %s", e)
             return seed_items
 
-        extras: List[Item] = []
+        extras: list[Item] = []
         for it in self.items:
             if it.id is None or it.id not in expanded_ids or it.id in seed_id_set:
                 continue
@@ -709,7 +709,7 @@ class LongTerm:
 
     def _merge_pair(self, item_i: Item, item_j: Item, now: float) -> Item:
         content = f"{item_i.content}；{item_j.content}"
-        emb: Optional[List[float]] = None
+        emb: list[float] | None = None
         if (
             item_i.embedding
             and item_j.embedding
@@ -753,8 +753,8 @@ class LongTerm:
         self,
         a: str,
         b: str,
-        emb_a: Optional[List[float]] = None,
-        emb_b: Optional[List[float]] = None,
+        emb_a: list[float] | None = None,
+        emb_b: list[float] | None = None,
     ) -> float:
         if emb_a and emb_b and len(emb_a) == len(emb_b):
             return cosine_similarity(emb_a, emb_b)
@@ -766,7 +766,7 @@ class LongTerm:
         last = self.items[-1]
         return -1 if last.id is None else int(last.id)
 
-    def snapshot(self) -> List[Item]:
+    def snapshot(self) -> list[Item]:
         return [
             Item(
                 content=it.content, importance=it.importance,
@@ -780,8 +780,8 @@ class LongTerm:
         ]
 
     async def filter_by_category(
-        self, categories: List[str], limit: int
-    ) -> List[Item]:
+        self, categories: list[str], limit: int
+    ) -> list[Item]:
         """Return in-memory items whose category matches any of *categories*.
 
         Results are ordered by importance descending and limited to *limit*.
@@ -804,11 +804,11 @@ class LongTerm:
     async def update_item(
         self,
         memory_id: int,
-        content: Optional[str] = None,
-        importance: Optional[float] = None,
-        category: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-    ) -> Optional[Item]:
+        content: str | None = None,
+        importance: float | None = None,
+        category: str | None = None,
+        tags: list[str] | None = None,
+    ) -> Item | None:
         """Update a single LTM item in memory + PG.
 
         Returns the updated Item, or None if not found.
@@ -816,7 +816,7 @@ class LongTerm:
         the API layer handles that asynchronously when content changes.
         """
         async with self._lock:
-            target: Optional[Item] = None
+            target: Item | None = None
             for it in self.items:
                 if it.id == memory_id:
                     target = it
@@ -853,7 +853,7 @@ class LongTerm:
 
             return target
 
-    async def update_embedding(self, memory_id: int, embedding: Optional[List[float]]) -> None:
+    async def update_embedding(self, memory_id: int, embedding: list[float] | None) -> None:
         """Persist a recomputed embedding to PG and the in-memory Item."""
         async with self._lock:
             for it in self.items:
@@ -876,7 +876,7 @@ class LongTerm:
 
         Returns True if the item was found and deleted, False otherwise.
         """
-        target: Optional[Item] = None
+        target: Item | None = None
         async with self._lock:
             for idx, it in enumerate(self.items):
                 if it.id == memory_id:

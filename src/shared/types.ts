@@ -549,13 +549,15 @@ export interface DocumentRow {
   id: string
   title: string
   docType: string
-  source: 'agent_generated' | 'user_upload'
+  source: 'agent_generated' | 'user_upload' | 'obsidian_sync' | 'artifact_import'
   status: 'active' | 'deleted'
   createdBy: string
   createdAt: number
   updatedAt: number
   latestVersion: number
   latestVersionId: string
+  sourcePath?: string
+  contentHash?: string | null
   latestMetadata?: {
     filename?: string
     parser?: string
@@ -620,4 +622,44 @@ export interface UploadResult {
   version?: VersionRow
   success: boolean
   message?: string
+}
+
+// ─── Obsidian Sync Types ──────────────────────────────────────
+
+export interface FolderNode {
+  name: string
+  path: string
+  docCount: number
+}
+
+export interface FileNode {
+  id: string
+  title: string
+  sourcePath: string
+  docType: string
+  source: string
+  updatedAt: number
+}
+
+export interface DocumentTree {
+  currentPath: string
+  folders: FolderNode[]
+  files: FileNode[]
+}
+
+export interface SyncReport {
+  scanned: number
+  added: number
+  updated: number
+  deleted: number
+  skipped: number
+  errors: { path: string; error: string }[]
+}
+
+export interface SyncStatus {
+  vaultPath: string | null
+  vaultExists: boolean
+  totalMdFiles: number
+  lastSyncAt: number | null
+  lastSyncSummary: SyncReport | null
 }
