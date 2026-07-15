@@ -1,8 +1,6 @@
 """Tests for HookRegistry registration, dispatch, and control flow."""
 
-import asyncio
 
-import pytest
 
 from app.services.hook_registry import (
     HookContext,

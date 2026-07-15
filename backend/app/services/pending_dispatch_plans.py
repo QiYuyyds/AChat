@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Literal
 
 from app.schemas.dispatch import DispatchPlanItem, PendingDispatchPlan
 from app.schemas.events import DispatchPlanPendingEvent, DispatchPlanResolvedEvent
@@ -181,7 +181,7 @@ class PendingDispatchPlansStore:
 pending_dispatch_plans = PendingDispatchPlansStore()
 
 
-def get_planner_snapshot() -> Optional["PlannerSnapshot"]:
+def get_planner_snapshot() -> PlannerSnapshot | None:
     """Build a PlannerSnapshot from the most recent pending dispatch plan.
 
     Returns ``None`` when no plan is pending. Used as the default

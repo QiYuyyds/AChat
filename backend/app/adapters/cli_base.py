@@ -368,7 +368,7 @@ def _resolve_windows_exe(exec_path: str) -> str:
     ``"claude"``. In either case we find the real ``.exe``.
     """
     # If it's a short name (no path separator), resolve via PATH first.
-    if not os.sep in exec_path and os.altsep not in exec_path:
+    if os.sep not in exec_path and os.altsep not in exec_path:
         resolved = shutil.which(exec_path)
         if resolved and os.path.isfile(resolved):
             exec_path = resolved
@@ -483,7 +483,7 @@ class CLIAdapterBase(AgentPlatformAdapter, ABC):
         _conpty_proc = None
 
         if _use_conpty:
-            from app.adapters.conpty import ConPTYProcess, spawn_conpty
+            from app.adapters.conpty import spawn_conpty
 
             try:
                 _conpty_proc = await spawn_conpty(

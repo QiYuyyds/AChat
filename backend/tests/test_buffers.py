@@ -2,15 +2,12 @@
 
 import asyncio
 
-import pytest
-
 from app.services.prompt_assembler import (
     StepObservation,
     TaskMemBuffer,
     ToolCallTrace,
     ToolStateTracker,
 )
-
 
 # ─── TaskMemBuffer tests (Task 2.3) ──────────────────────────────────────────
 

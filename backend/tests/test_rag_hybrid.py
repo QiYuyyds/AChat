@@ -1,10 +1,11 @@
 """Unit tests for HybridStore — mode detection + degradation when backends unavailable."""
 
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.config import Settings
-from app.infra.hybrid import HybridStore, HybridResult
+from app.infra.hybrid import HybridStore
 
 
 def _make_settings(**overrides) -> Settings:

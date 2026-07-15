@@ -5,7 +5,6 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Optional
 
 # On Windows the default ProactorEventLoop is required for subprocess support.
 # Some libraries / env configs may switch to SelectorEventLoop which does not
@@ -39,13 +38,14 @@ _rag_service = None
 _infrastructure = None
 _app_ref = None
 _document_service = None
+_obsidian_sync_service = None
 _kg_wired = False
 
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
-    global _memory_service, _rag_service, _infrastructure, _app_ref, _document_service, _kg_wired
+    global _memory_service, _rag_service, _infrastructure, _app_ref, _document_service, _obsidian_sync_service, _kg_wired
     _app_ref = app_instance
 
     # Startup
@@ -61,9 +61,9 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     init_observability(settings)
     if settings.trace_enabled:
         try:
+            from openinference.instrumentation.openai import OpenAIInstrumentor
             from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
             from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-            from openinference.instrumentation.openai import OpenAIInstrumentor
             FastAPIInstrumentor.instrument_app(app_instance)
             HTTPXClientInstrumentor().instrument()
             OpenAIInstrumentor().instrument()
@@ -133,13 +133,19 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     # ─── PromptAssembler ───
     try:
-        from app.services.prompt_assembler import (
-            ContextAssembler, SourceRegistry,
-            PlannerSource, ProfileSource, RecallSource,
-            TaskMemBuffer, TaskMemSource, ToolStateSource, ToolStateTracker,
-            ConstraintsSource,
-        )
         from app.services.pending_dispatch_plans import get_planner_snapshot
+        from app.services.prompt_assembler import (
+            ConstraintsSource,
+            ContextAssembler,
+            PlannerSource,
+            ProfileSource,
+            RecallSource,
+            SourceRegistry,
+            TaskMemBuffer,
+            TaskMemSource,
+            ToolStateSource,
+            ToolStateTracker,
+        )
         from app.tools.registry import tool_registry as _tool_reg
 
         # Create shared buffers and mount to app.state
@@ -224,6 +230,19 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning("DocumentService init failed: %s", e)
         _document_service = None
+
+    # ─── ObsidianSyncService ───
+    try:
+        from app.services.obsidian_sync_service import ObsidianSyncService
+        if _document_service:
+            _obsidian_sync_service = ObsidianSyncService(document_service=_document_service)
+            logger.info("ObsidianSyncService initialized")
+        else:
+            logger.warning("ObsidianSyncService skipped (DocumentService not available)")
+            _obsidian_sync_service = None
+    except Exception as e:
+        logger.warning("ObsidianSyncService init failed: %s", e)
+        _obsidian_sync_service = None
 
     # ─── Startup Status Dashboard ───
     _log_startup_dashboard(settings)
@@ -387,6 +406,9 @@ def _log_startup_dashboard(settings) -> None:
     # Document service
     doc_status = "✓ DocumentService" if _document_service else "✗ DocumentService not initialized"
     logger.info("Document Svc:   %s", doc_status)
+
+    obs_status = "✓ ObsidianSync" if _obsidian_sync_service else "✗ ObsidianSync not initialized"
+    logger.info("Obsidian Sync:  %s", obs_status)
 
     # Server config
     logger.info("Server:          http://%s:%s", settings.host, settings.port)
@@ -611,8 +633,8 @@ def _wire_es_to_rag(rag_service, es_client):
 
 def _wire_kg_to_rag(rag_service, neo4j_driver, settings, generate_fn):
     """Wire KGStore into RAGService's HybridStore for KG search/index/delete."""
-    from app.graph.kgstore import KGStore
     from app.graph.extractor import Extractor
+    from app.graph.kgstore import KGStore
 
     extractor = Extractor(generate_fn)
     kg_store = KGStore(settings, neo4j_driver, extractor)
@@ -682,7 +704,9 @@ def create_app() -> FastAPI:
         mcp,
         memory,
         messages,
+        obsidian,
         pending,
+        plan_usage,
         profile,
         runs_misc,
         skills,
@@ -705,9 +729,11 @@ def create_app() -> FastAPI:
     app.include_router(pending.router, tags=["pending"])
     app.include_router(settings_router.router, prefix="/api", tags=["settings"])
     app.include_router(runs_misc.router, prefix="/api", tags=["runs-misc"])
+    app.include_router(plan_usage.router, prefix="/api", tags=["plan-usage"])
     app.include_router(mobile_routes.router, prefix="/api", tags=["mobile"])
     app.include_router(stream.router, prefix="/api", tags=["stream"])
     app.include_router(documents.router, prefix="/api", tags=["documents"])
+    app.include_router(obsidian.router, prefix="/api", tags=["obsidian"])
     app.include_router(eval.router, prefix="/api", tags=["eval"])
     app.include_router(memory.router, prefix="", tags=["memory"])
     app.include_router(skills.router, prefix="/api", tags=["skills"])

@@ -31,13 +31,15 @@ type MessagePart =
       attachmentId: string; fileName: string; size: number; mimeType: string }
   | { type: 'file_attachment';
       attachmentId: string; fileName: string; size: number; mimeType: string }
+  | { type: 'execution_plan';
+      planId: string; steps: PlanStep[]; complexity: 'simple' | 'moderate' | 'complex' }
 ```
 
 源：`src/shared/types.ts:7-27`
 
 ---
 
-## 10 种 part 详解
+## 11 种 part 详解
 
 ### 1. `text`
 
@@ -162,6 +164,33 @@ Agent 的主要文字输出。content 是 markdown 文本，前端用 `react-mar
 
 **LLM 投递**：默认 **不**自动塞内容到 prompt（避免 prompt 爆炸）。Agent 想读时调 `read_attachment(attachmentId)` 工具（详见 Spec 07）。
 
+### 11. `execution_plan`
+
+```typescript
+{ type: 'execution_plan', planId: string, steps: PlanStep[], complexity: 'simple' | 'moderate' | 'complex' }
+
+interface PlanStep {
+  id: string
+  title: string
+  status: 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped'
+}
+```
+
+结构化执行计划卡片。Solo 模式 Agent 通过 `create_plan` 工具创建，系统追踪步骤进度，前端渲染为 checklist 卡片。
+
+**不增量**：步骤变更通过 `plan.step_update` 事件全量替换 steps 数组，不走 PartDelta 协议。
+
+**注入路径**：对称于 `artifact_ref`：
+1. Agent 调用 `create_plan` 工具 → 返回 `{ planId, steps, complexity }`
+2. `_execute_tool_call_to_result` 检测到 `create_plan` 成功 → 追加 `PlanCreatedEvent`
+3. `consume_stream` 收到 `plan.created` → 在当前 message 末尾 push `execution_plan` part + emit `part.start`
+
+**步骤状态更新**：`plan_step` / `add_plan_steps` 工具成功时，`_execute_tool_call_to_result` 追加 `PlanStepUpdateEvent`，`consume_stream` 收到后更新 parts_buffer 中的 steps。
+
+**Run 结束清理**：`consume_stream` 收到 `run.end` 时，将 `execution_plan` parts 中未完成的步骤标为终态（in_progress → done/failed，pending → skipped），并发出最终 `PlanStepUpdateEvent`。
+
+**渲染**：`ExecutionPlanPart` checklist 卡片，显示进度条 + 步骤列表，每个步骤用状态图标标识（⬚ pending, 🔄 in_progress, ✅ done, ❌ failed, ⏭ skipped）。
+
 ---
 
 ## PartDelta：增量协议
@@ -211,6 +240,7 @@ function PartList({ parts }) {
 | `deploy_candidates` | `<DeployCandidatesPart>` | 多个 web_app 候选选择卡，点击后调用部署 API |
 | `image_attachment` | `<AttachmentChip context="message">` | 图片缩略 |
 | `file_attachment` | `<AttachmentChip context="message">` | 文件 chip |
+| `execution_plan` | `<ExecutionPlanPart>` | checklist 进度卡片，进度条 + 步骤列表 |
 
 ### 状态映射（在 MessageItem 层）
 
@@ -239,6 +269,7 @@ LLM 下一轮 turn 需要 history（assistant 的旧消息回传 messages 数组
 | `artifact_ref` | `[产物: art_xxx]` |
 | `deploy_status` | `[部署预览: title vN (/deployments/dep_xxx)]` / `[部署预览: title workspace=dist (/deployments/dep_xxx)]` 或 `[部署失败: ...]` |
 | `deploy_candidates` | `[部署候选: title vN (id=art_xxx), ...]` |
+| `execution_plan` | `[执行计划: step1(✅), step2(🔄), step3(⬚)]` |
 | 附件 | `[图片附件: <fileName>]` / `[文件附件: <fileName>]` |
 
 具体实现见 `agent-runner.ts` 的 `extractTextFromParts`（拼回字符串） + `buildMessagesForLLM`（构造 OpenAI format）。

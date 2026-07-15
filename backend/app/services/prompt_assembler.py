@@ -17,8 +17,9 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from app.memory.memory_writer import _IMPORTANCE_BY_CATEGORY, classify_memory_content
 
@@ -39,8 +40,8 @@ SlotKind = str
 
 @dataclass
 class SlotFilter:
-    categories: List[str] = field(default_factory=list)
-    require_tags: List[str] = field(default_factory=list)
+    categories: list[str] = field(default_factory=list)
+    require_tags: list[str] = field(default_factory=list)
     min_score: float = 0.0
     top_k: int = 0
     max_age_hours: int = 0
@@ -61,13 +62,13 @@ class ContextItem:
     text: str
     score: float = 0.0
     source: str = ""
-    meta: Dict[str, str] = field(default_factory=dict)
+    meta: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class FilledSlot:
     kind: SlotKind
-    items: List[ContextItem] = field(default_factory=list)
+    items: list[ContextItem] = field(default_factory=list)
     skipped: bool = False
     reason: str = ""
 
@@ -80,7 +81,7 @@ DEFAULT_GLOBAL_TOKEN_BUDGET = 3600
 @dataclass
 class RuntimeContextSchema:
     mode: str
-    slots: List[Slot] = field(default_factory=list)
+    slots: list[Slot] = field(default_factory=list)
 
 
 CHAT_SCHEMA = RuntimeContextSchema(
@@ -128,7 +129,7 @@ RAG_SCHEMA = RuntimeContextSchema(
 )
 
 
-def default_schemas() -> Dict[str, RuntimeContextSchema]:
+def default_schemas() -> dict[str, RuntimeContextSchema]:
     return {
         "chat": CHAT_SCHEMA,
         "tool": TOOL_SCHEMA,
@@ -169,7 +170,7 @@ class TaskMemBuffer:
 
     def __init__(self, max_size: int = 20) -> None:
         self._max_size = max_size
-        self._buf: List[StepObservation] = []
+        self._buf: list[StepObservation] = []
         self._lock = asyncio.Lock()
 
     async def push(self, obs: StepObservation) -> None:
@@ -182,7 +183,7 @@ class TaskMemBuffer:
         async with self._lock:
             self._buf.clear()
 
-    async def snapshot(self) -> List[StepObservation]:
+    async def snapshot(self) -> list[StepObservation]:
         async with self._lock:
             return list(self._buf)
 
@@ -208,7 +209,7 @@ class ToolStateTracker:
 
     def __init__(self, max_size: int = 10) -> None:
         self._max_size = max_size
-        self._buf: List[ToolCallTrace] = []
+        self._buf: list[ToolCallTrace] = []
         self._lock = asyncio.Lock()
 
     async def record(self, trace: ToolCallTrace) -> None:
@@ -219,7 +220,7 @@ class ToolStateTracker:
             if len(self._buf) > self._max_size:
                 self._buf = self._buf[-self._max_size :]
 
-    async def snapshot(self) -> List[ToolCallTrace]:
+    async def snapshot(self) -> list[ToolCallTrace]:
         async with self._lock:
             return list(self._buf)
 
@@ -240,8 +241,8 @@ class PlannerSnapshot:
 
 
 # Provider callbacks — return None when no data is available (safe degrade).
-PlannerProvider = Callable[[], Optional[PlannerSnapshot]]
-ToolRegistryProvider = Callable[[], Dict[str, Any]]
+PlannerProvider = Callable[[], PlannerSnapshot | None]
+ToolRegistryProvider = Callable[[], dict[str, Any]]
 
 
 # ─── Task 4.4: Sources ───────────────────────────────────────────────────────
@@ -249,7 +250,7 @@ ToolRegistryProvider = Callable[[], Dict[str, Any]]
 @dataclass
 class Query:
     text: str = ""
-    embedding: List[float] = field(default_factory=list)
+    embedding: list[float] = field(default_factory=list)
     task_id: str = ""
     mode: str = ""
     conversation_id: str = ""
@@ -265,7 +266,7 @@ class ContextSource(ABC):
     def supports(self, kind: SlotKind) -> bool: ...
 
     @abstractmethod
-    async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]: ...
+    async def fetch(self, slot: Slot, q: Query) -> list[ContextItem]: ...
 
 
 class ProfileSource(ContextSource):
@@ -287,8 +288,8 @@ class ProfileSource(ContextSource):
     def supports(self, kind: SlotKind) -> bool:
         return kind == SlotProfile
 
-    async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
-        items: List[ContextItem] = []
+    async def fetch(self, slot: Slot, q: Query) -> list[ContextItem]:
+        items: list[ContextItem] = []
         _pref_count = 0
 
         # Resolve preferences: use in-memory provider only when the query
@@ -296,7 +297,7 @@ class ProfileSource(ContextSource):
         # For any other user, query the UserPreference table directly so that
         # multi-user deployments get each user's own profile data.
         user_id = q.user_id or "default_user"
-        prefs: Dict[str, str] = {}
+        prefs: dict[str, str] = {}
 
         if self._pref is not None and user_id == "default_user":
             prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
@@ -318,7 +319,7 @@ class ProfileSource(ContextSource):
 
         try:
             _pref_count = len(prefs)
-            scored: List[ContextItem] = []
+            scored: list[ContextItem] = []
             for k, v in prefs.items():
                 category, _tags, _slot_hint = classify_memory_content(
                     str(k), str(v),
@@ -352,7 +353,7 @@ class ProfileSource(ContextSource):
 class PlannerSource(ContextSource):
     """Fills planner slot from dispatch plan state via PlannerProvider."""
 
-    def __init__(self, provider: Optional[PlannerProvider] = None):
+    def __init__(self, provider: PlannerProvider | None = None):
         self._provider = provider
 
     def id(self) -> str:
@@ -361,7 +362,7 @@ class PlannerSource(ContextSource):
     def supports(self, kind: SlotKind) -> bool:
         return kind == SlotPlanner
 
-    async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
+    async def fetch(self, slot: Slot, q: Query) -> list[ContextItem]:
         if self._provider is None:
             return []
         try:
@@ -372,7 +373,7 @@ class PlannerSource(ContextSource):
         if snap is None:
             return []
 
-        items: List[ContextItem] = []
+        items: list[ContextItem] = []
         # Task status line
         items.append(
             ContextItem(
@@ -411,7 +412,7 @@ class PlannerSource(ContextSource):
 class TaskMemSource(ContextSource):
     """Fills task memory slot from TaskMemBuffer step observations."""
 
-    def __init__(self, buffer: Optional[TaskMemBuffer] = None):
+    def __init__(self, buffer: TaskMemBuffer | None = None):
         self._buffer = buffer
 
     def id(self) -> str:
@@ -420,7 +421,7 @@ class TaskMemSource(ContextSource):
     def supports(self, kind: SlotKind) -> bool:
         return kind == SlotTaskMem
 
-    async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
+    async def fetch(self, slot: Slot, q: Query) -> list[ContextItem]:
         if self._buffer is None:
             return []
         try:
@@ -435,7 +436,7 @@ class TaskMemSource(ContextSource):
         if top_k > 0 and len(observations) > top_k:
             observations = observations[-top_k:]  # keep most recent
 
-        items: List[ContextItem] = []
+        items: list[ContextItem] = []
         for obs in observations:
             if obs.success:
                 text = f"步骤{obs.step_id} [{obs.tool_name}]→{obs.result}"
@@ -450,8 +451,8 @@ class ToolStateSource(ContextSource):
 
     def __init__(
         self,
-        registry_provider: Optional[ToolRegistryProvider] = None,
-        tracker: Optional[ToolStateTracker] = None,
+        registry_provider: ToolRegistryProvider | None = None,
+        tracker: ToolStateTracker | None = None,
     ):
         self._registry_provider = registry_provider
         self._tracker = tracker
@@ -462,8 +463,8 @@ class ToolStateSource(ContextSource):
     def supports(self, kind: SlotKind) -> bool:
         return kind == SlotToolState
 
-    async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
-        items: List[ContextItem] = []
+    async def fetch(self, slot: Slot, q: Query) -> list[ContextItem]:
+        items: list[ContextItem] = []
         top_k = slot.filter.top_k or 0
 
         # 1. Available tool list
@@ -518,7 +519,7 @@ class ConstraintsSource(ContextSource):
     def supports(self, kind: SlotKind) -> bool:
         return kind == SlotConstraints
 
-    async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
+    async def fetch(self, slot: Slot, q: Query) -> list[ContextItem]:
         if not self._text:
             return []
         return [ContextItem(text=self._text, source="constraints")]
@@ -536,7 +537,7 @@ class RecallSource(ContextSource):
     def supports(self, kind: SlotKind) -> bool:
         return kind == SlotRecall
 
-    async def fetch(self, slot: Slot, q: Query) -> List[ContextItem]:
+    async def fetch(self, slot: Slot, q: Query) -> list[ContextItem]:
         if self._memory is None or not q.text:
             return []
         try:
@@ -564,7 +565,7 @@ class SourceRegistry:
     """Holds ContextSource registrations grouped by SlotKind."""
 
     def __init__(self) -> None:
-        self._sources: Dict[SlotKind, List[ContextSource]] = {}
+        self._sources: dict[SlotKind, list[ContextSource]] = {}
 
     def register(self, source: ContextSource) -> None:
         all_kinds = [SlotProfile, SlotPlanner, SlotTaskMem, SlotToolState, SlotConstraints, SlotRecall]
@@ -572,7 +573,7 @@ class SourceRegistry:
             if source.supports(kind):
                 self._sources.setdefault(kind, []).append(source)
 
-    def for_kind(self, kind: SlotKind) -> List[ContextSource]:
+    def for_kind(self, kind: SlotKind) -> list[ContextSource]:
         return list(self._sources.get(kind, []))
 
 
@@ -581,8 +582,8 @@ class ContextAssembler:
 
     def __init__(
         self,
-        schemas: Optional[Dict[str, RuntimeContextSchema]] = None,
-        registry: Optional[SourceRegistry] = None,
+        schemas: dict[str, RuntimeContextSchema] | None = None,
+        registry: SourceRegistry | None = None,
         global_limit: int = DEFAULT_GLOBAL_TOKEN_BUDGET,
     ) -> None:
         self.schemas = schemas or default_schemas()
@@ -627,7 +628,7 @@ class ContextAssembler:
         if not sources:
             return FilledSlot(kind=slot.kind, skipped=not slot.required, reason="no source registered")
 
-        all_items: List[ContextItem] = []
+        all_items: list[ContextItem] = []
         for src in sources:
             try:
                 items = await src.fetch(slot, q) or []
@@ -668,7 +669,7 @@ class ContextAssembler:
                 fs.reason = "global budget exceeded"
 
 
-def _trim_by_budget(items: List[ContextItem], budget: int) -> List[ContextItem]:
+def _trim_by_budget(items: list[ContextItem], budget: int) -> list[ContextItem]:
     """Drop items once cumulative length exceeds budget.
 
     Aligns with the original AGI-memory behavior: when adding an item would
@@ -693,10 +694,10 @@ def _trim_by_budget(items: List[ContextItem], budget: int) -> List[ContextItem]:
 @dataclass
 class RuntimeContext:
     schema: RuntimeContextSchema
-    filled: List[FilledSlot] = field(default_factory=list)
-    trace: List[str] = field(default_factory=list)
+    filled: list[FilledSlot] = field(default_factory=list)
+    trace: list[str] = field(default_factory=list)
 
-    def slot_by_kind(self, kind: SlotKind) -> Optional[FilledSlot]:
+    def slot_by_kind(self, kind: SlotKind) -> FilledSlot | None:
         for fs in self.filled:
             if fs.kind == kind:
                 return fs
@@ -758,14 +759,14 @@ class RuntimeContext:
             return ""
         return "<system-reminder>\n" + "\n\n".join(sections) + "\n</system-reminder>"
 
-    def _get_slot_def(self, kind: SlotKind) -> Optional[Slot]:
+    def _get_slot_def(self, kind: SlotKind) -> Slot | None:
         """Look up Slot definition from schema by kind."""
         for slot in self.schema.slots:
             if slot.kind == kind:
                 return slot
         return None
 
-    def render_history(self) -> List[Dict[str, str]]:
+    def render_history(self) -> list[dict[str, str]]:
         """Render static context as system messages for cache stability."""
         ctx = self.render_static()
         if not ctx:

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from app.schemas.dispatch import DispatchPlanItem
-from app.schemas.events import DispatchEndEvent, DispatchStartEvent
+from app.schemas.events import DispatchEndEvent, DispatchStartEvent, PlanStepUpdateEvent
 from app.services.event_bus import event_bus
 from app.utils.clock import now_ms
 
@@ -169,18 +169,18 @@ async def execute_dag(
                 child_run_id=None,
             )
             failed_ids.add(t.id)
-        event_bus.publish(
-            DispatchEndEvent(
-                conversation_id=ctx.conversation_id,
-                timestamp=now_ms(),
-                parent_run_id=ctx.parent_run_id,
-                child_run_id=None,
-                task_id=t.id,
-                status="skipped",
-                error=reason,
-            ),
-            user_id=ctx.user_id,
-        )
+            event_bus.publish(
+                DispatchEndEvent(
+                    conversation_id=ctx.conversation_id,
+                    timestamp=now_ms(),
+                    parent_run_id=ctx.parent_run_id,
+                    child_run_id=None,
+                    task_id=t.id,
+                    status="skipped",
+                    error=reason,
+                ),
+                user_id=ctx.user_id,
+            )
 
         # Execute ready tasks in parallel
         if ready:
@@ -204,23 +204,46 @@ async def _execute_node(
     """Execute a single DAG node via the provided spawn function.
 
     Emits ``dispatch.start`` when the child run begins and ``dispatch.end``
-    when it finishes.
+    when it finishes. Also updates linked plan steps automatically.
     """
+    from app.services.plan_dispatch_mapping import plan_dispatch_mapping as _pdm
+    from app.services.plan_registry import plan_registry as _preg
+
     child_run_id_holder: list[str] = []
 
     def on_start(run_id: str) -> None:
         child_run_id_holder.append(run_id)
-    event_bus.publish(
-        DispatchStartEvent(
-            conversation_id=ctx.conversation_id,
-            timestamp=now_ms(),
-            parent_run_id=ctx.parent_run_id,
-            child_run_id=run_id,
-            task_id=task.id,
-            agent_id=task.agent_id,
-        ),
-        user_id=ctx.user_id,
-    )
+        event_bus.publish(
+            DispatchStartEvent(
+                conversation_id=ctx.conversation_id,
+                timestamp=now_ms(),
+                parent_run_id=ctx.parent_run_id,
+                child_run_id=run_id,
+                task_id=task.id,
+                agent_id=task.agent_id,
+            ),
+            user_id=ctx.user_id,
+        )
+        # Auto-update: mark linked plan step as in_progress
+        if task.plan_step_id is not None:
+            mapping_key = _pdm.lookup_by_task(task.id)
+            if mapping_key is not None:
+                plan_id, step_id = mapping_key
+                plan = _preg.get(plan_id)
+                if plan is not None:
+                    target = next((s for s in plan.steps if s.id == step_id), None)
+                    if target is not None and target.status == "pending":
+                        target.status = "in_progress"
+                        _preg.update(plan)
+                        event_bus.publish(
+                            PlanStepUpdateEvent(
+                                conversation_id=ctx.conversation_id,
+                                timestamp=now_ms(),
+                                planId=plan_id,
+                                steps=plan.steps,
+                            ),
+                            user_id=ctx.user_id,
+                        )
 
     logger.info(
         "[dag_executor] executing node=%s agent=%s parent_run=%s",
@@ -255,6 +278,30 @@ async def _execute_node(
         ),
         user_id=ctx.user_id,
     )
+
+    # Auto-update: mark linked plan step as done/failed based on dispatch result
+    if task.plan_step_id is not None:
+        _pdm.update_task_status(task.id, result.status)
+        mapping_key = _pdm.lookup_by_task(task.id)
+        if mapping_key is not None:
+            plan_id, step_id = mapping_key
+            agg = _pdm.aggregate_step_status(plan_id, step_id)
+            if agg is not None and agg != "in_progress":
+                plan = _preg.get(plan_id)
+                if plan is not None:
+                    target = next((s for s in plan.steps if s.id == step_id), None)
+                    if target is not None and target.status != agg:
+                        target.status = agg  # type: ignore[assignment]
+                        _preg.update(plan)
+                        event_bus.publish(
+                            PlanStepUpdateEvent(
+                                conversation_id=ctx.conversation_id,
+                                timestamp=now_ms(),
+                                planId=plan_id,
+                                steps=plan.steps,
+                            ),
+                            user_id=ctx.user_id,
+                        )
 
     return NodeResult(
         task_id=task.id,

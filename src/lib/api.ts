@@ -930,6 +930,7 @@ export interface AppSettingsPatchBody {
   deploymentPublishEnabled?: boolean
   deploymentPublishDir?: string | null
   deploymentPublicBaseUrl?: string | null
+  obsidianVaultPath?: string | null
 }
 
 export async function updateAppSettings(patch: AppSettingsPatchBody): Promise<AppSettingsRow> {
@@ -1033,6 +1034,34 @@ export async function uploadDocument(
     throw new Error(`HTTP ${res.status}: ${body || res.statusText}`)
   }
   return res.json() as Promise<UploadResult>
+}
+
+// ─── Obsidian Sync ──────────────────────────────────────────
+export async function fetchDocumentTree(path?: string): Promise<import('@/shared/types').DocumentTree> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+  return json<import('@/shared/types').DocumentTree>(
+    authFetch(API_BASE_URL + '/api/documents/tree' + query),
+  )
+}
+
+export async function fetchDocumentFlat(sources?: string[]): Promise<DocumentRow[]> {
+  const query = sources?.length ? `?sources=${encodeURIComponent(sources.join(','))}` : ''
+  const { documents } = await json<{ documents: DocumentRow[] }>(
+    authFetch(API_BASE_URL + '/api/documents/flat' + query),
+  )
+  return documents
+}
+
+export async function syncObsidian(): Promise<import('@/shared/types').SyncReport> {
+  return json<import('@/shared/types').SyncReport>(
+    authFetch(API_BASE_URL + '/api/obsidian/sync', { method: 'POST' }),
+  )
+}
+
+export async function getObsidianStatus(): Promise<import('@/shared/types').SyncStatus> {
+  return json<import('@/shared/types').SyncStatus>(
+    authFetch(API_BASE_URL + '/api/obsidian/status'),
+  )
 }
 
 // ─── Skills (技能；文件系统支撑，custom adapter 用) ──────────

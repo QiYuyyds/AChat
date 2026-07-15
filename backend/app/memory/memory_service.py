@@ -9,7 +9,7 @@ and consolidation triggers.
 import asyncio
 import logging
 import time
-from typing import Callable, List, Optional
+from collections.abc import Callable
 
 from app.config import Settings
 from app.db.engine import get_db
@@ -48,16 +48,16 @@ class MemoryService:
         self.preference = Preference(user_id="default_user")
 
         # Graph memory (Neo4j, optional — driver injected later)
-        self.graph_memory: Optional[GraphMemory] = None
+        self.graph_memory: GraphMemory | None = None
 
         # Session memory (incremental conversation summary)
         self.session_memory = SessionMemory()
 
         # Embedding function (injected by infrastructure factory)
-        self._embed_fn: Optional[Callable] = None
+        self._embed_fn: Callable | None = None
 
         # LLM generate function (injected for memory extraction)
-        self._generate_fn: Optional[Callable] = None
+        self._generate_fn: Callable | None = None
 
         self._initialized = False
 
@@ -111,7 +111,7 @@ class MemoryService:
         self, role: str, content: str, agent_id: str = "",
         conversation_id: str = "",
         *,
-        user_id: Optional[str] = None,
+        user_id: str | None = None,
     ) -> None:
         """Post-conversation hook — called after each message exchange.
 
@@ -172,16 +172,16 @@ class MemoryService:
             asyncio.create_task(self._safe_consolidate())
 
     async def recall(
-        self, query: str, top_k: Optional[int] = None, agent_id: str = "",
-        *, user_id: Optional[str] = None,
-    ) -> List[Item]:
+        self, query: str, top_k: int | None = None, agent_id: str = "",
+        *, user_id: str | None = None,
+    ) -> list[Item]:
         """Semantic recall from LTM."""
         from app.observability import start_span
         k = top_k or self.settings.memory_long_term_top_k
         with start_span("memory.recall", source="ltm"):
             return await self.ltm.recall(query, top_k=k, agent_id=agent_id, user_id=user_id)
 
-    async def graph_recall(self, item_id: int) -> List[int]:
+    async def graph_recall(self, item_id: int) -> list[int]:
         """Graph-based recall — expand from a seed memory."""
         if self.graph_memory is None:
             return []
@@ -200,7 +200,7 @@ class MemoryService:
             lines.append(f"{prefix}: {content}")
         return "\n".join(lines)
 
-    def get_preference_context(self, *, user_id: Optional[str] = None) -> str:
+    def get_preference_context(self, *, user_id: str | None = None) -> str:
         """Return preference block for prompt injection.
 
         For multi-user: when user_id is provided and differs from the default,
@@ -375,7 +375,7 @@ class MemoryService:
         except Exception as e:
             logger.warning("Preference consolidation failed: %s", e)
 
-    async def _safe_extract_memory(self, content: str, agent_id: str = "", *, user_id: Optional[str] = None) -> None:
+    async def _safe_extract_memory(self, content: str, agent_id: str = "", *, user_id: str | None = None) -> None:
         """Extract memory facts from assistant reply using LLM (background task)."""
         try:
             from app.memory.memory_writer import extract_memory_from_reply

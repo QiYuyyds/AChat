@@ -1,7 +1,6 @@
 """InfrastructureStatus — aggregated health of all optional infrastructure services."""
 
 from dataclasses import dataclass
-from typing import Dict
 
 
 @dataclass
@@ -15,7 +14,7 @@ class InfrastructureStatus:
     kafka: str = "disconnected"
     redis: str = "disconnected"
 
-    def summary(self) -> Dict[str, str]:
+    def summary(self) -> dict[str, str]:
         return {
             "postgres": self.postgres,
             "milvus": self.milvus,

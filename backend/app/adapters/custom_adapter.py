@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 import logging
 import re
@@ -68,10 +67,11 @@ MAX_IMAGES_PER_MESSAGE = 5
 _TRUNCATION_ERROR_MSG = (
     "Tool call arguments were truncated (finish_reason=length). The output hit "
     "the max_tokens limit. Try one of:\n"
-    "1. Reduce content size and call write_artifact again.\n"
-    "2. Create the artifact with minimal content first, then use update_artifact "
-    "to add files incrementally.\n"
-    "3. Simplify the content (e.g. inline CSS instead of separate files)."
+    "1. Split the content into smaller chunks — write the first part with "
+    "fs_write, then append more with fs_edit (insert at end of file).\n"
+    "2. Reduce content size and call the tool again with less data.\n"
+    "3. Simplify the content (e.g. inline CSS instead of separate files, "
+    "remove verbose comments)."
 )
 
 _EMPTY_ARGS_ERROR_MSG = (

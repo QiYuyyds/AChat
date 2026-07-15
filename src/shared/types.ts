@@ -27,6 +27,12 @@ export type MessagePart =
       size: number
       mimeType: string
     }
+  | {
+      type: 'execution_plan'
+      planId: string
+      steps: PlanStep[]
+      complexity: 'simple' | 'moderate' | 'complex'
+    }
 
 // ─── 增量 delta（流式追加）─────────────────────────────────
 export type PartDelta =
@@ -182,6 +188,15 @@ export interface DiffHunk {
   newStart: number
   newLines: number
   lines: string[]
+}
+
+// ─── Execution Plan types ──────────────────────────────────
+export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped'
+
+export interface PlanStep {
+  id: string
+  title: string
+  status: PlanStepStatus
 }
 
 // ─── Adapter 名称 ──────────────────────────────────────────
@@ -450,6 +465,17 @@ export type StreamEvent = BaseEvent &
     | { type: 'mcp_call.pending'; pendingCall: PendingMcpCall }
     | { type: 'mcp_call.resolved'; pendingId: string; approved: boolean }
     | {
+        type: 'plan.created'
+        planId: string
+        steps: PlanStep[]
+        complexity: 'simple' | 'moderate' | 'complex'
+      }
+    | {
+        type: 'plan.step_update'
+        planId: string
+        steps: PlanStep[]
+      }
+    | {
         type: 'worktree.created' | 'worktree.merged' | 'worktree.cleaned'
         taskId: string
         branchName?: string
@@ -549,13 +575,15 @@ export interface DocumentRow {
   id: string
   title: string
   docType: string
-  source: 'agent_generated' | 'user_upload'
+  source: 'agent_generated' | 'user_upload' | 'obsidian_sync' | 'artifact_import'
   status: 'active' | 'deleted'
   createdBy: string
   createdAt: number
   updatedAt: number
   latestVersion: number
   latestVersionId: string
+  sourcePath?: string
+  contentHash?: string | null
   latestMetadata?: {
     filename?: string
     parser?: string
@@ -620,4 +648,44 @@ export interface UploadResult {
   version?: VersionRow
   success: boolean
   message?: string
+}
+
+// ─── Obsidian Sync Types ──────────────────────────────────────
+
+export interface FolderNode {
+  name: string
+  path: string
+  docCount: number
+}
+
+export interface FileNode {
+  id: string
+  title: string
+  sourcePath: string
+  docType: string
+  source: string
+  updatedAt: number
+}
+
+export interface DocumentTree {
+  currentPath: string
+  folders: FolderNode[]
+  files: FileNode[]
+}
+
+export interface SyncReport {
+  scanned: number
+  added: number
+  updated: number
+  deleted: number
+  skipped: number
+  errors: { path: string; error: string }[]
+}
+
+export interface SyncStatus {
+  vaultPath: string | null
+  vaultExists: boolean
+  totalMdFiles: number
+  lastSyncAt: number | null
+  lastSyncSummary: SyncReport | null
 }

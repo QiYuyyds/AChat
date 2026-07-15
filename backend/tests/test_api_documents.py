@@ -19,11 +19,10 @@ async def api_client(db):
     import httpx
     from fastapi import FastAPI
 
-    from app.api import documents
-    from app.services.document_service import DocumentService
-
     # Initialize DocumentService with test DB and no RAG (rag=None)
     import app.main as main_mod
+    from app.api import documents
+    from app.services.document_service import DocumentService
     main_mod._document_service = DocumentService(db=None, rag=None)
 
     app = FastAPI()

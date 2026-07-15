@@ -9,14 +9,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
-from sqlalchemy import desc, select, update, func, delete
-from sqlalchemy.orm import selectinload
+from sqlalchemy import desc, func, select, update
 
 from app.db.engine import get_db
 from app.db.models import Document, DocumentVersion, RagChunk
-from app.rag.parser import ParseResult, parse_bytes
+from app.rag.parser import parse_bytes
 from app.utils.ids import new_document_id, new_document_version_id
 
 logger = logging.getLogger(__name__)
@@ -74,6 +73,118 @@ class DocumentService:
                 items.append(item)
             return items
 
+    # ─── Virtual directory tree (obsidian_sync only) ──────────────────────
+
+    async def list_tree(self, path: str, user_id: str) -> dict:
+        """Return virtual directory tree for obsidian_sync documents.
+
+        Only documents with source='obsidian_sync' are included. Folders and
+        files are derived from the source_path column.
+        """
+        async with self._get_db() as session:
+            # Normalize path: strip leading/trailing slashes
+            prefix = path.strip("/")
+
+            result = await session.execute(
+                select(Document).where(
+                    Document.source == "obsidian_sync",
+                    Document.status != "deleted",
+                    Document.user_id == user_id if user_id else True,
+                )
+            )
+            docs = result.scalars().all()
+
+        # Build folder and file lists from source_path
+        folders: dict[str, dict[str, Any]] = {}
+        files: list[dict[str, Any]] = []
+
+        for doc in docs:
+            sp = doc.source_path
+            if not sp:
+                continue
+
+            # Filter by requested path prefix
+            if prefix:
+                if not sp.startswith(prefix + "/"):
+                    continue
+                remaining = sp[len(prefix) + 1:]
+            else:
+                remaining = sp
+
+            if not remaining:
+                continue
+
+            parts = remaining.split("/")
+            if len(parts) == 1:
+                # It's a file at the current level
+                files.append({
+                    "id": doc.id,
+                    "title": doc.title,
+                    "source_path": doc.source_path,
+                    "doc_type": doc.doc_type,
+                    "source": doc.source,
+                    "updated_at": doc.updated_at,
+                })
+            else:
+                # It's in a subdirectory — collect folder names at current level
+                folder_name = parts[0]
+                if folder_name not in folders:
+                    folders[folder_name] = {
+                        "name": folder_name,
+                        "path": f"{prefix}/{folder_name}" if prefix else folder_name,
+                        "doc_count": 0,
+                    }
+                folders[folder_name]["doc_count"] += 1
+
+        return {
+            "current_path": path,
+            "folders": sorted(folders.values(), key=lambda f: f["name"]),
+            "files": sorted(files, key=lambda f: f["title"]),
+        }
+
+    # ─── Flat list (non-obsidian sources) ──────────────────────────────────
+
+    async def list_flat(self, user_id: str, sources: list[str] | None = None) -> list[dict]:
+        """Return flat document list for specified sources.
+
+        Default sources: user_upload, agent_generated, artifact_import.
+        Does NOT include obsidian_sync documents.
+        """
+        if sources is None:
+            sources = ["user_upload", "agent_generated", "artifact_import"]
+
+        async with self._get_db() as session:
+            result = await session.execute(
+                select(Document)
+                .where(
+                    Document.status != "deleted",
+                    Document.source.in_(sources),
+                    Document.user_id == user_id if user_id else True,
+                )
+                .order_by(desc(Document.updated_at))
+            )
+            docs = result.scalars().all()
+            if not docs:
+                return []
+
+            items: list[dict] = []
+            for doc in docs:
+                item = _doc_to_dict(doc)
+                if doc.latest_version_id:
+                    ver_result = await session.execute(
+                        select(DocumentVersion).where(
+                            DocumentVersion.id == doc.latest_version_id
+                        )
+                    )
+                    ver = ver_result.scalar_one_or_none()
+                    if ver:
+                        meta = ver.meta or {}
+                        item["latest_metadata"] = meta
+                        item["latest_content_chars"] = len(ver.content_md or "")
+                        item["latest_parser"] = meta.get("parser")
+                items.append(item)
+            return items
+
     # ─── Write (create or update) ──────────────────────────────────────────
 
     async def write_document(
@@ -89,6 +200,8 @@ class DocumentService:
         metadata: dict | None = None,
         ingest_to_rag: bool = False,
         user_id: str | None = None,
+        source_path: str = "",
+        content_hash: str | None = None,
     ) -> dict:
         """Create a new document or update an existing one (creates a new version).
 
@@ -146,12 +259,17 @@ class DocumentService:
                 doc.latest_version = next_ver
                 doc.latest_version_id = version.id
                 doc.updated_at = now
+                if source_path is not None:
+                    doc.source_path = source_path
+                if content_hash is not None:
+                    doc.content_hash = content_hash
                 created = False
             else:
                 # Create new document
                 document_id = new_document_id()
                 doc = Document(
                     id=document_id,
+                    user_id=user_id,
                     title=title,
                     doc_type=doc_type,
                     source=source,
@@ -161,6 +279,8 @@ class DocumentService:
                     updated_at=now,
                     latest_version=1,
                     latest_version_id="",
+                    source_path=source_path,
+                    content_hash=content_hash,
                 )
                 version = DocumentVersion(
                     id=new_document_version_id(),
@@ -463,6 +583,7 @@ def _doc_to_dict(doc: Document) -> dict:
     """Convert Document ORM row to API dict."""
     return {
         "id": doc.id,
+        "user_id": doc.user_id,
         "title": doc.title,
         "doc_type": doc.doc_type,
         "source": doc.source,
@@ -472,6 +593,8 @@ def _doc_to_dict(doc: Document) -> dict:
         "updated_at": doc.updated_at,
         "latest_version": doc.latest_version,
         "latest_version_id": doc.latest_version_id,
+        "source_path": doc.source_path,
+        "content_hash": doc.content_hash,
     }
 
 

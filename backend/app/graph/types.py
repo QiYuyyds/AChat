@@ -1,7 +1,5 @@
 # types — 知识图谱中的实体 / 关系 / 检索结果数据结构
 from dataclasses import dataclass, field
-from typing import List
-
 
 # EntityType 实体类型枚举（字符串值，与 Go 版保持一致）
 EntityType = str
@@ -43,15 +41,15 @@ class GraphSearchResult:
     chunk_id: int = 0       # 文档内 idx（兼容字段）
     pg_id: int = 0          # PG 自增 ID，用于 RAG RRF 融合
     score: float = 0.0      # 基于路径跳数和匹配数量的综合分
-    entities: List[str] = field(default_factory=list)  # 命中的实体名称
-    hop_path: List[str] = field(default_factory=list)  # 遍历路径（可解释性）
+    entities: list[str] = field(default_factory=list)  # 命中的实体名称
+    hop_path: list[str] = field(default_factory=list)  # 遍历路径（可解释性）
 
 
 @dataclass
 class ExtractResult:
     """Extractor.extract 的输出"""
-    entities: List[Entity] = field(default_factory=list)
-    relations: List[Relation] = field(default_factory=list)
+    entities: list[Entity] = field(default_factory=list)
+    relations: list[Relation] = field(default_factory=list)
 
 
 @dataclass

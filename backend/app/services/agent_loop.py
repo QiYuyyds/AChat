@@ -104,24 +104,72 @@ _COORDINATED_PROMPT_SUFFIX = """
   例如，要同时让两个 Agent 分别写报告，请在一次回复中同时发出两个 task_dispatch 调用，
   它们将并行运行，而不是一个完成后才开始另一个。
 - 收到子 Agent 返回后审查结果，不满意就重新派发并附上修正说明
-- 所有工作完成后，给用户一条自然语言总结
+- **所有工作完成后**，给用户一条自然语言总结
+- **不要中途停下**：如果执行计划还有未完成的步骤，dispatch_plan 返回后应继续执行下一步，
+  而不是停下来等用户说"继续"。只有所有 plan step 都完成（或明确需要用户输入时）才停下来。
 
-### 群成员列表
+### 群组成员列表
 {agent_roster}
+"""
+
+_COORDINATED_PLAN_SUFFIX = """
+
+## 执行计划与调度配合
+
+你可以使用 create_plan 工具创建执行计划，让用户看到你的总体工作安排和进度。
+
+### 要使用 create_plan 的场景
+- 需要修改 3 个或以上文件
+- 需要先研究分析、再实现、再验证（多阶段任务）
+- 用户明确要求分步执行
+- 任务涉及多个不同阶段（如：调研→设计→开发→测试）
+
+### 不要使用 create_plan 的场景
+- 改一个配置值、修一行代码
+- 回答信息性问题
+- 1-2 步就能完成的简单操作
+
+### 自检
+如果不确定是否需要 create_plan，问自己：用户需要看到我的工作计划吗？如果不需要，直接做。
+
+### 使用方式
+1. **先调 create_plan** 展示总体工作计划（3-8 个粗粒度步骤）
+2. **在 dispatch_plan 中指定 planStepId** 将子任务关联到对应的 plan step
+   - dispatch_plan 的每个 task 可以有 planStepId 字段，指向 create_plan 中的某个 step
+   - 这样当子任务完成时，对应的 plan step 会自动更新状态
+3. **自己执行的步骤** 用 plan_step 工具手动标记进度
+4. **不需要一一对应**
+   - plan step 是粗粒度的进度展示，dispatch task 是细粒度的调度
+   - 不是每个 dispatch task 都需要关联 plan step
+   - 不是每个 plan step 都需要 dispatch task（协调者自己执行的步骤不用 dispatch）
+
+### 示例流程
+```
+1. create_plan(steps=[{id:'s1',title:'需求分析'},{id:'s2',title:'设计'},{id:'s3',title:'开发'}])
+2. dispatch_plan(tasks=[
+     {id:'t1', task:'调研竞品', planStepId:'s1'},
+     {id:'t2', task:'UI 设计', planStepId:'s2'},
+   ])
+3. plan_step(planId, 's3')  // 自己执行开发步骤
+```
 """
 
 
 def build_coordinated_system_prompt(
-    base_system_prompt: str, agent_roster: str = ""
+    base_system_prompt: str, agent_roster: str = "", plan_enabled: bool = False
 ) -> str:
     """Build the system prompt for coordinated (orchestrator) mode.
 
     Args:
         base_system_prompt: The orchestrator agent's own system prompt.
         agent_roster: Formatted list of available agents in the conversation.
+        plan_enabled: Whether plan tools are available (appends plan guidance).
     """
     suffix = _COORDINATED_PROMPT_SUFFIX.replace("{agent_roster}", agent_roster)
-    return base_system_prompt + suffix
+    prompt = base_system_prompt + suffix
+    if plan_enabled:
+        prompt += _COORDINATED_PLAN_SUFFIX
+    return prompt
 
 
 def _format_agent_roster(agents: list[Agent], orchestrator_id: str) -> str:
@@ -177,6 +225,43 @@ _SOLO_DISPATCH_SUFFIX = """
 """
 
 
+# ─── Solo mode plan guidance (injected when plan tools are available) ────
+_PLAN_SUFFIX = """
+
+## 执行计划（create_plan / plan_step / add_plan_steps）
+
+当你面对复杂任务时，建议先创建执行计划，让用户看到你的工作安排和进度。
+
+### 要使用 create_plan 的场景
+- 需要修改 3 个或以上文件
+- 需要先研究分析、再实现、再验证（多阶段任务）
+- 用户明确要求分步执行
+- 任务涉及多个不同阶段（如：调研→设计→开发→测试）
+
+### 不要使用 create_plan 的场景
+- 改一个配置值、修一行代码
+- 回答信息性问题
+- 读一个文件、执行一条命令
+- 1-2 步就能完成的简单操作
+
+### 判断示例
+- 用户："搭建完整的用户认证系统" → ✅ create_plan（涉及多个文件、多个阶段）
+- 用户："修复这个 typo" → ❌ 直接做（简单改动）
+- 用户："分析这个性能问题" → ✅ create_plan（需要研究→实现→验证）
+- 用户："把这个函数重命名为 foo" → ❌ 直接做（单步操作）
+
+### 使用方式
+1. 调用 create_plan(steps=[{id:'s1',title:'步骤1'}, ...], complexity='moderate')
+2. 开始每个步骤前，调用 plan_step(planId, stepId) 标记步骤为 in_progress
+   - plan_step 会自动把前一个 in_progress 步骤标为 done
+   - plan_step 和实际工具调用可以在同一轮并行发出
+3. 如果发现需要额外步骤，调用 add_plan_steps(planId, steps=[...]) 追加
+
+### 自检
+如果不确定是否需要 create_plan，问自己：用户需要看到我的工作计划吗？如果不需要，直接做。
+"""
+
+
 # ─── Subagent mode prompt suffix ──────────────────────────────────────────────
 _SUBAGENT_SUFFIX = """
 
@@ -200,14 +285,17 @@ _SUBAGENT_SUFFIX = """
 """
 
 
-def build_solo_system_prompt(base_system_prompt: str, dispatch_enabled: bool = False) -> str:
+def build_solo_system_prompt(base_system_prompt: str, dispatch_enabled: bool = False, plan_enabled: bool = False) -> str:
     """Build the system prompt for solo mode with soft self-verify reminder.
 
     When dispatch_enabled, also appends dispatch guidance.
+    When plan_enabled, also appends plan tool guidance.
     """
     prompt = base_system_prompt + _SOLO_VERIFY_SUFFIX
     if dispatch_enabled:
         prompt += _SOLO_DISPATCH_SUFFIX
+    if plan_enabled:
+        prompt += _PLAN_SUFFIX
     return prompt
 
 
@@ -280,7 +368,14 @@ async def _run_solo_loop(
     if dispatch_enabled and "task_dispatch" not in tool_names:
         tool_names.append("task_dispatch")
 
-    solo_prompt = build_solo_system_prompt(agent.system_prompt, dispatch_enabled)
+    # Inject plan tools for solo mode (Phase 1: solo only)
+    plan_enabled = dispatch_enabled  # same condition: below max depth
+    if plan_enabled:
+        for plan_tool in ("create_plan", "plan_step", "add_plan_steps"):
+            if plan_tool not in tool_names:
+                tool_names.append(plan_tool)
+
+    solo_prompt = build_solo_system_prompt(agent.system_prompt, dispatch_enabled, plan_enabled)
     solo_args = replace(
         args,
         override_tool_names=tool_names,
@@ -377,16 +472,20 @@ async def _run_coordinated_loop(
             for ra in roster_agents:
                 db.expunge(ra)
 
-    # Build tool list: agent's own tools + task_dispatch + dispatch_plan
+    # Build tool list: agent's own tools + task_dispatch + dispatch_plan + plan tools
     tool_names = list(agent.tool_names_list)
     if "task_dispatch" not in tool_names:
         tool_names.append("task_dispatch")
     if "dispatch_plan" not in tool_names:
         tool_names.append("dispatch_plan")
+    # Inject plan tools for coordinated mode
+    for plan_tool in ("create_plan", "plan_step", "add_plan_steps"):
+        if plan_tool not in tool_names:
+            tool_names.append(plan_tool)
 
     roster = _format_agent_roster(roster_agents, agent.id)
     coordinated_prompt = build_coordinated_system_prompt(
-        agent.system_prompt, roster
+        agent.system_prompt, roster, plan_enabled=True
     )
 
     logger.info(

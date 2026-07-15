@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
 from app.services.hook_registry import HookContext, HookEvent, HookRegistry
 from app.services.hooks import skill_auto_activator
 from app.services.hooks.skill_auto_activator import (

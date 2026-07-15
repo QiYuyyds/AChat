@@ -4,13 +4,11 @@ import pytest
 
 from app.services.checkpoint_service import (
     MAX_CHECKPOINTS_PER_RUN,
-    clean_old_checkpoints,
     clean_run_checkpoints,
     list_checkpoints,
     load_latest_checkpoint,
     save_checkpoint,
 )
-
 
 SAMPLE_MESSAGES = [
     {"role": "system", "content": "You are a helpful assistant."},

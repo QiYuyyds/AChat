@@ -11,11 +11,9 @@ Verifies:
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 import pytest_asyncio
-
 
 # ─── _blunt_metadata unit tests ──────────────────────────────────────────────
 
@@ -247,6 +245,7 @@ async def test_sdk_static_metadata_in_system_prompt(db, custom_agent_setup, monk
     agent_runner._cached_location = None
 
     from sqlalchemy import select
+
     from app.db.engine import get_db
     from app.db.models import Agent, Workspace
     from app.services.agent_runner import RunArgs, build_adapter_input
@@ -307,6 +306,7 @@ async def test_sdk_dynamic_metadata_in_user_tail(db, custom_agent_setup, monkeyp
     agent_runner._cached_location = None
 
     from sqlalchemy import select
+
     from app.db.engine import get_db
     from app.db.models import Agent, Workspace
     from app.services.agent_runner import RunArgs, build_adapter_input
@@ -375,6 +375,7 @@ async def test_cli_agent_no_metadata(db, cli_agent_setup, monkeypatch):
     monkeypatch.setattr(agent_runner, "_get_prompt_assembler", lambda: mock_assembler)
 
     from sqlalchemy import select
+
     from app.db.engine import get_db
     from app.db.models import Agent, Workspace
     from app.services.agent_runner import RunArgs, build_adapter_input

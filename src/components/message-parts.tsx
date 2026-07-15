@@ -4,6 +4,8 @@ import { Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, FileTex
 import type { KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import { useEffect, useRef, useState } from 'react'
 
+import type { PlanStep, PlanStepStatus } from '@/shared/types'
+
 import { Card, CardContent } from '@/components/ui/card'
 import { AttachmentChip } from '@/components/attachment-chip'
 import { Button } from '@/components/ui/button'
@@ -119,6 +121,8 @@ function PartRenderer({
       return <ArtifactRefPart artifactId={part.artifactId} />
     case 'deploy_status':
       return <DeployStatusPart deployment={part.deployment} />
+    case 'execution_plan':
+      return <ExecutionPlanPart steps={part.steps} planId={part.planId} complexity={part.complexity} />
     case 'deploy_candidates':
       return <DeployCandidatesPart conversationId={conversationId} candidates={part.candidates} />
     case 'image_attachment':
@@ -138,6 +142,63 @@ function PartRenderer({
     default:
       return null
   }
+}
+
+// ─── Execution Plan ──────────────────────────────────────
+const STATUS_ICON: Record<PlanStepStatus, ReactNode> = {
+  pending: <span className="text-muted-foreground">⬚</span>,
+  in_progress: <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />,
+  done: <Check className="h-3.5 w-3.5 text-green-600" />,
+  failed: <XCircle className="h-3.5 w-3.5 text-red-500" />,
+  skipped: <span className="text-muted-foreground">⏭</span>,
+}
+
+function ExecutionPlanPart({
+  steps,
+  planId,
+  complexity,
+}: {
+  steps: PlanStep[]
+  planId: string
+  complexity: 'simple' | 'moderate' | 'complex'
+}) {
+  const doneCount = steps.filter((s) => s.status === 'done').length
+  const totalCount = steps.length
+  const progress = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0
+
+  return (
+    <Card className="border-l-4 border-l-blue-500 py-0 gap-0">
+      <CardContent className="p-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <Layers className="h-4 w-4 text-blue-500" />
+            执行计划
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {doneCount}/{totalCount} · {progress}%
+          </span>
+        </div>
+        {/* Progress bar */}
+        <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+          <div
+            className="h-full rounded-full bg-blue-500 transition-all duration-300"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+        {/* Step list */}
+        <div className="space-y-1">
+          {steps.map((step) => (
+            <div key={step.id} className="flex items-center gap-2 text-sm">
+              <span className="flex-shrink-0">{STATUS_ICON[step.status]}</span>
+              <span className={step.status === 'done' ? 'line-through text-muted-foreground' : step.status === 'in_progress' ? 'font-medium' : ''}>
+                {step.title}
+              </span>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 // ─── Text ──────────────────────────────────────────────
@@ -549,20 +610,21 @@ function TerminalPreviewBlock({
   return (
     <div
       className={cn(
-        'min-w-0 overflow-hidden rounded-md border bg-zinc-950 text-zinc-100 shadow-sm',
+        'min-w-0 overflow-hidden rounded-md border shadow-sm',
+        'bg-muted/60 text-foreground',
         tone === 'error'
           ? 'border-destructive/50'
-          : 'border-zinc-200 dark:border-zinc-800',
+          : 'border-border',
       )}
     >
-      <div className="flex min-w-0 items-center gap-2 border-b border-zinc-800 px-2.5 py-1.5 text-[10px] text-zinc-400">
+      <div className="flex min-w-0 items-center gap-2 border-b border-border/60 bg-muted/40 px-2.5 py-1.5 text-[10px] text-muted-foreground">
         <Terminal className="size-3 shrink-0" />
         <span className="shrink-0 font-medium">{label}</span>
-        {meta && <span className="min-w-0 truncate font-mono text-zinc-500">{meta}</span>}
+        {meta && <span className="min-w-0 truncate font-mono">{meta}</span>}
         <button
           type="button"
           onClick={(event) => void copy(event)}
-          className="ml-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
+          className="ml-auto inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
           title={copyTitle}
         >
           {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
@@ -571,7 +633,7 @@ function TerminalPreviewBlock({
       </div>
       <pre
         className={cn(
-          'min-w-0 max-w-full overflow-auto px-2.5 py-2 font-mono text-[11px] leading-relaxed text-zinc-100 whitespace-pre-wrap break-words [overflow-wrap:anywhere]',
+          'min-w-0 max-w-full overflow-auto px-2.5 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]',
           expanded ? 'max-h-80' : collapsedMaxClassName,
         )}
       >

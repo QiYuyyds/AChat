@@ -77,7 +77,6 @@ async def api_client(db, test_user):
     import httpx
 
     import app.services.agent_runner  # noqa: F401  wires runner into registry
-    from app.auth.dependencies import COOKIE_NAME
     from app.main import create_app
 
     app = create_app()

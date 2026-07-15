@@ -2,15 +2,12 @@
 
 import asyncio
 
-import pytest
-
 from app.services.hook_registry import (
-    HookContext,
     HookEvent,
     HookRegistry,
     HookResult,
 )
-from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
+from app.tools.base import ToolContext, ToolDef, ok
 from app.tools.registry import ToolRegistry
 
 

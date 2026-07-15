@@ -1,9 +1,9 @@
 """Unit tests for LongTerm memory — mock DB, real consolidation algorithm."""
 
 import time
-import pytest
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.config import Settings
 from app.memory.consolidation import Item

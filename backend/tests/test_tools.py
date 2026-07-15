@@ -7,7 +7,6 @@ report tools against an isolated SQLite DB and a real on-disk sandbox workspace.
 import asyncio
 import os
 
-import pytest
 import pytest_asyncio
 
 from app.tools.base import ToolContext

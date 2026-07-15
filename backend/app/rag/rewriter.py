@@ -6,8 +6,8 @@ Ported from AGI-memory ``internal/rag/rewriter.py``. Zero modification.
 import json
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +23,11 @@ class HistoryMessage:
 class LLMRewriter:
     """用 LLM 做 history-aware multi-query 改写，失败时回退原 query。"""
 
-    def __init__(self, generate_fn: Optional[GenerateFn], num_queries: int = 3):
+    def __init__(self, generate_fn: GenerateFn | None, num_queries: int = 3):
         self.generate_fn = generate_fn
         self.num_queries = num_queries if num_queries > 0 else 3
 
-    def rewrite(self, query: str, history: List[HistoryMessage]) -> List[str]:
+    def rewrite(self, query: str, history: list[HistoryMessage]) -> list[str]:
         query = (query or "").strip()
         if not query:
             return []
@@ -59,8 +59,8 @@ class LLMRewriter:
             return [query]
         return _dedup_keep_order(queries + [query])[:self.num_queries]
 
-    def _build_user_msg(self, query: str, history: List[HistoryMessage]) -> str:
-        lines: List[str] = ["最近对话历史："]
+    def _build_user_msg(self, query: str, history: list[HistoryMessage]) -> str:
+        lines: list[str] = ["最近对话历史："]
         if history:
             recent = history[-6:]
             for msg in recent:
@@ -76,7 +76,7 @@ class LLMRewriter:
         return "\n".join(lines)
 
 
-def _parse_queries(raw: str) -> List[str]:
+def _parse_queries(raw: str) -> list[str]:
     raw = _strip_json_fence(raw)
     data = json.loads(raw)
     queries = data.get("queries", []) if isinstance(data, dict) else []
@@ -91,9 +91,9 @@ def _strip_json_fence(raw: str) -> str:
     return raw.strip()
 
 
-def _dedup_keep_order(values: List[str]) -> List[str]:
+def _dedup_keep_order(values: list[str]) -> list[str]:
     seen = set()
-    out: List[str] = []
+    out: list[str] = []
     for value in values:
         key = value.strip().lower()
         if not key or key in seen:

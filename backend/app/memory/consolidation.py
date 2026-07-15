@@ -9,8 +9,7 @@ Ported from AGI-memory:
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -23,18 +22,18 @@ class Item:
 
     content: str
     importance: float = 0.5
-    embedding: Optional[List[float]] = None
-    id: Optional[int] = None
+    embedding: list[float] | None = None
+    id: int | None = None
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
     category: str = ""
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     slot_hint: str = ""
     score: float = 0.0
     scope: str = "global"
     agent_id: str = ""
     # Multi-user isolation: owning user (None = legacy/global)
-    user_id: Optional[str] = None
+    user_id: str | None = None
     # Runtime-only decay checkpoint (not persisted). 0.0 → fall back to created_at.
     last_decay_ts: float = 0.0
 
@@ -46,8 +45,8 @@ class RecallFilter:
     Duck-typed so it is compatible with promptctx.RecallFilter as well.
     """
 
-    categories: List[str] = field(default_factory=list)
-    require_tags: List[str] = field(default_factory=list)
+    categories: list[str] = field(default_factory=list)
+    require_tags: list[str] = field(default_factory=list)
     max_age_hours: int = 0
     min_score: float = 0.0
     top_k: int = 0
@@ -60,8 +59,8 @@ class ConsolidationResult:
     deduped: int = 0
     merged: int = 0
     expired: int = 0
-    delete_from_db: List[int] = field(default_factory=list)
-    update_in_db: List["Item"] = field(default_factory=list)
+    delete_from_db: list[int] = field(default_factory=list)
+    update_in_db: list["Item"] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -131,9 +130,9 @@ class ConsolidationConfig:
 # ---------------------------------------------------------------------------
 
 
-def tokenize_zh(text: str) -> List[str]:
+def tokenize_zh(text: str) -> list[str]:
     """Chinese-English mixed tokenizer: Chinese by character, English/numeric by word."""
-    tokens: List[str] = []
+    tokens: list[str] = []
     word = ""
     for ch in text:
         cp = ord(ch)
@@ -153,7 +152,7 @@ def tokenize_zh(text: str) -> List[str]:
     return tokens
 
 
-def cosine_similarity(a: List[float], b: List[float]) -> float:
+def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors."""
     if not a or not b or len(a) != len(b):
         return 0.0
@@ -165,14 +164,14 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
     return dot / (na * nb)
 
 
-def tf_cosine(query_tokens: Optional[List[str]], content: str) -> float:
+def tf_cosine(query_tokens: list[str] | None, content: str) -> float:
     """TF bag-of-words cosine similarity using ``tokenize_zh``."""
     if query_tokens is None:
         query_tokens = tokenize_zh("")
     item_tokens = tokenize_zh(content)
     if not query_tokens or not item_tokens:
         return 0.0
-    vocab: Dict[str, int] = {}
+    vocab: dict[str, int] = {}
     for t in query_tokens:
         if t not in vocab:
             vocab[t] = len(vocab)

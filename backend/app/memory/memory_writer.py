@@ -15,14 +15,15 @@ import asyncio
 import json
 import logging
 import re
-from typing import Callable, Dict, List, Optional, Protocol, Tuple
+from collections.abc import Callable
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
 
 # Importance floor per memory category. Replaces the old hardcoded 0.7 so the
 # ranking actually means something — identity/policy outrank plain facts.
-_IMPORTANCE_BY_CATEGORY: Dict[str, float] = {
+_IMPORTANCE_BY_CATEGORY: dict[str, float] = {
     "identity": 0.9,
     "policy": 0.8,
     "preference": 0.7,
@@ -59,7 +60,7 @@ def _contains_any(s: str, *subs: str) -> bool:
 # ── Rule-based classification ──────────────────────────────────────────────
 
 
-def classify_memory_content(key: str, value: str) -> Tuple[str, List[str], str]:
+def classify_memory_content(key: str, value: str) -> tuple[str, list[str], str]:
     """Classify memory content using rules.
 
     Returns (category, tags, slot_hint).
@@ -98,7 +99,7 @@ _CLASSIFY_SYSTEM_PROMPT = (
 async def llm_classify_memory(
     generate_fn: Callable,
     content: str,
-) -> Tuple[str, List[str], str]:
+) -> tuple[str, list[str], str]:
     """Classify memory content using LLM fallback.
 
     Requests JSON output with category, tags, slot_hint.
@@ -165,14 +166,14 @@ _EXTRACTION_SYSTEM_PROMPT = (
 
 async def extract_memory_from_reply(
     generate_fn: Callable,
-    embed_fn: Optional[Callable],
+    embed_fn: Callable | None,
     ltm,
     content: str,
-    preference: Optional[_PreferenceLike] = None,
-    existing_keys: Optional[List[str]] = None,
+    preference: _PreferenceLike | None = None,
+    existing_keys: list[str] | None = None,
     agent_id: str = "",
     *,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
 ) -> None:
     """Extract k-v facts from assistant reply using LLM, classify, and store.
 
@@ -336,7 +337,7 @@ def _truncate_value(value: str) -> str:
     return value.strip()
 
 
-def _extract_rule_based(msg: str) -> Dict[str, str]:
+def _extract_rule_based(msg: str) -> dict[str, str]:
     """Rule-based preference fallback. Ports ``Preference.extract_and_save_sync``
     rules ("我喜欢" / "我爱" / "我叫" / "我在" / "我住在"), returning the first
     match as a single-entry dict — faithful to the original, which returns on
@@ -382,10 +383,10 @@ def _extract_rule_based(msg: str) -> Dict[str, str]:
 
 
 async def extract_preferences(
-    generate_fn: Optional[Callable],
+    generate_fn: Callable | None,
     msg: str,
-    existing_keys: Optional[List[str]] = None,
-) -> Dict[str, str]:
+    existing_keys: list[str] | None = None,
+) -> dict[str, str]:
     """Extract user preferences from a user message via LLM, with rule fallback.
 
     When ``generate_fn`` is None, the LLM call raises, or the LLM returns

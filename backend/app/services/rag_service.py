@@ -5,13 +5,13 @@ Wires RAGEngine + LLMRewriter + LLMReranker based on settings.
 """
 
 import logging
-from typing import Callable, List, Optional, Tuple
+from collections.abc import Callable
 
 from app.config import Settings
 from app.infra.hybrid import HybridStore
 from app.rag.rag_engine import RAGEngine
-from app.rag.rewriter import HistoryMessage, LLMRewriter
 from app.rag.reranker import LLMReranker
+from app.rag.rewriter import HistoryMessage, LLMRewriter
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +23,13 @@ class RAGService:
         self.settings = settings
         self._hybrid = HybridStore(settings)
         self._engine = RAGEngine(settings, hybrid=self._hybrid)
-        self._generate_fn: Optional[Callable] = None
-        self._embed_fn: Optional[Callable] = None
+        self._generate_fn: Callable | None = None
+        self._embed_fn: Callable | None = None
         self._initialized = False
         # Delete backends for document cleanup (wired in main.py)
-        self._es_delete_fn: Optional[Callable] = None
-        self._milvus_delete_fn: Optional[Callable] = None
-        self._kg_delete_fn: Optional[Callable] = None
+        self._es_delete_fn: Callable | None = None
+        self._milvus_delete_fn: Callable | None = None
+        self._kg_delete_fn: Callable | None = None
 
     def set_generate_fn(self, fn: Callable) -> None:
         """Inject LLM generate function for query rewrite / rerank / answer composition."""
@@ -50,10 +50,10 @@ class RAGService:
         self._embed_fn = fn
         self._engine.set_embed_fn(fn)
 
-    def set_milvus_backend(self, search_fn: Callable, insert_fn: Optional[Callable] = None) -> None:
+    def set_milvus_backend(self, search_fn: Callable, insert_fn: Callable | None = None) -> None:
         self._hybrid.set_milvus_backend(search_fn, insert_fn)
 
-    def set_es_backend(self, search_fn: Callable, index_fn: Optional[Callable] = None) -> None:
+    def set_es_backend(self, search_fn: Callable, index_fn: Callable | None = None) -> None:
         self._hybrid.set_es_backend(search_fn, index_fn)
 
     def set_kg_backend(self, search_fn: Callable) -> None:
@@ -81,9 +81,10 @@ class RAGService:
             return
         # Check if any chunks exist in PG
         try:
+            from sqlalchemy import func, select
+
             from app.db.engine import get_db
             from app.db.models import RagChunk
-            from sqlalchemy import select, func
 
             async with get_db() as session:
                 stmt = select(func.count()).select_from(RagChunk)
@@ -103,7 +104,7 @@ class RAGService:
             self.settings.rag_rerank_enabled,
         )
 
-    async def ingest(self, doc: str, *, user_id: Optional[str] = None) -> int:
+    async def ingest(self, doc: str, *, user_id: str | None = None) -> int:
         """Ingest a document: split → embed → index to PG/Milvus/ES."""
         from app.observability import start_span
         with start_span("rag.ingest"):
@@ -112,10 +113,10 @@ class RAGService:
     async def search(
         self,
         query: str,
-        history: Optional[List[HistoryMessage]] = None,
+        history: list[HistoryMessage] | None = None,
         *,
-        user_id: Optional[str] = None,
-    ) -> Tuple[str, List[dict]]:
+        user_id: str | None = None,
+    ) -> tuple[str, list[dict]]:
         """Search the knowledge base with optional history-aware rewriting."""
         from app.observability import start_span
         truncated_q = query[:100] if query else ""
@@ -135,9 +136,10 @@ class RAGService:
 
         Returns the number of PG rows deleted.
         """
+        from sqlalchemy import delete, select
+
         from app.db.engine import get_db
         from app.db.models import RagChunk
-        from sqlalchemy import select, delete, func
 
         # 1. Collect pg_ids before deleting (needed for ES/Milvus cleanup)
         async with get_db() as session:
@@ -184,9 +186,10 @@ class RAGService:
         then batch-deletes across all four stores.
         Returns the number of PG rows deleted.
         """
+        from sqlalchemy import delete, select
+
         from app.db.engine import get_db
         from app.db.models import RagChunk
-        from sqlalchemy import select, delete
 
         # 1. Collect pg_ids + doc_hashes before deleting
         async with get_db() as session:

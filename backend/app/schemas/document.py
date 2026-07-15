@@ -4,7 +4,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ─── Request models ────────────────────────────────────────────────────────
 
 
@@ -48,6 +47,8 @@ class DocumentResponse(BaseModel):
     updated_at: float = Field(alias="updatedAt")
     latest_version: int = Field(alias="latestVersion")
     latest_version_id: str = Field(alias="latestVersionId")
+    source_path: str = Field(default="", alias="sourcePath")
+    content_hash: str | None = Field(default=None, alias="contentHash")
 
     model_config = {"populate_by_name": True}
 
@@ -81,6 +82,8 @@ class LatestVersionMeta(BaseModel):
 class DocumentListItem(DocumentResponse):
     """Document row in list responses, enriched with latest-version info."""
 
+    source_path: str = Field(default="", alias="sourcePath")
+    content_hash: str | None = Field(default=None, alias="contentHash")
     latest_metadata: dict[str, Any] | None = Field(default=None, alias="latestMetadata")
     latest_content_chars: int | None = Field(default=None, alias="latestContentChars")
     latest_parser: str | None = Field(default=None, alias="latestParser")
@@ -159,5 +162,46 @@ class UploadDocumentResponse(BaseModel):
     version: VersionResponse | None = None
     success: bool
     message: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class FolderNode(BaseModel):
+    """A folder in the virtual directory tree."""
+
+    name: str
+    path: str
+    doc_count: int = Field(alias="docCount")
+
+    model_config = {"populate_by_name": True}
+
+
+class FileNode(BaseModel):
+    """A file in the virtual directory tree."""
+
+    id: str
+    title: str
+    source_path: str = Field(alias="sourcePath")
+    doc_type: str = Field(alias="docType")
+    source: str
+    updated_at: float = Field(alias="updatedAt")
+
+    model_config = {"populate_by_name": True}
+
+
+class DocumentTreeResponse(BaseModel):
+    """Response for GET /api/documents/tree."""
+
+    current_path: str = Field(alias="currentPath")
+    folders: list[FolderNode]
+    files: list[FileNode]
+
+    model_config = {"populate_by_name": True}
+
+
+class DocumentFlatListResponse(BaseModel):
+    """Response for GET /api/documents/flat."""
+
+    documents: list[DocumentListItem]
 
     model_config = {"populate_by_name": True}

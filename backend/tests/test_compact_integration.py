@@ -14,7 +14,7 @@ from sqlalchemy import select
 from app.db.engine import get_db
 from app.db.models import Agent, ContextSummary, Conversation, Message
 from app.schemas.events import MessageAddedEvent
-from app.services import agent_runner, context_compaction_service
+from app.services import context_compaction_service
 from app.services.agent_runner import _maybe_auto_compact_hook
 from app.services.context_compaction_service import compact_conversation
 from app.services.event_bus import event_bus

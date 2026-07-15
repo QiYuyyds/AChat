@@ -13,10 +13,10 @@ Any unavailable path is skipped and remaining weights renormalised.
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from app.config import Settings
 from app.db.engine import get_db
@@ -25,7 +25,7 @@ from app.graph.types import ChunkRef
 
 logger = logging.getLogger(__name__)
 
-EmbedFn = Callable[[str], List[float]]
+EmbedFn = Callable[[str], list[float]]
 
 
 @dataclass
@@ -41,7 +41,7 @@ class HybridResult:
 @dataclass
 class _PathHits:
     """Single-path retrieval result (rank-ordered) + success flag."""
-    hits: List[dict] = field(default_factory=list)
+    hits: list[dict] = field(default_factory=list)
     ok: bool = False
 
 
@@ -58,33 +58,33 @@ class HybridStore:
     def __init__(
         self,
         settings: Settings,
-        embed_fn: Optional[EmbedFn] = None,
+        embed_fn: EmbedFn | None = None,
     ):
         self.settings = settings
         self._embed_fn = embed_fn
         self._reranker = None
 
         # Injected search backends (set by infrastructure factory)
-        self._milvus_search_fn: Optional[Callable] = None  # (emb, k) -> List[dict]
-        self._es_search_fn: Optional[Callable] = None     # (query, k) -> List[dict]
-        self._kg_search_fn: Optional[Callable] = None      # (query, k) -> List[dict]
+        self._milvus_search_fn: Callable | None = None  # (emb, k) -> List[dict]
+        self._es_search_fn: Callable | None = None     # (query, k) -> List[dict]
+        self._kg_search_fn: Callable | None = None      # (query, k) -> List[dict]
 
         # Milvus insert backend
-        self._milvus_insert_fn: Optional[Callable] = None  # (ids, contents, embs) -> None
-        self._es_index_fn: Optional[Callable] = None       # (pg_id, content, doc_hash, idx) -> None
+        self._milvus_insert_fn: Callable | None = None  # (ids, contents, embs) -> None
+        self._es_index_fn: Callable | None = None       # (pg_id, content, doc_hash, idx) -> None
 
         # KG index/delete backends
-        self._kg_index_fn: Optional[Callable] = None   # (doc_hash, chunks: List[ChunkRef]) -> None
-        self._kg_delete_fn: Optional[Callable] = None  # (doc_hash) -> None
+        self._kg_index_fn: Callable | None = None   # (doc_hash, chunks: List[ChunkRef]) -> None
+        self._kg_delete_fn: Callable | None = None  # (doc_hash) -> None
 
     def set_embed_fn(self, fn: EmbedFn) -> None:
         self._embed_fn = fn
 
-    def set_milvus_backend(self, search_fn: Callable, insert_fn: Optional[Callable] = None) -> None:
+    def set_milvus_backend(self, search_fn: Callable, insert_fn: Callable | None = None) -> None:
         self._milvus_search_fn = search_fn
         self._milvus_insert_fn = insert_fn
 
-    def set_es_backend(self, search_fn: Callable, index_fn: Optional[Callable] = None) -> None:
+    def set_es_backend(self, search_fn: Callable, index_fn: Callable | None = None) -> None:
         self._es_search_fn = search_fn
         self._es_index_fn = index_fn
 
@@ -126,14 +126,14 @@ class HybridStore:
     async def index_chunks(
         self,
         doc_hash: str,
-        contents: List[str],
-        parents: List[str],
-        embeddings: List[List[float]],
+        contents: list[str],
+        parents: list[str],
+        embeddings: list[list[float]],
         *,
-        content_hashes: Optional[List[str]] = None,
-        cache_hit: Optional[List[bool]] = None,
-        user_id: Optional[str] = None,
-    ) -> List[int]:
+        content_hashes: list[str] | None = None,
+        cache_hit: list[bool] | None = None,
+        user_id: str | None = None,
+    ) -> list[int]:
         """Persist chunks to PG + Milvus + ES. KG indexing is best-effort async.
 
         Args:
@@ -141,7 +141,7 @@ class HybridStore:
             cache_hit: True = embedding reused from cache, skip KG entity extraction.
             user_id: owner for multi-user isolation.
         """
-        pg_ids: List[int] = []
+        pg_ids: list[int] = []
 
         for idx, content in enumerate(contents):
             embedding = embeddings[idx] if idx < len(embeddings) else []
@@ -206,7 +206,7 @@ class HybridStore:
 
     # ─── Search (async with asyncio.gather for concurrent paths) ──────────
 
-    async def search(self, query: str, top_k: int, *, user_id: Optional[str] = None) -> List[HybridResult]:
+    async def search(self, query: str, top_k: int, *, user_id: str | None = None) -> list[HybridResult]:
         """Single-query search with auto mode detection."""
         mode = self.mode()
         if mode == "hybrid":
@@ -218,7 +218,7 @@ class HybridStore:
         logger.warning("Search infrastructure unavailable (Milvus and ES both disconnected)")
         return []
 
-    async def search_multi(self, queries: List[str], top_k: int, *, user_id: Optional[str] = None) -> List[HybridResult]:
+    async def search_multi(self, queries: list[str], top_k: int, *, user_id: str | None = None) -> list[HybridResult]:
         """Multi-query search with RRF fusion across query variants."""
         queries = [q for q in (queries or []) if q]
         if not queries:
@@ -233,7 +233,7 @@ class HybridStore:
         results_by_query = await asyncio.gather(*tasks, return_exceptions=True)
 
         k = self.settings.rag_rrf_constant_k or 60
-        merged: Dict[str, dict] = {}
+        merged: dict[str, dict] = {}
         for query_results in results_by_query:
             if isinstance(query_results, Exception):
                 continue
@@ -247,7 +247,7 @@ class HybridStore:
                 else:
                     merged[key] = {"score": score, "result": result}
 
-        out: List[HybridResult] = []
+        out: list[HybridResult] = []
         for item in merged.values():
             result = item["result"]
             result.score = item["score"]
@@ -259,7 +259,7 @@ class HybridStore:
 
     # ─── Internal: hybrid 3-way RRF ──────────────────────────────────────
 
-    async def _search_hybrid(self, query: str, top_k: int, *, user_id: Optional[str] = None) -> List[HybridResult]:
+    async def _search_hybrid(self, query: str, top_k: int, *, user_id: str | None = None) -> list[HybridResult]:
         fetch_k = max(top_k * 2, 10)
 
         # Concurrent fetch from all 3 paths
@@ -301,7 +301,7 @@ class HybridStore:
         kg_w = raw_kg / available if kg_path.ok else 0.0
 
         k = self.settings.rag_rrf_constant_k or 60
-        rrf_scores: Dict[int, float] = {}
+        rrf_scores: dict[int, float] = {}
 
         # ── Track path membership for source attribution ──
         milvus_ids: set[int] = set()
@@ -337,7 +337,7 @@ class HybridStore:
         # Load content from PG
         ids = [pid for pid, _ in sorted_ids]
         row_map = await self._load_chunks_by_ids(ids)
-        results: List[HybridResult] = []
+        results: list[HybridResult] = []
         for pid, score in sorted_ids:
             row = row_map.get(pid)
             if row is None:
@@ -362,13 +362,13 @@ class HybridStore:
             ))
         return results
 
-    async def _search_semantic(self, query: str, top_k: int, *, user_id: Optional[str] = None) -> List[HybridResult]:
+    async def _search_semantic(self, query: str, top_k: int, *, user_id: str | None = None) -> list[HybridResult]:
         path = await self._fetch_milvus(query, top_k, user_id=user_id)
         if not path.ok:
             return []
         ids = [h["pg_id"] for h in path.hits if h.get("pg_id") is not None]
         row_map = await self._load_chunks_by_ids(ids) if ids else {}
-        results: List[HybridResult] = []
+        results: list[HybridResult] = []
         for h in path.hits:
             pid = h.get("pg_id")
             if pid is None:
@@ -384,13 +384,13 @@ class HybridStore:
             ))
         return results
 
-    async def _search_keyword(self, query: str, top_k: int, *, user_id: Optional[str] = None) -> List[HybridResult]:
+    async def _search_keyword(self, query: str, top_k: int, *, user_id: str | None = None) -> list[HybridResult]:
         path = await self._fetch_es(query, top_k, user_id=user_id)
         if not path.ok:
             return []
         ids = [h["pg_id"] for h in path.hits if h.get("pg_id") is not None]
         row_map = await self._load_chunks_by_ids(ids) if ids else {}
-        results: List[HybridResult] = []
+        results: list[HybridResult] = []
         for h in path.hits:
             pid = h.get("pg_id")
             if pid is None:
@@ -408,7 +408,7 @@ class HybridStore:
 
     # ─── 3-way fetch (each returns _PathHits) ────────────────────────────
 
-    async def _fetch_milvus(self, query: str, fetch_k: int, *, user_id: Optional[str] = None) -> _PathHits:
+    async def _fetch_milvus(self, query: str, fetch_k: int, *, user_id: str | None = None) -> _PathHits:
         from app.observability import start_span
         if not self._milvus_ok():
             return _PathHits(ok=False)
@@ -440,7 +440,7 @@ class HybridStore:
             logger.warning("Milvus search failed: %s", e)
             return _PathHits(ok=False)
 
-    async def _fetch_es(self, query: str, fetch_k: int, *, user_id: Optional[str] = None) -> _PathHits:
+    async def _fetch_es(self, query: str, fetch_k: int, *, user_id: str | None = None) -> _PathHits:
         from app.observability import start_span
         if not self._es_ok():
             return _PathHits(ok=False)
@@ -479,7 +479,7 @@ class HybridStore:
         pool = top_k * (4 if self._reranker is not None else 2)
         return max(pool, 10)
 
-    def _finalize(self, query: str, results: List[HybridResult], top_k: int) -> List[HybridResult]:
+    def _finalize(self, query: str, results: list[HybridResult], top_k: int) -> list[HybridResult]:
         if self._reranker is not None and len(results) > 1:
             return self._reranker.rerank(query, results, top_k)
         if top_k > 0 and len(results) > top_k:
@@ -487,8 +487,8 @@ class HybridStore:
         return results
 
     @staticmethod
-    def _materialize_kg_only(hits: list, top_k: int) -> List[HybridResult]:
-        out: List[HybridResult] = []
+    def _materialize_kg_only(hits: list, top_k: int) -> list[HybridResult]:
+        out: list[HybridResult] = []
         for hit in hits[:top_k]:
             pg_id = hit.get("pg_id", 0) if isinstance(hit, dict) else getattr(hit, "pg_id", 0)
             content = hit.get("content", "") if isinstance(hit, dict) else getattr(hit, "content", "")
@@ -500,7 +500,7 @@ class HybridStore:
         return out
 
     @staticmethod
-    async def _load_chunks_by_ids(ids: List[int]) -> Dict[int, dict]:
+    async def _load_chunks_by_ids(ids: list[int]) -> dict[int, dict]:
         """Load chunk content + parent from PG by IDs."""
         if not ids:
             return {}

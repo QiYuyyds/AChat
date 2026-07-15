@@ -1,9 +1,9 @@
 """Unit tests for LLMRewriter and LLMReranker — generation + failure fallback."""
 
 import json
-import pytest
-from app.rag.rewriter import LLMRewriter, HistoryMessage
+
 from app.rag.reranker import LLMReranker
+from app.rag.rewriter import HistoryMessage, LLMRewriter
 
 
 class TestLLMRewriter:

@@ -19,7 +19,6 @@ from typing import Protocol
 
 from app.utils.platform import IS_WINDOWS
 
-
 # ─── Build toolchain manifest files ─────────────────────────────────────────
 # Known build-system manifests whose presence in a workspace root indicates
 # a "real" project that should be subject to build/compile/test evidence gates.

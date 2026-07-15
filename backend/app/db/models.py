@@ -729,6 +729,9 @@ class UserSettings(Base):
     mobile_device_token: Mapped[str | None] = mapped_column(
         String, name="mobile_device_token", nullable=True
     )
+    obsidian_vault_path: Mapped[str | None] = mapped_column(
+        String(1024), name="obsidian_vault_path", nullable=True
+    )
     settings: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
 
@@ -917,6 +920,12 @@ class Document(Base):
     updated_at: Mapped[float] = mapped_column(Float, nullable=False)
     latest_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     latest_version_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    source_path: Mapped[str] = mapped_column(
+        String(1024), name="source_path", nullable=False, default=""
+    )
+    content_hash: Mapped[str | None] = mapped_column(
+        String(64), name="content_hash", nullable=True
+    )
 
     # Relationships
     versions: Mapped[list["DocumentVersion"]] = relationship(
@@ -925,6 +934,7 @@ class Document(Base):
 
     __table_args__ = (
         Index("idx_documents_updated", "updated_at"),
+        Index("idx_documents_source_path", "source_path"),
     )
 
 

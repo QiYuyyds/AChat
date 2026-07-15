@@ -12,9 +12,6 @@ from __future__ import annotations
 import hashlib
 import time
 
-import pytest
-
-
 # ─── 7.1: pdftotext page count ─────────────────────────────────────────────
 
 
@@ -172,7 +169,7 @@ async def test_delete_versions_by_document_cleans_four_ways(db):
     assert len(kg_calls) == 2
 
     # Verify PG has no more chunks for this document
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
 
     async with get_db() as session:
         count_result = await session.execute(

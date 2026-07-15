@@ -16,7 +16,7 @@ import hmac
 import logging
 import os
 import re
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
@@ -102,7 +102,7 @@ def _read_bearer(header: str | None) -> str | None:
     return parts[1]
 
 
-async def _try_legacy_mobile_auth(req: Request) -> Optional[User]:
+async def _try_legacy_mobile_auth(req: Request) -> User | None:
     """Attempt legacy mobile token auth; return a synthetic User if successful.
 
     Logs a deprecation warning on each use. Returns None if legacy token

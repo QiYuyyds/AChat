@@ -126,9 +126,7 @@ class HookRegistry:
                     continue
                 if result.action == "deny":
                     return result
-                if result.action == "modify":
-                    effective = result
-                elif result.action == "inject":
+                if result.action == "modify" or result.action == "inject":
                     effective = result
                 # allow: keep current effective result
             except Exception:

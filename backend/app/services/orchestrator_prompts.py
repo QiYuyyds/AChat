@@ -19,6 +19,15 @@ def _json(value: object) -> str:
 
 
 # ─── misc ─────────────────────────────────────────────────────────────────────
+_STATUS_EMOJI = {
+    "pending": "⬚",
+    "in_progress": "🔄",
+    "done": "✅",
+    "failed": "❌",
+    "skipped": "⏭",
+}
+
+
 def extract_text_from_parts(parts: list[dict]) -> str:
     out: list[str] = []
     for p in parts:
@@ -37,6 +46,13 @@ def extract_text_from_parts(parts: list[dict]) -> str:
                 f"[文件附件: {p['fileName']} ({format_size(p['size'])}, "
                 f"{p['mimeType']}) · id={p['attachmentId']}]"
             )
+        elif ptype == "execution_plan":
+            steps = p.get("steps", [])
+            summary = ", ".join(
+                f"{s.get('title', s.get('id', '?'))}({_STATUS_EMOJI.get(s.get('status', 'pending'), '?')})"
+                for s in steps
+            )
+            out.append(f"[执行计划: {summary}]")
     return "\n\n".join(s for s in out if s)
 
 

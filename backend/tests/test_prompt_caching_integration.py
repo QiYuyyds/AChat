@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import pytest_asyncio
 
-
 # ─── Task 9.4: agent_runner static/dynamic injection ────────────────────────
 
 
@@ -83,11 +82,15 @@ async def custom_agent_setup(db, tmp_path):
 async def test_build_adapter_input_static_to_system_dynamic_to_prompt(db, custom_agent_setup, monkeypatch):
     """build_adapter_input injects render_static() to system prompt and
     render_dynamic() to user prompt (Task 9.4)."""
-    from app.services.prompt_assembler import (
-        CHAT_SCHEMA, REACT_SCHEMA, ContextItem, FilledSlot,
-        RuntimeContext, SlotConstraints, SlotPlanner,
-    )
     from app.services import agent_runner
+    from app.services.prompt_assembler import (
+        REACT_SCHEMA,
+        ContextItem,
+        FilledSlot,
+        RuntimeContext,
+        SlotConstraints,
+        SlotPlanner,
+    )
 
     # Build a RuntimeContext with known static and dynamic content
     test_ctx = RuntimeContext(
@@ -150,11 +153,14 @@ async def test_build_adapter_input_static_to_system_dynamic_to_prompt(db, custom
 
 async def test_build_adapter_input_empty_dynamic_leaves_prompt_unchanged(db, custom_agent_setup, monkeypatch):
     """When render_dynamic() returns empty, the prompt is unchanged (Task 9.4)."""
-    from app.services.prompt_assembler import (
-        CHAT_SCHEMA, ContextItem, FilledSlot,
-        RuntimeContext, SlotConstraints,
-    )
     from app.services import agent_runner
+    from app.services.prompt_assembler import (
+        CHAT_SCHEMA,
+        ContextItem,
+        FilledSlot,
+        RuntimeContext,
+        SlotConstraints,
+    )
 
     # Build a RuntimeContext with only static content (no dynamic)
     test_ctx = RuntimeContext(
@@ -169,6 +175,7 @@ async def test_build_adapter_input_empty_dynamic_leaves_prompt_unchanged(db, cus
     monkeypatch.setattr(agent_runner, "_get_prompt_assembler", lambda: mock_assembler)
 
     from sqlalchemy import select
+
     from app.db.engine import get_db
     from app.db.models import Agent, Workspace
     from app.services.agent_runner import RunArgs, build_adapter_input
@@ -216,6 +223,7 @@ class TestSummariseCacheSafe:
     def test_summarise_accepts_parent_system_prompt_param(self):
         """_summarise() signature includes parent_system_prompt parameter."""
         import inspect
+
         from app.services.context_compaction_service import _summarise
 
         sig = inspect.signature(_summarise)

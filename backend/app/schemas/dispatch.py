@@ -46,6 +46,8 @@ class DispatchPlanItem(BaseModel):
     # advisory fields
     complexity: str | None = None
     explored: list[str] | None = None
+    # Link this dispatch task to a plan step (optional)
+    plan_step_id: str | None = Field(default=None, alias="planStepId")
     # advisory context level — controls sub-agent context amount
     context_level: Literal["isolated", "standard"] | None = Field(
         default=None, alias="contextLevel"

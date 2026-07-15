@@ -51,8 +51,11 @@ _DESCRIPTION = (
     "Parent directories are created automatically. Each file is capped at 100 KB; in "
     "sandbox mode the workspace as a whole is capped at 100 MB / 1000 files. In "
     "'review' mode the user must approve the diff before the write actually happens; "
-    "you'll see ok:false with 'rejected' if they decline. Use this to scaffold code, "
-    "write documents, etc."
+    "you'll see ok:false with 'rejected' if they decline. IMPORTANT: if the file "
+    "content is very large, write the first portion with fs_write, then use fs_edit "
+    "to append the rest (replace the last few lines of the current content with "
+    "those lines plus the new content). This avoids hitting the LLM output token "
+    "limit. Use this to scaffold code, write documents, etc."
 )
 
 

@@ -15,7 +15,6 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +84,7 @@ def _parse_pdf(filename: str, content_type: str, data: bytes) -> ParseResult:
     raise ValueError("pdf contains no extractable text; OCR is required")
 
 
-def _extract_pdf_with_pdfplumber(data: bytes) -> Tuple[str, int, str]:
+def _extract_pdf_with_pdfplumber(data: bytes) -> tuple[str, int, str]:
     """Most accurate PDF extractor — requires pdfplumber library."""
     try:
         import pdfplumber  # type: ignore
@@ -111,7 +110,7 @@ def _extract_pdf_with_pdfplumber(data: bytes) -> Tuple[str, int, str]:
         return "", 0, "pdfplumber"
 
 
-def _extract_pdf_with_pypdf2(data: bytes) -> Tuple[str, int, str]:
+def _extract_pdf_with_pypdf2(data: bytes) -> tuple[str, int, str]:
     """Pure-Python fallback — tries PyPDF2 then pypdf (successor library)."""
     reader = None
     # Try PyPDF2 first (as specified in requirements), then pypdf (already installed)
@@ -136,7 +135,7 @@ def _extract_pdf_with_pypdf2(data: bytes) -> Tuple[str, int, str]:
         return "", 0, "pdf_text"
 
 
-def _extract_pdf_with_pdftotext(data: bytes) -> Tuple[str, int, str]:
+def _extract_pdf_with_pdftotext(data: bytes) -> tuple[str, int, str]:
     """System-command fallback — requires pdftotext (poppler-utils) installed."""
     exe = shutil.which("pdftotext")
     if not exe:
@@ -200,7 +199,7 @@ def _rune_len(text: str) -> int:
     return len(text or "")
 
 
-def _safe_unlink(path: Optional[str]) -> None:
+def _safe_unlink(path: str | None) -> None:
     if not path:
         return
     try:

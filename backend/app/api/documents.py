@@ -20,9 +20,13 @@ from app.db.models import User
 from app.schemas import (
     DeleteDocumentResponse,
     DocumentDetailResponse,
+    DocumentFlatListResponse,
     DocumentListItem,
     DocumentListResponse,
     DocumentResponse,
+    DocumentTreeResponse,
+    FileNode,
+    FolderNode,
     IngestResultResponse,
     IngestVersionRequest,
     UploadDocumentResponse,
@@ -55,6 +59,8 @@ def _doc_response(d: dict) -> DocumentResponse:
         updated_at=d["updated_at"],
         latest_version=d["latest_version"],
         latest_version_id=d["latest_version_id"],
+        source_path=d.get("source_path", ""),
+        content_hash=d.get("content_hash"),
     )
 
 
@@ -133,6 +139,69 @@ async def write_document(req: WriteDocumentRequest, user: User = Depends(get_cur
 # ─── Get document ─────────────────────────────────────────────────────────
 
 
+@router.get("/documents/tree")
+async def list_document_tree(
+    path: str = "",
+    user: User = Depends(get_current_user),
+) -> DocumentTreeResponse:
+    """Virtual directory tree for obsidian_sync documents."""
+    svc = _get_service()
+    result = await svc.list_tree(path, user.id)
+    return DocumentTreeResponse(
+        current_path=result["current_path"],
+        folders=[
+            FolderNode(
+                name=f["name"],
+                path=f["path"],
+                doc_count=f["doc_count"],
+            )
+            for f in result["folders"]
+        ],
+        files=[
+            FileNode(
+                id=f["id"],
+                title=f["title"],
+                source_path=f["source_path"],
+                doc_type=f["doc_type"],
+                source=f["source"],
+                updated_at=f["updated_at"],
+            )
+            for f in result["files"]
+        ],
+    )
+
+
+@router.get("/documents/flat")
+async def list_documents_flat(
+    sources: str | None = None,
+    user: User = Depends(get_current_user),
+) -> DocumentFlatListResponse:
+    """Flat document list for non-obsidian sources."""
+    svc = _get_service()
+    source_list = sources.split(",") if sources else None
+    items = await svc.list_flat(user.id, source_list)
+    docs = []
+    for item in items:
+        docs.append(DocumentListItem(
+            id=item["id"],
+            title=item["title"],
+            doc_type=item["doc_type"],
+            source=item["source"],
+            status=item["status"],
+            created_by=item["created_by"],
+            created_at=item["created_at"],
+            updated_at=item["updated_at"],
+            latest_version=item["latest_version"],
+            latest_version_id=item["latest_version_id"],
+            source_path=item.get("source_path", ""),
+            content_hash=item.get("content_hash"),
+            latest_metadata=item.get("latest_metadata"),
+            latest_content_chars=item.get("latest_content_chars"),
+            latest_parser=item.get("latest_parser"),
+        ))
+    return DocumentFlatListResponse(documents=docs)
+
+
 @router.get("/documents/{document_id}")
 async def get_document(document_id: str, user: User = Depends(get_current_user)) -> DocumentDetailResponse:
     await verify_document_ownership(document_id, user.id)
@@ -204,7 +273,7 @@ async def ingest_document(
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=404)  # type: ignore
     return IngestResultResponse(
-        version_id=result["version_id"] if "version_id" in result else req.version_id,
+        version_id=result.get("version_id", req.version_id),
         chunk_count=result["chunk_count"],
         doc_hash=result["doc_hash"],
     )

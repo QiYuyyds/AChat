@@ -127,6 +127,10 @@ class Settings(BaseSettings):
     eval_rule_enabled: bool = True
     eval_judge_enabled: bool = False
 
+    # ─── Obsidian Sync ───
+    obsidian_max_embed_depth: int = 2
+    obsidian_default_ignore: list[str] = [".obsidian/", "Templates/"]
+
     @property
     def cors_origins_list(self) -> list[str]:
         """Parse CORS origins from comma-separated string."""
