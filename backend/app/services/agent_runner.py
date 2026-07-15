@@ -37,6 +37,8 @@ from app.schemas.events import (
     DeployStatusEvent,
     MessageEndEvent,
     MessageStartEvent,
+    PlanCreatedEvent,
+    PlanStepUpdateEvent,
     PartStartEvent,
     RunEndEvent,
     RunStartEvent,
@@ -515,10 +517,11 @@ class RunExecutionResult:
     artifact_ids: list[str] = field(default_factory=list)
     output_message_ids: list[str] = field(default_factory=list)
     output_artifacts: dict[str, str] = field(default_factory=dict)
+    plan_stats: dict | None = None
 
 
 def _empty_run_execution_result() -> RunExecutionResult:
-    return RunExecutionResult(artifact_ids=[], output_message_ids=[], output_artifacts={})
+    return RunExecutionResult(artifact_ids=[], output_message_ids=[], output_artifacts={}, plan_stats=None)
 
 
 # ─── TurnResult (internal to the SDK ReAct loop) ───────────────────────────────
@@ -739,6 +742,26 @@ async def _execute_tool_call_to_result(
             timestamp=now_ms(),
             message_id=message_id,
             deployment=DeployStatusRecord.model_validate(value),
+        ))
+
+    # ── Plan tool event generation (symmetric to write_artifact → ArtifactCreateEvent) ──
+    if tc.name == "create_plan" and result.ok and isinstance(value, dict) and "planId" in value:
+        from app.schemas.plan import PlanStep as PlanStepModel
+        events.append(PlanCreatedEvent(
+            conversation_id=conversation_id,
+            timestamp=now_ms(),
+            planId=value["planId"],
+            steps=[PlanStepModel.model_validate(s) for s in value.get("steps", [])],
+            complexity=value.get("complexity", "moderate"),
+        ))
+
+    if tc.name in ("plan_step", "add_plan_steps") and result.ok and isinstance(value, dict) and "planId" in value:
+        from app.schemas.plan import PlanStep as PlanStepModel
+        events.append(PlanStepUpdateEvent(
+            conversation_id=conversation_id,
+            timestamp=now_ms(),
+            planId=value["planId"],
+            steps=[PlanStepModel.model_validate(s) for s in value.get("updatedSteps", [])],
         ))
 
     # O8: check post_tool_use inject action (e.g. skill_auto_activator)
@@ -1827,6 +1850,7 @@ _VISIBLE_EVENT_TYPES = frozenset({
     "part.start", "part.delta", "part.end",
     "tool.call", "tool.result",
     "artifact.create", "deploy.status",
+    "plan.created", "plan.step_update",
 })
 
 
@@ -1845,6 +1869,7 @@ async def consume_stream(
     output_key_by_artifact_id: dict[str, str] = {}
     tool_name_by_call_id: dict[str, str] = {}
     current_message_id: str | None = None
+    _plan_stats_payload: dict | None = None
 
     from app.services.async_db_writer import register_parts_buffer, unregister_parts_buffer
     register_parts_buffer(run_id, parts_buffer)
@@ -1919,6 +1944,164 @@ async def consume_stream(
                         user_id=user_id,
                     )
 
+            # plan.created: inject execution_plan part (symmetric to artifact.create → artifact_ref)
+            if event.type == "plan.created" and current_message_id:
+                parts = parts_buffer.get(current_message_id, [])
+                part_index = len(parts)
+                plan_part = {
+                    "type": "execution_plan",
+                    "planId": event.plan_id,
+                    "steps": [s.model_dump(by_alias=True) for s in event.steps],
+                    "complexity": event.complexity,
+                }
+                parts.append(plan_part)
+                parts_buffer[current_message_id] = parts
+                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
+                if not hidden:
+                    publish(
+                        PartStartEvent(
+                            conversation_id=event.conversation_id,
+                            timestamp=now_ms(),
+                            message_id=current_message_id,
+                            part_index=part_index,
+                            part=plan_part,
+                        ),
+                        user_id=user_id,
+                    )
+
+            # plan.step_update: update execution_plan part steps in parts_buffer
+            if event.type == "plan.step_update" and current_message_id:
+                parts = parts_buffer.get(current_message_id, [])
+                updated_steps = [s.model_dump(by_alias=True) for s in event.steps]
+                for p in parts:
+                    if p.get("type") == "execution_plan" and p.get("planId") == event.plan_id:
+                        p["steps"] = updated_steps
+                        break
+                parts_buffer[current_message_id] = parts
+                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
+                if not hidden:
+                    publish(event, user_id=user_id)
+
+            # dispatch.start → plan step auto-update (mark step as in_progress)
+            if event.type == "dispatch.start":
+                from app.services.plan_dispatch_mapping import plan_dispatch_mapping as _pdm
+                from app.services.plan_registry import plan_registry as _preg
+                mapping_key = _pdm.lookup_by_task(event.task_id)
+                if mapping_key is not None:
+                    plan_id, step_id = mapping_key
+                    plan = _preg.get(plan_id)
+                    if plan is not None:
+                        target = next((s for s in plan.steps if s.id == step_id), None)
+                        if target is not None and target.status == "pending":
+                            target.status = "in_progress"
+                            _preg.update(plan)
+                            if not hidden:
+                                publish(
+                                    PlanStepUpdateEvent(
+                                        conversation_id=event.conversation_id,
+                                        timestamp=now_ms(),
+                                        planId=plan_id,
+                                        steps=plan.steps,
+                                    ),
+                                    user_id=user_id,
+                                )
+
+            # dispatch.end → plan step auto-update (aggregate status)
+            if event.type == "dispatch.end":
+                from app.services.plan_dispatch_mapping import plan_dispatch_mapping as _pdm
+                from app.services.plan_registry import plan_registry as _preg
+                mapping_key = _pdm.lookup_by_task(event.task_id)
+                if mapping_key is not None:
+                    plan_id, step_id = mapping_key
+                    # Update dispatch task status
+                    _pdm.update_task_status(event.task_id, event.status)
+                    # Aggregate status across all tasks for this step
+                    agg = _pdm.aggregate_step_status(plan_id, step_id)
+                    if agg is not None and agg != "in_progress":
+                        plan = _preg.get(plan_id)
+                        if plan is not None:
+                            target = next((s for s in plan.steps if s.id == step_id), None)
+                            if target is not None and target.status != agg:
+                                target.status = agg  # type: ignore[assignment]
+                                _preg.update(plan)
+                                if not hidden:
+                                    publish(
+                                        PlanStepUpdateEvent(
+                                            conversation_id=event.conversation_id,
+                                            timestamp=now_ms(),
+                                            planId=plan_id,
+                                            steps=plan.steps,
+                                        ),
+                                        user_id=user_id,
+                                    )
+
+            # Run-end cleanup: finalize all execution_plan parts + write stats + clear registries
+            if event.type == "run.end":
+                # Finalize execution_plan step statuses in parts_buffer
+                if current_message_id:
+                    run_status = event.status
+                    parts = parts_buffer.get(current_message_id, [])
+                    plan_changed = False
+                    for p in parts:
+                        if p.get("type") != "execution_plan":
+                            continue
+                        for step in p.get("steps", []):
+                            if step.get("status") == "in_progress":
+                                step["status"] = "done" if run_status == "complete" else "failed"
+                                plan_changed = True
+                            elif step.get("status") == "pending":
+                                step["status"] = "skipped"
+                                plan_changed = True
+                    if plan_changed:
+                        parts_buffer[current_message_id] = parts
+                        await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
+                        from app.schemas.plan import PlanStep as PlanStepModel
+                        for p in parts:
+                            if p.get("type") == "execution_plan":
+                                if not hidden:
+                                    publish(
+                                        PlanStepUpdateEvent(
+                                            conversation_id=event.conversation_id,
+                                            timestamp=now_ms(),
+                                            planId=p["planId"],
+                                            steps=[PlanStepModel.model_validate(s) for s in p.get("steps", [])],
+                                        ),
+                                        user_id=user_id,
+                                    )
+
+                # Compute plan usage stats (DB write deferred to finalize to avoid connection pool errors)
+                from app.services.plan_registry import plan_registry as _plan_registry_stats
+                _all_plans = list(_plan_registry_stats._plans.values())
+                if _all_plans:
+                    plan = _all_plans[-1]
+                    # Mirror the finalized statuses from parts_buffer into the registry
+                    if current_message_id:
+                        for p in parts_buffer.get(current_message_id, []):
+                            if p.get("type") != "execution_plan":
+                                continue
+                            finalized_by_id = {s["id"]: s["status"] for s in p.get("steps", [])}
+                            for step in plan.steps:
+                                if step.id in finalized_by_id:
+                                    step.status = finalized_by_id[step.id]
+                    completed_steps = sum(1 for s in plan.steps if s.status == "done")
+                    skipped_steps = sum(1 for s in plan.steps if s.status == "skipped")
+                    _plan_stats_payload = {
+                        "created": True,
+                        "complexity": plan.complexity,
+                        "stepCount": len(plan.steps),
+                        "completedSteps": completed_steps,
+                        "skippedSteps": skipped_steps,
+                        "addedStepsCount": plan.added_steps_count,
+                    }
+                else:
+                    _plan_stats_payload = None
+
+                # Clean up plan_dispatch_mapping and plan_registry on run end
+                from app.services.plan_dispatch_mapping import plan_dispatch_mapping as _pdm
+                from app.services.plan_registry import plan_registry as _plan_registry
+                _pdm.cleanup_run()
+                _plan_registry.cleanup_run()
+
             if event.type == "message.end":
                 current_message_id = None
             if event.type == "tool.result":
@@ -1985,6 +2168,7 @@ async def consume_stream(
         artifact_ids=artifact_ids,
         output_message_ids=output_message_ids,
         output_artifacts=output_artifacts,
+        plan_stats=_plan_stats_payload,
     )
 
 
@@ -2246,6 +2430,11 @@ async def finalize(
             run.status = status
             run.finished_at = finished_at
             run.error = error
+            # Write plan usage stats into usage JSONB (computed in consume_stream)
+            if result.plan_stats is not None:
+                usage = dict(run.usage or {})
+                usage["plan"] = result.plan_stats
+                run.usage = usage
 
         # any message still 'streaming' for this run -> terminal status
         streaming = (

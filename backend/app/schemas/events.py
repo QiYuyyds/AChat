@@ -21,6 +21,7 @@ from app.schemas.messages import (
     MessageUsage,
     RunUsage,
 )
+from app.schemas.plan import PlanComplexity, PlanStep
 
 
 # ─── Base Event ─────────────────────────────────────
@@ -437,6 +438,28 @@ class SummaryUpdatedEvent(BaseEvent):
     summary: str | None = None
 
 
+# ─── Plan Events ─────────────────────────────────────
+class PlanCreatedEvent(BaseEvent):
+    """Event when an execution plan is created via create_plan tool."""
+
+    type: Literal["plan.created"] = "plan.created"
+    plan_id: str = Field(alias="planId")
+    steps: list[PlanStep]
+    complexity: PlanComplexity
+
+    model_config = {"populate_by_name": True}
+
+
+class PlanStepUpdateEvent(BaseEvent):
+    """Event when plan step status changes (via plan_step / add_plan_steps tools or run-end cleanup)."""
+
+    type: Literal["plan.step_update"] = "plan.step_update"
+    plan_id: str = Field(alias="planId")
+    steps: list[PlanStep]
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Union Type ─────────────────────────────────────
 StreamEvent = Annotated[
     Union[  # noqa: UP007 - keep Union[] for the Pydantic discriminated union
@@ -487,6 +510,9 @@ StreamEvent = Annotated[
         TurnMetricEvent,
         # Summary
         SummaryUpdatedEvent,
+        # Plan events
+        PlanCreatedEvent,
+        PlanStepUpdateEvent,
     ],
     Field(discriminator="type"),
 ]

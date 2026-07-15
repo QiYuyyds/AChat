@@ -179,8 +179,26 @@ def _resolve_posix_user_shell() -> str | None:
     return None
 
 
+def _translate_posix_operators(command: str) -> str:
+    """Translate POSIX shell operators to PowerShell equivalents.
+
+    PowerShell 5.1 does not support ``&&`` / ``||``.  Replace them with
+    ``;`` (unconditional sequential) so commands still execute.  ``||`` is
+    dropped entirely — PS has no concise equivalent, and blindly running
+    the RHS on failure is rarely what the LLM intended.
+    """
+    # && → ;  (both sides run unconditionally)
+    # || → ;  (same — PS 5.1 has no short-circuit OR operator)
+    import re
+
+    command = re.sub(r"&&", ";", command)
+    command = re.sub(r"\|\|", ";", command)
+    return command
+
+
 def _build_shell_invocation(command: str) -> tuple[str, list[str]]:
     if IS_WINDOWS:
+        command = _translate_posix_operators(command)
         preamble = (
             "$OutputEncoding = [Console]::OutputEncoding = "
             "[System.Text.UTF8Encoding]::new();"

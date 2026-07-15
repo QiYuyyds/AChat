@@ -32,15 +32,15 @@ async def run_agent_loop(
 ```
 
 所有模式委托给 `execute_simple_run`（已有的 ReAct while-loop）。区别仅在于：
-- **工具列表**：coordinated 模式注入 `task_dispatch` + `dispatch_plan`；solo 和 subagent 模式在 `dispatch_depth < MAX_DISPATCH_DEPTH` 时注入 `task_dispatch`
+- **工具列表**：coordinated 模式注入 `task_dispatch` + `dispatch_plan` + `create_plan` / `plan_step` / `add_plan_steps`；solo 模式在 `dispatch_depth < MAX_DISPATCH_DEPTH` 时注入 `task_dispatch` + plan 工具；subagent 模式在 `dispatch_depth < MAX_DISPATCH_DEPTH` 时注入 `task_dispatch`（不注入 plan 工具）
 - **System prompt**：solo 注入自检提示 + 派发指导，coordinated 注入协调者指导，subagent 注入子 Agent 指导
 
 ### 2.2 三种模式
 
 | 模式 | 触发条件 | 工具列表 | System Prompt |
 |---|---|---|---|
-| `solo` | `dispatch_mode='solo'` 或非 orchestrator | agent 工具 + `task_dispatch`（depth < MAX） | base + 软自检 + 派发指导 |
-| `coordinated` | `dispatch_mode='orchestrated'` + `is_orchestrator=True` | agent 工具 + `task_dispatch` + `dispatch_plan` | base + 协调者指导 |
+| `solo` | `dispatch_mode='solo'` 或非 orchestrator | agent 工具 + `task_dispatch`（depth < MAX）+ `create_plan` / `plan_step` / `add_plan_steps`（depth < MAX） | base + 软自检 + 派发指导 + 执行计划指导 |
+| `coordinated` | `dispatch_mode='orchestrated'` + `is_orchestrator=True` | agent 工具 + `task_dispatch` + `dispatch_plan` + `create_plan` / `plan_step` / `add_plan_steps` | base + 协调者指导 + 执行计划与调度配合指导 |
 | `subagent` | `task_dispatch` / `dispatch_plan` 工具调用（`override_prompt` set） | agent 工具 + `task_dispatch`（depth < MAX） | base + 子 Agent 指导 |
 
 > `MAX_DISPATCH_DEPTH = 3`。达到最大深度时，`task_dispatch` 不注入——该 Agent 为终端执行者。
@@ -116,11 +116,12 @@ async def spawn_subagent_loop(
 ## 3a. dispatch_plan 工具（DAG 派发）
 
 - **名称**: `dispatch_plan`
-- **参数**: `tasks` (array of `{ id, agentId?, task, dependsOn? }`, required) — `agentId` 可选，省略时 clone-self
+- **参数**: `tasks` (array of `{ id, agentId?, task, dependsOn?, planStepId? }`, required) — `agentId` 可选，省略时 clone-self；`planStepId` 可选，关联到 `create_plan` 中的步骤
 - **行为**: 声明一个结构化 DAG，系统进行拓扑排序并按 wave 调度——同一 wave 内独立任务并行执行，依赖任务等待上游完成。返回 `{ tasks: { <id>: { status, summary } } }` 平坦 map
 - **深度/防环检查**: 与 `task_dispatch` 相同
 - **可见性**: 所有任务都 clone-self 时 `visibility='hidden'`；有任何 group-member 时 `visibility='visible'`
 - **注册**: 全局注册在 `tool_registry`，仅 coordinated 模式注入（solo/subagent 暂不支持 DAG）
+- **Plan Step 联动**: 当 task item 指定了 `planStepId`，系统在 `dispatch.start` 时自动将对应 plan step 标为 `in_progress`，在 `dispatch.end` 时根据所有关联 tasks 状态聚合更新 plan step（详见 `plan_dispatch_mapping`）
 - **适用场景**: 3+ 子任务且有明确依赖关系、用户要求生成完整项目（PRD → 设计 → 前端+后端 → 集成测试）
 
 ### 3a.1 DAG 验证
@@ -208,4 +209,5 @@ async def spawn_subagent_loop(
 | `backend/app/tools/dispatch_plan.py` | `dispatch_plan` 工具定义 + handler（DAG 派发 + 可选审批） |
 | `backend/app/services/dag_executor.py` | DAG 验证 / 波调度 / 执行（`validate_dag` / `topological_waves` / `execute_dag`） |
 | `backend/app/services/orchestrator.py` | stub（已移除三阶段逻辑） |
+| `backend/app/services/plan_dispatch_mapping.py` | Plan step 与 dispatch task 的映射注册表（forward + reverse + per-task 状态跟踪） |
 | `backend/app/services/orchestrator_prompts.py` | 仅保留 `extract_text_from_parts` 等工具函数 |

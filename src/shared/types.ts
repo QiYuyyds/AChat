@@ -27,6 +27,12 @@ export type MessagePart =
       size: number
       mimeType: string
     }
+  | {
+      type: 'execution_plan'
+      planId: string
+      steps: PlanStep[]
+      complexity: 'simple' | 'moderate' | 'complex'
+    }
 
 // ─── 增量 delta（流式追加）─────────────────────────────────
 export type PartDelta =
@@ -182,6 +188,15 @@ export interface DiffHunk {
   newStart: number
   newLines: number
   lines: string[]
+}
+
+// ─── Execution Plan types ──────────────────────────────────
+export type PlanStepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped'
+
+export interface PlanStep {
+  id: string
+  title: string
+  status: PlanStepStatus
 }
 
 // ─── Adapter 名称 ──────────────────────────────────────────
@@ -449,6 +464,17 @@ export type StreamEvent = BaseEvent &
     | { type: 'ask_user.resolved'; pendingId: string; answered: boolean }
     | { type: 'mcp_call.pending'; pendingCall: PendingMcpCall }
     | { type: 'mcp_call.resolved'; pendingId: string; approved: boolean }
+    | {
+        type: 'plan.created'
+        planId: string
+        steps: PlanStep[]
+        complexity: 'simple' | 'moderate' | 'complex'
+      }
+    | {
+        type: 'plan.step_update'
+        planId: string
+        steps: PlanStep[]
+      }
     | {
         type: 'worktree.created' | 'worktree.merged' | 'worktree.cleaned'
         taskId: string

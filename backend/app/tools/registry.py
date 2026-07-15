@@ -24,6 +24,11 @@ from app.tools.deploy_workspace import (
     deploy_workspace_tool,
 )
 from app.tools.dispatch_plan import dispatch_plan_tool
+from app.tools.execution_plan import (
+    add_plan_steps_tool,
+    create_plan_tool,
+    plan_step_tool,
+)
 from app.tools.fs_edit import fs_edit_tool
 from app.tools.fs_glob import fs_glob_tool
 from app.tools.fs_grep import fs_grep_tool
@@ -193,6 +198,9 @@ def _build_registry() -> ToolRegistry:
     # load_skill is auto-injected per equipped skill; write_skill is opt-in (tool_names).
     reg.register(load_skill_tool)
     reg.register(write_skill_tool)
+    reg.register(create_plan_tool)
+    reg.register(plan_step_tool)
+    reg.register(add_plan_steps_tool)
     return reg
 
 

@@ -706,6 +706,7 @@ def create_app() -> FastAPI:
         messages,
         obsidian,
         pending,
+        plan_usage,
         profile,
         runs_misc,
         skills,
@@ -728,6 +729,7 @@ def create_app() -> FastAPI:
     app.include_router(pending.router, tags=["pending"])
     app.include_router(settings_router.router, prefix="/api", tags=["settings"])
     app.include_router(runs_misc.router, prefix="/api", tags=["runs-misc"])
+    app.include_router(plan_usage.router, prefix="/api", tags=["plan-usage"])
     app.include_router(mobile_routes.router, prefix="/api", tags=["mobile"])
     app.include_router(stream.router, prefix="/api", tags=["stream"])
     app.include_router(documents.router, prefix="/api", tags=["documents"])

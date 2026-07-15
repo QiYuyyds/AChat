@@ -78,6 +78,15 @@ _PARAMETERS: dict[str, Any] = {
                             "tasks that can run immediately."
                         ),
                     },
+                    "planStepId": {
+                        "type": "string",
+                        "description": (
+                            "Optional: the ID of a plan step (from create_plan) "
+                            "to link this dispatch task to. When the task "
+                            "completes, the linked plan step will be "
+                            "automatically updated."
+                        ),
+                    },
                 },
             },
         },
@@ -305,6 +314,21 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         ),
         user_id=ctx.user_id,
     )
+
+    # Register plan-step mappings for tasks with planStepId
+    from app.services.plan_dispatch_mapping import plan_dispatch_mapping
+    from app.services.plan_registry import plan_registry
+
+    for item in items:
+        if item.plan_step_id is None:
+            continue
+        plan = plan_registry.find_plan_by_step(item.plan_step_id)
+        if plan is not None:
+            plan_dispatch_mapping.register(
+                plan_id=plan.plan_id,
+                step_id=item.plan_step_id,
+                dispatch_task_id=item.id,
+            )
 
     # Determine visibility: clone-self if all tasks use caller's agent_id
     all_clone = all(item.agent_id == ctx.agent_id for item in items)

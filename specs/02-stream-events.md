@@ -70,6 +70,10 @@ type StreamEvent = BaseEvent & (
 
   // —— 心跳 ——
   | { type: 'heartbeat' }
+
+  // —— 执行计划（solo + coordinated mode Agent 的结构化进度追踪）——
+  | { type: 'plan.created',  planId: string, steps: PlanStep[], complexity: 'simple' | 'moderate' | 'complex' }
+  | { type: 'plan.step_update', planId: string, steps: PlanStep[] }
 )
 
 interface RunUsageEvent {
@@ -109,13 +113,20 @@ interface DispatchPlanItem {
   agentId: string
   task: string                  // 给该 agent 的具体任务描述
   dependsOn: string[]           // 前置任务 id 列表
+  planStepId?: string          // 可选：关联到 create_plan 中的步骤 id，用于自动更新 plan step 状态
 }
 
 type PartDelta =
   | { type: 'text.append',     text: string }
   | { type: 'code.append',     text: string }
   | { type: 'thinking.append', text: string }
-  // 注：tool_use / tool_result / artifact_ref 不增量，整体替换或独立事件
+  // 注：tool_use / tool_result / artifact_ref / execution_plan 不增量，整体替换或独立事件
+
+interface PlanStep {
+  id: string
+  title: string
+  status: 'pending' | 'in_progress' | 'done' | 'failed' | 'skipped'
+}
 ```
 
 ---
@@ -244,6 +255,8 @@ dispatch.end      (parentRunId=r1, taskId=t3, status='skipped', error='Upstream 
 | `bash_command.resolved` | ❌ 透传 | approved=true/false 由前端 store 用来移除对应 pending |
 | `run.usage` | ✅ 落到 `agent_runs.usage` JSON 列 | adapter 在 run 结束前 emit；前端 store 同步更新该 run 行 |
 | `heartbeat` | ❌ 透传 | |
+| `plan.created` | ❌ 透传 | 触发 consume_stream 注入 execution_plan part |
+| `plan.step_update` | ✅ 更新 parts_buffer 中 execution_plan part 的 steps | 全量替换 steps 数组 |
 
 **写入策略**：流式 `part.delta` 高频，使用「内存缓冲 + 定时 flush」避免每个 delta 都打 DB：
 
@@ -304,3 +317,38 @@ Plan review adds two dispatch events before the existing `dispatch.plan` executi
 `dispatch.plan.pending` means AgentRunner has compiled and validated a plan, registered it in the in-memory pending plan queue, and is waiting for user action. `dispatch.plan.resolved` removes that pending review from the UI. The existing `dispatch.plan` event remains the signal that an approved compiled plan is now executing.
 
 These events are pass-through and are not persisted. The pending queue is recoverable through `GET /api/conversations/:id/pending-dispatch-plans` while the server process is alive.
+
+## Execution Plan Events
+
+`plan.created` and `plan.step_update` events enable real-time rendering of the Agent's structured execution plan in the UI.
+
+**Flow:**
+```
+1. Agent calls create_plan tool → handler registers plan in plan_registry → returns { planId, steps, complexity }
+2. _execute_tool_call_to_result detects create_plan success → appends PlanCreatedEvent
+3. consume_stream receives plan.created → pushes execution_plan part + emits part.start
+4. Agent calls plan_step → handler updates plan_registry → returns { planId, updatedSteps }
+5. _execute_tool_call_to_result detects plan_step success → appends PlanStepUpdateEvent
+6. consume_stream receives plan.step_update → updates execution_plan part steps in parts_buffer + SSE publish
+7. On run.end: consume_stream finalizes all execution_plan parts (in_progress→done/failed, pending→skipped)
+```
+
+`plan.created` is pass-through (triggers part injection like `artifact.create`). `plan.step_update` updates the parts_buffer and is SSE-published for the frontend reducer to apply. Both are not independently persisted—the `execution_plan` part in the message parts carries the canonical state.
+
+### Plan Step Auto-Update from Dispatch Events
+
+When a dispatch task has `planStepId` set (coordinated mode), the system automatically updates the linked plan step status:
+
+```
+1. Orchestrator calls create_plan → plan_registry registers plan
+2. Orchestrator calls dispatch_plan with planStepId on task items → handler registers mapping in plan_dispatch_mapping
+3. dispatch.start event → consume_stream checks plan_dispatch_mapping → marks plan step as 'in_progress' → emits plan.step_update
+4. dispatch.end event → consume_stream updates task status in plan_dispatch_mapping → aggregates all tasks for same (planId, stepId) → updates plan step status → emits plan.step_update
+   - All tasks complete → step 'done'
+   - Any task failed/aborted → step 'failed'
+   - All tasks skipped → step 'skipped'
+   - Some tasks still running → step remains 'in_progress'
+5. On run.end: plan_dispatch_mapping and plan_registry are cleaned up
+```
+
+This auto-update only applies to dispatch tasks with `planStepId`. Steps the orchestrator executes itself must be manually updated with `plan_step`.

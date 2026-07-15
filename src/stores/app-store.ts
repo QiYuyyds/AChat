@@ -15,6 +15,7 @@ import type {
   PendingMcpCall,
   PendingQuestion,
   PendingWrite,
+  PlanStep,
   StreamEvent,
   TurnMetricData,
 } from '@/shared/types'
@@ -855,6 +856,20 @@ export const useAppStore = create<AppState>()(
             return
           }
 
+          case 'plan.step_update': {
+            // Find execution_plan part by planId in the current message and replace its steps
+            for (const msg of Object.values(s.messages)) {
+              const planPart = msg.parts.find(
+                (p) => p.type === 'execution_plan' && p.planId === event.planId,
+              )
+              if (planPart && planPart.type === 'execution_plan') {
+                planPart.steps = event.steps
+                break
+              }
+            }
+            return
+          }
+
           case 'dispatch.plan.pending': {
             const pending = event.pendingPlan
             const status: DispatchState['taskStatus'] = {}
@@ -1201,6 +1216,12 @@ function areMessagePartsEquivalent(a: MessagePart, b: MessagePart): boolean {
       return (
         b.type === 'deploy_status' &&
         areUnknownValuesEquivalent(a.deployment, b.deployment)
+      )
+    case 'execution_plan':
+      return (
+        b.type === 'execution_plan' &&
+        a.planId === b.planId &&
+        a.steps === b.steps
       )
     case 'deploy_candidates':
       return (
