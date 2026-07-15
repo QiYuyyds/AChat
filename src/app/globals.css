@@ -214,3 +214,78 @@
     animation: none;
   }
 }
+
+/* ===== Auth 页面动画 ===== */
+
+/* 浮动光球 — 不同延迟和路径让光球错落漂浮 */
+@keyframes auth-float-orb {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  25%      { transform: translate(30px, -20px) scale(1.05); }
+  50%      { transform: translate(-10px, 15px) scale(0.95); }
+  75%      { transform: translate(20px, 10px) scale(1.02); }
+}
+
+/* 入场：淡入 + 上移 */
+@keyframes auth-fade-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* 光晕呼吸 — 缓慢缩放 + 透明度变化 */
+@keyframes auth-glow-breathe {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50%      { opacity: 1; transform: scale(1.08); }
+}
+
+/* 标题 shimmer — 光带扫过 */
+@keyframes auth-shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+/* 渐变流动 — 背景位置缓慢偏移 */
+@keyframes auth-gradient-pan {
+  0%   { background-position: 0% 50%; }
+  50%  { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.auth-fade-up { animation: auth-fade-up 600ms ease-out both; }
+.auth-fade-up-delay-1 { animation: auth-fade-up 600ms ease-out 100ms both; }
+.auth-fade-up-delay-2 { animation: auth-fade-up 600ms ease-out 200ms both; }
+.auth-fade-up-delay-3 { animation: auth-fade-up 600ms ease-out 300ms both; }
+.auth-orb { animation: auth-float-orb 8s ease-in-out infinite; }
+.auth-glow-breathe { animation: auth-glow-breathe 6s ease-in-out infinite; }
+
+/* 标题渐变 shimmer — 用 primary-foreground 和 warning 混合做光带 */
+.auth-shimmer-text {
+  background: linear-gradient(
+    90deg,
+    var(--primary-foreground) 0%,
+    var(--primary-foreground) 40%,
+    color-mix(in oklch, var(--primary-foreground) 60%, var(--warning)) 50%,
+    var(--primary-foreground) 60%,
+    var(--primary-foreground) 100%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: auth-shimmer 4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-fade-up,
+  .auth-fade-up-delay-1,
+  .auth-fade-up-delay-2,
+  .auth-fade-up-delay-3,
+  .auth-orb,
+  .auth-glow-breathe,
+  .auth-shimmer-text {
+    animation: none;
+  }
+  .auth-shimmer-text {
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
