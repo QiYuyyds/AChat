@@ -1,8 +1,8 @@
 'use client'
 
-import { Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, FileText, FolderGit2, Image as ImageIcon, Layers, Loader2, Package, Presentation, Rocket, Sparkles, Terminal, XCircle } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, File as FileIcon, FileText, FolderGit2, Image as ImageIcon, Layers, Loader2, Package, Presentation, Rocket, Sparkles, Terminal, XCircle } from 'lucide-react'
 import type { KeyboardEvent, MouseEvent, ReactNode } from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { PlanStep, PlanStepStatus } from '@/shared/types'
 
@@ -10,6 +10,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { AttachmentChip } from '@/components/attachment-chip'
 import { Button } from '@/components/ui/button'
 import { CodeBlock } from '@/components/code-block'
+import { DiffBlock } from '@/components/diff-block'
 import { Markdown } from '@/components/markdown'
 import { formatDuration } from '@/lib/format'
 import { artifactPreviewPath } from '@/lib/artifact-preview'
@@ -58,10 +59,10 @@ export function PartList({
     }
   })
 
-  // 计算最后一个有 content 的 part index（用于判断 thinking 是否正在流式）
+  // 计算最后一个有 content 的 part index（用于判断 thinking/file_write_preview 是否正在流式）
   let lastContentPartIndex = -1
   parts.forEach((p, i) => {
-    if (p.type === 'text' || p.type === 'thinking' || p.type === 'code') {
+    if (p.type === 'text' || p.type === 'thinking' || p.type === 'code' || p.type === 'file_write_preview') {
       lastContentPartIndex = i
     }
   })
@@ -125,6 +126,8 @@ function PartRenderer({
       return <ExecutionPlanPart steps={part.steps} planId={part.planId} complexity={part.complexity} />
     case 'deploy_candidates':
       return <DeployCandidatesPart conversationId={conversationId} candidates={part.candidates} />
+    case 'file_write_preview':
+      return <FileWritePreviewPart path={part.path} content={part.content} callId={part.callId} status={part.status} language={part.language} oldContent={part.oldContent} newContent={part.newContent} isStreaming={isStreaming} />
     case 'image_attachment':
     case 'file_attachment':
       return (
@@ -416,6 +419,22 @@ function ToolUsePart({
           : null)
       : null
 
+  // Direction B: detect fs_write/fs_edit with diff data in tool result
+  const isFileDiffTool = (toolName === 'fs_write' || toolName === 'fs_edit') && completion && !completion.isError
+  const diffData = isFileDiffTool && typeof completion.result === 'object' && completion.result !== null
+    ? (() => {
+        const r = completion.result as Record<string, unknown>
+        const oldContent = r.oldContent as string | null | undefined
+        const newContent = r.newContent as string | null | undefined
+        const path = r.path as string | undefined
+        if (oldContent !== undefined && newContent !== undefined) {
+          const ext = path ? path.split('.').pop() : undefined
+          return { oldContent: oldContent ?? '', newContent: newContent ?? '', language: ext }
+        }
+        return null
+      })()
+    : null
+
   const state: 'running' | 'success' | 'error' = !completion
     ? 'running'
     : completion.isError
@@ -506,6 +525,13 @@ function ToolUsePart({
             tone={completion?.isError ? 'error' : 'neutral'}
           />
         )}
+        {/* Direction B: inline diff preview for fs_write/fs_edit */}
+        {isFileDiffTool && diffData && !showDetails && (
+          <CompactDiffPreview oldCode={diffData.oldContent} newCode={diffData.newContent} />
+        )}
+        {isFileDiffTool && diffData && showDetails && (
+          <DiffBlock oldCode={diffData.oldContent} newCode={diffData.newContent} language={diffData.language} />
+        )}
 
         {showDetails && (
           <div className="min-w-0 space-y-2 pt-1">
@@ -526,6 +552,185 @@ function ToolUsePart({
           </div>
         )}
       </CardContent>
+    </Card>
+  )
+}
+
+// ─── CompactDiffPreview: ToolUsePart 内的紧凑 diff 预览 ──────────────────────
+function CompactDiffPreview({ oldCode, newCode }: { oldCode: string; newCode: string }) {
+  // Simple unified diff: show up to 8 changed lines
+  const oldLines = oldCode.split('\n')
+  const newLines = newCode.split('\n')
+  const maxLines = 8
+
+  // Find changed lines by comparing line by line
+  const changedLines: Array<{ kind: 'removed' | 'added'; text: string }> = []
+  let oldIdx = 0
+  let newIdx = 0
+  while (oldIdx < oldLines.length || newIdx < newLines.length) {
+    if (oldIdx < oldLines.length && newIdx < newLines.length && oldLines[oldIdx] === newLines[newIdx]) {
+      oldIdx++
+      newIdx++
+    } else {
+      // Check if line was removed
+      if (oldIdx < oldLines.length && (newIdx >= newLines.length || oldLines[oldIdx] !== newLines[newIdx])) {
+        changedLines.push({ kind: 'removed', text: oldLines[oldIdx] })
+        oldIdx++
+      }
+      // Check if line was added
+      if (newIdx < newLines.length && (oldIdx >= oldLines.length || oldLines[oldIdx] !== newLines[newIdx])) {
+        changedLines.push({ kind: 'added', text: newLines[newIdx] })
+        newIdx++
+      }
+    }
+  }
+
+  const displayed = changedLines.slice(0, maxLines)
+  const hasMore = changedLines.length > maxLines
+
+  return (
+    <div className="mt-1 overflow-hidden rounded bg-muted/30 text-[11px]">
+      {displayed.map((line, i) => (
+        <div
+          key={i}
+          className={cn(
+            'px-2 py-px font-mono',
+            line.kind === 'removed' && 'bg-red-500/10 text-red-700 dark:text-red-400',
+            line.kind === 'added' && 'bg-green-500/10 text-green-700 dark:text-green-400',
+          )}
+        >
+          <span className="mr-1 inline-block w-3 text-center text-muted-foreground/50">
+            {line.kind === 'removed' ? '-' : '+'}
+          </span>
+          <span className="break-all">{line.text}</span>
+        </div>
+      ))}
+      {hasMore && (
+        <div className="px-2 py-0.5 text-center text-muted-foreground">
+          +{changedLines.length - maxLines} more lines
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── FileWritePreviewPart: 流式文件写入预览 ──────────────────────────────
+function FileWritePreviewPart({
+  path,
+  content,
+  callId,
+  status,
+  language,
+  oldContent,
+  newContent,
+  isStreaming = false,
+}: {
+  path: string
+  content: string
+  callId: string
+  status: 'streaming' | 'complete' | 'failed'
+  language?: string
+  oldContent?: string | null
+  newContent?: string | null
+  isStreaming?: boolean
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll during streaming
+  const scrollToBottom = useCallback(() => {
+    if (scrollRef.current && isStreaming) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [isStreaming])
+
+  useEffect(() => {
+    if (isStreaming) {
+      scrollToBottom()
+    }
+  }, [content, isStreaming, scrollToBottom])
+
+  const displayName = path || '正在写入...'
+  const derivedLanguage = language || (path ? path.split('.').pop() : undefined)
+
+  return (
+    <Card className="overflow-hidden border-primary/20 py-0">
+      <div className="flex items-center gap-2 bg-primary/5 px-3 py-1.5 text-xs">
+        <FileIcon className="size-3.5 text-primary" />
+        <span className="min-w-0 max-w-[16rem] truncate font-medium">{displayName}</span>
+        <span className="text-muted-foreground">·</span>
+        {status === 'streaming' && (
+          <>
+            <Loader2 className="size-3 animate-spin text-primary" />
+            <span className="text-primary">生成中</span>
+          </>
+        )}
+        {status === 'complete' && oldContent && (
+          <>
+            <Check className="size-3 text-green-600" />
+            <span className="text-green-600">已完成</span>
+          </>
+        )}
+        {status === 'complete' && !oldContent && (
+          <>
+            <Check className="size-3 text-green-600" />
+            <span className="text-green-600">已创建</span>
+          </>
+        )}
+        {status === 'failed' && (
+          <>
+            <XCircle className="size-3 text-destructive" />
+            <span className="text-destructive">失败</span>
+          </>
+        )}
+      </div>
+
+      {status === 'streaming' && (
+        <div ref={scrollRef} className="max-h-[24rem] overflow-auto">
+          <div className="relative">
+            <CodeBlock
+              code={content}
+              language={derivedLanguage || 'text'}
+            />
+            {isStreaming && (
+              <span className="absolute bottom-1 right-2 inline-block size-2 animate-pulse rounded-full bg-green-500" />
+            )}
+          </div>
+        </div>
+      )}
+
+      {status === 'complete' && oldContent != null && newContent != null && (
+        <div className="max-h-[32rem] overflow-auto">
+          <DiffBlock
+            oldCode={oldContent}
+            newCode={newContent}
+            language={derivedLanguage}
+          />
+        </div>
+      )}
+
+      {status === 'complete' && oldContent == null && newContent != null && (
+        <div className="max-h-[32rem] overflow-auto">
+          <CodeBlock
+            code={newContent}
+            language={derivedLanguage || 'text'}
+          />
+        </div>
+      )}
+
+      {status === 'failed' && (
+        <div className="px-3 py-2 text-xs text-muted-foreground">
+          {content ? (
+            <details>
+              <summary className="cursor-pointer text-destructive">写入失败 — 查看部分内容</summary>
+              <pre className="mt-1 max-h-[12rem] overflow-auto rounded bg-muted/50 p-2 font-mono text-[11px]">
+                {content}
+              </pre>
+            </details>
+          ) : (
+            <span className="text-destructive">写入失败</span>
+          )}
+        </div>
+      )}
     </Card>
   )
 }

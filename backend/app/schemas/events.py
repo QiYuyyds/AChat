@@ -460,6 +460,21 @@ class PlanStepUpdateEvent(BaseEvent):
     model_config = {"populate_by_name": True}
 
 
+# ─── File Write Preview Events ─────────────────────────────────────
+class FileWritePreviewCompleteEvent(BaseEvent):
+    """Event when fs_write/fs_edit tool execution completes with diff data."""
+
+    type: Literal["file_write_preview.complete"] = "file_write_preview.complete"
+    message_id: str = Field(alias="messageId")
+    call_id: str = Field(alias="callId")
+    path: str
+    old_content: str | None = Field(default=None, alias="oldContent")
+    new_content: str | None = Field(default=None, alias="newContent")
+    status: Literal["complete", "failed"]
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Union Type ─────────────────────────────────────
 StreamEvent = Annotated[
     Union[  # noqa: UP007 - keep Union[] for the Pydantic discriminated union
@@ -513,6 +528,8 @@ StreamEvent = Annotated[
         # Plan events
         PlanCreatedEvent,
         PlanStepUpdateEvent,
+        # File write preview events
+        FileWritePreviewCompleteEvent,
     ],
     Field(discriminator="type"),
 ]

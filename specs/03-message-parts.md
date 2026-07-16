@@ -31,15 +31,18 @@ type MessagePart =
       attachmentId: string; fileName: string; size: number; mimeType: string }
   | { type: 'file_attachment';
       attachmentId: string; fileName: string; size: number; mimeType: string }
-  | { type: 'execution_plan';
-      planId: string; steps: PlanStep[]; complexity: 'simple' | 'moderate' | 'complex' }
+| { type: 'execution_plan';
+    planId: string; steps: PlanStep[]; complexity: 'simple' | 'moderate' | 'complex' }
+| { type: 'file_write_preview';
+    path: string; content: string; callId: string; status: 'streaming' | 'complete' | 'failed';
+    language?: string; oldContent?: string | null; newContent?: string | null }
 ```
 
 源：`src/shared/types.ts:7-27`
 
 ---
 
-## 11 种 part 详解
+## 12 种 part 详解
 
 ### 1. `text`
 
@@ -191,15 +194,46 @@ interface PlanStep {
 
 **渲染**：`ExecutionPlanPart` checklist 卡片，显示进度条 + 步骤列表，每个步骤用状态图标标识（⬚ pending, 🔄 in_progress, ✅ done, ❌ failed, ⏭ skipped）。
 
+### 12. `file_write_preview`
+
+```typescript
+{ type: 'file_write_preview', path: string, content: string, callId: string,
+  status: 'streaming' | 'complete' | 'failed', language?: string,
+  oldContent?: string | null, newContent?: string | null }
+```
+
+SDK Agent 调用 `fs_write` 时的流式文件写入预览。CustomAdapter 在 tool_call 累积阶段实时产出此 part，让用户看到代码「一行行生长」。
+
+**可增量**：通过 `file_write_preview.append` PartDelta 流式追加 content。
+
+**三态渲染**：
+- `streaming`：绿色高亮代码块 + 闪烁光标，标题显示文件路径或「正在写入...」
+- `complete` + oldContent ≠ null：unified diff 视图，红色删除 + 绿色新增
+- `complete` + oldContent === null：最终语法高亮代码块（新文件）
+- `failed`：错误指示器 + 部分内容
+
+**注入路径**：对称于 `execution_plan`：
+1. CustomAdapter 检测到 `tcd.function.name == "fs_write"` → yield `part.start(file_write_preview)`
+2. args_buffer 增量 → yield `part.delta(file_write_preview.append)`
+3. `_execute_tool_call_to_result` 执行 `fs_write` 成功 → 追加 `FileWritePreviewCompleteEvent`
+4. `consume_stream` 收到 `file_write_preview.complete` → 更新 parts_buffer 中对应 part 的 status/oldContent/newContent
+
+**callId 关联**：与后续 `tool_use` part 的 callId 一致，Phase 1 各自独立渲染。
+
+**降级**：partial JSON 提取失败时 part 停留在空/不完整状态，tool 执行完后 `file_write_preview.complete` 正常回填 diff 数据。
+
+**渲染**：`FileWritePreviewPart` 组件，三态渲染（streaming / complete-with-diff / complete-new-file / failed）。
+
 ---
 
 ## PartDelta：增量协议
 
 ```typescript
 type PartDelta =
-  | { type: 'text.append';     text: string }
-  | { type: 'code.append';     text: string }
-  | { type: 'thinking.append'; text: string }
+| { type: 'text.append';     text: string }
+| { type: 'code.append';     text: string }
+| { type: 'thinking.append'; text: string }
+| { type: 'file_write_preview.append'; text: string }
 ```
 
 事件 `part.delta` 携带这个 delta，按 `messageId + partIndex` 找到对应 part，根据 delta type 追加到 content。
@@ -241,6 +275,7 @@ function PartList({ parts }) {
 | `image_attachment` | `<AttachmentChip context="message">` | 图片缩略 |
 | `file_attachment` | `<AttachmentChip context="message">` | 文件 chip |
 | `execution_plan` | `<ExecutionPlanPart>` | checklist 进度卡片，进度条 + 步骤列表 |
+| `file_write_preview` | `<FileWritePreviewPart>` | 流式文件写入预览：streaming 代码块 / complete diff 视图 / new file 代码块 |
 
 ### 状态映射（在 MessageItem 层）
 
@@ -270,6 +305,7 @@ LLM 下一轮 turn 需要 history（assistant 的旧消息回传 messages 数组
 | `deploy_status` | `[部署预览: title vN (/deployments/dep_xxx)]` / `[部署预览: title workspace=dist (/deployments/dep_xxx)]` 或 `[部署失败: ...]` |
 | `deploy_candidates` | `[部署候选: title vN (id=art_xxx), ...]` |
 | `execution_plan` | `[执行计划: step1(✅), step2(🔄), step3(⬚)]` |
+| `file_write_preview` | `[写入预览: path (streaming/complete/failed)]` |
 | 附件 | `[图片附件: <fileName>]` / `[文件附件: <fileName>]` |
 
 具体实现见 `agent-runner.ts` 的 `extractTextFromParts`（拼回字符串） + `buildMessagesForLLM`（构造 OpenAI format）。

@@ -338,7 +338,7 @@ write_artifact({
 - **sandbox 模式**额外检查 workspace 总量：累计 size > 100 MB 或文件数 > 1000 拒（递归扫 `rootPath`）
 - **local 模式**跳过总量检查（用户自管理）
 
-**返回**：`{ path, absolutePath, cwd, bytes, applied: 'auto' | 'review' }`。`applied` 标识用户审批路径还是直接写。
+**返回**：`{ path, absolutePath, cwd, bytes, applied: 'auto' | 'review', oldContent: string | null, newContent: string }`。`applied` 标识用户审批路径还是直接写。`oldContent` 是修改前内容（新文件为 null），`newContent` 是写入内容——供前端 `ToolUsePart` 内联 diff 渲染和 `file_write_preview` part 完成状态回填。
 
 **冲突追踪**：写入成功后记录 `(runId, absolutePath, 内容 hash)`（`dispatch-file-writes.ts`），供 Orchestrator 检测同波次多个子 Agent 写同一文件（详见 Spec 06「代码冲突检测」）。bash / SDK adapter 自写盘不经 `fs_write`，是已知盲区。
 
@@ -380,7 +380,7 @@ write_artifact({
 
 **大文件保护**：文件 > 1 MB（`MAX_READ_BYTES`）时返回 `err("file too large for edit (max 1 MB); use fs_write for full rewrite")`，引导 LLM 回退到 `fs_write`。
 
-**返回**：`{ path, absolutePath, bytes, applied: 'auto' | 'review' }`
+**返回**：`{ path, absolutePath, bytes, applied: 'auto' | 'review', oldContent: string, newContent: string }`。`oldContent` 是编辑前文件内容，`newContent` 是编辑后内容——供前端 `ToolUsePart` 内联 diff 渲染和 `file_write_preview` part 完成状态回填。
 
 **与 Claude Code 对照**：对应 Claude Code 的 `Edit` 工具（唯一性校验策略相同）。Claude Code 另有 `MultiEdit` 工具用于批量多文件编辑，本变更不实现；后续可按相同模式新增 `fs_multiedit`。
 

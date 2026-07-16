@@ -35,6 +35,7 @@ from app.schemas.artifacts import ArtifactRecord
 from app.schemas.events import (
     ArtifactCreateEvent,
     DeployStatusEvent,
+    FileWritePreviewCompleteEvent,
     MessageEndEvent,
     MessageStartEvent,
     PlanCreatedEvent,
@@ -763,6 +764,31 @@ async def _execute_tool_call_to_result(
             planId=value["planId"],
             steps=[PlanStepModel.model_validate(s) for s in value.get("updatedSteps", [])],
         ))
+
+    # fs_write / fs_edit: append FileWritePreviewCompleteEvent for frontend preview updates
+    if tc.name in ("fs_write", "fs_edit"):
+        if result.ok and isinstance(value, dict):
+            events.append(FileWritePreviewCompleteEvent(
+                conversation_id=conversation_id,
+                timestamp=now_ms(),
+                message_id=message_id,
+                call_id=tc.id,
+                path=value.get("path", ""),
+                oldContent=value.get("oldContent"),
+                newContent=value.get("newContent"),
+                status="complete",
+            ))
+        else:
+            events.append(FileWritePreviewCompleteEvent(
+                conversation_id=conversation_id,
+                timestamp=now_ms(),
+                message_id=message_id,
+                call_id=tc.id,
+                path="",
+                oldContent=None,
+                newContent=None,
+                status="failed",
+            ))
 
     # O8: check post_tool_use inject action (e.g. skill_auto_activator)
     post_result = ctx.last_post_hook_result
@@ -1851,6 +1877,7 @@ _VISIBLE_EVENT_TYPES = frozenset({
     "tool.call", "tool.result",
     "artifact.create", "deploy.status",
     "plan.created", "plan.step_update",
+"file_write_preview.complete",
 })
 
 
@@ -2034,6 +2061,21 @@ async def consume_stream(
                                         ),
                                         user_id=user_id,
                                     )
+
+            # file_write_preview.complete: update matching file_write_preview part in parts_buffer
+            if event.type == "file_write_preview.complete" and current_message_id:
+                parts = parts_buffer.get(current_message_id, [])
+                for p in parts:
+                    if p.get("type") == "file_write_preview" and p.get("callId") == event.call_id:
+                        p["status"] = event.status
+                        p["path"] = event.path
+                        p["oldContent"] = event.old_content
+                        p["newContent"] = event.new_content
+                        break
+                parts_buffer[current_message_id] = parts
+                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
+                if not hidden:
+                    publish(event, user_id=user_id)
 
             # Run-end cleanup: finalize all execution_plan parts + write stats + clear registries
             if event.type == "run.end":

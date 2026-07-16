@@ -208,6 +208,176 @@ class _ToolCallBuffer:
         return entry
 
 
+class _ContentExtractor:
+    """State machine that tracks the 'content' field value in accumulating args_buffer JSON.
+
+    States: IDLE → FOUND_KEY → WAIT_VALUE → IN_STRING → DONE
+    Only emits decoded content chunks during IN_STRING state.
+    """
+
+    class _State:
+        IDLE = 0
+        FOUND_KEY = 1
+        WAIT_VALUE = 2
+        IN_STRING = 3
+        ESCAPE = 4
+        DONE = 5
+
+    def __init__(self) -> None:
+        self._state = self._State.IDLE
+        self._buffer = ""
+        self._path: str | None = None
+        self._tracking_path = False
+        self._path_buffer = ""
+        self._key_buffer = ""
+        self._content_done = False
+
+    def feed(self, chunk: str) -> list[str]:
+        """Feed a chunk of args_buffer text. Returns list of decoded content chunks."""
+        results: list[str] = []
+        for ch in chunk:
+            if self._state == self._State.DONE:
+                break
+
+            if self._state == self._State.IDLE:
+                self._buffer += ch
+                if self._buffer.endswith('"content"'):
+                    self._state = self._State.FOUND_KEY
+                    self._buffer = ""
+                elif self._buffer.endswith('"path"'):
+                    self._tracking_path = True
+                    self._state = self._State.FOUND_KEY
+                    self._buffer = ""
+                # Keep last 8 chars for matching (longest key is "content" = 8+2 quotes)
+                if len(self._buffer) > 10:
+                    self._buffer = self._buffer[-10:]
+
+            elif self._state == self._State.FOUND_KEY:
+                if ch == ':':
+                    self._state = self._State.WAIT_VALUE
+                    self._key_buffer = "path" if self._tracking_path else "content"
+
+            elif self._state == self._State.WAIT_VALUE:
+                if ch == '"':
+                    self._state = self._State.IN_STRING
+                    self._buffer = ""
+                elif ch not in (' ', '\t', '\n', '\r'):
+                    # Non-string value (number, null, etc.) — skip
+                    self._state = self._State.IDLE
+                    self._tracking_path = False
+
+            elif self._state == self._State.IN_STRING:
+                if ch == '\\':
+                    self._state = self._State.ESCAPE
+                    self._buffer += ch
+                elif ch == '"':
+                    # String closed
+                    if self._tracking_path:
+                        self._path = self._buffer
+                        self._tracking_path = False
+                        if self._content_done:
+                            self._state = self._State.DONE
+                        else:
+                            self._state = self._State.IDLE
+                        self._buffer = ""
+                    else:
+                        self._content_done = True
+                        if self._path is not None:
+                            self._state = self._State.DONE
+                        else:
+                            self._state = self._State.IDLE
+                        self._buffer = ""
+                else:
+                    if self._tracking_path:
+                        self._buffer += ch
+                    else:
+                        results.append(ch)
+
+            elif self._state == self._State.ESCAPE:
+                self._state = self._State.IN_STRING
+                if self._tracking_path:
+                    decoded = self._decode_escape(ch)
+                    self._buffer += decoded
+                else:
+                    decoded = self._decode_escape(ch)
+                    if decoded is not None:
+                        results.append(decoded)
+
+        return results
+
+    def get_path(self) -> str | None:
+        return self._path
+
+    @staticmethod
+    def _decode_escape(ch: str) -> str | None:
+        """Decode a single JSON string escape character (the char after backslash)."""
+        escape_map = {
+            '"': '"',
+            '\\': '\\',
+            '/': '/',
+            'n': '\n',
+            't': '\t',
+            'r': '\r',
+            'b': '\b',
+            'f': '\f',
+        }
+        if ch in escape_map:
+            return escape_map[ch]
+        if ch == 'u':
+            # Unicode escape needs 4 hex digits — can't decode from single char.
+            # Emit a placeholder; the complete event will have the correct content.
+            return None
+        # Unknown escape: emit as-is per JSON spec leniency
+        return ch
+
+
+def _path_from_extension(path: str) -> str | None:
+    """Derive a syntax-highlighting language identifier from a file path extension."""
+    if not path:
+        return None
+    ext_map = {
+        '.ts': 'typescript',
+        '.tsx': 'typescript',
+        '.js': 'javascript',
+        '.jsx': 'javascript',
+        '.py': 'python',
+        '.rs': 'rust',
+        '.go': 'go',
+        '.java': 'java',
+        '.kt': 'kotlin',
+        '.rb': 'ruby',
+        '.php': 'php',
+        '.c': 'c',
+        '.cpp': 'cpp',
+        '.h': 'c',
+        '.hpp': 'cpp',
+        '.cs': 'csharp',
+        '.swift': 'swift',
+        '.sh': 'bash',
+        '.bash': 'bash',
+        '.zsh': 'bash',
+        '.sql': 'sql',
+        '.html': 'html',
+        '.css': 'css',
+        '.scss': 'scss',
+        '.less': 'less',
+        '.json': 'json',
+        '.yaml': 'yaml',
+        '.yml': 'yaml',
+        '.toml': 'toml',
+        '.xml': 'xml',
+        '.md': 'markdown',
+        '.lua': 'lua',
+        '.r': 'r',
+        '.dart': 'dart',
+        '.vue': 'vue',
+        '.svelte': 'svelte',
+    }
+    import os
+    _, ext = os.path.splitext(path.lower())
+    return ext_map.get(ext)
+
+
 class CustomAdapter(AgentPlatformAdapter):
     @property
     def name(self) -> AdapterName:
@@ -275,6 +445,9 @@ class CustomAdapter(AgentPlatformAdapter):
         reasoning_buffer = ""
         next_part_index = 0
         tool_call_buffer = _ToolCallBuffer()
+        # Direction A: track fs_write tool calls for streaming preview
+        preview_extractors: dict[int, _ContentExtractor] = {}
+        preview_part_indices: dict[int, int] = {}
 
         max_tokens = _compute_max_tokens(model_provider, model_id, messages)
 
@@ -383,8 +556,32 @@ class CustomAdapter(AgentPlatformAdapter):
                     entry.id = tcd.id
                 if tcd.function and tcd.function.name:
                     entry.name = tcd.function.name
+                    # Direction A: detect fs_write and initialize preview extractor
+                    if tcd.function.name == "fs_write" and tcd.index not in preview_extractors:
+                        preview_extractors[tcd.index] = _ContentExtractor()
+                        preview_part_indices[tcd.index] = next_part_index
+                        next_part_index += 1
+                        yield PartStartEvent(
+                            conversation_id=input.conversation_id,
+                            timestamp=now_ms(),
+                            message_id=message_id,
+                            part_index=preview_part_indices[tcd.index],
+                            part={"type": "file_write_preview", "path": "", "content": "", "callId": tcd.id or "", "status": "streaming"},
+                        )
                 if tcd.function and tcd.function.arguments:
                     entry.args_buffer += tcd.function.arguments
+                    # Direction A: feed args_buffer increment to extractor and yield deltas
+                    if tcd.index in preview_extractors:
+                        extractor = preview_extractors[tcd.index]
+                        content_chunks = extractor.feed(tcd.function.arguments)
+                        for chunk_text in content_chunks:
+                            yield PartDeltaEvent(
+                                conversation_id=input.conversation_id,
+                                timestamp=now_ms(),
+                                message_id=message_id,
+                                part_index=preview_part_indices[tcd.index],
+                                delta={"type": "file_write_preview.append", "text": chunk_text},
+                            )
                     logger.debug(
                         "[CustomAdapter] tool_call delta idx=%d id=%s name=%s args_chunk=%r",
                         tcd.index, tcd.id, tcd.function.name, tcd.function.arguments[:200],
@@ -406,6 +603,15 @@ class CustomAdapter(AgentPlatformAdapter):
                 timestamp=now_ms(),
                 message_id=message_id,
                 part_index=text_part_index,
+            )
+        # End file_write_preview parts (streaming phase done; tool execution will
+        # produce file_write_preview.complete to finalize status)
+        for idx in sorted(preview_part_indices.keys()):
+            yield PartEndEvent(
+                conversation_id=input.conversation_id,
+                timestamp=now_ms(),
+                message_id=message_id,
+                part_index=preview_part_indices[idx],
             )
 
         tool_calls = [tc for tc in tool_call_buffer.entries.values() if tc.id and tc.name]
