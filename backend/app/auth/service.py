@@ -98,6 +98,19 @@ async def authenticate_user(
     return AuthResult(user=_user_profile(user), tokens=_tokens_for_user(user))
 
 
+async def authenticate_default_user(
+    db: AsyncSession, password: str
+) -> AuthResult:
+    """Authenticate the configured default account without exposing its email."""
+    email = get_settings().default_user_email
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+    if user is None or not verify_password(password, user.password_hash):
+        raise ValueError("Invalid credentials")
+
+    return AuthResult(user=_user_profile(user), tokens=_tokens_for_user(user))
+
+
 async def refresh_access_token(
     db: AsyncSession, refresh_token: str
 ) -> AuthTokens:

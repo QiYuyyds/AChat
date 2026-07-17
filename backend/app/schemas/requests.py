@@ -507,6 +507,12 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class VipLoginRequest(BaseModel):
+    """Request to use the password-only VIP shortcut."""
+
+    password: str = Field(min_length=1, max_length=128)
+
+
 class RefreshRequest(BaseModel):
     """Request to refresh access token."""
 

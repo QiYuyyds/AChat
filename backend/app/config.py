@@ -105,6 +105,7 @@ class Settings(BaseSettings):
     jwt_access_token_expiry: int = 3600  # seconds (1 hour)
     jwt_refresh_token_expiry: int = 604800  # seconds (7 days)
     allow_registration: bool = True
+    vip_login_enabled: bool = False
     default_user_email: str = "admin@local"
     default_user_password: str = ""
 

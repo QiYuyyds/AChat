@@ -13,6 +13,7 @@ export interface AuthUser {
 
 interface AuthConfig {
   allowRegistration: boolean
+  vipLoginEnabled: boolean
 }
 
 interface AuthState {
@@ -23,6 +24,7 @@ interface AuthState {
 
   initialize: () => Promise<void>
   login: (email: string, password: string) => Promise<void>
+  vipLogin: (password: string) => Promise<void>
   register: (email: string, name: string, password: string) => Promise<void>
   logout: () => Promise<void>
   refreshToken: () => Promise<boolean>
@@ -59,7 +61,7 @@ let refreshPromise: Promise<boolean> | null = null
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
-  config: { allowRegistration: false },
+  config: { allowRegistration: false, vipLoginEnabled: false },
   isLoading: true,
   isAuthenticated: false,
 
@@ -72,12 +74,27 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         const data = await res.json()
         set({
           user: data.user,
-          config: { allowRegistration: data.config?.allowRegistration ?? false },
+          config: {
+            allowRegistration: data.config?.allowRegistration ?? false,
+            vipLoginEnabled: data.config?.vipLoginEnabled ?? false,
+          },
           isAuthenticated: true,
           isLoading: false,
         })
       } else {
-        set({ user: null, isAuthenticated: false, isLoading: false })
+        const configRes = await fetch(`${API_BASE_URL}/api/auth/config`, {
+          credentials: 'include',
+        })
+        const config = configRes.ok ? await configRes.json() : {}
+        set({
+          user: null,
+          config: {
+            allowRegistration: config.allowRegistration ?? false,
+            vipLoginEnabled: config.vipLoginEnabled ?? false,
+          },
+          isAuthenticated: false,
+          isLoading: false,
+        })
       }
     } catch {
       set({ user: null, isAuthenticated: false, isLoading: false })
@@ -99,7 +116,33 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     storeToken(data.tokens?.access_token ?? '')
     set({
       user: data.user,
-      config: { allowRegistration: data.config?.allowRegistration ?? false },
+      config: {
+        allowRegistration: data.config?.allowRegistration ?? false,
+        vipLoginEnabled: data.config?.vipLoginEnabled ?? false,
+      },
+      isAuthenticated: true,
+    })
+  },
+
+  vipLogin: async (password: string) => {
+    const res = await fetch(`${API_BASE_URL}/api/auth/vip-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ password }),
+    })
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(body || `VIP login failed (${res.status})`)
+    }
+    const data = await res.json()
+    storeToken(data.tokens?.access_token ?? '')
+    set({
+      user: data.user,
+      config: {
+        allowRegistration: data.config?.allowRegistration ?? false,
+        vipLoginEnabled: data.config?.vipLoginEnabled ?? true,
+      },
       isAuthenticated: true,
     })
   },
@@ -119,7 +162,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     storeToken(data.tokens?.access_token ?? '')
     set({
       user: data.user,
-      config: { allowRegistration: data.config?.allowRegistration ?? true },
+      config: {
+        allowRegistration: data.config?.allowRegistration ?? true,
+        vipLoginEnabled: data.config?.vipLoginEnabled ?? false,
+      },
       isAuthenticated: true,
     })
   },
@@ -150,7 +196,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           storeToken(data.tokens?.access_token ?? '')
           set({
             user: data.user,
-            config: { allowRegistration: data.config?.allowRegistration ?? get().config.allowRegistration },
+            config: {
+              allowRegistration: data.config?.allowRegistration ?? get().config.allowRegistration,
+              vipLoginEnabled: data.config?.vipLoginEnabled ?? get().config.vipLoginEnabled,
+            },
             isAuthenticated: true,
           })
           return true

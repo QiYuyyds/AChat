@@ -79,6 +79,73 @@ async def test_login_unknown_email(raw_client):
     assert resp.status_code == 401
 
 
+# ─── VIP login ────────────────────────────────────────────────────────────
+
+async def test_auth_config_includes_vip_login_flag(raw_client, monkeypatch):
+    monkeypatch.setenv("VIP_LOGIN_ENABLED", "true")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    resp = await raw_client.get("/api/auth/config")
+    assert resp.status_code == 200
+    assert resp.json()["vipLoginEnabled"] is True
+
+
+async def test_vip_login_success(raw_client, test_user, monkeypatch):
+    monkeypatch.setenv("VIP_LOGIN_ENABLED", "true")
+    monkeypatch.setenv("DEFAULT_USER_EMAIL", test_user["email"])
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    resp = await raw_client.post(
+        "/api/auth/vip-login",
+        json={"password": "testpass123"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["user"]["email"] == test_user["email"]
+    assert COOKIE_NAME in resp.cookies
+
+
+async def test_vip_login_invalid_password(raw_client, test_user, monkeypatch):
+    monkeypatch.setenv("VIP_LOGIN_ENABLED", "true")
+    monkeypatch.setenv("DEFAULT_USER_EMAIL", test_user["email"])
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    resp = await raw_client.post(
+        "/api/auth/vip-login",
+        json={"password": "wrongpassword"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid credentials"
+
+
+async def test_vip_login_disabled(raw_client, monkeypatch):
+    monkeypatch.setenv("VIP_LOGIN_ENABLED", "false")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    resp = await raw_client.post(
+        "/api/auth/vip-login",
+        json={"password": "testpass123"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_vip_login_missing_default_user(raw_client, monkeypatch):
+    monkeypatch.setenv("VIP_LOGIN_ENABLED", "true")
+    monkeypatch.setenv("DEFAULT_USER_EMAIL", "missing@example.com")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    resp = await raw_client.post(
+        "/api/auth/vip-login",
+        json={"password": "testpass123"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid credentials"
+
+
 # ─── me ───────────────────────────────────────────────────────────────────
 
 async def test_me_authenticated(api_client):

@@ -1,6 +1,6 @@
 'use client'
 
-import { Loader2 } from 'lucide-react'
+import { Crown, Loader2 } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
@@ -9,17 +9,30 @@ import { AuthBrandPanel } from '@/components/auth-brand-panel'
 import { ParticleBackground } from '@/components/particle-background'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { useAuthStore } from '@/stores/auth-store'
 
 export default function LoginPage() {
   const router = useRouter()
   const login = useAuthStore((s) => s.login)
+  const vipLogin = useAuthStore((s) => s.vipLogin)
+  const vipLoginEnabled = useAuthStore((s) => s.config.vipLoginEnabled)
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [vipOpen, setVipOpen] = useState(false)
+  const [vipPassword, setVipPassword] = useState('')
+  const [vipError, setVipError] = useState<string | null>(null)
+  const [vipSubmitting, setVipSubmitting] = useState(false)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -32,6 +45,31 @@ export default function LoginPage() {
       setError(err instanceof Error ? err.message : 'Login failed')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  function handleVipOpenChange(open: boolean) {
+    setVipOpen(open)
+    if (!open) {
+      setVipPassword('')
+      setVipError(null)
+    }
+  }
+
+  async function handleVipSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (vipSubmitting) return
+
+    setVipError(null)
+    setVipSubmitting(true)
+    try {
+      await vipLogin(vipPassword)
+      handleVipOpenChange(false)
+      router.replace('/')
+    } catch {
+      setVipError('密码错误')
+    } finally {
+      setVipSubmitting(false)
     }
   }
 
@@ -134,7 +172,67 @@ export default function LoginPage() {
             </p>
           </CardContent>
         </Card>
+
+        {vipLoginEnabled && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="absolute right-4 bottom-4 z-20 bg-background/80 backdrop-blur-sm"
+            onClick={() => handleVipOpenChange(true)}
+          >
+            <Crown className="size-4" />
+            VIP 登录
+          </Button>
+        )}
       </div>
+
+      <Dialog open={vipOpen} onOpenChange={handleVipOpenChange}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>VIP 登录</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleVipSubmit}>
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="vip-password" className="text-sm font-medium">
+                密码
+              </label>
+              <Input
+                id="vip-password"
+                type="password"
+                placeholder="请输入密码"
+                value={vipPassword}
+                onChange={(e) => setVipPassword(e.target.value)}
+                required
+                disabled={vipSubmitting}
+                autoComplete="current-password"
+                autoFocus
+              />
+            </div>
+            {vipError && (
+              <p
+                className="mt-3 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
+                role="alert"
+              >
+                {vipError}
+              </p>
+            )}
+            <DialogFooter className="mt-4">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={vipSubmitting}
+                onClick={() => handleVipOpenChange(false)}
+              >
+                取消
+              </Button>
+              <Button type="submit" disabled={vipSubmitting || !vipPassword}>
+                {vipSubmitting ? <Loader2 className="size-4 animate-spin" /> : '登录'}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
