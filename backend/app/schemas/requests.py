@@ -13,6 +13,9 @@ class CreateConversationRequest(BaseModel):
     mode: Literal["single", "group"]
     agent_ids: list[str] = Field(alias="agentIds", min_length=1)
     bound_path: str | None = Field(default=None, alias="boundPath")
+    code_intelligence_enabled: bool = Field(
+        default=False, alias="codeIntelligenceEnabled"
+    )
     dispatch_mode: Literal["solo", "orchestrated"] | None = Field(
         default=None, alias="dispatchMode"
     )

@@ -18,6 +18,7 @@ from app.services import deploy_command_service
 from app.tools.ask_user import ask_user_tool
 from app.tools.base import ToolContext, ToolDef, ToolResult, err
 from app.tools.bash import bash_tool
+from app.tools.code_explore import code_explore_tool
 from app.tools.deploy_artifact import deploy_artifact_for_conversation, deploy_artifact_tool
 from app.tools.deploy_workspace import (
     deploy_workspace_for_conversation,
@@ -187,6 +188,7 @@ def _build_registry() -> ToolRegistry:
     reg.register(fs_grep_tool)
     reg.register(fs_glob_tool)
     reg.register(bash_tool)
+    reg.register(code_explore_tool)
     reg.register(ask_user_tool)
     reg.register(rag_search_tool)
     reg.register(rag_ingest_tool)

@@ -46,6 +46,7 @@ CLI_MCP_TOOL_NAMES = frozenset({
     "ask_user",             # user interaction
     "deploy_artifact",      # deploy single artifact
     "deploy_workspace",     # deploy workspace
+    "code_explore",        # managed source intelligence
 })
 
 # ─── MCP Protocol constants ───────────────────────────────────────

@@ -229,6 +229,7 @@ export interface CreateConversationBody {
   mode: 'single' | 'group'
   agentIds: string[]
   boundPath?: string
+  codeIntelligenceEnabled?: boolean
 }
 
 export async function createConversation(body: CreateConversationBody): Promise<ConversationWithMeta> {
@@ -242,6 +243,64 @@ export async function createConversation(body: CreateConversationBody): Promise<
   return conversation
 }
 
+export interface CodeIntelligenceCounts {
+  files: number
+  symbols: number
+  relationships: number
+}
+
+export interface CodeIntelligenceStatusRecord {
+  enabled: boolean
+  runtimeVersion: string | null
+  status:
+    | 'disabled'
+    | 'preparing_runtime'
+    | 'queued'
+    | 'indexing'
+    | 'ready'
+    | 'syncing'
+    | 'rebuilding'
+    | 'cancelling'
+    | 'failed'
+    | 'interrupted'
+  phase: string | null
+  progressPercent: number | null
+  counts: CodeIntelligenceCounts
+  createdAt: number | null
+  updatedAt: number | null
+  startedAt: number | null
+  completedAt: number | null
+  lastSyncAt: number | null
+  error: string | null
+  projectPath: string
+}
+
+export async function fetchCodeIntelligenceStatus(
+  conversationId: string,
+): Promise<CodeIntelligenceStatusRecord> {
+  const response = await json<{ status: CodeIntelligenceStatusRecord }>(
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/code-intelligence`),
+  )
+  return response.status
+}
+export type CodeIntelligenceAction =
+  | 'enable'
+  | 'disable'
+  | 'cancel'
+  | 'sync'
+  | 'rebuild'
+  | 'retry'
+
+export async function runCodeIntelligenceAction(
+  conversationId: string,
+  action: CodeIntelligenceAction,
+): Promise<void> {
+  await json<Record<string, unknown>>(
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/code-intelligence/${action}`, {
+      method: 'POST',
+    }),
+  )
+}
 export async function deleteConversation(conversationId: string): Promise<void> {
   await json<{ ok: true }>(
     authFetch(`${API_BASE_URL}/api/conversations/${conversationId}`, { method: 'DELETE' }),

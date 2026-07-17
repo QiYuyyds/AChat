@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import delete, select
 
@@ -309,6 +310,7 @@ async def create_conversation(
     agent_ids: list[str],
     title: str | None = None,
     bound_path: str | None = None,
+    code_intelligence_enabled: bool = False,
     dispatch_mode: str | None = None,
     user_id: str | None = None,
 ) -> ConversationResponse:
@@ -401,6 +403,15 @@ async def create_conversation(
         )
         db.add(conv)
         db.add(workspace)
+
+    if code_intelligence_enabled and workspace_mode == "local":
+        from app.code_intelligence.service import schedule_workspace_enable
+
+        schedule_workspace_enable(
+            workspace_root=Path(root_path),
+            project_path=Path(resolved_bound_path).resolve(),
+            download_approved=True,
+        )
 
     return ConversationResponse(
         id=conversation_id,

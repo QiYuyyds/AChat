@@ -57,6 +57,20 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     settings = get_settings()
 
+    # ─── Optional source intelligence ───
+    try:
+        from app.code_intelligence.bootstrap import (
+            build_code_intelligence_service,
+            recover_code_intelligence_metadata,
+        )
+        from app.code_intelligence.service import configure_code_intelligence_service
+
+        configure_code_intelligence_service(build_code_intelligence_service(settings))
+        await recover_code_intelligence_metadata()
+        logger.info("Code intelligence service initialized")
+    except Exception as e:
+        logger.warning("Code intelligence init failed: %s", e)
+
     # ── Observability (OTel + auto instrumentation) ──
     init_observability(settings)
     if settings.trace_enabled:
@@ -267,6 +281,11 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     yield
 
     # Shutdown
+    try:
+        from app.code_intelligence.service import shutdown_code_intelligence_service
+        await shutdown_code_intelligence_service()
+    except Exception:
+        pass
     shutdown_observability()
     try:
         from app.services.async_db_writer import stop_db_writer
@@ -697,6 +716,7 @@ def create_app() -> FastAPI:
         attachments,
         auth,
         conversations,
+        code_intelligence,
         deployments,
         documents,
         eval,
@@ -720,6 +740,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router, prefix="/api", tags=["auth"])
     app.include_router(profile.router, prefix="/api", tags=["profile"])
     app.include_router(conversations.router, prefix="/api", tags=["conversations"])
+    app.include_router(code_intelligence.router, prefix="/api", tags=["code-intelligence"])
     app.include_router(messages.router, prefix="/api", tags=["messages"])
     app.include_router(agents.router, prefix="/api", tags=["agents"])
     app.include_router(artifacts.router, prefix="/api", tags=["artifacts"])

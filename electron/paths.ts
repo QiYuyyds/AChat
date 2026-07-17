@@ -8,6 +8,11 @@ import path from 'node:path'
  * 详见 Spec 12 §5。
  */
 export function setupDataDir(): void {
+  if (!process.env.AGENTHUB_CODEGRAPH_RESOURCES) {
+    process.env.AGENTHUB_CODEGRAPH_RESOURCES = app.isPackaged
+      ? path.join(process.resourcesPath, 'codegraph')
+      : path.resolve(__dirname, '..', 'resources', 'codegraph')
+  }
   // 已被外部（CI / e2e / 调用方）设置过就不动
   if (process.env.AGENTHUB_DATA_DIR) return
 

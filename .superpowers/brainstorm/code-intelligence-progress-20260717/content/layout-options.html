@@ -1,0 +1,46 @@
+<h2>源码智能布局方案</h2>
+<p class="subtitle">两种方案都保证开关完整位于边框内；构建完成后恢复你指定的绿色“已就绪”布局。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:24px;background:#faf8f5">
+      <div style="max-width:440px;margin:auto;border:1px solid #ddd7d0;border-radius:8px;background:white;overflow:hidden;color:#312c27">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #e5e0da">
+          <strong>源码智能</strong>
+          <span style="display:inline-flex;width:42px;height:24px;padding:2px;border-radius:999px;background:#92735f;box-sizing:border-box;justify-content:flex-end"><i style="width:20px;height:20px;border-radius:50%;background:white"></i></span>
+        </div>
+        <div style="padding:14px 16px;border-bottom:1px solid #e5e0da">
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:8px"><span>正在构建源码索引</span><strong>46%</strong></div>
+          <div style="height:6px;border-radius:999px;background:#ece8e4;overflow:hidden"><div style="height:100%;width:46%;background:#92735f"></div></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:14px 16px;font-size:13px"><span style="color:#777">项目</span><span>D:\codegraph\codegraph</span></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. 分区式（推荐）</h3>
+      <p>标题和开关固定在完整边框内；进度单独一行，只显示整体真实百分比。层次清楚，完成后整块进度区替换为绿色就绪状态。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:24px;background:#faf8f5">
+      <div style="max-width:440px;margin:auto;border:1px solid #ddd7d0;border-radius:8px;background:white;padding:14px 16px;color:#312c27;box-sizing:border-box">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <strong>源码智能</strong>
+          <span style="display:inline-flex;width:42px;height:24px;padding:2px;border-radius:999px;background:#92735f;box-sizing:border-box;justify-content:flex-end"><i style="width:20px;height:20px;border-radius:50%;background:white"></i></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:8px"><span>正在构建源码索引</span><strong>46%</strong></div>
+        <div style="height:6px;border-radius:999px;background:#ece8e4;overflow:hidden"><div style="height:100%;width:46%;background:#92735f"></div></div>
+        <div style="display:flex;justify-content:space-between;margin-top:16px;font-size:13px"><span style="color:#777">项目</span><span>D:\codegraph\codegraph</span></div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 单卡片式</h3>
+      <p>所有内容放在一个内边距容器中，更紧凑；但标题、进度和详情之间的层级较弱，大项目路径容易显得拥挤。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <p><strong>进度规则：</strong>仅由后端收到的真实 CodeGraph 进度推动，单调递增至 99%；任务成功后进度区域消失，显示绿色“源码索引已就绪”。</p>
+</div>

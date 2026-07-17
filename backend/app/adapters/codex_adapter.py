@@ -14,7 +14,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time as _time
+from pathlib import Path
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -37,6 +39,14 @@ from app.utils.clock import now_ms
 from app.utils.ids import new_message_id
 
 logger = logging.getLogger(__name__)
+
+ACHAT_MCP_TOOL_HINT = (
+    "\n\n## AChat MCP Tools\n"
+    "AChat platform tools are available through the achat-tools MCP Bridge.\n"
+    "- `code_explore` → `mcp__achat-tools__code_explore`\n"
+    "Use code_explore for structure, call paths, and impact. Use file search/read "
+    "tools for exact lines, unsupported files, low-confidence, or failed results.\n"
+)
 
 # ─── timedeltas ──────────────────────────────────────────────────
 
@@ -69,6 +79,30 @@ def _next_rpc_id() -> int:
 _next_rpc_id._counter = 0  # type: ignore[attr-defined]
 
 
+def _build_achat_mcp_overrides(input: AdapterInput) -> list[str]:
+    backend_dir = Path(__file__).resolve().parents[2]
+    bridge_args = [
+        "-m",
+        "app.mcp_bridge",
+        "--conversation-id",
+        input.conversation_id,
+        "--run-id",
+        input.run_id,
+        "--workspace-path",
+        input.workspace_path or "",
+        "--agent-id",
+        input.agent_id,
+    ]
+    return [
+        "-c",
+        f"mcp_servers.achat-tools.command={json.dumps(sys.executable)}",
+        "-c",
+        f"mcp_servers.achat-tools.args={json.dumps(bridge_args)}",
+        "-c",
+        f"mcp_servers.achat-tools.env.PYTHONPATH={json.dumps(str(backend_dir))}",
+    ]
+
+
 # ─── adapter ─────────────────────────────────────────────────────
 
 
@@ -90,6 +124,7 @@ class CodexCLIAdapter(CLIAdapterBase):
 
     def _build_args(self, input: AdapterInput) -> list[str]:
         args = ["app-server", "--listen", "stdio://"]
+        args.extend(_build_achat_mcp_overrides(input))
         custom = input.custom_args or []
         custom = filter_custom_args(custom, _codex_blocked_args)
         args.extend(custom)
@@ -121,7 +156,7 @@ class CodexCLIAdapter(CLIAdapterBase):
         thread_params: dict[str, Any] = {
             "cwd": input.workspace_path or ".",
             "model": input.model_id or None,
-            "developerInstructions": input.system_prompt or None,
+            "developerInstructions": (input.system_prompt or "") + ACHAT_MCP_TOOL_HINT,
         }
         if input.resume_session_id:
             thread_params["threadId"] = input.resume_session_id

@@ -1,0 +1,41 @@
+{
+  "version": "0.9.3",
+  "license": {
+    "spdx": "MIT",
+    "name": "MIT License",
+    "url": "https://github.com/colbymchenry/codegraph/blob/v0.9.3/LICENSE",
+    "noticeFile": "CODEGRAPH-NOTICE.txt"
+  },
+  "artifacts": {
+    "darwin-arm64": {
+      "url": "https://github.com/colbymchenry/codegraph/releases/download/v0.9.3/codegraph-darwin-arm64.tar.gz",
+      "sha256": "999a3023f8f0f07bf748d48019e94d5aca081e664a8f04569ebec43d819d20ac",
+      "archiveType": "tar.gz"
+    },
+    "darwin-x64": {
+      "url": "https://github.com/colbymchenry/codegraph/releases/download/v0.9.3/codegraph-darwin-x64.tar.gz",
+      "sha256": "dfbbf22b29b416273cf995d31f4ee4c701445f112f04bad4f23aad9e79fba1f7",
+      "archiveType": "tar.gz"
+    },
+    "linux-arm64": {
+      "url": "https://github.com/colbymchenry/codegraph/releases/download/v0.9.3/codegraph-linux-arm64.tar.gz",
+      "sha256": "154aaa86a75d2fa24f3bb8b2b291d4d478ec6dcaacd5eeb05feb7f78fdaaad17",
+      "archiveType": "tar.gz"
+    },
+    "linux-x64": {
+      "url": "https://github.com/colbymchenry/codegraph/releases/download/v0.9.3/codegraph-linux-x64.tar.gz",
+      "sha256": "99d02e7b21591b2611da9aecf503862caa8b7a5b67b7557c2c55c82eed8a01ba",
+      "archiveType": "tar.gz"
+    },
+    "win32-arm64": {
+      "url": "https://github.com/colbymchenry/codegraph/releases/download/v0.9.3/codegraph-win32-arm64.zip",
+      "sha256": "9d602dea44c505e1a497cf592c4d4f320d92e7456a2dd35bd6e679f477abe3a7",
+      "archiveType": "zip"
+    },
+    "win32-x64": {
+      "url": "https://github.com/colbymchenry/codegraph/releases/download/v0.9.3/codegraph-win32-x64.zip",
+      "sha256": "852091f3211a7e6254797514dec12f676aec9b5bee8250c0bdf42a56a20bca6d",
+      "archiveType": "zip"
+    }
+  }
+}

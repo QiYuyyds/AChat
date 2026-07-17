@@ -41,6 +41,20 @@ from app.utils.ids import new_message_id
 
 logger = logging.getLogger(__name__)
 
+ACHAT_MCP_TOOL_HINT = (
+    "\n\n## AChat MCP Tools\n"
+    "AChat platform tools are available via the \"achat-tools\" MCP server. "
+    "Use the exact MCP-prefixed name:\n\n"
+    "- `write_artifact` → `mcp__achat-tools__write_artifact`\n"
+    "- `read_artifact` → `mcp__achat-tools__read_artifact`\n"
+    "- `ask_user` → `mcp__achat-tools__ask_user`\n"
+    "- `deploy_artifact` → `mcp__achat-tools__deploy_artifact`\n"
+    "- `deploy_workspace` → `mcp__achat-tools__deploy_workspace`\n"
+    "- `code_explore` → `mcp__achat-tools__code_explore`\n"
+    "Use code_explore for structure, call paths, and impact; fall back to file "
+    "search/read tools for exact lines or unavailable results.\n"
+)
+
 # ─── blocked args (mirrors multica claudeBlockedArgs) ──────────
 
 _claude_blocked_args: dict[str, BlockedArgMode] = {
@@ -134,20 +148,8 @@ class ClaudeCLIAdapter(CLIAdapterBase):
             args.extend(("--model", input.model_id))
         if input.resume_session_id:
             args.extend(("--resume", input.resume_session_id))
-        # MCP tool name mapping: Claude CLI prefixes all MCP tools as
-        # mcp__<server>__<tool>, but prompts use bare AChat tool names.
-        _mcp_tool_hint = (
-            "\n\n## AChat MCP Tools\n"
-            "AChat platform tools are available via the \"achat-tools\" MCP "
-            "server. When instructions tell you to call an AChat tool, you "
-            "MUST use the MCP-prefixed name as shown below:\n\n"
-            "- `write_artifact` → `mcp__achat-tools__write_artifact`\n"
-            "- `read_artifact` → `mcp__achat-tools__read_artifact`\n"
-            "- `ask_user` → `mcp__achat-tools__ask_user`\n"
-            "- `deploy_artifact` → `mcp__achat-tools__deploy_artifact`\n"
-            "- `deploy_workspace` → `mcp__achat-tools__deploy_workspace`\n"
-        )
-        _sp_content = (input.system_prompt or "") + _mcp_tool_hint
+        # Claude prefixes tools exposed by the AChat MCP Bridge.
+        _sp_content = (input.system_prompt or "") + ACHAT_MCP_TOOL_HINT
         # Windows command-line cannot carry newlines; write to temp file.
         # Both --system-prompt[-file] and --append-system-prompt[-file]
         # variants exist in the Claude Code CLI.

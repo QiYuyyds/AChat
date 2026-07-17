@@ -18,7 +18,8 @@
     "electron:rebuild": "node scripts/rebuild-electron-sqlite.mjs",
     "electron:prebuild": "node scripts/electron-prebuild.mjs",
     "electron:dev": "concurrently -k -n NEXT,TSC,ELECTRON -c blue,yellow,magenta \"pnpm dev\" \"pnpm electron:tsc:watch\" \"wait-on -d 200 tcp:127.0.0.1:3000 file:./dist-electron/main.js && node scripts/electron-dev.mjs\"",
-    "electron:build": "pnpm build && pnpm electron:prebuild && pnpm electron:tsc && electron-builder",
+    "codegraph:prepare": "node scripts/prepare-codegraph-runtime.mjs",
+    "electron:build": "pnpm build && pnpm electron:prebuild && pnpm electron:tsc && pnpm codegraph:prepare && electron-builder",
     "mobile:dev": "pnpm --filter @agenthub/mobile dev",
     "mobile:build": "pnpm --filter @agenthub/mobile build",
     "mobile:sync": "pnpm --filter @agenthub/mobile cap:sync",
@@ -65,6 +66,7 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
+    "@alloc/quick-lru": "^5.2.0",
     "@electron/rebuild": "^4.0.4",
     "@playwright/test": "^1.60.0",
     "@tailwindcss/postcss": "^4",
@@ -114,6 +116,20 @@
           ]
         }
       ],
+      "extraResources": [
+        {
+          "from": "resources/codegraph/codegraph-darwin-${arch}.tar.gz",
+          "to": "codegraph/runtime.tar.gz"
+        },
+        {
+          "from": "backend/app/code_intelligence/runtime-manifest.json",
+          "to": "codegraph/runtime-manifest.json"
+        },
+        {
+          "from": "backend/app/code_intelligence/CODEGRAPH-NOTICE.txt",
+          "to": "codegraph/CODEGRAPH-NOTICE.txt"
+        }
+      ],
       "hardenedRuntime": false,
       "gatekeeperAssess": false
     },
@@ -124,6 +140,20 @@
           "arch": [
             "x64"
           ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "resources/codegraph/codegraph-win32-${arch}.zip",
+          "to": "codegraph/runtime.zip"
+        },
+        {
+          "from": "backend/app/code_intelligence/runtime-manifest.json",
+          "to": "codegraph/runtime-manifest.json"
+        },
+        {
+          "from": "backend/app/code_intelligence/CODEGRAPH-NOTICE.txt",
+          "to": "codegraph/CODEGRAPH-NOTICE.txt"
         }
       ]
     },
