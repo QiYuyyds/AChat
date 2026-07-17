@@ -27,7 +27,7 @@ async def test_watermark_reached_triggers_silent_compact():
     ) as mock_count, patch.object(
         agent_runner, "compact_conversation", new_callable=AsyncMock
     ) as mock_compact:
-        mock_count.return_value = 15
+        mock_count.return_value = 35  # above AUTO_COMPACT_WATERMARK (30)
         mock_compact.return_value = type("R", (), {
             "summary": type("S", (), {
                 "id": "cs_1",
@@ -52,7 +52,7 @@ async def test_watermark_below_threshold_does_not_trigger():
     ) as mock_count, patch.object(
         agent_runner, "compact_conversation", new_callable=AsyncMock
     ) as mock_compact:
-        mock_count.return_value = 5
+        mock_count.return_value = 5  # below AUTO_COMPACT_WATERMARK (30)
 
         await _maybe_auto_compact_hook("conv_test", override_prompt=None)
 
@@ -68,7 +68,7 @@ async def test_watermark_exactly_at_threshold_triggers():
     ) as mock_count, patch.object(
         agent_runner, "compact_conversation", new_callable=AsyncMock
     ) as mock_compact:
-        mock_count.return_value = 10
+        mock_count.return_value = 30  # exactly at AUTO_COMPACT_WATERMARK (30)
         mock_compact.return_value = type("R", (), {
             "summary": type("S", (), {
                 "id": "cs_1",
@@ -92,7 +92,7 @@ async def test_compaction_skipped_is_swallowed():
     ) as mock_count, patch.object(
         agent_runner, "compact_conversation", new_callable=AsyncMock
     ) as mock_compact:
-        mock_count.return_value = 20
+        mock_count.return_value = 35  # above AUTO_COMPACT_WATERMARK (30)
         mock_compact.side_effect = CompactionSkipped("compactable_too_small", None)
 
         # Should not raise
@@ -129,7 +129,7 @@ async def test_general_exception_does_not_propagate():
     ) as mock_count, patch.object(
         agent_runner, "compact_conversation", new_callable=AsyncMock
     ) as mock_compact:
-        mock_count.return_value = 20
+        mock_count.return_value = 35  # above AUTO_COMPACT_WATERMARK (30)
         mock_compact.side_effect = RuntimeError("Unexpected DB error")
 
         # Should not raise
@@ -166,8 +166,8 @@ async def test_token_threshold_triggers_compaction():
         agent_runner, "compact_conversation", new_callable=AsyncMock
     ) as mock_compact:
         mock_count.return_value = 5  # below watermark threshold
-        mock_limit.return_value = 64_000  # deepseek-chat context window
-        mock_tokens.return_value = 60_000  # > 87% of 64000 = 55680
+        mock_limit.return_value = 1_000_000  # deepseek V4 context window
+        mock_tokens.return_value = 900_000  # > 87% of 1M = 870K
         mock_compact.return_value = _mock_compact_result()
 
         await _maybe_auto_compact_hook("conv_test", override_prompt=None, agent_id="ag_1")
@@ -188,8 +188,8 @@ async def test_neither_threshold_met_does_not_compact():
         agent_runner, "compact_conversation", new_callable=AsyncMock
     ) as mock_compact:
         mock_count.return_value = 5  # below watermark
-        mock_limit.return_value = 64_000
-        mock_tokens.return_value = 10_000  # well below 87% of 64000
+        mock_limit.return_value = 1_000_000
+        mock_tokens.return_value = 100_000  # well below 87% of 1M
 
         await _maybe_auto_compact_hook("conv_test", override_prompt=None, agent_id="ag_1")
 

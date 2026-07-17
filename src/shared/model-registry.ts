@@ -17,7 +17,7 @@ import type { ModelProvider } from './types'
 const PROVIDER_FALLBACK_CONTEXT: Record<ModelProvider, number> = {
   anthropic: 200_000,
   openai: 128_000,
-  deepseek: 64_000,
+  deepseek: 1_000_000,
   'volcano-ark': 32_000,
   'openai-compatible': 128_000,
 }
@@ -26,12 +26,14 @@ const PROVIDER_FALLBACK_CONTEXT: Record<ModelProvider, number> = {
 const DEFAULT_OUTPUT_RESERVE = 4096
 
 const KNOWN_MODELS: Record<string, { context: number; outputReserve?: number }> = {
-  // DeepSeek
-  'deepseek-chat': { context: 64_000 },
-  'deepseek-v4-flash': { context: 64_000 },
-  'deepseek-v4': { context: 64_000 },
-  'deepseek-reasoner': { context: 128_000, outputReserve: 16_384 }, // R1 系列 thinking 吃 token
-  'deepseek-r1': { context: 128_000, outputReserve: 16_384 },
+  // DeepSeek V4 — deepseek-chat/reasoner map to v4-flash non-thinking/thinking modes
+  // Source: https://api-docs.deepseek.com/quick_start/pricing (July 2026)
+  'deepseek-chat': { context: 1_000_000 },
+  'deepseek-v4-flash': { context: 1_000_000 },
+  'deepseek-v4': { context: 1_000_000 },
+  'deepseek-v4-pro': { context: 1_000_000 },
+  'deepseek-reasoner': { context: 1_000_000, outputReserve: 16_384 }, // thinking 模式 eats token
+  'deepseek-r1': { context: 1_000_000, outputReserve: 16_384 },
 
   // OpenAI
   'gpt-4o': { context: 128_000 },

@@ -16,7 +16,7 @@ def test_known_model_uses_table_context_and_default_reserve():
 
 def test_known_model_with_explicit_output_reserve():
     limits = get_model_limits("deepseek", "deepseek-reasoner")
-    assert limits.context_window == 128_000
+    assert limits.context_window == 1_000_000
     assert limits.output_reserve == 16_384
 
 

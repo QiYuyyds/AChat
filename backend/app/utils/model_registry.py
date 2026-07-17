@@ -20,7 +20,7 @@ ModelProvider = str
 PROVIDER_FALLBACK_CONTEXT: dict[ModelProvider, int] = {
     "anthropic": 200_000,
     "openai": 128_000,
-    "deepseek": 64_000,
+    "deepseek": 1_000_000,
     "volcano-ark": 32_000,
     "openai-compatible": 128_000,
 }
@@ -29,12 +29,14 @@ PROVIDER_FALLBACK_CONTEXT: dict[ModelProvider, int] = {
 DEFAULT_OUTPUT_RESERVE = 4096
 
 KNOWN_MODELS: dict[str, dict[str, int]] = {
-    # DeepSeek
-    "deepseek-chat": {"context": 64_000, "maxOutputTokens": 8_192},
-    "deepseek-v4-flash": {"context": 64_000, "maxOutputTokens": 8_192},
-    "deepseek-v4": {"context": 64_000, "maxOutputTokens": 8_192},
-    "deepseek-reasoner": {"context": 128_000, "outputReserve": 16_384, "maxOutputTokens": 8_192},  # R1 thinking eats tokens
-    "deepseek-r1": {"context": 128_000, "outputReserve": 16_384, "maxOutputTokens": 8_192},
+    # DeepSeek V4 — deepseek-chat/reasoner map to v4-flash non-thinking/thinking modes
+    # Source: https://api-docs.deepseek.com/quick_start/pricing (July 2026)
+    "deepseek-chat": {"context": 1_000_000, "maxOutputTokens": 384_000},
+    "deepseek-v4-flash": {"context": 1_000_000, "maxOutputTokens": 384_000},
+    "deepseek-v4": {"context": 1_000_000, "maxOutputTokens": 384_000},
+    "deepseek-v4-pro": {"context": 1_000_000, "maxOutputTokens": 384_000},
+    "deepseek-reasoner": {"context": 1_000_000, "outputReserve": 16_384, "maxOutputTokens": 384_000},
+    "deepseek-r1": {"context": 1_000_000, "outputReserve": 16_384, "maxOutputTokens": 384_000},
     # OpenAI
     "gpt-4o": {"context": 128_000, "maxOutputTokens": 16_384},
     "gpt-4o-mini": {"context": 128_000, "maxOutputTokens": 16_384},
