@@ -16,6 +16,7 @@ from app.auth.dependencies import (
 )
 from app.auth.service import (
     AuthResult,
+    authenticate_default_user,
     authenticate_user,
     change_password,
     logout_all_devices,
@@ -30,6 +31,7 @@ from app.schemas import (
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
+    VipLoginRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,10 @@ def _auth_response(result: AuthResult) -> JSONResponse:
 def _config_response() -> dict:
     """Public auth config for the frontend (e.g. allow_registration)."""
     settings = get_settings()
-    return {"allowRegistration": settings.allow_registration}
+    return {
+        "allowRegistration": settings.allow_registration,
+        "vipLoginEnabled": settings.vip_login_enabled,
+    }
 
 
 # ─── POST /api/auth/register ───────────────────────────
@@ -101,6 +106,35 @@ async def login(request: Request) -> JSONResponse:
     async with get_db() as db:
         try:
             result = await authenticate_user(db, req.email, req.password)
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid credentials",
+            ) from e
+
+    return _auth_response(result)
+
+
+# ─── POST /api/auth/vip-login ──────────────────────────
+@router.post("/auth/vip-login")
+async def vip_login(request: Request) -> JSONResponse:
+    """Log in to the configured default account using only its password."""
+    settings = get_settings()
+    if not settings.vip_login_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+    try:
+        body = await request.json()
+        req = VipLoginRequest(**body)
+    except (ValidationError, Exception) as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid request body: {e}",
+        ) from e
+
+    async with get_db() as db:
+        try:
+            result = await authenticate_default_user(db, req.password)
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

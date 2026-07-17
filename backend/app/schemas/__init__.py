@@ -110,6 +110,7 @@ from app.schemas.requests import (
     UsageByModel,
     UsageSummaryResponse,
     UsageTopConversation,
+    VipLoginRequest,
 )
 
 __all__ = [
@@ -204,6 +205,7 @@ __all__ = [
     # Auth
     "RegisterRequest",
     "LoginRequest",
+    "VipLoginRequest",
     "RefreshRequest",
     "ChangePasswordRequest",
     # Documents
