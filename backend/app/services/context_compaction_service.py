@@ -14,6 +14,7 @@ Full compaction flow (LLM-backed, triggered by the explicit /compact action):
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 
@@ -39,7 +40,10 @@ MIN_COMPACTABLE = 2
 MIN_COMPACT_TOKENS = 800
 # Auto-compact trigger: when uncompacted message count reaches this watermark,
 # _maybe_auto_compact_hook fires compact_conversation(silent=True).
-AUTO_COMPACT_WATERMARK = 10
+# With 1M-context models (DeepSeek V4), 30 messages (~150k tokens) is a
+# reasonable safety net — the token-based trigger (87% of context window)
+# is the primary mechanism, this is the backup.
+AUTO_COMPACT_WATERMARK = 30
 
 # Friendly notices for benign "nothing to compact" outcomes (not errors).
 _TOO_SHORT_NOTICE = "当前对话还太短，暂时不需要压缩上下文。"
@@ -145,8 +149,9 @@ async def estimate_uncompacted_tokens(conversation_id: str) -> int:
     """Estimate total token count of uncompacted messages.
 
     Loads the same uncompacted message slice as ``count_uncompacted_messages``
-    and sums coarse token estimates of their text parts. Used by the
-    auto-compaction hook's token-based trigger.
+    and sums coarse token estimates of ALL message parts (text, tool_use,
+    tool_result, thinking). Used by the auto-compaction hook's token-based
+    trigger.
     """
     latest = await get_latest_context_summary(conversation_id)
     since_created_at = latest.covered_until_created_at if latest else None
@@ -164,7 +169,7 @@ async def estimate_uncompacted_tokens(conversation_id: str) -> int:
         )
     total = 0
     for m in rows:
-        total += estimate_tokens(_message_text(m))
+        total += _message_token_estimate(m)
     return total
 
 
@@ -573,6 +578,24 @@ def _message_text(msg: Message) -> str:
         if p.get("type") == "text" and p.get("content")
     ]
     return "\n".join(texts).strip()
+
+
+def _message_token_estimate(msg: Message) -> int:
+    """Estimate token count for ALL parts of a message (text, tool_use, tool_result, thinking)."""
+    total = 0
+    for p in msg.parts_list:
+        ptype = p.get("type")
+        if ptype in ("text", "thinking", "effective_prompt"):
+            total += estimate_tokens(p.get("content", ""))
+        elif ptype == "tool_use":
+            total += estimate_tokens(json.dumps(p.get("args", {}), ensure_ascii=False))
+        elif ptype == "tool_result":
+            result = p.get("result", "")
+            if isinstance(result, str):
+                total += estimate_tokens(result)
+            else:
+                total += estimate_tokens(json.dumps(result, ensure_ascii=False))
+    return total
 
 
 async def _summarise(
