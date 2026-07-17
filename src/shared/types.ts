@@ -33,12 +33,23 @@ export type MessagePart =
       steps: PlanStep[]
       complexity: 'simple' | 'moderate' | 'complex'
     }
+  | {
+      type: 'file_write_preview'
+      path: string
+      content: string
+      callId: string
+      status: 'streaming' | 'complete' | 'failed'
+      language?: string
+      oldContent?: string | null
+      newContent?: string | null
+    }
 
 // ─── 增量 delta（流式追加）─────────────────────────────────
 export type PartDelta =
   | { type: 'text.append'; text: string }
   | { type: 'code.append'; text: string }
   | { type: 'thinking.append'; text: string }
+  | { type: 'file_write_preview.append'; text: string }
 
 // ─── Artifact 内容（联合）─────────────────────────────────
 export type ArtifactType =
@@ -483,6 +494,15 @@ export type StreamEvent = BaseEvent &
         mergeStatus?: 'success' | 'conflict'
       }
     | { type: 'summary.updated'; summary: string | null }
+    | {
+        type: 'file_write_preview.complete'
+        messageId: string
+        callId: string
+        path: string
+        oldContent: string | null
+        newContent: string | null
+        status: 'complete' | 'failed'
+      }
     | { type: 'heartbeat' }
     | {
         type: 'turn.metric'

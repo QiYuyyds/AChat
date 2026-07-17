@@ -791,6 +791,8 @@ export const useAppStore = create<AppState>()(
               part.content += event.delta.text
             } else if (event.delta.type === 'code.append' && part.type === 'code') {
               part.content += event.delta.text
+            } else if (event.delta.type === 'file_write_preview.append' && part.type === 'file_write_preview') {
+              part.content += event.delta.text
             }
             return
           }
@@ -864,6 +866,23 @@ export const useAppStore = create<AppState>()(
               )
               if (planPart && planPart.type === 'execution_plan') {
                 planPart.steps = event.steps
+                break
+              }
+            }
+            return
+          }
+
+          case 'file_write_preview.complete': {
+            // Find file_write_preview part by callId and update status/diff data
+            for (const msg of Object.values(s.messages)) {
+              const previewPart = msg.parts.find(
+                (p) => p.type === 'file_write_preview' && p.callId === event.callId,
+              )
+              if (previewPart && previewPart.type === 'file_write_preview') {
+                previewPart.status = event.status
+                previewPart.path = event.path
+                previewPart.oldContent = event.oldContent
+                previewPart.newContent = event.newContent
                 break
               }
             }

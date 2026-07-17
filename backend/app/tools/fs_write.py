@@ -80,6 +80,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
 
     # Auto mode: write immediately.
     if mode == "auto":
+        old_content = read_if_exists(workspace, parsed.path)
         try:
             write_result = write_file_in_workspace(workspace, parsed.path, parsed.content)
         except (ValueError, OSError) as e:
@@ -101,6 +102,8 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
                 "cwd": write_result.cwd,
                 "bytes": write_result.bytes,
                 "applied": "auto",
+                "oldContent": old_content,
+                "newContent": parsed.content,
             }
         )
 
@@ -145,6 +148,8 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
             "absolutePath": abs_path,
             "bytes": byte_len,
             "applied": "review",
+            "oldContent": pending.old_content,
+            "newContent": pending.new_content,
         }
     )
 

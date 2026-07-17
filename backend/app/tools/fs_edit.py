@@ -152,6 +152,8 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
                 "cwd": write_result.cwd,
                 "bytes": write_result.bytes,
                 "applied": "auto",
+                "oldContent": old_content,
+                "newContent": new_content,
             }
         )
 
@@ -191,6 +193,8 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
             "absolutePath": abs_path,
             "bytes": byte_len,
             "applied": "review",
+            "oldContent": pending.old_content,
+            "newContent": pending.new_content,
         }
     )
 

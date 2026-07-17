@@ -74,6 +74,9 @@ type StreamEvent = BaseEvent & (
   // —— 执行计划（solo + coordinated mode Agent 的结构化进度追踪）——
   | { type: 'plan.created',  planId: string, steps: PlanStep[], complexity: 'simple' | 'moderate' | 'complex' }
   | { type: 'plan.step_update', planId: string, steps: PlanStep[] }
+
+// —— 文件写入预览（SDK Agent fs_write 流式预览 + 执行完成后 diff 回填）——
+| { type: 'file_write_preview.complete', messageId: string, callId: string, path: string, oldContent: string | null, newContent: string | null, status: 'complete' | 'failed' }
 )
 
 interface RunUsageEvent {
@@ -257,6 +260,7 @@ dispatch.end      (parentRunId=r1, taskId=t3, status='skipped', error='Upstream 
 | `heartbeat` | ❌ 透传 | |
 | `plan.created` | ❌ 透传 | 触发 consume_stream 注入 execution_plan part |
 | `plan.step_update` | ✅ 更新 parts_buffer 中 execution_plan part 的 steps | 全量替换 steps 数组 |
+| `file_write_preview.complete` | ✅ 更新 parts_buffer 中 file_write_preview part 的 status/path/oldContent/newContent | 对称于 plan.step_update 更新 execution_plan |
 
 **写入策略**：流式 `part.delta` 高频，使用「内存缓冲 + 定时 flush」避免每个 delta 都打 DB：
 
@@ -352,3 +356,24 @@ When a dispatch task has `planStepId` set (coordinated mode), the system automat
 ```
 
 This auto-update only applies to dispatch tasks with `planStepId`. Steps the orchestrator executes itself must be manually updated with `plan_step`.
+
+## File Write Preview Events
+
+`file_write_preview.complete` events enable real-time rendering of file write previews in the UI.
+
+**Flow:**
+```
+1. CustomAdapter detects tcd.function.name == "fs_write" → yields part.start(file_write_preview)
+2. args_buffer increments → CustomAdapter feeds to _ContentExtractor → yields part.delta(file_write_preview.append)
+3. _execute_tool_call_to_result executes fs_write → appends FileWritePreviewCompleteEvent
+4. consume_stream receives file_write_preview.complete → updates file_write_preview part in parts_buffer + SSE publish
+```
+
+**Visibility**: `file_write_preview.complete` is in `_VISIBLE_EVENT_TYPES` — persisted to DB and published to SSE for non-hidden runs. Hidden runs (clone-subagent) persist but don't publish.
+
+**Event fields**:
+- `messageId` / `callId`: identifies the target file_write_preview part to update
+- `path`: workspace-relative file path
+- `oldContent`: previous file content (null for new files)
+- `newContent`: final written content (null on failure)
+- `status`: 'complete' on success, 'failed' on error
