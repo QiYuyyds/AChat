@@ -7,6 +7,7 @@ import { AddAgentDialog } from '@/components/add-agent-dialog'
 import { AgentInfoPopover } from '@/components/agent-info-popover'
 import { AskUserQuestionDialog } from '@/components/ask-user-question-dialog'
 import { ArtifactLibrary } from '@/components/artifact-library'
+import { CodeIntelligenceControl } from '@/components/code-intelligence-control'
 import { ConversationOutline } from '@/components/conversation-outline'
 import { FileLibraryDialog } from '@/components/file-library-dialog'
 import { FileTab } from '@/components/file-tab'
@@ -149,6 +150,9 @@ export function ChatPanel() {
           >
             <FolderTree className="size-4" />
           </Button>
+          {conv.workspaceMode === 'local' && (
+            <CodeIntelligenceControl conversationId={conv.id} />
+          )}
           <Button
             size="icon-sm"
             variant={artifactsOpen || previewArtifactId ? 'default' : 'ghost'}

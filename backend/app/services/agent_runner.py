@@ -1578,6 +1578,27 @@ async def _resolve_mcp_configs(agent: Agent) -> list[Any]:
     return build_mcp_server_configs_from_db(list(rows))
 
 
+def _inject_code_intelligence_tool(
+    tool_names: list[str],
+    agent: Agent,
+    workspace: Workspace,
+) -> list[str]:
+    if (
+        agent.adapter_name != "custom"
+        or workspace.mode != "local"
+        or not workspace.bound_path
+        or "code_explore" in tool_names
+    ):
+        return list(tool_names)
+
+    from app.code_intelligence.metadata import MetadataStore
+
+    metadata = MetadataStore(workspace.root_path).read()
+    if not metadata.enabled or metadata.status != "ready":
+        return list(tool_names)
+    return [*tool_names, "code_explore"]
+
+
 async def execute_simple_run(
     run_id: str,
     cancel_event: asyncio.Event,
@@ -1653,6 +1674,10 @@ async def execute_simple_run(
                         new_tools,
                         args.conversation_id,
                     )
+
+    base_tool_names = _inject_code_intelligence_tool(
+        list(base_tool_names), agent, workspace
+    )
 
     # Auto-inject companion artifact tools when write_artifact is present.
     # CLI agents get all hub tools via _build_agent_hub_tool_guidance; SDK (Custom)

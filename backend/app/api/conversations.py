@@ -73,6 +73,7 @@ async def create_conversation(req: Request, user: User = Depends(get_current_use
             agent_ids=body.agent_ids,
             title=body.title,
             bound_path=body.bound_path,
+            code_intelligence_enabled=body.code_intelligence_enabled,
             dispatch_mode=body.dispatch_mode,
             user_id=user.id,
         )
