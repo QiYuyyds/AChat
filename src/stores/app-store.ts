@@ -19,6 +19,7 @@ import type {
   StreamEvent,
   TurnMetricData,
 } from '@/shared/types'
+import { computeTotalTokens, computeMessageTotalTokens } from '@/shared/usage'
 
 enableMapSet()
 
@@ -1683,13 +1684,17 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           if (u.model) d.model = u.model
         } else {
           // Top-level run: count normally
+          const runTotal = computeTotalTokens(
+            u.inputTokens, u.outputTokens, u.cacheCreationTokens, u.cacheReadTokens,
+          )
           result.inputTokens += u.inputTokens
           result.outputTokens += u.outputTokens
           result.cacheCreationTokens += u.cacheCreationTokens
           result.cacheReadTokens += u.cacheReadTokens
+          result.totalTokens += runTotal
           result.runCount++
-          result.byAgent[run.agentId] = (result.byAgent[run.agentId] ?? 0) + sub
-          if (u.model) result.byModel[u.model] = (result.byModel[u.model] ?? 0) + sub
+          result.byAgent[run.agentId] = (result.byAgent[run.agentId] ?? 0) + runTotal
+          if (u.model) result.byModel[u.model] = (result.byModel[u.model] ?? 0) + runTotal
           const d = detail[run.agentId] ??= {
             inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
             cacheReadTokens: 0, totalTokens: 0, runCount: 0,
@@ -1699,6 +1704,7 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           d.outputTokens += u.outputTokens
           d.cacheCreationTokens += u.cacheCreationTokens
           d.cacheReadTokens += u.cacheReadTokens
+          d.totalTokens += runTotal
           d.runCount++
           if (u.model) d.model = u.model
           if (run.startedAt > lastInputTs) {
@@ -1719,18 +1725,22 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
         if (m.runId && runsWithUsage.has(m.runId)) continue
 
         const u = m.usage
+        const provider = m.agentId ? agents[m.agentId]?.modelProvider : undefined
+        const msgTotal = computeMessageTotalTokens(
+          u.inputTokens, u.outputTokens, u.cacheReadTokens, provider,
+        )
         result.inputTokens += u.inputTokens
         result.outputTokens += u.outputTokens
         result.cacheReadTokens += u.cacheReadTokens
+        result.totalTokens += msgTotal
         if (m.runId && !seenRunIds.has(m.runId)) {
           seenRunIds.add(m.runId)
           result.runCount++
         }
-        const sub = u.inputTokens + u.outputTokens
         if (m.agentId) {
-          result.byAgent[m.agentId] = (result.byAgent[m.agentId] ?? 0) + sub
+          result.byAgent[m.agentId] = (result.byAgent[m.agentId] ?? 0) + msgTotal
           const modelId = agents[m.agentId]?.modelId
-          if (modelId) result.byModel[modelId] = (result.byModel[modelId] ?? 0) + sub
+          if (modelId) result.byModel[modelId] = (result.byModel[modelId] ?? 0) + msgTotal
           const d = detail[m.agentId] ??= {
             inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
             cacheReadTokens: 0, totalTokens: 0, runCount: 0,
@@ -1739,6 +1749,7 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           d.inputTokens += u.inputTokens
           d.outputTokens += u.outputTokens
           d.cacheReadTokens += u.cacheReadTokens
+          d.totalTokens += msgTotal
           if (m.runId && !seenRunIds.has(m.runId)) d.runCount++
           if (modelId) d.model = modelId
         }
@@ -1749,11 +1760,7 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
       }
     }
 
-    result.totalTokens =
-      result.inputTokens + result.outputTokens + result.cacheCreationTokens + result.cacheReadTokens
-    for (const d of Object.values(detail)) {
-      d.totalTokens = d.inputTokens + d.outputTokens + d.cacheCreationTokens + d.cacheReadTokens
-    }
+// totalTokens 和 d.totalTokens 已在循环内按 provider 语义逐条累加，此处不再重算
 
     // 压缩后的乐观覆盖：仅当覆盖值比最新实测的 run/message 更新时接管「当前 ctx」。
     if (ctxOverride && ctxOverride.at > lastInputTs) {

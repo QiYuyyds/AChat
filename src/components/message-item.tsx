@@ -26,6 +26,7 @@ import { formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { MessageRow } from '@/db/schema'
 import { PIN_LIMIT_PER_CONVERSATION } from '@/shared/constants'
+import { computeMessageTotalTokens } from '@/shared/usage'
 import {
   useAppStore,
   useIsRunActive,
@@ -233,9 +234,12 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
               title={`新 Input: ${message.usage.inputTokens.toLocaleString()}\nOutput: ${message.usage.outputTokens.toLocaleString()}${message.usage.cacheReadTokens > 0 ? `\nCache 命中: ${message.usage.cacheReadTokens.toLocaleString()}` : ''}`}
             >
               {formatTokenShort(
-                message.usage.inputTokens +
-                  message.usage.outputTokens +
+                computeMessageTotalTokens(
+                  message.usage.inputTokens,
+                  message.usage.outputTokens,
                   message.usage.cacheReadTokens,
+                  agent?.modelProvider,
+                ),
               )}{' '}
               tok
             </span>
