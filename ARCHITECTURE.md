@@ -210,7 +210,7 @@ backend/
 │   │   ├── claude_adapter.py ★ ClaudeCLIAdapter: spawn `claude` stream-json 协议
 │   │   ├── codex_adapter.py  ★ CodexCLIAdapter: spawn `codex app-server` JSON-RPC 2.0
 │   │   ├── mock_adapter.py  Mock (脚本流, 不烧 token)
-│   │   ├── custom_adapter.py OpenAI 兼容 (DeepSeek / 火山方舟等, SDK 路线, 工具循环 MAX_TURNS=8)
+│   │   ├── custom_adapter.py OpenAI 兼容 (DeepSeek / 火山方舟等, SDK 路线, model-done 主路径 + 预算收尾)
 │   │   └── custom_provider_client.py / registry.py / session_store.py
 │   ├── mcp_bridge.py      ★ AChat MCP Bridge: stdio MCP Server, 把 write_artifact/ask_user/task_dispatch 等平台工具暴露给 CLI agent
 │   │

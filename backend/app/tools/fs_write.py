@@ -40,22 +40,17 @@ _PARAMETERS: dict[str, Any] = {
     "type": "object",
     "required": ["path", "content"],
     "properties": {
-        "path": {"type": "string", "description": "Destination path inside the workspace."},
-        "content": {"type": "string", "description": "UTF-8 text content (max 100 KB)."},
+        "path": {"type": "string", "description": "目标文件路径（相对于 workspace 根目录或绝对路径，必须在 workspace 内）。"},
+        "content": {"type": "string", "description": "UTF-8 文本内容（最大 100KB）。"},
     },
 }
 
 _DESCRIPTION = (
-    "Write a UTF-8 text file inside the workspace. Path can be relative (resolved "
-    "against the workspace root) or absolute (must still be inside the workspace). "
-    "Parent directories are created automatically. Each file is capped at 100 KB; in "
-    "sandbox mode the workspace as a whole is capped at 100 MB / 1000 files. In "
-    "'review' mode the user must approve the diff before the write actually happens; "
-    "you'll see ok:false with 'rejected' if they decline. IMPORTANT: if the file "
-    "content is very large, write the first portion with fs_write, then use fs_edit "
-    "to append the rest (replace the last few lines of the current content with "
-    "those lines plus the new content). This avoids hitting the LLM output token "
-    "limit. Use this to scaffold code, write documents, etc."
+    "向 workspace 写入 UTF-8 文本文件（创建或完整覆盖）。"
+    "父目录自动创建。单个文件上限 100KB，sandbox 模式下 workspace 总量上限 100MB / 1000 文件。"
+    "review 模式下用户需审批 diff 后才会真正写入，用户拒绝时返回 ok:false。"
+    "适合创建新文件或完整重写已有文件。小范围修改用 fs_edit 更精准。"
+    "内容过大时先 fs_write 写入首部分，再用 fs_edit 追加后续内容，避免超出 LLM 输出 token 限制。"
 )
 
 

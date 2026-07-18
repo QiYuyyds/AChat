@@ -38,7 +38,9 @@ class _CreatePlanArgs(BaseModel):
 
 _CREATE_PLAN_DESCRIPTION = (
     "Create a structured execution plan with named steps. Use this for tasks "
-    "that require 3+ steps. Do NOT use for simple tasks (1-2 steps). "
+    "that require 3+ steps, including exploratory tasks like analyzing a project, "
+    "understanding a codebase, or generating multi-module documentation. "
+    "Do NOT use for simple tasks (1-2 steps) or single-step queries. "
     "Each step needs a unique id (e.g. 's1', 's2') and a title. "
     "After creating the plan, call plan_step before starting each step's work."
 )
@@ -171,12 +173,38 @@ async def _handle_plan_step(args: Any, ctx: ToolContext) -> ToolResult:
     target_step.status = "in_progress"
     plan_registry.update(plan)
 
-    return ok({
+    result: dict[str, Any] = {
         "planId": parsed.plan_id,
         "currentStep": target_step.model_dump(by_alias=True),
         "previousStep": previous_step.model_dump(by_alias=True) if previous_step else None,
         "updatedSteps": [s.model_dump(by_alias=True) for s in plan.steps],
-    })
+    }
+
+    # Just-in-time verification nudge: when starting the last step of a 3+ step
+    # plan and no step title mentions verification, remind the agent to verify.
+    # This mirrors Claude Code's TodoWriteTool verification nudge — a structural
+    # prompt injected at the critical moment, not a static system-prompt rule.
+    remaining_pending = [
+        s for s in plan.steps
+        if s.id != target_step.id and s.status != "done"
+    ]
+    if not remaining_pending and len(plan.steps) >= 3:
+        verification_keywords = (
+            "验证", "测试", "检查", "verify", "test", "check",
+            "validate", "lint", "typecheck", "run ",
+        )
+        has_verification = any(
+            any(kw in s.title.lower() for kw in verification_keywords)
+            for s in plan.steps
+        )
+        if not has_verification:
+            result["nudge"] = (
+                "你的计划即将完成，但没有包含验证步骤。"
+                "建议在完成最后一步后，跑一遍 typecheck / lint / tests（如果项目有的话），"
+                "或用 add_plan_steps 追加一个验证步骤来确认工作成果。"
+            )
+
+    return ok(result)
 
 
 plan_step_tool = ToolDef(

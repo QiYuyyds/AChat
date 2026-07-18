@@ -16,7 +16,18 @@ from app.observability.tracer import is_trace_enabled
 
 logger = logging.getLogger(__name__)
 
-MAX_TURNS = 8
+# Absolute safety bound only — not a product max-steps score threshold.
+SAFETY_MAX_MODEL_CALLS = 10_000
+
+# stop_reason values that indicate abnormal (non-model-done) Custom termination
+_ABNORMAL_STOP_REASONS = frozenset({
+    "budget_forced_final",
+    "budget_exhausted",
+    "duplicate_tool_breaker",
+    "tool_error_breaker",
+    "compact_failure_breaker",
+    "max_tool_turns",
+})
 
 
 @dataclass
@@ -56,6 +67,14 @@ def run_rule_evaluations(trace_id: str, spans: list[Any]) -> list[EvalScore]:
     for fs in finalize_spans:
         total_turns = max(total_turns, _get_span_attr(fs, "agenthub.total_turns", 0) or 0)
 
+    # Prefer explicit stop_reason from finalize / agent.run spans when present
+    stop_reason = ""
+    for s in list(finalize_spans) + list(agent_run_spans):
+        sr = _get_span_attr(s, "agenthub.stop_reason", None) or _get_span_attr(s, "stop_reason", None)
+        if sr:
+            stop_reason = str(sr)
+            break
+
     # ── Task Completion ──
     finish_reason = ""
     if llm_spans:
@@ -67,10 +86,16 @@ def run_rule_evaluations(trace_id: str, spans: list[Any]) -> list[EvalScore]:
         score=1.0 if finish_reason == "end_turn" else 0.0,
         explanation=f"finish_reason={finish_reason or 'unknown'}",
     ))
+    # Replaces old MAX_TURNS=8 gate: score 0 only for abnormal Custom stops or
+    # absolute safety-bound blowups — not for long successful model-done runs.
+    abnormal = stop_reason in _ABNORMAL_STOP_REASONS or total_turns >= SAFETY_MAX_MODEL_CALLS
     scores.append(EvalScore(
         name="max_turns_exceeded",
-        score=0.0 if total_turns >= MAX_TURNS else 1.0,
-        explanation=f"total_turns={total_turns}, max={MAX_TURNS}",
+        score=0.0 if abnormal else 1.0,
+        explanation=(
+            f"stop_reason={stop_reason or 'n/a'}, total_turns={total_turns}, "
+            f"safety_max={SAFETY_MAX_MODEL_CALLS}"
+        ),
     ))
 
     # ── Tool Quality ──

@@ -51,17 +51,45 @@ class ReadResult:
     size: int
     content: str
     truncated: bool
+    start_line: int = 0
+    end_line: int = 0
+    total_lines: int = 0
 
 
-def read_file_in_workspace(workspace: Workspace, target: str) -> ReadResult:
+def read_file_in_workspace(
+    workspace: Workspace,
+    target: str,
+    offset: int = 0,
+    limit: int = 0,
+) -> ReadResult:
     abs_path = assert_path_within_workspace(workspace, target)
     if not os.path.isfile(abs_path):
         raise ValueError(f"Not a file: {target}")
     size = os.path.getsize(abs_path)
     if size > MAX_READ_BYTES:
         raise ValueError(f"File too large ({size / 1024 / 1024:.2f} MB > 1 MB limit)")
-    with open(abs_path, encoding="utf-8") as f:
-        raw = f.read()
+
+    if offset > 0 or limit > 0:
+        start_line = offset if offset > 0 else 1
+        collected: list[str] = []
+        total_lines = 0
+        with open(abs_path, encoding="utf-8") as f:
+            for i, line in enumerate(f, start=1):
+                total_lines = i
+                if i < start_line:
+                    continue
+                if limit > 0 and len(collected) >= limit:
+                    continue
+                collected.append(line)
+        raw = "".join(collected)
+        end_line = start_line + len(collected) - 1 if collected else start_line
+    else:
+        with open(abs_path, encoding="utf-8") as f:
+            raw = f.read()
+        start_line = 0
+        end_line = 0
+        total_lines = 0
+
     truncated = len(raw) > MAX_READ_CHARS
     content = (
         raw[:MAX_READ_CHARS] + f"\n\n[TRUNCATED at {MAX_READ_CHARS} chars]"
@@ -75,6 +103,9 @@ def read_file_in_workspace(workspace: Workspace, target: str) -> ReadResult:
         size=size,
         content=content,
         truncated=truncated,
+        start_line=start_line,
+        end_line=end_line,
+        total_lines=total_lines,
     )
 
 

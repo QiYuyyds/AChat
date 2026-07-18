@@ -44,31 +44,28 @@ _PARAMETERS: dict[str, Any] = {
     "properties": {
         "path": {
             "type": "string",
-            "description": "File path inside the workspace (relative or absolute).",
+            "description": "workspace 内的文件路径（相对或绝对）。",
         },
         "old_string": {
             "type": "string",
             "description": (
-                "The exact text to replace. Must appear exactly once in the file; "
-                "zero or multiple matches will be rejected. Include enough "
-                "surrounding context to make the match unique."
+                "要替换的精确文本。必须在文件中唯一出现（零次或多次匹配会被拒绝）。"
+                "包含足够的上下文以确保匹配唯一。"
             ),
         },
         "new_string": {
             "type": "string",
-            "description": "The replacement text.",
+            "description": "替换后的文本。",
         },
     },
 }
 
 
 _DESCRIPTION = (
-    "Edit a workspace file by replacing a single, unique occurrence of "
-    "old_string with new_string. The tool verifies old_string appears exactly "
-    "once (zero or multiple matches are rejected) to prevent ambiguous edits. "
-    "In review mode the user sees a diff highlighting only the changed lines "
-    "(unlike fs_write which shows a full-file diff). Use this for precise, "
-    "targeted edits; use fs_write for full rewrites or new files."
+    "精准修改文件：将文件中唯一出现的 old_string 替换为 new_string。"
+    "工具会验证 old_string 在文件中恰好出现一次（零次或多次匹配都会被拒绝），避免歧义修改。"
+    "review 模式下用户看到的 diff 只高亮变更行（区别于 fs_write 的全文件 diff）。"
+    "适合小范围的定点修改；创建新文件或完整重写用 fs_write。"
 )
 
 

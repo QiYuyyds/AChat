@@ -26,12 +26,14 @@ import { formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { MessageRow } from '@/db/schema'
 import { PIN_LIMIT_PER_CONVERSATION } from '@/shared/constants'
+import { computeMessageTotalTokens } from '@/shared/usage'
 import {
   useAppStore,
   useIsRunActive,
   useDispatchForMessage,
   useLatestAgentMessageId,
   useLatestUserMessageId,
+  useRunStopHint,
   useTurnMetrics,
 } from '@/stores/app-store'
 import { useAuthStore } from '@/stores/auth-store'
@@ -69,6 +71,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
   const isLatestAgent = !isUser && latestAgentId === message.id
 
   const isRunActive = useIsRunActive(message.conversationId, message.runId)
+  const stopHint = useRunStopHint(message.conversationId, message.runId)
 
   const turnMetrics = useTurnMetrics(message.conversationId, message.runId)
 
@@ -231,9 +234,12 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
               title={`新 Input: ${message.usage.inputTokens.toLocaleString()}\nOutput: ${message.usage.outputTokens.toLocaleString()}${message.usage.cacheReadTokens > 0 ? `\nCache 命中: ${message.usage.cacheReadTokens.toLocaleString()}` : ''}`}
             >
               {formatTokenShort(
-                message.usage.inputTokens +
-                  message.usage.outputTokens +
+                computeMessageTotalTokens(
+                  message.usage.inputTokens,
+                  message.usage.outputTokens,
                   message.usage.cacheReadTokens,
+                  agent?.modelProvider,
+                ),
               )}{' '}
               tok
             </span>
@@ -322,6 +328,15 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
               })()}
               {turnMetrics && Object.keys(turnMetrics).length > 0 && (
                 <TurnTimeline turnMetrics={turnMetrics} />
+              )}
+              {/* Abnormal Custom stop light hint — only on latest agent msg of the run */}
+              {!isUser && isLatestAgent && stopHint && message.status !== 'streaming' && (
+                <div
+                  className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-800 dark:text-amber-200"
+                  role="status"
+                >
+                  {stopHint}
+                </div>
               )}
             </>
           )}

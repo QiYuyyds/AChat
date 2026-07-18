@@ -59,7 +59,10 @@ logger = logging.getLogger(__name__)
 # connection — once chunks start streaming there is no retry).
 MAX_API_RETRIES = 2
 
-MAX_TURNS = 8
+# Legacy stream() path only: absolute safety bound (not a product default cap).
+# Primary Custom path uses AgentRunner._run_react_loop with model-done + budget
+# termination (see react_loop_termination.py). None-like "no small default".
+MAX_TURNS = 10_000
 
 # guard against one user message carrying too many images (token blowup + provider caps)
 MAX_IMAGES_PER_MESSAGE = 5

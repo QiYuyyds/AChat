@@ -64,6 +64,8 @@ class LoopRunResult:
     artifact_ids: list[str] = field(default_factory=list)
     output_message_ids: list[str] = field(default_factory=list)
     run_id: str | None = None  # child run ID (for dispatch events)
+    stop_reason: str | None = None
+    stop_reason_label: str | None = None
 
 
 # ─── Coordinated mode system prompt ───────────────────────────────────────────
@@ -117,17 +119,20 @@ _COORDINATED_PLAN_SUFFIX = """
 ## 执行计划与调度配合
 
 你可以使用 create_plan 工具创建执行计划，让用户看到你的总体工作安排和进度。
+这包括**探索型任务**（分析项目、理解代码库、生成文档）和**生产型任务**（写代码、修 bug、搭系统）。
 
 ### 要使用 create_plan 的场景
 - 需要修改 3 个或以上文件
 - 需要先研究分析、再实现、再验证（多阶段任务）
 - 用户明确要求分步执行
 - 任务涉及多个不同阶段（如：调研→设计→开发→测试）
+- 需要系统性探索或分析一个项目、代码库或模块（如：分析项目架构、理解代码结构）
+- 需要生成多模块的文档或报告
 
 ### 不要使用 create_plan 的场景
 - 改一个配置值、修一行代码
-- 回答信息性问题
 - 1-2 步就能完成的简单操作
+- 单次查询能回答的问题（如「这个函数怎么用」「配置在哪」）
 
 ### 自检
 如果不确定是否需要 create_plan，问自己：用户需要看到我的工作计划吗？如果不需要，直接做。
@@ -231,24 +236,29 @@ _PLAN_SUFFIX = """
 ## 执行计划（create_plan / plan_step / add_plan_steps）
 
 当你面对复杂任务时，建议先创建执行计划，让用户看到你的工作安排和进度。
+这包括**探索型任务**（分析项目、理解代码库、生成文档）和**生产型任务**（写代码、修 bug、搭系统）。
 
 ### 要使用 create_plan 的场景
 - 需要修改 3 个或以上文件
 - 需要先研究分析、再实现、再验证（多阶段任务）
 - 用户明确要求分步执行
 - 任务涉及多个不同阶段（如：调研→设计→开发→测试）
+- 需要系统性探索或分析一个项目、代码库或模块（如：分析项目架构、理解代码结构）
+- 需要生成多模块的文档或报告
 
 ### 不要使用 create_plan 的场景
 - 改一个配置值、修一行代码
-- 回答信息性问题
-- 读一个文件、执行一条命令
 - 1-2 步就能完成的简单操作
+- 单次查询能回答的问题（如「这个函数怎么用」「配置在哪」）
 
 ### 判断示例
 - 用户："搭建完整的用户认证系统" → ✅ create_plan（涉及多个文件、多个阶段）
 - 用户："修复这个 typo" → ❌ 直接做（简单改动）
 - 用户："分析这个性能问题" → ✅ create_plan（需要研究→实现→验证）
 - 用户："把这个函数重命名为 foo" → ❌ 直接做（单步操作）
+- 用户："详细分析一下这个项目代码" → ✅ create_plan（需要系统性探索多个模块）
+- 用户："理解这个代码库的架构" → ✅ create_plan（多步骤探索分析）
+- 用户："这个函数怎么用" → ❌ 直接回答（单次查询）
 
 ### 使用方式
 1. 调用 create_plan(steps=[{id:'s1',title:'步骤1'}, ...], complexity='moderate')
@@ -578,13 +588,20 @@ async def spawn_subagent_loop(
         text = await _extract_run_final_text(
             child_run_id, conversation_id, run_result.output_message_ids
         )
+        text = text or "(subagent produced no text output)"
+        stop_reason = getattr(run_result, "stop_reason", None)
+        if stop_reason and stop_reason != "complete":
+            from app.services.react_loop_termination import format_child_stop_prefix
+            text = format_child_stop_prefix(stop_reason, text)
 
         return LoopRunResult(
             status=run_result.status,
-            text=text or "(subagent produced no text output)",
+            text=text,
             artifact_ids=run_result.artifact_ids,
             output_message_ids=run_result.output_message_ids,
             run_id=child_run_id,
+            stop_reason=stop_reason,
+            stop_reason_label=getattr(run_result, "stop_reason_label", None),
         )
 
 

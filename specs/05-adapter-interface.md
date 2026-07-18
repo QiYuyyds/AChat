@@ -150,10 +150,17 @@ interface AdapterInput {
        [{ type: 'text', text }, { type: 'image_url', image_url: { url: 'data:<mime>;base64,...' } }, ...]
      - 否则纯文本字符串
    
-3. tool loop（最多 MAX_TURNS=8 轮）:
-   每轮：
+3. tool loop（主路径 model-done：本轮 0 tool call 即结束；无产品级默认小步数帽）：
+   主路径由 AgentRunner `_run_react_loop` 驱动（`call_once` 单轮 + 工具执行）。
+   终止语义见 `openspec` capability `custom-react-loop-termination`：
+   - 正常结束：模型返回 0 tool call（`stop_reason=complete`）
+   - 可选 `max_tool_turns` 保险丝（默认关闭）与上下文预算管线（compact → soft → forced → hard）
+   - 行为断路器（重复 tool 指纹 / 同 tool 连败 / compact 连败）
+   - legacy `adapter.stream()` 仅保留超高安全上限，不当产品默认
+
+   每轮（call_once）：
      yield message.start (新 partIndex 重置)
-     client.chat.completions.create({ model, messages, tools, stream: true })
+     client.chat.completions.create({ model, messages, tools 或 tools=[] 强制收尾, stream: true })
      for await chunk:
        - delta.content → text part
        - delta.reasoning_content → thinking part (DeepSeek 思维链)
@@ -161,7 +168,7 @@ interface AdapterInput {
      yield message.end
      
      若无 tool_calls：跳出循环
-     若有 tool_calls：
+     若有 tool_calls（非 forced 轮）：
        并行 toolRegistry.execute(name, args, ctx)
        逐个 yield tool.result
         write_artifact 检测 result.value.artifactId 存在 → yield artifact.create (拉 DB 详情)
@@ -311,7 +318,7 @@ execute_simple_run()
 |---|---|
 | `ClaudeCodeAdapter` | `SDKResultMessage.usage`（success / error 都有）+ `modelUsage` 拿实际模型 id |
 | `CodexAdapter` | `runStreamed()` 的 `turn.completed.usage` |
-| `CustomAgentAdapter` | 调用时设 `stream_options: { include_usage: true }`，stream 末尾会有一个携 `usage` 的特殊 chunk；跨 turn 累加（一个 run 内可能 ≤ MAX_TURNS=8 次 chat.completions.create） |
+| `CustomAgentAdapter` | 调用时设 `stream_options: { include_usage: true }`，stream 末尾会有一个携 `usage` 的特殊 chunk；跨 turn 累加（轮次数由 model-done / 预算收尾管线决定，无默认 8 步帽） |
 | `MockAdapter` | 不上报 usage（agent_runs.usage = null） |
 
 **字段映射**（OpenAI 协议 → 我们的 `RunUsage`）：

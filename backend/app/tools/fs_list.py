@@ -22,7 +22,7 @@ _PARAMETERS: dict[str, Any] = {
     "properties": {
         "path": {
             "type": "string",
-            "description": 'Directory path. Omit or pass "" for the workspace root.',
+            "description": "目录路径，省略或传 \"\" 表示 workspace 根目录。",
         },
     },
 }
@@ -63,9 +63,9 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
 fs_list_tool = ToolDef(
     name="fs_list",
     description=(
-        "List files and directories inside the workspace. Path defaults to the "
-        "workspace root. Use this before fs_read when exploring a project; it avoids "
-        "shell-specific listing mistakes."
+        "列出 workspace 内单个目录的文件和子目录，path 省略时默认为 workspace 根目录。"
+        "适合查看某个具体目录的内容。"
+        "需要一次性获取整个项目的文件清单时，用 fs_glob 更高效。"
     ),
     parameters=_PARAMETERS,
     handler=_handler,
