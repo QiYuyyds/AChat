@@ -195,6 +195,8 @@ class CodexCLIAdapter(CLIAdapterBase):
         run_output_tokens = 0
         run_cache_read = 0
         last_input_tokens = 0
+        last_cache_read_tokens = 0
+        last_output_tokens = 0
         final_status = "completed"
         final_error = ""
 
@@ -364,6 +366,8 @@ class CodexCLIAdapter(CLIAdapterBase):
                         run_output_tokens += usage.get("output_tokens", 0)
                         run_cache_read += usage.get("cache_read_tokens", 0)
                         last_input_tokens = usage.get("input_tokens", 0)
+                        last_cache_read_tokens = usage.get("cache_read_tokens", 0)
+                        last_output_tokens = usage.get("output_tokens", 0)
 
                 elif method == "turn/error":
                     turn_done = True
@@ -420,6 +424,8 @@ class CodexCLIAdapter(CLIAdapterBase):
             cache_read_tokens=run_cache_read,
             cache_creation_tokens=0,
             last_input_tokens=last_input_tokens,
+            last_cache_read_tokens=last_cache_read_tokens,
+            last_output_tokens=last_output_tokens,
         )
         yield RunUsageEvent(
             conversation_id=input.conversation_id,

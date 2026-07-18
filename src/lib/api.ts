@@ -229,7 +229,6 @@ export interface CreateConversationBody {
   mode: 'single' | 'group'
   agentIds: string[]
   boundPath?: string
-  codeIntelligenceEnabled?: boolean
 }
 
 export async function createConversation(body: CreateConversationBody): Promise<ConversationWithMeta> {

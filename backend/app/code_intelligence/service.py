@@ -306,7 +306,15 @@ def schedule_workspace_enable(
     download_approved: bool,
 ) -> asyncio.Task[None]:
     if _service is None:
-        raise RuntimeError("Code intelligence service is not initialized")
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "[code-intelligence] service not initialized; "
+            "skipping auto-enable for workspace_root=%s project_path=%s",
+            workspace_root,
+            project_path,
+        )
+        return asyncio.create_task(asyncio.sleep(0))
     return _service.schedule_enable(
         workspace_root=workspace_root,
         project_path=project_path,

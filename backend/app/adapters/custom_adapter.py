@@ -188,6 +188,8 @@ class _RunUsage:
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     last_input_tokens: int = 0
+    last_cache_read_tokens: int = 0
+    last_output_tokens: int = 0
 
 
 @dataclass
@@ -842,6 +844,8 @@ class CustomAdapter(AgentPlatformAdapter):
                     run_usage.cache_read_tokens += cached
                     run_usage.cache_creation_tokens += cache_created
                     run_usage.last_input_tokens = inp
+                    run_usage.last_cache_read_tokens = cached
+                    run_usage.last_output_tokens = out
                     # Record per-call cache metrics for aggregate monitoring
                     cache_metrics.record(
                         cache_read=cached,
@@ -1182,13 +1186,16 @@ def _to_message_usage(u: _MsgUsage) -> MessageUsage:
     )
 
 
-def _to_run_usage(u: _RunUsage, model_id: str) -> RunUsage:
+def _to_run_usage(u: _RunUsage, model_id: str, turn_count: int = 0) -> RunUsage:
     return RunUsage(
         input_tokens=u.input_tokens,
         output_tokens=u.output_tokens,
         cache_creation_tokens=u.cache_creation_tokens,
         cache_read_tokens=u.cache_read_tokens,
         last_input_tokens=u.last_input_tokens,
+        last_cache_read_tokens=u.last_cache_read_tokens,
+        last_output_tokens=u.last_output_tokens,
+        turn_count=turn_count,
         model=model_id,
     )
 

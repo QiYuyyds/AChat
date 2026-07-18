@@ -579,8 +579,8 @@ _EXPLORATION_TOOLS = frozenset({
 })
 
 # Thresholds for plan-reminder injection.
-_PLAN_REMINDER_MIN_TURNS = 4  # turns without a plan before reminding
-_PLAN_REMINDER_MIN_EXPLORATION = 5  # exploration tool calls before reminding
+_PLAN_REMINDER_MIN_TURNS = 2  # turns without a plan before reminding
+_PLAN_REMINDER_MIN_EXPLORATION = 3  # exploration tool calls before reminding
 
 
 # ─── Parallel tool execution helper ──────────────────────────────────────────
@@ -985,7 +985,7 @@ async def _run_react_loop(  # noqa: C901
             conversation_id=conversation_id,
             timestamp=now_ms(),
             run_id=run_id,
-            usage=_to_run_usage(run_usage, model_id or ""),
+            usage=_to_run_usage(run_usage, model_id or "", turn_count=term.model_call_count),
             stop_reason=reason.value,
             stop_reason_label=stop_reason_label(reason),
         )
@@ -1127,6 +1127,8 @@ async def _run_react_loop(  # noqa: C901
                         run_usage.output_tokens += event.usage.output_tokens
                         run_usage.cache_read_tokens += event.usage.cache_read_tokens
                         run_usage.last_input_tokens = event.usage.input_tokens
+                        run_usage.last_cache_read_tokens = event.usage.cache_read_tokens
+                        run_usage.last_output_tokens = event.usage.output_tokens
                         turn_input_tokens += event.usage.input_tokens
                         turn_output_tokens += event.usage.output_tokens
                         turn_cache_read_tokens += event.usage.cache_read_tokens
@@ -3398,7 +3400,7 @@ def _build_agent_hub_tool_guidance(
         file_lines = [
             "### 文件探索与操作工具",
             "路径必须解析在 workspace 内。各工具适用场景：",
-            "- fs_list：查看单个目录的内容",
+            "- fs_list：查看目录内容，支持 depth 参数递归展开。分析项目结构时用 fs_list({ depth: 3 }) 一次性获取多级目录概览，避免逐目录遍历",
             "- fs_glob：按模式批量查找文件（如 **/*.py），一次调用覆盖整个项目",
             "- fs_grep：按正则搜索文件内容，定位符号位置而不用读全文",
             "- 如果任务需要系统性探索（如分析项目、理解代码库），先调 create_plan 创建计划再按步骤探索，不要直接开始读文件。",
@@ -3408,14 +3410,19 @@ def _build_agent_hub_tool_guidance(
                 "- code_explore：基于代码图谱回答结构性问题（入口、调用链、依赖）"
             )
         file_lines.extend([
-            "- fs_read：读取已定位到的文件内容（大文件可用 offset/limit 分段读取）",
+            "- fs_read：读取文件内容，支持三种模式：full（默认完整读取）、outline（只返回结构骨架，token 消耗约 1/10）、head（只读前 N 行）",
+            "- 探索项目时的推荐流程：先用 fs_list({ depth: 3 }) 获取项目结构概览，再用 fs_read({ path: \"...\", mode: \"outline\" }) 快速了解各文件结构，最后对关键文件用 fs_read({ path: \"...\" }) 完整读取",
             "- fs_write / fs_edit：写入新文件 / 精准修改已有文件",
             "- bash：运行构建、测试、安装等 shell 命令",
             "",
-            'fs_list 正确案例：fs_list({ path: "" }) 查看根目录；fs_list({ path: "src/server" }) 查看子目录。',
+            'fs_list 正确案例：fs_list({ path: "", depth: 3 }) 获取项目多级结构概览；'
+            'fs_list({ path: "src/server" }) 查看单个子目录；'
+            '需要查看 .env.example 等隐藏文件时用 fs_list({ showHidden: true })。',
             'fs_glob 正确案例：fs_glob({ pattern: "**/*.py" }) 一次拿到全部 Python 文件清单。',
             'fs_grep 正确案例：fs_grep({ pattern: "def |class ", glob: "*.py" }) 定位所有函数和类定义。',
-            'fs_read 正确案例：fs_read({ path: "src/app/page.tsx" })，先看现有代码再改；'
+            'fs_read 正确案例：fs_read({ path: "src/app/page.tsx", mode: "outline" }) 快速了解文件结构；'
+            'fs_read({ path: "src/app/page.tsx" }) 完整读取先看现有代码再改；'
+            'fs_read({ path: "...", mode: "head" }) 快速预览文件开头；'
             '大文件截断后用 fs_read({ path: "...", offset: 200, limit: 100 }) 继续读取。',
             'fs_write 正确案例：fs_write({ path: "src/app/page.tsx", content: "完整的新文件内容" })；content 是完整文件内容，不是 diff patch。',
             'bash 正确案例：bash({ command: "pnpm typecheck" })；子目录命令用 bash({ command: "pnpm build", cwd: "frontend", timeoutMs: 300000 })，不要写 cd frontend && pnpm build。',

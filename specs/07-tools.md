@@ -77,11 +77,13 @@ export const toolRegistry = buildRegistry()
 | `ask_user` | 向用户发起结构化选择题 | 等待用户回答（in-memory pending） | 需要澄清范围 / 风格 / 平台 / 风险选择的 agent |
 | `plan_tasks` | Orchestrator 拆解子任务 | 无（输出端工具） | **仅 Orchestrator** |
 | `report_task_result` | 子任务上报最终语义结果 | 无（输出端工具） | Orchestrator 派发的子 agent（AgentRunner 自动注入） |
+| `fs_list` | 列出 workspace 内目录内容 | 读文件系统 | 需要查看目录结构 / 项目概览的 agent |
 | `fs_read` | 读 workspace 内文本文件 | 读文件系统 | 需要看用户项目代码的 agent |
 | `fs_write` | 写 workspace 内文本文件 | 写文件系统 | 需要生成 / 修改文件的 agent |
 | `fs_edit` | 精确局部替换 workspace 内文本文件 | 写文件系统（复用 pending_writes review 流程） | 需要精确编辑代码的 agent（`local-code` 预设强制装备） |
 | `fs_grep` | 正则搜索 workspace 内文件内容 | 读文件系统 | 需要搜索代码符号 / 文本的 agent（`local-code` 预设强制装备） |
 | `fs_glob` | 递归 glob 匹配 workspace 内文件 | 读文件系统 | 需要按模式查找文件的 agent（`local-code` 预设强制装备） |
+| `code_explore` | 基于代码图谱回答结构性问题 | 读文件系统 / 进程 | 需要分析项目结构 / 调用链的 agent（仅 local workspace 且图谱就绪时可用） |
 | `bash` | 在 workspace 内跑 shell 命令 | 进程 / 文件系统 | 需要 git / 编译 / 测试的 agent |
 | `web_search` | 用 Tavily 搜公网 | 调外部 API（`api.tavily.com`，耗 Tavily 额度） | 需要实时联网信息的 custom agent（**opt-in，不自动注入**） |
 | `load_skill` | 按需读回装备 skill 的 `SKILL.md` 正文（渐进式披露） | 读 `<data_dir>/skills/` | custom agent 装备 ≥1 skill 时由 `agent_runner` **自动注入**（详见 openspec/changes/add-agent-skills） |
@@ -310,20 +312,57 @@ write_artifact({
 - 当 plan 含 `acceptanceCriteria` 时，child agent 必须在 `acceptanceResults` 中复制每条 criterion 原文，并给出 `passed/evidence`。AgentRunner 缺项或发现 `passed=false` 时，把该任务判为 `failed`。
 - 由于 `DispatchTaskStatus` 当前没有 `blocked`，`blocked` report 在 dispatch 层映射为 `failed`，错误原因保留 blocked summary / blockers；下游任务照常 skipped。
 
+### fs_list
+
+源文件：`backend/app/tools/fs_list.py`
+
+列出 workspace 内目录的文件和子目录。
+
+**参数**：`{ path?: string, depth?: int, showHidden?: bool }`。
+- `path`：目录路径，省略或传 `""` 表示 workspace 根目录。
+- `depth`：递归展开子目录的深度（1–5，默认 1）。`depth=1` 只列出当前目录内容（保持原有行为）；`depth>1` 递归展开子目录，返回扁平 entries 列表，每个 entry 携带 `relativePath` 和 `depth` 字段。递归时自动跳过依赖目录（`node_modules` / `.git` / `.venv` / `__pycache__` / `.next` / `dist` / `build`）。entry 总数上限 500，超过时 `truncated=true`。
+- `showHidden`：是否显示隐藏文件（以 `.` 开头的文件/目录），默认 `false`。`true` 时包含 `.env.example` / `.eslintrc` 等配置文件。
+
+**限制**：
+- 路径必须解析后落在 effective cwd 子树内（`assertPathWithinWorkspace`）
+- `depth>1` 时跳过依赖目录的递归展开（但仍列出目录名本身）
+- entry 总数上限 500（防止超大项目爆 context）
+
+**返回**（`depth=1`）：`{ relPath, absolutePath, parent, entries: [{ name, isDirectory, size? }] }`
+
+**返回**（`depth>1`）：`{ relPath, absolutePath, entries: [{ name, isDirectory, size?, relativePath, depth }], truncated }`
+
+**典型用法**：分析项目结构时用 `depth=3` 一次性获取整体概览，避免逐目录遍历。
+
 ### fs_read
 
-源文件：`src/server/tools/fs-read.ts`
+源文件：`backend/app/tools/fs_read.py`
 
-读 workspace 内文本文件。
+读 workspace 内文本文件，支持三种读取模式。
 
-**参数**：`{ path: string }`，相对（基于 effective cwd）或绝对路径，resolve 后必须落在 effective cwd 子树内（`assertPathWithinWorkspace`，详见 `src/server/workspace-utils.ts`）。
+**参数**：`{ path: string, mode?: string, offset?: int, limit?: int }`。
+- `path`：相对（基于 effective cwd）或绝对路径，resolve 后必须落在 effective cwd 子树内（`assertPathWithinWorkspace`）。
+- `mode`：读取模式（`"full"` | `"outline"` | `"head"`，默认 `"full"`）。
+  - `full`：完整内容（当前行为），配合 `offset` / `limit` 分页读取大文件。
+  - `outline`：只返回文件结构骨架（import / class / interface / type / enum / function / variable 声明），用纯 Python 正则提取，不调 LLM。token 消耗约为 full 的 1/10。返回 `outline` 数组（每个元素含 `type` / `line` / `content`）、`language`（按扩展名检测）、`totalLines`、`fullSize`。未提取到结构时返回空 `outline` + `note` 建议用 `mode="full"`。
+  - `head`：只读前 N 行（`limit` 参数，默认 50），等价于 `offset=0, limit=N` 的快捷方式。返回 `content`、`startLine`（1）、`endLine`、`totalLines`、`truncated`。
+- `offset`：从第几行开始读取（1-based），默认 0 表示从头读取。仅 `mode="full"` 时生效。
+- `limit`：最多读取的行数，默认 0 表示不限制。`mode="full"` 时受 50k 字符上限约束；`mode="head"` 时默认 50。
 
 **限制**：
 - 文件大小上限 **1 MB**（`statSync.size > 1_048_576` 拒）
 - 文本截断到 **50,000 字符**（同 `read_attachment` 风格）
 - 仅 utf-8
 
-**返回**：`{ path, absolutePath, cwd, size, content, truncated }`
+**返回**（`mode="full"`）：`{ path, absolutePath, cwd, size, content, truncated, startLine?, endLine?, totalLines? }`
+
+**返回**（`mode="outline"`）：`{ path, absolutePath, mode, language, outline: [{ type, line, content }], totalLines, fullSize, note? }`（不含 `content`）
+
+**返回**（`mode="head"`）：`{ path, absolutePath, cwd, size, content, mode, startLine, endLine, totalLines, truncated }`
+
+**语言检测**：按文件扩展名映射（`.ts/.tsx` → typescript, `.py` → python, `.go` → go, `.java` → java, `.rs` → rust, `.js/.jsx` → javascript 等）。未识别扩展名时用通用正则回退。
+
+**典型用法**：分析项目代码时先用 `mode="outline"` 了解文件结构，再按需 `mode="full"` 读取关键文件。
 
 ### fs_write
 
@@ -467,6 +506,31 @@ curl -s http://127.0.0.1:3000/health
 **返回**：`{ cwd, command, exitCode, output, truncated, timedOut }`
 
 ---
+
+### code_explore
+
+源文件：`backend/app/tools/code_explore.py`
+
+基于代码图谱（CodeGraph）回答结构性问题：项目入口、调用链、模块依赖、修改影响范围。
+
+**参数**：`{ query: string }`（非空，≤2000 字符）。
+
+**前置条件**：
+- workspace 模式为 `local` 且有 `bound_path`
+- 代码图谱已就绪（`metadata.status == "ready"`）
+
+**自动初始化**：创建 local workspace（`mode="local"` 且有 `bound_path`）时，`conversation_service.create_conversation` 自动调用 `schedule_workspace_enable()` 在后台构建图谱，无需用户手动开启。图谱构建是异步的，不阻塞 API 响应。用户首次对话时图谱可能未就绪，后续对话可用。`code_intelligence_enabled` 参数已弃用（保留向后兼容但忽略），用户可在会话创建后通过 `CodeIntelligenceControl` 面板手动关闭。
+
+**fallback 机制**：图谱不可用时返回指导性错误消息，包含：
+1. 当前图谱状态和进度
+2. 建议替代工具：`fs_list(depth=3)` 获取项目结构、`fs_grep` 搜索符号、`fs_read(mode="outline")` 查看文件骨架
+3. 图谱就绪后可用 `code_explore` 的提示
+
+**限制**：
+- 输出截断到 **30,000 字符**
+- 支持 `ctx.cancel_event` 取消
+
+**返回**：`{ query, context, truncated }`
 
 ### web_search
 

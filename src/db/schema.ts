@@ -241,6 +241,12 @@ export interface RunUsage {
   cacheReadTokens: number
   /** 用于上下文窗口仪表的最近一次「input prompt 长度」（不是累计），方便 UI 显示 ctx X/200k */
   lastInputTokens?: number
+  /** 最近一次 turn 的缓存命中 tokens（单次 ctx 拆解树用） */
+  lastCacheReadTokens?: number
+  /** 最近一次 turn 的 output tokens */
+  lastOutputTokens?: number
+  /** 本轮 ReAct 的模型调用次数（顶部「· N 轮」标注用） */
+  turnCount?: number
   /** 实际使用的模型 id；不同 run 可能不同（agent 配置改过 / 第三方网关动态路由），用来归类 */
   model?: string
 }

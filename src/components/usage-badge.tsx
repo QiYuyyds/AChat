@@ -6,7 +6,8 @@ import { useState } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { compactConversation } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { getModelLimits } from '@/shared/model-registry'
+import { getModelLimits, getModelPricing } from '@/shared/model-registry'
+import { computeCost, computeLastNetInput, computeNetInput } from '@/shared/usage'
 import { useAppStore, useConversationUsageTotal, type AgentUsageDetail } from '@/stores/app-store'
 
 /**
@@ -77,6 +78,20 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
   const hasSubagentTokens = agentEntries.some(([, d]) => d.subagentTokens > 0)
   const showAgentDetails = hasMultipleAgents || hasSubagentTokens
 
+  // 累计「新内容(净)」——provider-aware: DeepSeek 扣 cacheRead, Anthropic 加 cacheCreation
+  const netInput = computeNetInput(
+    total.inputTokens,
+    total.cacheReadTokens,
+    total.cacheCreationTokens,
+  )
+  // 单次 ctx 拆解：旧记录 (lastCacheReadTokens === 0 && turnCount === 0) 时隐藏子树
+  const hasDecomposition = total.lastCacheReadTokens > 0 || total.turnCount > 0
+  const lastNetNew = computeLastNetInput(
+    total.lastInputTokens,
+    total.lastCacheReadTokens,
+    total.cacheCreationTokens,
+  )
+
   return (
     <Popover>
       <PopoverTrigger
@@ -92,20 +107,23 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
         <div className="mb-2 flex items-baseline justify-between border-b pb-2">
           <span className="font-medium">本会话 token 累计</span>
           <span className="text-[10px] text-muted-foreground">
-            {total.runCount} 次响应
+            {total.runCount} 次响应{total.turnCount > 0 ? ` · ${total.turnCount} 轮` : ''}
             {hasCacheData && cacheHitRate > 0 && (
               <span className="ml-1 text-emerald-600">· 缓存 {Math.round(cacheHitRate)}%</span>
             )}
           </span>
         </div>
 
-        {/* ── 总览 ── */}
+        {/* ── 累计（跨 N 轮）── */}
         <div className="space-y-1">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            累计{total.turnCount > 0 ? `（跨 ${total.turnCount} 轮）` : ''}
+          </div>
           <RowWithHint
-            label="新 Input"
-            value={total.inputTokens}
+            label="新内容(净)"
+            value={netInput}
             highlight
-            tip="按正常 input 单价 (1×) 计费"
+            tip="按正常 input 单价 (1×) 计费（累计 input 扣除缓存复用）"
           />
           <RowWithHint
             label="Output"
@@ -136,12 +154,41 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
                 : total.inputTokens
             }
             bold
-            hint={total.cacheCreationTokens > 0 ? '新+写入+命中' : '含缓存命中'}
+            hint="累计 input + cache 总量"
           />
+          <CostEstimateRow
+            byModel={total.byModel}
+            inputTokens={total.inputTokens}
+            cacheReadTokens={total.cacheReadTokens}
+            cacheCreationTokens={total.cacheCreationTokens}
+            outputTokens={total.outputTokens}
+          />
+          {/* Cache 命中率 — provider-aware formula + visual bar */}
+          {hasCacheData && (
+            <CacheHitRateRow rate={cacheHitRate} cacheReadTokens={total.cacheReadTokens} />
+          )}
+        </div>
+
+        {/* ── 最近一次调用（第 N 轮）── */}
+        <div className="mt-3 space-y-1 border-t pt-2">
+          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            最近一次调用{total.turnCount > 0 ? `（第 ${total.turnCount} 轮）` : ''}
+          </div>
           {contextWindow > 0 ? (
-            <ContextRow used={total.lastInputTokens} ceiling={contextWindow} />
+            <ContextRow
+              used={total.lastInputTokens}
+              ceiling={contextWindow}
+              lastCacheReadTokens={total.lastCacheReadTokens}
+              hasDecomposition={hasDecomposition}
+              netNew={lastNetNew}
+            />
           ) : (
-            <Row label="当前 ctx" value={total.lastInputTokens} dim hint="最近一次 prompt 大小" />
+            <Row
+              label="当前 ctx"
+              value={total.lastInputTokens}
+              dim
+              hint="最近一次 prompt 大小（单轮，非累计）"
+            />
           )}
           <button
             type="button"
@@ -153,14 +200,10 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
             <Archive className="size-3" />
             {compacting ? '正在压缩...' : '压缩上下文'}
           </button>
-          {/* Cache 命中率 — provider-aware formula + visual bar */}
-          {hasCacheData && (
-            <CacheHitRateRow rate={cacheHitRate} cacheReadTokens={total.cacheReadTokens} />
-          )}
         </div>
 
         <div className="mt-2 border-t pt-2 text-[10px] text-muted-foreground">
-          所有 token 都计费，速率不同。详见各行 tooltip。Pin 消息可避免被预算自动截断。
+          累计栏为跨 N 轮的计费维度；单次栏为最近一次调用的 ctx 快照。Pin 消息可避免被预算自动截断。
         </div>
 
         {/* ── 按 Agent 独立卡片 ── */}
@@ -356,6 +399,70 @@ function computeCacheHitRate(
   return inputTokens > 0 ? (cacheReadTokens / inputTokens) * 100 : 0
 }
 
+/** 费用格式化：CNY ¥ 2 位小数，USD $ 4 位小数（单次会话通常 < $0.01）。 */
+function formatCost(cost: number, currency: 'CNY' | 'USD'): string {
+  if (currency === 'CNY') return `¥${cost.toFixed(2)}`
+  return `$${cost.toFixed(4)}`
+}
+
+/**
+ * 费用估算行：取 byModel 中 token 用量最大的模型作为主模型，查定价后展示：
+ * - 估算费用 ¥X.XX
+ * - 无缓存 ¥Y.YY
+ * - 省 ¥Z.ZZ (NN%)
+ * 无价格数据时整行不渲染（优雅降级）。
+ */
+function CostEstimateRow({
+  byModel,
+  inputTokens,
+  cacheReadTokens,
+  cacheCreationTokens,
+  outputTokens,
+}: {
+  byModel: Record<string, number>
+  inputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  outputTokens: number
+}) {
+  // 取累计 token 用量最大的模型作为主模型
+  const entries = Object.entries(byModel).sort((a, b) => b[1] - a[1])
+  const primaryModel = entries[0]?.[0]
+  if (!primaryModel) return null
+
+  const pricing = getModelPricing(null, primaryModel)
+  if (!pricing) return null
+
+  const { actualCost, noCacheCost, savings, savingsPct, currency } = computeCost(
+    pricing,
+    inputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    outputTokens,
+  )
+
+  return (
+    <div className="space-y-0.5 border-t pt-1" title={`按 ${primaryModel} 官方定价估算（单价 per 1M tokens）`}>
+      <div className="flex items-baseline justify-between gap-3 font-medium">
+        <span>估算费用</span>
+        <span className="font-mono">{formatCost(actualCost, currency)}</span>
+      </div>
+      <div className="flex items-baseline justify-between gap-3 text-muted-foreground">
+        <span className="text-[10px]">无缓存</span>
+        <span className="font-mono text-[10px]">{formatCost(noCacheCost, currency)}</span>
+      </div>
+      {savings > 0 && (
+        <div className="flex items-baseline justify-between gap-3 text-emerald-600 dark:text-emerald-400">
+          <span className="text-[10px]">省</span>
+          <span className="font-mono text-[10px]">
+            {formatCost(savings, currency)} ({savingsPct.toFixed(0)}%)
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** Cache 命中率行：展示百分比 + 进度条 + 颜色 + 节省估算。 */
 function CacheHitRateRow({ rate, cacheReadTokens }: { rate: number; cacheReadTokens: number }) {
   const pct = Math.round(rate)
@@ -394,8 +501,20 @@ function CacheHitRateRow({ rate, cacheReadTokens }: { rate: number; cacheReadTok
   )
 }
 
-/** 当前 ctx 行的特殊版本：展示「used / ceiling (pct%)」+ 进度条 + 颜色。 */
-function ContextRow({ used, ceiling }: { used: number; ceiling: number }) {
+/** 当前 ctx 行的特殊版本：展示「used / ceiling (pct%)」+ 进度条 + 颜色 + 拆解子树。 */
+function ContextRow({
+  used,
+  ceiling,
+  lastCacheReadTokens,
+  hasDecomposition,
+  netNew,
+}: {
+  used: number
+  ceiling: number
+  lastCacheReadTokens: number
+  hasDecomposition: boolean
+  netNew: number
+}) {
   const hasData = used > 0
   const pct = hasData ? Math.min(100, (used / ceiling) * 100) : 0
   const tone = pct < 50 ? 'normal' : pct < 80 ? 'warn' : 'danger'
@@ -404,9 +523,10 @@ function ContextRow({ used, ceiling }: { used: number; ceiling: number }) {
       : tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
         : 'text-muted-foreground'
   const gradientSize = hasData && pct > 0 ? `${10000 / pct}% 100%` : '100% 100%'
+  const cachePct = used > 0 ? Math.round((lastCacheReadTokens / used) * 100) : 0
 
   return (
-    <div className="space-y-1" title="最近一次 prompt 大小 / 模型 contextWindow 上限">
+    <div className="space-y-1" title="最近一次 prompt 大小（单轮，非累计）/ 模型 contextWindow 上限">
       <div className="flex items-baseline justify-between gap-3">
         <span className={cn('truncate', toneColor)}>当前 ctx</span>
         <span className={cn('shrink-0 font-mono', toneColor)}>
@@ -424,6 +544,21 @@ function ContextRow({ used, ceiling }: { used: number; ceiling: number }) {
           }}
         />
       </div>
+      {hasDecomposition && (
+        <div className="pl-2 text-[10px] text-muted-foreground">
+          <div className="flex items-baseline justify-between gap-3">
+            <span>├ 缓存命中</span>
+            <span className="font-mono">
+              ~{formatTok(lastCacheReadTokens)}
+              {cachePct > 0 && <span className="ml-1">({cachePct}%)</span>}
+            </span>
+          </div>
+          <div className="flex items-baseline justify-between gap-3">
+            <span>└ 新内容</span>
+            <span className="font-mono">~{formatTok(netNew)}</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

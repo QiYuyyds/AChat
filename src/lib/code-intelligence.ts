@@ -1,13 +1,3 @@
-export type WorkspaceMode = 'sandbox' | 'local'
-
-export function buildCodeIntelligenceCreateFields(
-  workspaceMode: WorkspaceMode,
-  enabled: boolean,
-): { codeIntelligenceEnabled?: boolean } {
-  if (workspaceMode !== 'local') return {}
-  return { codeIntelligenceEnabled: enabled }
-}
-
 export type CodeIntelligenceStatus =
   | 'disabled'
   | 'preparing_runtime'

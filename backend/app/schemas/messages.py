@@ -201,13 +201,21 @@ class MessageUsage(BaseModel):
 
 
 class RunUsage(BaseModel):
-    """Per-run token usage."""
+    """Per-run token usage.
+
+    Accumulated fields total across all turns; last_* snapshot fields capture
+    the final turn for context-window decomposition. turnCount labels the
+    cumulative totals as "across N turns" in the UI.
+    """
 
     input_tokens: int = Field(alias="inputTokens")
     output_tokens: int = Field(alias="outputTokens")
     cache_creation_tokens: int = Field(alias="cacheCreationTokens")
     cache_read_tokens: int = Field(alias="cacheReadTokens")
     last_input_tokens: int | None = Field(default=None, alias="lastInputTokens")
+    last_cache_read_tokens: int = Field(default=0, alias="lastCacheReadTokens")
+    last_output_tokens: int = Field(default=0, alias="lastOutputTokens")
+    turn_count: int = Field(default=0, alias="turnCount")
     model: str | None = None
 
     model_config = {"populate_by_name": True}
