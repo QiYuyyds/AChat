@@ -8,11 +8,19 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.code_intelligence import service as code_service
-from app.code_intelligence.metadata import MetadataStore
+from app.code_intelligence.metadata import CodeIntelligenceMetadata, MetadataStore
 from app.services.fs_service import get_workspace_for_conversation
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
 
 MAX_OUTPUT_CHARS = 30_000
+
+_FALLBACK_TOOLS_HINT = (
+    "建议使用以下替代工具进行项目探索：\n"
+    "  • fs_list(depth=3) — 获取项目结构概览\n"
+    "  • fs_grep — 搜索符号定义和引用\n"
+    "  • fs_read(mode=\"outline\") — 查看文件结构骨架（import / class / function 签名）\n"
+    "图谱就绪后可用 code_explore 获取调用链分析。"
+)
 
 
 class _Args(BaseModel):
@@ -35,7 +43,7 @@ _PARAMETERS: dict[str, Any] = {
             "type": "string",
             "minLength": 1,
             "maxLength": 2000,
-            "description": "关于代码结构的问题，如“项目入口在哪”“X 的调用链是什么”“修改 Y 会影响哪些文件”。",
+            "description": "关于代码结构的问题，如\"项目入口在哪\"\"X 的调用链是什么\"\"修改 Y 会影响哪些文件\"。",
         }
     },
 }
@@ -56,7 +64,8 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     metadata = MetadataStore(workspace.root_path).read()
     if not metadata.enabled or metadata.status != "ready":
         return _fallback(
-            f"Source intelligence is unavailable (state: {metadata.status})"
+            f"代码图谱当前不可用（状态: {metadata.status}）",
+            metadata=metadata,
         )
     if ctx.cancel_event.is_set():
         return _fallback("Source exploration was cancelled")
@@ -78,17 +87,41 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     return ok({"query": parsed.query, "context": context, "truncated": truncated})
 
 
-def _fallback(reason: str) -> ToolResult:
-    return err(f"{reason}. Fall back to the available file search/read tools.")
+def _fallback(
+    reason: str,
+    *,
+    metadata: CodeIntelligenceMetadata | None = None,
+) -> ToolResult:
+    """Build an actionable fallback error message.
+
+    When *metadata* is available (graph not ready), the message includes the
+    current status, progress, and concrete alternative tool suggestions.
+    """
+    parts: list[str] = []
+
+    if metadata is not None:
+        progress_str = ""
+        if metadata.progress_percent is not None:
+            progress_str = f"，进度: {metadata.progress_percent}%"
+        parts.append(f"代码图谱正在后台构建中（当前状态: {metadata.status}{progress_str}）。")
+        parts.append(_FALLBACK_TOOLS_HINT)
+    else:
+        parts.append(reason + "。")
+        parts.append(_FALLBACK_TOOLS_HINT)
+
+    return err("\n".join(parts))
 
 
 code_explore_tool = ToolDef(
     name="code_explore",
     description=(
         "基于代码图谱回答结构性问题：项目入口、调用链、模块依赖、修改影响范围。"
-        "适合“主要流程是什么”“X 从哪里被调用”这类高层次问题，"
-        "返回结构化分析，比逐个读文件再自己总结高效得多。"
-        "仅适用于本地模式 workspace 且代码图谱已就绪；不可用时改用 fs_glob / fs_grep。"
+        "适合\"主要流程是什么\"\"X 从哪里被调用\"这类高层次问题，"
+        "返回结构化分析，比逐个读文件再自己总结高效得多。\n"
+        "仅适用于本地模式 workspace 且代码图谱已就绪。"
+        "绑定本地项目时自动后台构建图谱，首次对话可能未就绪——"
+        "此时可用 fs_list(depth=3) 获取项目结构、fs_grep 搜索符号、"
+        "fs_read(mode=\"outline\") 查看文件骨架。"
     ),
     parameters=_PARAMETERS,
     handler=_handler,

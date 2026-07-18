@@ -310,6 +310,7 @@ async def create_conversation(
     agent_ids: list[str],
     title: str | None = None,
     bound_path: str | None = None,
+    # Deprecated: code intelligence now auto-enables for all local workspaces.
     code_intelligence_enabled: bool = False,
     dispatch_mode: str | None = None,
     user_id: str | None = None,
@@ -404,9 +405,15 @@ async def create_conversation(
         db.add(conv)
         db.add(workspace)
 
-    if code_intelligence_enabled and workspace_mode == "local":
+    if workspace_mode == "local" and resolved_bound_path:
         from app.code_intelligence.service import schedule_workspace_enable
 
+        logger.info(
+            "[code-intelligence] auto-enable triggered for workspace %s "
+            "(bound_path=%s, triggered_by=local_workspace_binding)",
+            conversation_id,
+            resolved_bound_path,
+        )
         schedule_workspace_enable(
             workspace_root=Path(root_path),
             project_path=Path(resolved_bound_path).resolve(),

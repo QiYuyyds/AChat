@@ -4,7 +4,6 @@ import { AlertTriangle, FolderSearch } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { AgentAvatar } from '@/components/agent-avatar'
-import { CodeIntelligenceSwitch } from '@/components/code-intelligence-switch'
 import { DirPickerDialog } from '@/components/dir-picker-dialog'
 import { Button } from '@/components/ui/button'
 import {
@@ -17,7 +16,6 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { createConversation, getServerPlatform, type ServerPlatform } from '@/lib/api'
-import { buildCodeIntelligenceCreateFields } from '@/lib/code-intelligence'
 import { cn } from '@/lib/utils'
 import { useAgentList, useAppStore } from '@/stores/app-store'
 
@@ -38,7 +36,6 @@ export function NewConversationDialog({
   const [creating, setCreating] = useState(false)
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('sandbox')
   const [boundPath, setBoundPath] = useState('')
-  const [codeIntelligenceEnabled, setCodeIntelligenceEnabled] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [platform, setPlatform] = useState<ServerPlatform | null>(null)
@@ -73,7 +70,6 @@ export function NewConversationDialog({
     setSelected(new Set())
     setWorkspaceMode('sandbox')
     setBoundPath('')
-    setCodeIntelligenceEnabled(false)
     setError(null)
   }
 
@@ -92,7 +88,6 @@ export function NewConversationDialog({
         mode,
         agentIds: Array.from(selected),
         boundPath: workspaceMode === 'local' ? boundPath.trim() : undefined,
-        ...buildCodeIntelligenceCreateFields(workspaceMode, codeIntelligenceEnabled),
       })
       upsertConversation(conv)
       setActive(conv.id)
@@ -186,10 +181,7 @@ export function NewConversationDialog({
             <input
               type="radio"
               checked={workspaceMode === 'sandbox'}
-              onChange={() => {
-                setWorkspaceMode('sandbox')
-                setCodeIntelligenceEnabled(false)
-              }}
+              onChange={() => setWorkspaceMode('sandbox')}
               className="mt-0.5 accent-primary"
             />
             <div className="min-w-0 flex-1">
@@ -236,18 +228,11 @@ export function NewConversationDialog({
                     <AlertTriangle className="mt-0.5 size-3 shrink-0" />
                     <span>Agent 将能读写此目录中的真实文件。请确保已 git 备份。</span>
                   </div>
-                  <div className="flex items-center justify-between gap-3 rounded-md border bg-background/60 px-2.5 py-2">
-                    <div>
-                      <div className="text-xs font-medium">启用源码智能</div>
-                      <div className="mt-0.5 text-[10px] text-muted-foreground">
-                        构建本地代码关系图，帮助 Agent 跨文件检索与理解源码
-                      </div>
-                    </div>
-                    <CodeIntelligenceSwitch
-                      checked={codeIntelligenceEnabled}
-                      label="启用源码智能"
-                      onClick={() => setCodeIntelligenceEnabled((enabled) => !enabled)}
-                    />
+                  <div className="flex items-start gap-1.5 rounded-md border bg-primary/5 px-2.5 py-2 text-[10px] text-primary">
+                    <span className="font-medium">源码智能将自动启用</span>
+                    <span className="text-muted-foreground">
+                      绑定本地目录后，系统会自动构建代码关系图，帮助 Agent 跨文件检索与理解源码
+                    </span>
                   </div>
                 </>
               )}

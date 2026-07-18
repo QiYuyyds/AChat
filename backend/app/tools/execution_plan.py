@@ -37,12 +37,12 @@ class _CreatePlanArgs(BaseModel):
 
 
 _CREATE_PLAN_DESCRIPTION = (
-    "Create a structured execution plan with named steps. Use this for tasks "
-    "that require 3+ steps, including exploratory tasks like analyzing a project, "
-    "understanding a codebase, or generating multi-module documentation. "
-    "Do NOT use for simple tasks (1-2 steps) or single-step queries. "
-    "Each step needs a unique id (e.g. 's1', 's2') and a title. "
-    "After creating the plan, call plan_step before starting each step's work."
+    "创建结构化执行计划，让用户看到工作安排和进度。"
+    "适用于需要多步骤的复杂任务，包括探索型任务（分析项目、理解代码库、生成文档）"
+    "和生产型任务（写代码、修 bug、搭系统）。"
+    "不适用于简单任务（1-2 步）或单次查询。\n"
+    "每个 step 需要唯一 id（如 's1'、's2'）和 title。"
+    "建计划后，在每个步骤开始前调用 plan_step 标记进度。"
 )
 
 _CREATE_PLAN_PARAMETERS: dict[str, Any] = {

@@ -1606,6 +1606,12 @@ export interface ConversationUsageTotal {
   totalTokens: number
   /** 最近一次有 usage 的 run 的 input prompt token 数（context window 仪表用） */
   lastInputTokens: number
+  /** 最近一次 run 的缓存命中 token 数（单次 ctx 拆解树用） */
+  lastCacheReadTokens: number
+  /** 最近一次 run 的 output token 数（单次拆解用） */
+  lastOutputTokens: number
+  /** 最近一次 run 的 ReAct 模型调用次数（顶部 “· N 轮” 标注用） */
+  turnCount: number
   /** key = agentId，value = 该 agent 的累计 input+output tokens */
   byAgent: Record<string, number>
   /** key = modelId，value = 累计 input+output tokens */
@@ -1639,6 +1645,9 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
       cacheReadTokens: 0,
       totalTokens: 0,
       lastInputTokens: 0,
+      lastCacheReadTokens: 0,
+      lastOutputTokens: 0,
+      turnCount: 0,
       byAgent: {},
       byAgentDetail: {},
       byModel: {},
@@ -1710,6 +1719,9 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           if (run.startedAt > lastInputTs) {
             lastInputTs = run.startedAt
             result.lastInputTokens = u.lastInputTokens ?? u.inputTokens
+            result.lastCacheReadTokens = u.lastCacheReadTokens ?? 0
+            result.lastOutputTokens = u.lastOutputTokens ?? 0
+            result.turnCount = u.turnCount ?? 0
           }
         }
       }
@@ -1756,6 +1768,10 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
         if (m.createdAt > lastInputTs) {
           lastInputTs = m.createdAt
           result.lastInputTokens = u.inputTokens
+          // MessageUsage 无 turnCount / lastOutputTokens，仅能取 cacheRead 快照
+          result.lastCacheReadTokens = u.cacheReadTokens
+          result.lastOutputTokens = u.outputTokens
+          result.turnCount = 0
         }
       }
     }

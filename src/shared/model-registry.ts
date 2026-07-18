@@ -25,14 +25,38 @@ const PROVIDER_FALLBACK_CONTEXT: Record<ModelProvider, number> = {
 /** 默认给输出留的 token。reasoning 模型实际上需要更多（thinking 也吃 token），但 4K 兜底足够。 */
 const DEFAULT_OUTPUT_RESERVE = 4096
 
-const KNOWN_MODELS: Record<string, { context: number; outputReserve?: number }> = {
+/** 模型定价信息。所有单价均 per 1M tokens。 */
+export interface ModelPricing {
+  currency: 'CNY' | 'USD'
+  /** 缓存命中 input 单价（DeepSeek 的 prompt_cache_hit） */
+  inputCacheHit: number
+  /** 缓存未命中 input 单价（=净新内容单价） */
+  inputCacheMiss: number
+  /** output 单价 */
+  output: number
+}
+
+const KNOWN_MODELS: Record<string, { context: number; outputReserve?: number; pricing?: ModelPricing }> = {
   // DeepSeek V4 — deepseek-chat/reasoner map to v4-flash non-thinking/thinking modes
-  // Source: https://api-docs.deepseek.com/quick_start/pricing (July 2026)
-  'deepseek-chat': { context: 1_000_000 },
-  'deepseek-v4-flash': { context: 1_000_000 },
+  // Source: https://api-docs.deepseek.com/zh-cn/quick_start/pricing (July 2026)
+  'deepseek-chat': {
+    context: 1_000_000,
+    pricing: { currency: 'CNY', inputCacheHit: 0.02, inputCacheMiss: 1, output: 2 },
+  },
+  'deepseek-v4-flash': {
+    context: 1_000_000,
+    pricing: { currency: 'CNY', inputCacheHit: 0.02, inputCacheMiss: 1, output: 2 },
+  },
   'deepseek-v4': { context: 1_000_000 },
-  'deepseek-v4-pro': { context: 1_000_000 },
-  'deepseek-reasoner': { context: 1_000_000, outputReserve: 16_384 }, // thinking 模式 eats token
+  'deepseek-v4-pro': {
+    context: 1_000_000,
+    pricing: { currency: 'CNY', inputCacheHit: 0.025, inputCacheMiss: 3, output: 6 },
+  },
+  'deepseek-reasoner': {
+    context: 1_000_000,
+    outputReserve: 16_384, // thinking 模式 eats token
+    pricing: { currency: 'CNY', inputCacheHit: 0.025, inputCacheMiss: 3, output: 6 },
+  },
   'deepseek-r1': { context: 1_000_000, outputReserve: 16_384 },
 
   // OpenAI
@@ -87,6 +111,17 @@ export function getModelLimits(
   }
   // 最终兜底（也是 ClaudeCode adapter 用的，因为它没有 modelProvider 字段）
   return { contextWindow: 200_000, outputReserve: DEFAULT_OUTPUT_RESERVE }
+}
+
+/** 查模型定价。缺失时返回 null（调用方不渲染费用行）。 */
+export function getModelPricing(
+  _provider: ModelProvider | null | undefined,
+  modelId: string | null | undefined,
+): ModelPricing | null {
+  if (modelId && KNOWN_MODELS[modelId]?.pricing) {
+    return KNOWN_MODELS[modelId]!.pricing!
+  }
+  return null
 }
 
 /** 粗粒度 token 估算：4 字符 ≈ 1 token。中英混合实测误差 10-20% 量级，对预算决策够用。 */

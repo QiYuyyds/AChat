@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  buildCodeIntelligenceCreateFields,
   buildCodeIntelligenceDetailRows,
   getCodeIntelligenceStatusVisual,
   performCodeIntelligenceToggle,
@@ -15,21 +14,6 @@ import {
   scheduleCodeIntelligenceNoticeDismiss,
   startCodeIntelligencePolling,
 } from '@/lib/code-intelligence'
-
-describe('buildCodeIntelligenceCreateFields', () => {
-  it('includes the explicit enabled intent for a local workspace', () => {
-    expect(buildCodeIntelligenceCreateFields('local', true)).toEqual({
-      codeIntelligenceEnabled: true,
-    })
-    expect(buildCodeIntelligenceCreateFields('local', false)).toEqual({
-      codeIntelligenceEnabled: false,
-    })
-  })
-
-  it('omits source intelligence for sandbox workspaces', () => {
-    expect(buildCodeIntelligenceCreateFields('sandbox', true)).toEqual({})
-  })
-})
 
 describe('getCodeIntelligenceStatusVisual', () => {
   it.each([

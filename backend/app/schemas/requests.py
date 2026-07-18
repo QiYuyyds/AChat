@@ -13,6 +13,7 @@ class CreateConversationRequest(BaseModel):
     mode: Literal["single", "group"]
     agent_ids: list[str] = Field(alias="agentIds", min_length=1)
     bound_path: str | None = Field(default=None, alias="boundPath")
+    # Deprecated: code intelligence now auto-enables for all local workspaces.
     code_intelligence_enabled: bool = Field(
         default=False, alias="codeIntelligenceEnabled"
     )

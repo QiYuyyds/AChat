@@ -12,9 +12,18 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Literal, TypedDict
 
 # ModelProvider literals from src/shared/types.ts.
 ModelProvider = str
+
+
+class ModelPricing(TypedDict):
+    """模型定价信息。所有单价均 per 1M tokens。与前端 ModelPricing 接口一致。"""
+    currency: Literal["CNY", "USD"]
+    inputCacheHit: float  # 缓存命中 input 单价
+    inputCacheMiss: float  # 缓存未命中 input 单价（=净新内容单价）
+    output: float  # output 单价
 
 # Per-provider total context window (tokens) used when a model id is unknown.
 PROVIDER_FALLBACK_CONTEXT: dict[ModelProvider, int] = {
@@ -28,14 +37,31 @@ PROVIDER_FALLBACK_CONTEXT: dict[ModelProvider, int] = {
 # Default output reserve; 4K bottom line covers reasoning thinking tokens too.
 DEFAULT_OUTPUT_RESERVE = 4096
 
-KNOWN_MODELS: dict[str, dict[str, int]] = {
+KNOWN_MODELS: dict[str, dict[str, object]] = {
     # DeepSeek V4 — deepseek-chat/reasoner map to v4-flash non-thinking/thinking modes
-    # Source: https://api-docs.deepseek.com/quick_start/pricing (July 2026)
-    "deepseek-chat": {"context": 1_000_000, "maxOutputTokens": 384_000},
-    "deepseek-v4-flash": {"context": 1_000_000, "maxOutputTokens": 384_000},
+    # Source: https://api-docs.deepseek.com/zh-cn/quick_start/pricing (July 2026)
+    "deepseek-chat": {
+        "context": 1_000_000,
+        "maxOutputTokens": 384_000,
+        "pricing": {"currency": "CNY", "inputCacheHit": 0.02, "inputCacheMiss": 1, "output": 2},
+    },
+    "deepseek-v4-flash": {
+        "context": 1_000_000,
+        "maxOutputTokens": 384_000,
+        "pricing": {"currency": "CNY", "inputCacheHit": 0.02, "inputCacheMiss": 1, "output": 2},
+    },
     "deepseek-v4": {"context": 1_000_000, "maxOutputTokens": 384_000},
-    "deepseek-v4-pro": {"context": 1_000_000, "maxOutputTokens": 384_000},
-    "deepseek-reasoner": {"context": 1_000_000, "outputReserve": 16_384, "maxOutputTokens": 384_000},
+    "deepseek-v4-pro": {
+        "context": 1_000_000,
+        "maxOutputTokens": 384_000,
+        "pricing": {"currency": "CNY", "inputCacheHit": 0.025, "inputCacheMiss": 3, "output": 6},
+    },
+    "deepseek-reasoner": {
+        "context": 1_000_000,
+        "outputReserve": 16_384,
+        "maxOutputTokens": 384_000,
+        "pricing": {"currency": "CNY", "inputCacheHit": 0.025, "inputCacheMiss": 3, "output": 6},
+    },
     "deepseek-r1": {"context": 1_000_000, "outputReserve": 16_384, "maxOutputTokens": 384_000},
     # OpenAI
     "gpt-4o": {"context": 128_000, "maxOutputTokens": 16_384},
@@ -88,6 +114,18 @@ def get_model_limits(
         )
     # Final fallback (also used by ClaudeCode adapter — it has no modelProvider field).
     return ModelLimits(context_window=200_000, output_reserve=DEFAULT_OUTPUT_RESERVE)
+
+
+def get_model_pricing(
+    provider: ModelProvider | None,
+    model_id: str | None,
+) -> ModelPricing | None:
+    """查模型定价。缺失时返回 None。"""
+    if model_id and model_id in KNOWN_MODELS:
+        pricing = KNOWN_MODELS[model_id].get("pricing")
+        if isinstance(pricing, dict):
+            return pricing  # type: ignore[return-value]
+    return None
 
 
 def estimate_tokens(text: str) -> int:

@@ -536,6 +536,9 @@ export interface RunUsageEvent {
   cacheCreationTokens: number
   cacheReadTokens: number
   lastInputTokens?: number
+  lastCacheReadTokens?: number
+  lastOutputTokens?: number
+  turnCount?: number
   model?: string
 }
 

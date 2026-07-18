@@ -98,7 +98,6 @@ async def test_local_conversation_schedules_index_after_creation(
         mode="single",
         agent_ids=[agents["alice"]],
         bound_path=str(project_path),
-        code_intelligence_enabled=True,
         user_id=test_user["id"],
     )
 

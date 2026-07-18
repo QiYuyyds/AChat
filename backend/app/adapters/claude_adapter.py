@@ -227,6 +227,8 @@ class ClaudeCLIAdapter(CLIAdapterBase):
         run_cache_read = 0
         run_cache_write = 0
         last_input_tokens = 0
+        last_cache_read_tokens = 0
+        last_output_tokens = 0
         output_parts: list[str] = []
         any_event = False  # track whether we received any meaningful output
         result_is_error = False  # track error flag from the result event
@@ -441,6 +443,8 @@ class ClaudeCLIAdapter(CLIAdapterBase):
                             run_cache_write += u_cache_write
                             if u_input:
                                 last_input_tokens = u_input
+                                last_cache_read_tokens = u_cache_read
+                                last_output_tokens = u_output
 
                         for block in content:
                             btype = block.get("type", "")
@@ -698,6 +702,8 @@ class ClaudeCLIAdapter(CLIAdapterBase):
             cache_read_tokens=run_cache_read,
             cache_creation_tokens=run_cache_write,
             last_input_tokens=last_input_tokens,
+            last_cache_read_tokens=last_cache_read_tokens,
+            last_output_tokens=last_output_tokens,
         )
         yield RunUsageEvent(
             conversation_id=input.conversation_id,
