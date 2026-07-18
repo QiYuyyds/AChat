@@ -571,6 +571,17 @@ REACT_LOOP_MAX_TURNS = None
 # O2 Step 5: only read-only tools are cached within a single _run_react_loop call.
 READONLY_CACHEABLE_TOOLS = frozenset({"fs_read", "read_artifact", "read_attachment"})
 
+# Tools that indicate the agent is exploring/analyzing (not writing). Used by
+# the plan-reminder injection: if the agent makes 3+ exploration calls across
+# 2+ turns without creating a plan, inject a nudge to use create_plan.
+_EXPLORATION_TOOLS = frozenset({
+    "fs_read", "fs_list", "fs_glob", "fs_grep", "code_explore",
+})
+
+# Thresholds for plan-reminder injection.
+_PLAN_REMINDER_MIN_TURNS = 4  # turns without a plan before reminding
+_PLAN_REMINDER_MIN_EXPLORATION = 5  # exploration tool calls before reminding
+
 
 # ─── Parallel tool execution helper ──────────────────────────────────────────
 @dataclass
@@ -594,6 +605,7 @@ async def _execute_tool_call_to_result(
     mcp_manager: Any | None,
     ctx: ToolContext,
     hook_registry: Any | None,
+    user_id: str | None = None,
 ) -> _ToolCallExecResult:
     """Execute a single tool call and return its events + messages.
 
@@ -978,6 +990,15 @@ async def _run_react_loop(  # noqa: C901
             stop_reason_label=stop_reason_label(reason),
         )
 
+    # Plan-reminder tracking: detect when the agent is doing multi-turn
+    # exploration without creating a plan, and inject a nudge. This mirrors
+    # Claude Code's TodoWrite reminder — "提示词压力" to drive structured
+    # planning rather than ad-huc exploration.
+    has_created_plan = False
+    turns_without_plan = 0
+    exploration_tool_count = 0
+    plan_reminder_injected = False
+
     try:
         while term.model_call_count < SAFETY_MAX_MODEL_CALLS:
             if cancel_event.is_set():
@@ -1242,6 +1263,7 @@ async def _run_react_loop(  # noqa: C901
                             mcp_manager=mcp_manager,
                             ctx=replace(ctx) if len(executable) > 1 else ctx,
                             hook_registry=hook_registry,
+                            user_id=user_id,
                         )
                     )
                     for tc in executable
@@ -1314,6 +1336,39 @@ async def _run_react_loop(  # noqa: C901
                     finish_reason=None,
                     messages=messages,
                 ))
+
+            # ── Plan-reminder injection (Just-in-time Prompting) ──
+            # Track tool call patterns and nudge the agent to create a plan
+            # when it's doing multi-turn exploration without one.
+            for tc in tool_calls:
+                if tc.name == "create_plan":
+                    has_created_plan = True
+                    turns_without_plan = 0
+                elif tc.name in _EXPLORATION_TOOLS:
+                    exploration_tool_count += 1
+
+            if not has_created_plan:
+                turns_without_plan += 1
+                if (
+                    not plan_reminder_injected
+                    and turns_without_plan >= _PLAN_REMINDER_MIN_TURNS
+                    and exploration_tool_count >= _PLAN_REMINDER_MIN_EXPLORATION
+                ):
+                    messages.append({
+                        "role": "system",
+                        "content": (
+                            "你已进行了多轮文件探索操作，但尚未创建执行计划。"
+                            "如果这是一个需要多步骤的复杂任务（如分析项目、理解代码库、生成文档），"
+                            "建议先调用 create_plan 创建执行计划，让用户看到你的工作安排和进度。"
+                            "如果这是一个简单任务（1-2 步就能完成），可以忽略此提醒。"
+                        ),
+                    })
+                    plan_reminder_injected = True
+                    logger.info(
+                        "[AgentRunner] plan-reminder injected: run=%s turn=%d "
+                        "exploration_calls=%d turns_without_plan=%d",
+                        run_id, turn, exploration_tool_count, turns_without_plan,
+                    )
         else:
             yield _emit_run_usage(StopReason.BUDGET_EXHAUSTED)
     finally:
@@ -3214,7 +3269,9 @@ def _build_agent_hub_tool_guidance(
         sections.append("\n".join(lines))
 
     has_workspace_file_tools = (
-        "fs_read" in tools or "fs_write" in tools or "bash" in tools or is_sdk_agent
+        "fs_read" in tools or "fs_write" in tools or "bash" in tools
+        or "fs_list" in tools or "fs_glob" in tools or "fs_grep" in tools
+        or "code_explore" in tools or is_sdk_agent
     )
 
     if len(tools) > 0:
@@ -3243,6 +3300,7 @@ def _build_agent_hub_tool_guidance(
                 "- 如果本地项目已经构建出 dist / build / out / client/dist 等静态目录，可用 deploy_workspace 为该目录生成部署预览卡。",
                 "- write_artifact 只用于用户明确要求 artifact / 可预览原型 / 独立 demo / 文档交接，或任务本身声明需要 artifact handoff。",
                 "- 完成本地项目改动后，优先运行必要的验证命令（install / typecheck / build / test）；如果无法运行，说明具体原因。",
+                "- 复杂任务（如分析项目、理解代码库、多文件改动）先调 create_plan 创建执行计划，再按步骤操作文件；简单任务直接做。",
             ]
         )
     elif workspace.mode == "local" and "write_artifact" in tools:
@@ -3331,19 +3389,38 @@ def _build_agent_hub_tool_guidance(
             ]
         )
 
-    if (
-        "fs_list" in tools or "fs_read" in tools or "fs_write" in tools or "bash" in tools
-    ):
-        add(
-            [
-                "### workspace 文件与命令工具",
-                "用途：只操作当前 workspace 内的真实文件；路径必须在 <workspace_info><cwd> 下。",
-                'fs_list 正确案例：fs_list({ path: "" }) 查看根目录；fs_list({ path: "src/server" }) 查看子目录。',
-                'fs_read 正确案例：fs_read({ path: "src/app/page.tsx" })，先看现有代码再改。',
-                'fs_write 正确案例：fs_write({ path: "src/app/page.tsx", content: "完整的新文件内容" })；content 是完整文件内容，不是 diff patch。',
-                'bash 正确案例：bash({ command: "pnpm typecheck" })；子目录命令用 bash({ command: "pnpm build", cwd: "frontend", timeoutMs: 300000 })，不要写 cd frontend && pnpm build。',
-            ]
-        )
+    has_file_tools = (
+        "fs_list" in tools or "fs_read" in tools or "fs_write" in tools
+        or "fs_edit" in tools or "fs_glob" in tools or "fs_grep" in tools
+        or "code_explore" in tools or "bash" in tools
+    )
+    if has_file_tools:
+        file_lines = [
+            "### 文件探索与操作工具",
+            "路径必须解析在 workspace 内。各工具适用场景：",
+            "- fs_list：查看单个目录的内容",
+            "- fs_glob：按模式批量查找文件（如 **/*.py），一次调用覆盖整个项目",
+            "- fs_grep：按正则搜索文件内容，定位符号位置而不用读全文",
+            "- 如果任务需要系统性探索（如分析项目、理解代码库），先调 create_plan 创建计划再按步骤探索，不要直接开始读文件。",
+        ]
+        if workspace.mode == "local" and "code_explore" in tools:
+            file_lines.append(
+                "- code_explore：基于代码图谱回答结构性问题（入口、调用链、依赖）"
+            )
+        file_lines.extend([
+            "- fs_read：读取已定位到的文件内容（大文件可用 offset/limit 分段读取）",
+            "- fs_write / fs_edit：写入新文件 / 精准修改已有文件",
+            "- bash：运行构建、测试、安装等 shell 命令",
+            "",
+            'fs_list 正确案例：fs_list({ path: "" }) 查看根目录；fs_list({ path: "src/server" }) 查看子目录。',
+            'fs_glob 正确案例：fs_glob({ pattern: "**/*.py" }) 一次拿到全部 Python 文件清单。',
+            'fs_grep 正确案例：fs_grep({ pattern: "def |class ", glob: "*.py" }) 定位所有函数和类定义。',
+            'fs_read 正确案例：fs_read({ path: "src/app/page.tsx" })，先看现有代码再改；'
+            '大文件截断后用 fs_read({ path: "...", offset: 200, limit: 100 }) 继续读取。',
+            'fs_write 正确案例：fs_write({ path: "src/app/page.tsx", content: "完整的新文件内容" })；content 是完整文件内容，不是 diff patch。',
+            'bash 正确案例：bash({ command: "pnpm typecheck" })；子目录命令用 bash({ command: "pnpm build", cwd: "frontend", timeoutMs: 300000 })，不要写 cd frontend && pnpm build。',
+        ])
+        add(file_lines)
 
     if "task_dispatch" in tools:
         add(
