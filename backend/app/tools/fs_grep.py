@@ -42,25 +42,19 @@ _PARAMETERS: dict[str, Any] = {
     "properties": {
         "pattern": {
             "type": "string",
-            "description": "Regular expression to search for (Python re syntax).",
+            "description": "正则表达式（Python re 语法）。",
         },
         "path": {
             "type": "string",
-            "description": (
-                "Optional subdirectory to search in (relative to workspace root). "
-                "Omit for the whole workspace."
-            ),
+            "description": "可选的搜索子目录（相对于 workspace 根目录），省略则搜索整个 workspace。",
         },
         "glob": {
             "type": "string",
-            "description": (
-                "Optional file glob filter, e.g. '*.py' or '*.tsx'. Only files "
-                "matching this pattern are searched."
-            ),
+            "description": "可选的文件名过滤模式，如 '*.py' 或 '*.tsx'，只有匹配的文件才会被搜索。",
         },
         "max_results": {
             "type": "integer",
-            "description": "Maximum number of matches to return (default 100).",
+            "description": "最多返回的匹配数（默认 100）。",
             "default": MAX_RESULTS_DEFAULT,
         },
     },
@@ -68,12 +62,12 @@ _PARAMETERS: dict[str, Any] = {
 
 
 _DESCRIPTION = (
-    "Search for a regular expression inside workspace files. Returns structured "
-    "matches with file, line_number, line, and match text. Skips binary files "
-    "(null-byte detection) and dependency directories (node_modules, .git). "
-    "Per-file cap is 50 matches; total default cap is 100 (override with "
-    "max_results). A 10-second timeout returns partial results. Use this to find "
-    "code symbols, function calls, or text patterns across a project."
+    "在 workspace 文件内容中搜索正则表达式，返回匹配的文件、行号和匹配文本。"
+    "自动跳过二进制文件和依赖目录（node_modules、.git 等）。"
+    "单文件最多返回 50 条匹配，总数默认上限 100 条（可用 max_results 参数调整），"
+    "超过 10 秒返回部分结果。"
+    "定位函数定义、类声明、变量引用等符号位置时使用，"
+    "不需要读取整个文件就能找到目标——比先 fs_read 再人工查找高效得多。"
 )
 
 

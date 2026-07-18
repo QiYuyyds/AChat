@@ -32,28 +32,22 @@ _PARAMETERS: dict[str, Any] = {
     "properties": {
         "pattern": {
             "type": "string",
-            "description": (
-                "Glob pattern, e.g. '**/*.tsx' for all TypeScript files, "
-                "'src/**/*.py' for Python files under src."
-            ),
+            "description": "Glob 模式，如 '**/*.tsx' 匹配所有 TypeScript 文件，'src/**/*.py' 匹配 src 下的 Python 文件。",
         },
         "path": {
             "type": "string",
-            "description": (
-                "Optional subdirectory to search in (relative to workspace root). "
-                "Omit for the whole workspace."
-            ),
+            "description": "可选的搜索子目录（相对于 workspace 根目录），省略则搜索整个 workspace。",
         },
     },
 }
 
 
 _DESCRIPTION = (
-    "Find files inside the workspace by glob pattern. Supports '**/*.ext' "
-    "recursive patterns via pathlib (cross-platform, no shell needed). Returns "
-    "matching files with path, is_directory, and size. Results are capped at 200; "
-    "a 'truncated' flag indicates more matches exist. Use this to locate source "
-    "files by extension or name pattern."
+    "按 glob 模式批量查找文件（如 **/*.py、src/**/*.tsx）。"
+    "一次调用最多返回 200 个匹配结果，包含路径、是否目录、文件大小；"
+    "超过 200 个时 truncated 标志为 true。"
+    "需要一次性获取整个项目的文件清单、或按扩展名/路径模式筛选文件时使用，"
+    "比反复 fs_list 递归高效得多。"
 )
 
 

@@ -35,7 +35,7 @@ _PARAMETERS: dict[str, Any] = {
             "type": "string",
             "minLength": 1,
             "maxLength": 2000,
-            "description": "Question about code structure, call paths, or change impact.",
+            "description": "关于代码结构的问题，如“项目入口在哪”“X 的调用链是什么”“修改 Y 会影响哪些文件”。",
         }
     },
 }
@@ -85,8 +85,10 @@ def _fallback(reason: str) -> ToolResult:
 code_explore_tool = ToolDef(
     name="code_explore",
     description=(
-        "Explore code structure, call paths, and change impact from the managed local "
-        "source graph. Use file tools for exact lines or when this tool is unavailable."
+        "基于代码图谱回答结构性问题：项目入口、调用链、模块依赖、修改影响范围。"
+        "适合“主要流程是什么”“X 从哪里被调用”这类高层次问题，"
+        "返回结构化分析，比逐个读文件再自己总结高效得多。"
+        "仅适用于本地模式 workspace 且代码图谱已就绪；不可用时改用 fs_glob / fs_grep。"
     ),
     parameters=_PARAMETERS,
     handler=_handler,
