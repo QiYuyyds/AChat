@@ -107,7 +107,7 @@ def _input(conversation, **overrides) -> AdapterInput:
 
 
 @pytest_asyncio.fixture
-async def conversation(db, agents, tmp_path):
+async def conversation(db, agents, test_user, tmp_path):
     from app.db.engine import get_db
     from app.db.models import Conversation, Workspace
     from app.utils.clock import now_ms
@@ -127,6 +127,7 @@ async def conversation(db, agents, tmp_path):
             fs_write_approval_mode="auto",
             created_at=now,
             updated_at=now,
+            user_id=test_user["id"],
         )
         conv.agent_ids_list = [agents["alice"]]
         conv.pinned_message_ids_list = []
@@ -525,14 +526,17 @@ async def test_react_loop_cancel(conversation, monkeypatch):
             model_id="test-model",
         )
     ]
-    assert len(events) == 0
+    # Pre-cancelled: no model call, but stop_reason is still recorded.
+    assert len(events) == 1
+    assert events[0].type == "run.usage"
+    assert events[0].stop_reason == "cancelled"
 
 
-async def test_react_loop_max_turns(conversation, monkeypatch):
-    """ReAct loop stops at MAX_TURNS and emits run.usage."""
-    from app.services.agent_runner import REACT_LOOP_MAX_TURNS, _run_react_loop
+async def test_react_loop_model_done_beyond_eight_tool_turns(conversation, monkeypatch):
+    """No default 8-step cap: loop continues past 8 tool turns until model-done."""
+    from app.services.agent_runner import _run_react_loop
 
-    # Each turn calls a tool, so the loop runs until MAX_TURNS
+    n_tool_turns = 10
     scripts = [
         [
             _FakeChunk(
@@ -545,7 +549,9 @@ async def test_react_loop_max_turns(conversation, monkeypatch):
                                     id=f"call_{i}",
                                     function=_FakeFunction(
                                         name="fs_list",
-                                        arguments='{"path":""}',
+                                        # Distinct fingerprints (avoid duplicate breaker);
+                                        # empty path so tool succeeds (avoid error breaker).
+                                        arguments=f'{{"path":"","_i":{i}}}',
                                     ),
                                 )
                             ]
@@ -559,8 +565,15 @@ async def test_react_loop_max_turns(conversation, monkeypatch):
                 ]
             ),
         ]
-        for i in range(REACT_LOOP_MAX_TURNS)
+        for i in range(n_tool_turns)
     ]
+    # Final model-done turn
+    scripts.append(
+        [
+            _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="done"))]),
+            _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]),
+        ]
+    )
 
     _install_fake_client(monkeypatch, scripts)
 
@@ -579,10 +592,180 @@ async def test_react_loop_max_turns(conversation, monkeypatch):
     ]
     types = [e.type for e in events]
 
-    # Should have exactly MAX_TURNS message.start events
-    assert types.count("message.start") == REACT_LOOP_MAX_TURNS
-    # Final event should be run.usage (MAX_TURNS fallback)
+    assert types.count("message.start") == n_tool_turns + 1
     assert types[-1] == "run.usage"
+    usage_ev = events[-1]
+    assert usage_ev.stop_reason == "complete"
+
+
+async def test_react_loop_max_tool_turns_fuse(conversation, monkeypatch):
+    """Configured max_tool_turns triggers soft→forced wrap-up with label."""
+    from app.config import get_settings
+    from app.services.agent_runner import _run_react_loop
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "max_tool_turns", 2)
+
+    # 2 tool turns + soft inject turn (tools again) + forced final (tools=[])
+    scripts = [
+        # turn 1 tool
+        [
+            _FakeChunk(
+                choices=[
+                    _FakeChoice(
+                        delta=_FakeDelta(
+                            tool_calls=[
+                                _FakeToolCallDelta(
+                                    index=0,
+                                    id="call_0",
+                                    function=_FakeFunction(name="fs_list", arguments='{"path":"a"}'),
+                                )
+                            ]
+                        )
+                    )
+                ]
+            ),
+            _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="tool_calls")]),
+        ],
+        # turn 2 tool → fuse hit after this
+        [
+            _FakeChunk(
+                choices=[
+                    _FakeChoice(
+                        delta=_FakeDelta(
+                            tool_calls=[
+                                _FakeToolCallDelta(
+                                    index=0,
+                                    id="call_1",
+                                    function=_FakeFunction(name="fs_list", arguments='{"path":"b"}'),
+                                )
+                            ]
+                        )
+                    )
+                ]
+            ),
+            _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="tool_calls")]),
+        ],
+        # soft inject turn — still tools
+        [
+            _FakeChunk(
+                choices=[
+                    _FakeChoice(
+                        delta=_FakeDelta(
+                            tool_calls=[
+                                _FakeToolCallDelta(
+                                    index=0,
+                                    id="call_2",
+                                    function=_FakeFunction(name="fs_list", arguments='{"path":"c"}'),
+                                )
+                            ]
+                        )
+                    )
+                ]
+            ),
+            _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="tool_calls")]),
+        ],
+        # forced final
+        [
+            _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="forced summary"))]),
+            _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]),
+        ],
+    ]
+
+    client = _install_fake_client(monkeypatch, scripts)
+    adapter = CustomAdapter()
+    cancel = asyncio.Event()
+    inp = _input(conversation, tool_names=["fs_list"])
+
+    events = [
+        ev async for ev in _run_react_loop(
+            adapter, inp, cancel,
+            run_id="run_test",
+            agent_id=conversation["agent_id"],
+            conversation_id=conversation["conversation_id"],
+            model_id="test-model",
+        )
+    ]
+    usage_ev = [e for e in events if e.type == "run.usage"][-1]
+    assert usage_ev.stop_reason == "max_tool_turns"
+    assert usage_ev.stop_reason_label
+    # Last create should have tools=None (empty list becomes None in adapter)
+    last_call = client.chat.completions.calls[-1]
+    assert last_call.get("tools") in (None, [])
+
+
+async def test_react_loop_duplicate_tool_breaker(conversation, monkeypatch):
+    """Identical tool fingerprint ×3 injects then forces."""
+    from app.services.agent_runner import _run_react_loop
+
+    same_args = '{"path":"same"}'
+    scripts = []
+    for i in range(3):
+        scripts.append(
+            [
+                _FakeChunk(
+                    choices=[
+                        _FakeChoice(
+                            delta=_FakeDelta(
+                                tool_calls=[
+                                    _FakeToolCallDelta(
+                                        index=0,
+                                        id=f"call_{i}",
+                                        function=_FakeFunction(name="fs_list", arguments=same_args),
+                                    )
+                                ]
+                            )
+                        )
+                    ]
+                ),
+                _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="tool_calls")]),
+            ]
+        )
+    # soft inject turn — still same fingerprint
+    scripts.append(
+        [
+            _FakeChunk(
+                choices=[
+                    _FakeChoice(
+                        delta=_FakeDelta(
+                            tool_calls=[
+                                _FakeToolCallDelta(
+                                    index=0,
+                                    id="call_3",
+                                    function=_FakeFunction(name="fs_list", arguments=same_args),
+                                )
+                            ]
+                        )
+                    )
+                ]
+            ),
+            _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="tool_calls")]),
+        ]
+    )
+    # forced final
+    scripts.append(
+        [
+            _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="breaker summary"))]),
+            _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]),
+        ]
+    )
+
+    _install_fake_client(monkeypatch, scripts)
+    adapter = CustomAdapter()
+    cancel = asyncio.Event()
+    inp = _input(conversation, tool_names=["fs_list"])
+
+    events = [
+        ev async for ev in _run_react_loop(
+            adapter, inp, cancel,
+            run_id="run_test",
+            agent_id=conversation["agent_id"],
+            conversation_id=conversation["conversation_id"],
+            model_id="test-model",
+        )
+    ]
+    usage_ev = [e for e in events if e.type == "run.usage"][-1]
+    assert usage_ev.stop_reason == "duplicate_tool_breaker"
 
 
 # ─── O9: TurnMetricEvent ──────────────────────────────────────────────────────

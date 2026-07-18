@@ -32,6 +32,7 @@ import {
   useDispatchForMessage,
   useLatestAgentMessageId,
   useLatestUserMessageId,
+  useRunStopHint,
   useTurnMetrics,
 } from '@/stores/app-store'
 import { useAuthStore } from '@/stores/auth-store'
@@ -69,6 +70,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
   const isLatestAgent = !isUser && latestAgentId === message.id
 
   const isRunActive = useIsRunActive(message.conversationId, message.runId)
+  const stopHint = useRunStopHint(message.conversationId, message.runId)
 
   const turnMetrics = useTurnMetrics(message.conversationId, message.runId)
 
@@ -322,6 +324,15 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
               })()}
               {turnMetrics && Object.keys(turnMetrics).length > 0 && (
                 <TurnTimeline turnMetrics={turnMetrics} />
+              )}
+              {/* Abnormal Custom stop light hint — only on latest agent msg of the run */}
+              {!isUser && isLatestAgent && stopHint && message.status !== 'streaming' && (
+                <div
+                  className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-800 dark:text-amber-200"
+                  role="status"
+                >
+                  {stopHint}
+                </div>
               )}
             </>
           )}

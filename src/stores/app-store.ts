@@ -54,6 +54,10 @@ export interface DispatchState {
 export interface RunState extends AgentRunRow {
   turnMetrics?: Record<number, TurnMetricData>
   turnMetricsComplete?: boolean
+  /** Custom ReAct stop reason (optional). */
+  stopReason?: string | null
+  /** Short Chinese label for abnormal stops (optional). */
+  stopReasonLabel?: string | null
 }
 
 interface AppState {
@@ -654,6 +658,8 @@ export const useAppStore = create<AppState>()(
               finishedAt: null,
               turnMetrics: {},
               turnMetricsComplete: false,
+              stopReason: null,
+              stopReasonLabel: null,
             }
             return
           }
@@ -665,6 +671,12 @@ export const useAppStore = create<AppState>()(
               run.finishedAt = event.timestamp
               run.error = event.error ?? null
               run.turnMetricsComplete = true
+              if ('stopReason' in event) {
+                run.stopReason = event.stopReason ?? null
+              }
+              if ('stopReasonLabel' in event) {
+                run.stopReasonLabel = event.stopReasonLabel ?? null
+              }
             }
             if (event.status === 'failed' || event.status === 'aborted') {
               closeUnresolvedToolCallsForRun(
@@ -1400,6 +1412,23 @@ export function useIsRunActive(
   return useAppStore((s) => {
     if (!runId) return false
     return s.runsByConv[conversationId]?.[runId]?.status === 'running'
+  })
+}
+
+/** Abnormal Custom termination Chinese label for light UI hint (null for natural complete). */
+export function useRunStopHint(
+  conversationId: string,
+  runId: string | null,
+): string | null {
+  return useAppStore((s) => {
+    if (!runId) return null
+    const run = s.runsByConv[conversationId]?.[runId]
+    if (!run) return null
+    const label = run.stopReasonLabel
+    if (!label) return null
+    // complete / empty → no banner
+    if (!run.stopReason || run.stopReason === 'complete') return null
+    return label
   })
 }
 

@@ -113,6 +113,9 @@ class Settings(BaseSettings):
     # When True, SDK agents (Custom) use the AgentRunner ReAct loop (call_once).
     # Set to False to fall back to the legacy adapter.stream() path.
     use_react_loop: bool = True
+    # Optional Custom tool-turn fuse (None/0 = off). When hit, uses soft→forced
+    # wrap-up pipeline — not a product default max-steps cap.
+    max_tool_turns: int | None = None
 
     # ─── Verify Stage (P2 O6) ───
     enable_verify_stage: bool = True

@@ -55,6 +55,9 @@ class RunEndEvent(BaseEvent):
     run_id: str = Field(alias="runId")
     status: Literal["complete", "failed", "aborted"]
     error: str | None = None
+    # Custom ReAct termination metadata (optional; absent for CLI / older clients)
+    stop_reason: str | None = Field(default=None, alias="stopReason")
+    stop_reason_label: str | None = Field(default=None, alias="stopReasonLabel")
 
     model_config = {"populate_by_name": True}
 
@@ -65,6 +68,10 @@ class RunUsageEvent(BaseEvent):
     type: Literal["run.usage"] = "run.usage"
     run_id: str = Field(alias="runId")
     usage: RunUsage
+    # Carries stop reason from the Custom ReAct loop so consume_stream/finalize
+    # can attach it to RunEndEvent (CLI paths leave these None).
+    stop_reason: str | None = Field(default=None, alias="stopReason")
+    stop_reason_label: str | None = Field(default=None, alias="stopReasonLabel")
 
     model_config = {"populate_by_name": True}
 

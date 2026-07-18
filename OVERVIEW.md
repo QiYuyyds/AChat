@@ -201,7 +201,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `conpty.py` | Windows ConPTY 支持（隐藏子进程窗口、伪终端） |
 | `claude_adapter.py` | ★ ClaudeCLIAdapter：`spawn claude` stream-json 协议，CLI 自带工具 |
 | `codex_adapter.py` | ★ CodexCLIAdapter：`spawn codex app-server` JSON-RPC 2.0 通信 |
-| `custom_adapter.py` | OpenAI 协议 stream + 自驱 tool loop（MAX_TURNS=8，SDK 路线） |
+| `custom_adapter.py` | OpenAI 协议 stream + 自驱 tool loop（model-done 主路径，SDK 路线） |
 | `custom_provider_client.py` / `session_store.py` | provider 客户端 / 会话存储 |
 | `mock_adapter.py` | 假事件流，开发用 |
 > MCP Bridge：`backend/app/mcp_bridge.py` — stdio MCP Server，把 `write_artifact`/`ask_user`/`task_dispatch` 等 AChat 平台工具暴露给 CLI agent（Claude/Codex CLI 通过 `--mcp-config` 拉起）。

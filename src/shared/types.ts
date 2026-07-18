@@ -432,8 +432,23 @@ interface BaseEvent {
 export type StreamEvent = BaseEvent &
   (
     | { type: 'run.start'; runId: string; agentId: string; triggerMessageId: string; parentRunId?: string }
-    | { type: 'run.end'; runId: string; status: 'complete' | 'failed' | 'aborted'; error?: string }
-    | { type: 'run.usage'; runId: string; usage: RunUsageEvent }
+    | {
+        type: 'run.end'
+        runId: string
+        status: 'complete' | 'failed' | 'aborted'
+        error?: string
+        /** Custom ReAct internal stop reason (optional; absent for CLI / older servers). */
+        stopReason?: string
+        /** Short Chinese UI label for abnormal stops; empty/absent for natural complete. */
+        stopReasonLabel?: string
+      }
+    | {
+        type: 'run.usage'
+        runId: string
+        usage: RunUsageEvent
+        stopReason?: string
+        stopReasonLabel?: string
+      }
     | { type: 'message.start'; messageId: string; agentId: string; runId: string }
     | { type: 'message.end'; messageId: string }
     | { type: 'message.usage'; messageId: string; usage: MessageUsageEvent }

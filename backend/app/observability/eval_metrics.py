@@ -47,7 +47,7 @@ AGENT_METRICS: list[MetricDef] = [
     MetricDef("output_artifact_exists", AgentDimension.TASK_COMPLETION.value, EvalMethod.RULE,
               "1.0 if an artifact was produced"),
     MetricDef("max_turns_exceeded", AgentDimension.TASK_COMPLETION.value, EvalMethod.RULE,
-              "0.0 if total_turns >= MAX_TURNS, else 1.0"),
+              "0.0 if abnormal Custom stop_reason or safety-bound turns; 1.0 for model-done"),
     # Tool Quality
     MetricDef("tool_success_rate", AgentDimension.TOOL_QUALITY.value, EvalMethod.RULE,
               "successful tool calls / total tool calls"),

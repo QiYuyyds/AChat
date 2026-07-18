@@ -64,6 +64,8 @@ class LoopRunResult:
     artifact_ids: list[str] = field(default_factory=list)
     output_message_ids: list[str] = field(default_factory=list)
     run_id: str | None = None  # child run ID (for dispatch events)
+    stop_reason: str | None = None
+    stop_reason_label: str | None = None
 
 
 # ─── Coordinated mode system prompt ───────────────────────────────────────────
@@ -578,13 +580,20 @@ async def spawn_subagent_loop(
         text = await _extract_run_final_text(
             child_run_id, conversation_id, run_result.output_message_ids
         )
+        text = text or "(subagent produced no text output)"
+        stop_reason = getattr(run_result, "stop_reason", None)
+        if stop_reason and stop_reason != "complete":
+            from app.services.react_loop_termination import format_child_stop_prefix
+            text = format_child_stop_prefix(stop_reason, text)
 
         return LoopRunResult(
             status=run_result.status,
-            text=text or "(subagent produced no text output)",
+            text=text,
             artifact_ids=run_result.artifact_ids,
             output_message_ids=run_result.output_message_ids,
             run_id=child_run_id,
+            stop_reason=stop_reason,
+            stop_reason_label=getattr(run_result, "stop_reason_label", None),
         )
 
 

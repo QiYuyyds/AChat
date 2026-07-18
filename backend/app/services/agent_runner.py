@@ -511,6 +511,8 @@ class RunResult:
     artifact_ids: list[str] = field(default_factory=list)
     output_message_ids: list[str] = field(default_factory=list)
     output_artifacts: dict[str, str] = field(default_factory=dict)
+    stop_reason: str | None = None
+    stop_reason_label: str | None = None
 
 
 @dataclass
@@ -519,10 +521,19 @@ class RunExecutionResult:
     output_message_ids: list[str] = field(default_factory=list)
     output_artifacts: dict[str, str] = field(default_factory=dict)
     plan_stats: dict | None = None
+    stop_reason: str | None = None
+    stop_reason_label: str | None = None
 
 
 def _empty_run_execution_result() -> RunExecutionResult:
-    return RunExecutionResult(artifact_ids=[], output_message_ids=[], output_artifacts={}, plan_stats=None)
+    return RunExecutionResult(
+        artifact_ids=[],
+        output_message_ids=[],
+        output_artifacts={},
+        plan_stats=None,
+        stop_reason=None,
+        stop_reason_label=None,
+    )
 
 
 # ─── TurnResult (internal to the SDK ReAct loop) ───────────────────────────────
@@ -552,8 +563,10 @@ CLI_ADAPTERS = frozenset({"claude-code", "codex"})
 SDK_ADAPTERS = frozenset({"custom"})
 # mock is neither CLI nor SDK; it is test-only and ignored by tool injection.
 
-# Max turns in the SDK ReAct loop (mirrors CustomAdapter.MAX_TURNS).
-REACT_LOOP_MAX_TURNS = 8
+# Deprecated product default removed: Custom loop ends on model-done / budget /
+# breakers. Absolute safety bound lives in react_loop_termination.SAFETY_MAX_MODEL_CALLS.
+# Kept as alias for any external imports; do not use as a product max-steps cap.
+REACT_LOOP_MAX_TURNS = None
 
 # O2 Step 5: only read-only tools are cached within a single _run_react_loop call.
 READONLY_CACHEABLE_TOOLS = frozenset({"fs_read", "read_artifact", "read_attachment"})
@@ -842,7 +855,7 @@ def _mid_run_compact(messages: list[dict]) -> list[dict]:
 
 
 # ─── SDK ReAct loop (Phase 1: call_once + TurnResult) ─────────────────────────
-async def _run_react_loop(
+async def _run_react_loop(  # noqa: C901
     adapter: Any,
     adapter_input: AdapterInput,
     cancel_event: asyncio.Event,
@@ -859,13 +872,23 @@ async def _run_react_loop(
 ) -> AsyncIterator[StreamEvent]:
     """ReAct loop for SDK adapters: call_once → yield events → execute tools → repeat.
 
-    Yields all StreamEvents (same contract as adapter.stream). Persistence and
-    publishing are handled by consume_stream. Tool execution uses
-    tool_registry.execute_with_hooks. Hooks are dispatched at run/turn/tool
-    lifecycle points.
+    Termination is model-done primary (0 tool calls), with a unified budget
+    compact → soft → forced → hard pipeline and behavioral circuit breakers.
+    See ``react_loop_termination``.
     """
     from app.adapters.custom_adapter import _RunUsage, _to_run_usage
+    from app.config import get_settings
     from app.services.hook_registry import HookContext, HookEvent
+    from app.services.react_loop_termination import (
+        SAFETY_MAX_MODEL_CALLS,
+        StopReason,
+        TerminationState,
+        build_forced_messages,
+        decide_pre_model,
+        mark_compact_result,
+        stable_tool_fingerprint,
+        stop_reason_label,
+    )
 
     hook_registry = _get_hook_registry()
 
@@ -893,6 +916,8 @@ async def _run_react_loop(
             {"role": "user", "content": user_content},
         ]
 
+    full_tool_names = list(adapter_input.tool_names or [])
+
     ctx = ToolContext(
         conversation_id=conversation_id,
         workspace_path=adapter_input.workspace_path,
@@ -900,22 +925,25 @@ async def _run_react_loop(
         run_id=run_id,
         cancel_event=cancel_event,
         hook_registry=hook_registry,
-        tool_names=adapter_input.tool_names,
+        tool_names=full_tool_names,
         dispatch_depth=dispatch_depth,
         dispatch_mode=dispatch_mode,
         user_id=user_id,
     )
 
-    # O2 Step 5: per-run cache for read-only tool results
     tool_call_cache: dict[str, Any] = {}
 
-    # O2 Step 6: token budget control — get model context window
     model_limit = 0
     if model_id:
         try:
             model_limit = get_model_limits(model_provider, model_id).context_window
         except Exception:
             model_limit = 0
+
+    settings = get_settings()
+    raw_fuse = getattr(settings, "max_tool_turns", None)
+    max_tool_turns = raw_fuse if isinstance(raw_fuse, int) and raw_fuse > 0 else None
+    term = TerminationState(max_tool_turns=max_tool_turns)
 
     # ── on_run_start hook ──
     if hook_registry and hook_registry.has_handlers(HookEvent.ON_RUN_START):
@@ -925,9 +953,8 @@ async def _run_react_loop(
             agent_id=agent_id,
             conversation_id=conversation_id,
             messages=messages,
-            tool_names=adapter_input.tool_names,
+            tool_names=full_tool_names,
         ))
-        # O8: capture inject action (e.g. skill_auto_activator on_run_start)
         if run_start_result.action == "inject" and run_start_result.data:
             for item in run_start_result.data:
                 if isinstance(item, dict) and item.get("type") == "system_hint":
@@ -937,40 +964,94 @@ async def _run_react_loop(
                     })
 
     run_usage = _RunUsage()
-
     start_turn = resume_from_turn or 0
+    turn = start_turn
+
+    def _emit_run_usage(reason: StopReason) -> RunUsageEvent:
+        term.final_stop_reason = reason
+        return RunUsageEvent(
+            conversation_id=conversation_id,
+            timestamp=now_ms(),
+            run_id=run_id,
+            usage=_to_run_usage(run_usage, model_id or ""),
+            stop_reason=reason.value,
+            stop_reason_label=stop_reason_label(reason),
+        )
 
     try:
-        for turn in range(start_turn, REACT_LOOP_MAX_TURNS):
+        while term.model_call_count < SAFETY_MAX_MODEL_CALLS:
             if cancel_event.is_set():
+                yield _emit_run_usage(StopReason.CANCELLED)
                 break
 
-            adapter_input.messages = messages
             turn_start = time.monotonic()
+            total_tokens = (
+                estimate_tokens(json.dumps(messages, ensure_ascii=False))
+                if model_limit > 0
+                else 0
+            )
+            decision = decide_pre_model(
+                state=term,
+                total_tokens=total_tokens,
+                model_limit=model_limit,
+            )
 
-            # O2 Step 6: token budget control
-            if model_limit > 0:
-                total_tokens = estimate_tokens(json.dumps(messages, ensure_ascii=False))
-                if total_tokens > 0.95 * model_limit:
-                    logger.warning(
-                        "[AgentRunner] token budget exceeded 95%%: %d / %d, stopping loop",
-                        total_tokens, model_limit,
-                    )
-                    yield RunUsageEvent(
-                        conversation_id=conversation_id,
-                        timestamp=now_ms(),
-                        run_id=run_id,
-                        usage=_to_run_usage(run_usage, model_id or ""),
-                    )
-                    break
-                elif total_tokens > 0.90 * model_limit:
-                    pre_compact_count = len(messages)
+            if decision.action == "hard_stop":
+                logger.warning(
+                    "[AgentRunner] hard stop: reason=%s tokens=%d limit=%d",
+                    decision.stop_reason, total_tokens, model_limit,
+                )
+                yield _emit_run_usage(decision.stop_reason or StopReason.BUDGET_EXHAUSTED)
+                break
+
+            if decision.action == "compact":
+                pre_compact_count = len(messages)
+                pre_tokens = total_tokens
+                try:
                     messages = _mid_run_compact(messages)
                     post_tokens = estimate_tokens(json.dumps(messages, ensure_ascii=False))
+                    # Treat as success if something changed or tokens dropped/stable
+                    success = post_tokens < pre_tokens or len(messages) < pre_compact_count
+                    # Even no-op compact is "success" structurally; only exceptions fail
+                    mark_compact_result(term, success=True)
                     logger.info(
                         "[AgentRunner] mid-run compact: %d -> %d messages, %d -> %d tokens",
-                        pre_compact_count, len(messages), total_tokens, post_tokens,
+                        pre_compact_count, len(messages), pre_tokens, post_tokens,
                     )
+                except Exception as compact_err:  # noqa: BLE001
+                    logger.warning("[AgentRunner] mid-run compact failed: %s", compact_err)
+                    mark_compact_result(term, success=False)
+                # Re-evaluate after compact on same iteration
+                continue
+
+            if decision.action == "soft_inject" and decision.inject_message:
+                # Model-visible, user-hidden: system role in messages only (no SSE bubble)
+                messages.append({"role": "system", "content": decision.inject_message})
+                logger.info(
+                    "[AgentRunner] soft wrap-up inject: reason=%s",
+                    decision.pending_reason,
+                )
+
+            force_final = decision.action == "force_final"
+            if force_final:
+                for msg in build_forced_messages(term):
+                    messages.append(msg)
+                adapter_input.tool_names = []
+                # Also clear MCP tools so forced final has no tools
+                saved_mcp = adapter_input.mcp_tools
+                adapter_input.mcp_tools = None
+                term.forced_done = True
+                logger.info(
+                    "[AgentRunner] forced final call: reason=%s",
+                    decision.pending_reason,
+                )
+            else:
+                adapter_input.tool_names = full_tool_names
+                saved_mcp = None
+
+            adapter_input.messages = messages
+            term.model_call_count += 1
+            turn += 1
 
             # ── pre_turn hook ──
             if hook_registry and hook_registry.has_handlers(HookEvent.PRE_TURN):
@@ -979,14 +1060,9 @@ async def _run_react_loop(
                     run_id=run_id,
                     agent_id=agent_id,
                     conversation_id=conversation_id,
-                    turn_number=turn + 1,
+                    turn_number=turn,
                 ))
 
-            # ── Consume call_once events: yield + extract turn data ──
-            # Buffer message.usage and message.end so they are yielded AFTER
-            # tool results — matching the old stream path's event ordering.
-            # consume_stream clears parts_buffer on message.end; if we yield
-            # message.end before tool.result, the parts would be lost.
             text_content = ""
             reasoning_content = ""
             tool_calls: list[ToolCallInfo] = []
@@ -1010,6 +1086,9 @@ async def _run_react_loop(
                         elif dtype == "thinking.append":
                             reasoning_content += text
                     elif event.type == "tool.call":
+                        if force_final:
+                            # Ignore tool calls on forced final
+                            continue
                         tool_calls.append(ToolCallInfo(
                             id=event.call_id,
                             name=event.tool_name,
@@ -1039,15 +1118,22 @@ async def _run_react_loop(
                     yield event
             except Exception:
                 logger.exception("[AgentRunner] _run_react_loop call_once error")
+                if force_final and saved_mcp is not None:
+                    adapter_input.mcp_tools = saved_mcp
+                yield _emit_run_usage(StopReason.BUDGET_EXHAUSTED)
                 return
+
+            if force_final and saved_mcp is not None:
+                adapter_input.mcp_tools = saved_mcp
+            adapter_input.tool_names = full_tool_names
 
             if message_id is None:
+                yield _emit_run_usage(
+                    term.forced_trigger_reason or StopReason.BUDGET_EXHAUSTED
+                    if force_final else StopReason.COMPLETE
+                )
                 return
 
-            # Build assistant_message dict
-            # DeepSeek thinking-mode models require reasoning_content to be
-            # echoed back next turn, else the API errors with "The reasoning_content
-            # in the thinking mode must be passed back".
             assistant_msg: dict = {"role": "assistant", "content": text_content or None}
             if tool_calls:
                 assistant_msg["tool_calls"] = [
@@ -1060,16 +1146,15 @@ async def _run_react_loop(
             messages.append(assistant_msg)
             messages.extend(pre_resolved_messages)
 
-            # If no tool calls → yield deferred events, dispatch on_stop, emit run.usage
+            # No tool calls → natural or soft complete
             if len(tool_calls) == 0:
                 for ev in deferred_events:
                     yield ev
-                # ── turn metric ──
                 yield TurnMetricEvent(
                     conversation_id=conversation_id,
                     timestamp=now_ms(),
                     run_id=run_id,
-                    turn=turn + 1,
+                    turn=turn,
                     tokens=TurnTokenBreakdown(
                         input_tokens=turn_input_tokens,
                         output_tokens=turn_output_tokens,
@@ -1078,42 +1163,71 @@ async def _run_react_loop(
                     tool_calls=[],
                     duration_ms=int((time.monotonic() - turn_start) * 1000),
                 )
-                # ── post_turn hook ──
                 if hook_registry and hook_registry.has_handlers(HookEvent.POST_TURN):
                     await hook_registry.dispatch(HookContext(
                         event=HookEvent.POST_TURN,
                         run_id=run_id,
                         agent_id=agent_id,
                         conversation_id=conversation_id,
-                        turn_number=turn + 1,
+                        turn_number=turn,
                         message_id=message_id,
                         tool_calls=[],
                         finish_reason="stop",
                         messages=messages,
                     ))
-                # ── on_stop hook ──
                 if hook_registry and hook_registry.has_handlers(HookEvent.ON_STOP):
                     await hook_registry.dispatch(HookContext(
                         event=HookEvent.ON_STOP,
                         run_id=run_id,
                         agent_id=agent_id,
                         conversation_id=conversation_id,
-                        turn_number=turn + 1,
+                        turn_number=turn,
                     ))
-                yield RunUsageEvent(
-                    conversation_id=conversation_id,
-                    timestamp=now_ms(),
-                    run_id=run_id,
-                    usage=_to_run_usage(run_usage, model_id or ""),
+                if force_final:
+                    reason = term.forced_trigger_reason or StopReason.BUDGET_FORCED_FINAL
+                elif term.soft_done and term.soft_trigger_reason:
+                    # Soft injected then model finished with 0 tools
+                    reason = (
+                        term.soft_trigger_reason
+                        if term.soft_trigger_reason != StopReason.BUDGET_SOFT_COMPLETE
+                        else StopReason.BUDGET_SOFT_COMPLETE
+                    )
+                    if term.soft_trigger_reason in (
+                        StopReason.DUPLICATE_TOOL_BREAKER,
+                        StopReason.TOOL_ERROR_BREAKER,
+                        StopReason.COMPACT_FAILURE_BREAKER,
+                        StopReason.MAX_TOOL_TURNS,
+                    ):
+                        # Soft-only recovery for breakers/fuse counts as that reason
+                        reason = term.soft_trigger_reason
+                else:
+                    reason = StopReason.COMPLETE
+                yield _emit_run_usage(reason)
+                break
+
+            # Forced final ignored tool_calls above; if somehow still here, stop.
+            if force_final:
+                for ev in deferred_events:
+                    yield ev
+                yield _emit_run_usage(
+                    term.forced_trigger_reason or StopReason.BUDGET_FORCED_FINAL
                 )
                 break
 
-            # ── Execute tools and yield results ──
-            # When the model emits multiple tool_calls in a single turn, execute
-            # them in parallel (asyncio.gather) so that e.g. two task_dispatch
-            # calls run concurrently instead of sequentially.
-            # Skip tool calls already pre-resolved by the adapter (e.g. truncation).
+            # Soft already done and model still emits tools → force next iteration
+            if term.soft_done and not term.forced_done:
+                term.force_after_soft = True
+                if term.soft_trigger_reason == StopReason.DUPLICATE_TOOL_BREAKER:
+                    term.force_after_duplicate = True
+                elif term.soft_trigger_reason == StopReason.TOOL_ERROR_BREAKER:
+                    term.force_after_tool_error = True
+
+            # ── Execute tools ──
             executable = [tc for tc in tool_calls if tc.id not in pre_resolved]
+            exec_names: list[str] = []
+            exec_fps: list[str] = []
+            exec_errors: list[bool] = []
+
             if not cancel_event.is_set() and executable:
                 tasks = [
                     asyncio.create_task(
@@ -1134,14 +1248,17 @@ async def _run_react_loop(
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                # Yield results in original executable order (not completion order)
                 for i, tc in enumerate(executable):
                     if i >= len(results):
                         break
                     res = results[i]
+                    fp = stable_tool_fingerprint(tc.name, tc.args)
+                    exec_names.append(tc.name)
+                    exec_fps.append(fp)
 
                     if isinstance(res, Exception):
                         value = {"error": f"Tool execution error: {res}"}
+                        exec_errors.append(True)
                         yield ToolResultEvent(
                             conversation_id=conversation_id,
                             timestamp=now_ms(),
@@ -1157,21 +1274,26 @@ async def _run_react_loop(
                         })
                         continue
 
+                    is_err = any(
+                        getattr(ev, "type", None) == "tool.result" and getattr(ev, "is_error", False)
+                        for ev in res.events
+                    )
+                    exec_errors.append(is_err)
                     for ev in res.events:
                         yield ev
                     messages.append(res.tool_message)
                     for extra_msg in res.extra_messages:
                         messages.append(extra_msg)
 
-            # ── Yield deferred events (message.usage + message.end) after tools ──
+            term.record_tool_calls(exec_names, exec_fps, exec_errors)
+
             for ev in deferred_events:
                 yield ev
-            # ── turn metric ──
             yield TurnMetricEvent(
                 conversation_id=conversation_id,
                 timestamp=now_ms(),
                 run_id=run_id,
-                turn=turn + 1,
+                turn=turn,
                 tokens=TurnTokenBreakdown(
                     input_tokens=turn_input_tokens,
                     output_tokens=turn_output_tokens,
@@ -1180,29 +1302,21 @@ async def _run_react_loop(
                 tool_calls=[tc.name for tc in tool_calls],
                 duration_ms=int((time.monotonic() - turn_start) * 1000),
             )
-            # ── post_turn hook (after tool execution) ──
             if hook_registry and hook_registry.has_handlers(HookEvent.POST_TURN):
                 await hook_registry.dispatch(HookContext(
                     event=HookEvent.POST_TURN,
                     run_id=run_id,
                     agent_id=agent_id,
                     conversation_id=conversation_id,
-                    turn_number=turn + 1,
+                    turn_number=turn,
                     message_id=message_id,
                     tool_calls=[{"id": tc.id, "name": tc.name, "args": tc.args} for tc in tool_calls],
                     finish_reason=None,
                     messages=messages,
                 ))
         else:
-            # MAX_TURNS fallback: emit accumulated usage
-            yield RunUsageEvent(
-                conversation_id=conversation_id,
-                timestamp=now_ms(),
-                run_id=run_id,
-                usage=_to_run_usage(run_usage, model_id or ""),
-            )
+            yield _emit_run_usage(StopReason.BUDGET_EXHAUSTED)
     finally:
-        # ── on_run_end hook ──
         if hook_registry and hook_registry.has_handlers(HookEvent.ON_RUN_END):
             await hook_registry.dispatch(HookContext(
                 event=HookEvent.ON_RUN_END,
@@ -1922,6 +2036,8 @@ async def consume_stream(
     tool_name_by_call_id: dict[str, str] = {}
     current_message_id: str | None = None
     _plan_stats_payload: dict | None = None
+    stop_reason: str | None = None
+    stop_reason_label: str | None = None
 
     from app.services.async_db_writer import register_parts_buffer, unregister_parts_buffer
     register_parts_buffer(run_id, parts_buffer)
@@ -1939,6 +2055,10 @@ async def consume_stream(
                 current_message_id = event.message_id
             if event.type == "tool.call":
                 tool_name_by_call_id[event.call_id] = event.tool_name
+            if event.type == "run.usage":
+                if getattr(event, "stop_reason", None):
+                    stop_reason = event.stop_reason
+                    stop_reason_label = getattr(event, "stop_reason_label", None)
 
             await persist_event(
                 event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
@@ -2236,6 +2356,8 @@ async def consume_stream(
         output_message_ids=output_message_ids,
         output_artifacts=output_artifacts,
         plan_stats=_plan_stats_payload,
+        stop_reason=stop_reason,
+        stop_reason_label=stop_reason_label,
     )
 
 
@@ -2532,6 +2654,8 @@ async def finalize(
             run_id=run_id,
             status=status,
             error=error,
+            stop_reason=result.stop_reason,
+            stop_reason_label=result.stop_reason_label,
         ),
         user_id=args.user_id,
     )
@@ -2543,6 +2667,8 @@ async def finalize(
         artifact_ids=result.artifact_ids,
         output_message_ids=result.output_message_ids,
         output_artifacts=result.output_artifacts,
+        stop_reason=result.stop_reason,
+        stop_reason_label=result.stop_reason_label,
     )
 
 

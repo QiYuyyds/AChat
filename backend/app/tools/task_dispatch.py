@@ -158,12 +158,13 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     if result.status == "aborted":
         return err(f"Sub-agent run was aborted: {result.text}")
 
-    return ok(
-        {
-            "status": result.status,
-            "summary": result.text,
-        }
-    )
+    payload: dict[str, Any] = {
+        "status": result.status,
+        "summary": result.text,
+    }
+    if result.stop_reason:
+        payload["stopReason"] = result.stop_reason
+    return ok(payload)
 
 
 task_dispatch_tool = ToolDef(
