@@ -1,8 +1,8 @@
-"""Desktop engine user resolution via official cloud JWT.
+"""Desktop engine user resolution.
 
-Local engine JWT_SECRET is not the cloud secret, so cloud access tokens must be
-validated through the official HTTPS API (or trusted session handoff after that
-validation already happened in the webview).
+v1 default: local JWT (same as web, engine signs against configured JWT_SECRET /
+primary PG users). Optional legacy: cloud HTTPS /api/auth/me when cloud_api_client
+feature flag is on.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from app.utils.clock import now_ms
 
 logger = logging.getLogger(__name__)
 
-# Local stub for password_hash — desktop never authenticates against this hash.
 _DESKTOP_STUB_HASH = "!desktop-local-mirror!"
 
 
@@ -27,15 +26,21 @@ async def resolve_desktop_user(
     *,
     user_id_hint: str | None = None,
 ) -> User | None:
-    """Return a local User row mirrored from cloud identity, or None."""
-    from app.desktop.cloud_client import get_cloud_client, get_cloud_session, set_cloud_access_token
+    """Prefer local JWT; fall back to legacy cloud profile when feature-enabled."""
+    from app.desktop.runtime import cloud_api_client_enabled
+
+    # Local JWT is the v1 primary path — handled by get_current_user after this
+    # returns None. Only attempt cloud resolve when the legacy flag is on.
+    if not cloud_api_client_enabled():
+        return None
+
+    from app.desktop.cloud_client import get_cloud_session, set_cloud_access_token
 
     session = get_cloud_session()
     token = access_token or session.access_token
     if not token:
         return None
 
-    # Keep handoff in sync with the Authorization header the frontend sends.
     if access_token and access_token != session.access_token:
         set_cloud_access_token(access_token, user_id=user_id_hint or session.user_id)
 
@@ -59,7 +64,6 @@ async def resolve_desktop_user(
 async def _fetch_cloud_profile(token: str) -> dict[str, Any] | None:
     from app.desktop.cloud_client import CloudApiClient, get_cloud_session, set_cloud_access_token
 
-    # Temporarily ensure client uses this token.
     prev = get_cloud_session().access_token
     prev_uid = get_cloud_session().user_id
     set_cloud_access_token(token, user_id=prev_uid)
@@ -67,7 +71,6 @@ async def _fetch_cloud_profile(token: str) -> dict[str, Any] | None:
         data = await CloudApiClient().get_json("/api/auth/me")
     except Exception as e:
         logger.warning("desktop cloud /api/auth/me failed: %s", e)
-        # restore previous if fetch failed with explicit token
         set_cloud_access_token(prev, user_id=prev_uid)
         return None
     user = data.get("user") if isinstance(data, dict) else None
@@ -81,7 +84,7 @@ async def ensure_local_user(
     name: str,
     avatar_url: str | None = None,
 ) -> User:
-    """UPSERT a shadow User row so local FKs / ownership checks work offline-capable."""
+    """UPSERT a shadow User row for legacy cloud identity mapping."""
     async with get_db() as db:
         result = await db.execute(select(User).where(User.id == user_id))
         row = result.scalar_one_or_none()

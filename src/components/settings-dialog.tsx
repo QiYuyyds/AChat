@@ -40,6 +40,7 @@ import {
   type AppSettingsPatchBody,
   type ConnectionHint,
 } from '@/lib/api'
+import { engineFetch, isDesktopMode, restartLocalEngine } from '@/lib/desktop'
 import { subscribeUiCommand } from '@/lib/ui-command-events'
 
 interface SettingsForm {
@@ -78,6 +79,21 @@ export function SettingsDialog({
   const [connectionHints, setConnectionHints] = useState<ConnectionHint[]>([])
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [tab, setTab] = useState('keys')
+  const desktop = isDesktopMode()
+  const [infraLoading, setInfraLoading] = useState(false)
+  const [infraBusy, setInfraBusy] = useState(false)
+  const [infraMsg, setInfraMsg] = useState<string | null>(null)
+  const [infraForm, setInfraForm] = useState({
+    databaseUrl: '',
+    milvusHost: '',
+    milvusPort: '19530',
+    esAddresses: '',
+    neo4jUri: '',
+    neo4jUser: '',
+    neo4jPassword: '',
+    redisUrl: '',
+    userOverrideActive: false,
+  })
   const [form, setForm] = useState<SettingsForm>({
     anthropicApiKey: '',
     anthropicBaseUrl: '',
@@ -149,6 +165,103 @@ export function SettingsDialog({
       cancelled = true
     }
   }, [open])
+
+  useEffect(() => {
+    if (!open || !desktop) return
+    let cancelled = false
+    setInfraLoading(true)
+    setInfraMsg(null)
+    void engineFetch('/api/desktop/infra-config')
+      .then(async (res) => {
+        if (!res.ok) throw new Error(await res.text())
+        return res.json() as Promise<{
+          infra?: Record<string, unknown>
+          userOverrideActive?: boolean
+        }>
+      })
+      .then((data) => {
+        if (cancelled) return
+        const infra = data.infra ?? {}
+        setInfraForm({
+          databaseUrl: String(infra.databaseUrl ?? ''),
+          milvusHost: String(infra.milvusHost ?? ''),
+          milvusPort: String(infra.milvusPort ?? 19530),
+          esAddresses: String(infra.esAddresses ?? ''),
+          neo4jUri: String(infra.neo4jUri ?? ''),
+          neo4jUser: String(infra.neo4jUser ?? ''),
+          neo4jPassword: '',
+          redisUrl: String(infra.redisUrl ?? ''),
+          userOverrideActive: Boolean(data.userOverrideActive),
+        })
+      })
+      .catch((err) => {
+        if (!cancelled) setInfraMsg(`加载基础设施配置失败: ${String(err)}`)
+      })
+      .finally(() => {
+        if (!cancelled) setInfraLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open, desktop])
+
+  const handleSaveInfra = async () => {
+    if (infraBusy) return
+    setInfraBusy(true)
+    setInfraMsg(null)
+    try {
+      const res = await engineFetch('/api/desktop/infra-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          infra: {
+            databaseUrl: infraForm.databaseUrl.trim(),
+            milvusHost: infraForm.milvusHost.trim(),
+            milvusPort: Number(infraForm.milvusPort) || 19530,
+            esAddresses: infraForm.esAddresses.trim(),
+            neo4jUri: infraForm.neo4jUri.trim(),
+            neo4jUser: infraForm.neo4jUser.trim(),
+            neo4jPassword: infraForm.neo4jPassword.trim(),
+            redisUrl: infraForm.redisUrl.trim(),
+          },
+        }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const data = (await res.json()) as { message?: string }
+      setInfraMsg(data.message ?? '已保存。请重启本地引擎以生效。')
+      setInfraForm((f) => ({ ...f, userOverrideActive: true, neo4jPassword: '' }))
+    } catch (err) {
+      setInfraMsg(`保存失败: ${String(err)}`)
+    } finally {
+      setInfraBusy(false)
+    }
+  }
+
+  const handleRevertInfra = async () => {
+    if (infraBusy) return
+    setInfraBusy(true)
+    setInfraMsg(null)
+    try {
+      const res = await engineFetch('/api/desktop/infra-config', { method: 'DELETE' })
+      if (!res.ok) throw new Error(await res.text())
+      const data = (await res.json()) as { message?: string }
+      setInfraMsg(data.message ?? '已恢复默认。请重启本地引擎。')
+      setInfraForm((f) => ({ ...f, userOverrideActive: false, neo4jPassword: '' }))
+    } catch (err) {
+      setInfraMsg(`恢复默认失败: ${String(err)}`)
+    } finally {
+      setInfraBusy(false)
+    }
+  }
+
+  const handleRestartEngine = async () => {
+    try {
+      await restartLocalEngine()
+      setInfraMsg('正在重启本地引擎…')
+    } catch (err) {
+      setInfraMsg(`重启失败: ${String(err)}`)
+    }
+  }
 
   const handleSave = async () => {
     if (busy) return
@@ -270,6 +383,12 @@ export function SettingsDialog({
                   <FolderUp className="size-3.5" />
                   发布
                 </TabsTrigger>
+                {desktop && (
+                  <TabsTrigger value="infra">
+                    <Network className="size-3.5" />
+                    服务器
+                  </TabsTrigger>
+                )}
               </TabsList>
               {tab === 'keys' && (
                 <TooltipProvider>
@@ -368,6 +487,117 @@ export function SettingsDialog({
                 />
               </TabsContent>
 
+              {desktop && (
+                <TabsContent value="infra" className="mt-0 flex flex-col gap-3 py-1">
+                  <p className="text-xs text-muted-foreground leading-5">
+                    默认连接打包内置的官方基础设施。可改为你自己的 PostgreSQL / 可选检索服务。
+                    保存后需重启本地引擎。密钥不会写入日志。
+                  </p>
+                  {infraLoading ? (
+                    <div className="flex h-16 items-center justify-center">
+                      <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : (
+                    <>
+                      <KeyField
+                        label="Database URL"
+                        hint="postgresql+asyncpg://user:pass@host:5432/db"
+                        type="text"
+                        value={infraForm.databaseUrl}
+                        reveal
+                        onChange={(v) => setInfraForm((f) => ({ ...f, databaseUrl: v }))}
+                      />
+                      <KeyField
+                        label="Milvus Host（可选）"
+                        type="text"
+                        value={infraForm.milvusHost}
+                        reveal
+                        onChange={(v) => setInfraForm((f) => ({ ...f, milvusHost: v }))}
+                      />
+                      <KeyField
+                        label="Milvus Port"
+                        type="text"
+                        value={infraForm.milvusPort}
+                        reveal
+                        onChange={(v) => setInfraForm((f) => ({ ...f, milvusPort: v }))}
+                      />
+                      <KeyField
+                        label="Elasticsearch addresses（可选）"
+                        type="text"
+                        value={infraForm.esAddresses}
+                        reveal
+                        onChange={(v) => setInfraForm((f) => ({ ...f, esAddresses: v }))}
+                      />
+                      <KeyField
+                        label="Neo4j URI（可选）"
+                        type="text"
+                        value={infraForm.neo4jUri}
+                        reveal
+                        onChange={(v) => setInfraForm((f) => ({ ...f, neo4jUri: v }))}
+                      />
+                      <KeyField
+                        label="Neo4j User"
+                        type="text"
+                        value={infraForm.neo4jUser}
+                        reveal
+                        onChange={(v) => setInfraForm((f) => ({ ...f, neo4jUser: v }))}
+                      />
+                      <KeyField
+                        label="Neo4j Password"
+                        hint="留空表示不修改已保存密码"
+                        value={infraForm.neo4jPassword}
+                        reveal={false}
+                        onChange={(v) => setInfraForm((f) => ({ ...f, neo4jPassword: v }))}
+                      />
+                      <KeyField
+                        label="Redis URL（可选）"
+                        type="text"
+                        value={infraForm.redisUrl}
+                        reveal
+                        onChange={(v) => setInfraForm((f) => ({ ...f, redisUrl: v }))}
+                      />
+                      {infraForm.userOverrideActive && (
+                        <p className="text-[11px] text-muted-foreground">当前使用自定义覆盖（非打包默认）。</p>
+                      )}
+                      {infraMsg && (
+                        <div className="rounded-md border border-border bg-muted/40 px-2 py-2 text-xs leading-5">
+                          {infraMsg}
+                        </div>
+                      )}
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={infraBusy}
+                          onClick={() => void handleSaveInfra()}
+                        >
+                          {infraBusy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                          保存自定义服务器
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={infraBusy}
+                          onClick={() => void handleRevertInfra()}
+                        >
+                          恢复默认
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => void handleRestartEngine()}
+                        >
+                          <RotateCw className="size-3.5" />
+                          重启本地引擎
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </TabsContent>
+              )}
+
             </div>
           </Tabs>
         )}
@@ -376,9 +606,11 @@ export function SettingsDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>
             取消
           </Button>
-          <Button onClick={() => void handleSave()} disabled={busy || loading}>
-            {busy ? '保存中…' : '保存'}
-          </Button>
+          {tab !== 'infra' && (
+            <Button onClick={() => void handleSave()} disabled={busy || loading}>
+              {busy ? '保存中…' : '保存'}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

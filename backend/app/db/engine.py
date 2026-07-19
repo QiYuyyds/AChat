@@ -23,20 +23,33 @@ async def init_db() -> None:
     global _engine, _session_factory
 
     settings = get_settings()
+    url = settings.database_url
 
-    # PostgreSQL (asyncpg) engine configuration
-    _engine = create_async_engine(
-        settings.database_url,
-        echo=False,
-        future=True,
-        pool_size=10,
-        max_overflow=20,
-        pool_pre_ping=False,
-        pool_recycle=3600,
-    )
+    # PostgreSQL (asyncpg) / SQLite engine configuration.
+    # connect_timeout: fail fast on unreachable remote hosts instead of hanging
+    # past the desktop shell health budget (common with public IP + firewall drops).
+    engine_kwargs: dict = {
+        "echo": False,
+        "future": True,
+        "pool_pre_ping": False,
+        "pool_recycle": 3600,
+    }
+    if url.startswith("sqlite"):
+        engine_kwargs.update({"pool_size": 5, "max_overflow": 0})
+    else:
+        engine_kwargs.update(
+            {
+                "pool_size": 10,
+                "max_overflow": 20,
+                # asyncpg: seconds to establish TCP (+ optional SSL)
+                "connect_args": {"timeout": 15},
+            }
+        )
+
+    _engine = create_async_engine(url, **engine_kwargs)
 
     # SQLite needs per-connection PRAGMAs for FK cascade + WAL concurrency.
-    if settings.database_url.startswith("sqlite"):
+    if url.startswith("sqlite"):
 
         @event.listens_for(_engine.sync_engine, "connect")
         def _init_sqlite_connection(dbapi_connection, connection_record):  # type: ignore[no-untyped-def]

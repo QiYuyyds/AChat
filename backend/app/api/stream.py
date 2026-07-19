@@ -29,15 +29,13 @@ async def _resolve_sse_user(request: Request, token: str | None) -> str | None:
     ``?token=`` query param (cross-origin dev / desktop — EventSource cannot set
     Authorization headers). Returns the user_id or None if unauthenticated.
 
-    Desktop mode: cloud JWTs are not signed with the local engine JWT_SECRET.
-    Resolve identity the same way as REST (``resolve_desktop_user`` via official
-    ``/api/auth/me`` + local shadow User), then fall back to local verify.
+    Desktop v1: local JWT (same secret/users as engine primary store). Optional
+    legacy cloud resolve only when cloud_api_client feature flag is on.
     """
-    # Desktop engine: prefer official-cloud validation (not local JWT_SECRET).
     try:
-        from app.desktop.runtime import is_desktop_mode
+        from app.desktop.runtime import cloud_api_client_enabled, is_desktop_mode
 
-        if is_desktop_mode():
+        if is_desktop_mode() and cloud_api_client_enabled():
             from app.desktop.auth import resolve_desktop_user
             from app.desktop.cloud_client import get_cloud_session
 
@@ -52,7 +50,7 @@ async def _resolve_sse_user(request: Request, token: str | None) -> str | None:
                 if user is not None:
                     return user.id
     except Exception:
-        # Fall through to local JWT path (web / tests).
+        # Fall through to local JWT path (web / tests / desktop v1).
         pass
 
     if not token:

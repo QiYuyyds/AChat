@@ -5,21 +5,27 @@
 
 import {
   ENGINE_TOKEN_HEADER,
+  alignLoopbackHost,
   engineFetch,
   engineUrl,
   getDesktopBridge,
   isDesktopMode,
   probeEngineHealth,
+  urlTargetsEngine,
+  waitForEngineToken,
   type DesktopEngineStatus,
 } from '@/shared/desktop'
 
 export {
   ENGINE_TOKEN_HEADER,
+  alignLoopbackHost,
   engineFetch,
   engineUrl,
   getDesktopBridge,
   isDesktopMode,
   probeEngineHealth,
+  urlTargetsEngine,
+  waitForEngineToken,
   type DesktopEngineStatus,
 }
 
@@ -44,45 +50,64 @@ export async function getLocalEngineStatus(): Promise<DesktopEngineStatus | 'web
 }
 
 /**
- * Desktop routing principle (v1):
- * - Auth / account / cloud-authoritative CRUD → official API (API_BASE_URL)
- * - Agent execution / local tools / local SSE → local engine (engineBaseUrl + token)
+ * Desktop routing (v1 pivot):
+ * - **All** business REST/SSE → local engine (`engineBaseUrl`)
+ * - Native: selectDirectory / engine status / restart via bridge
+ * - Pure web (no bridge): unchanged official API_BASE_URL
  *
- * Callers should use `isDesktopMode()` + `engineFetch` for execution plane.
+ * Legacy dual-plane cloud prefixes are gated off (empty) by default.
  */
 export const DESKTOP_LOCAL_ENGINE_PATH_PREFIXES = [
-  '/api/messages', // send / stream execution may target engine in desktop (see task 6.3 wiring)
-  '/api/stream',
-  '/api/fs',
-  '/api/pending',
-  '/api/runs',
+  '/api/',
   '/healthz',
+  '/health',
 ] as const
 
-export const DESKTOP_OFFICIAL_CLOUD_PATH_PREFIXES = [
-  '/api/auth',
-  '/api/profile',
-  '/api/settings',
-  '/api/conversations',
-  '/api/agents',
-  '/api/documents',
-  '/api/memory',
-  '/api/skills',
-  '/api/mcp',
-] as const
+/** @deprecated v0 dual-plane; empty so desktop never routes business traffic to remote API. */
+export const DESKTOP_OFFICIAL_CLOUD_PATH_PREFIXES = [] as const
 
 /**
- * Base URL for Agent execution / tools / local stream in desktop mode.
- * Falls back to official API base for pure web.
+ * Base URL for API traffic in desktop mode = engine (page-aligned host); pure web = officialBase.
  */
 export function executionBaseUrl(officialBase: string): string {
   if (!isDesktopMode()) return officialBase
   const bridge = getDesktopBridge()
-  return bridge?.engineBaseUrl?.replace(/\/$/, '') || officialBase
+  if (!bridge?.engineBaseUrl) return officialBase
+  return alignLoopbackHost(bridge.engineBaseUrl)
 }
 
+/** True when `url` targets the local engine in desktop mode (loopback-aware). */
 export function isExecutionUrl(url: string, officialBase: string): boolean {
   if (!isDesktopMode()) return false
   const engine = executionBaseUrl(officialBase)
-  return engine.length > 0 && url.startsWith(engine)
+  if (!engine) {
+    // Same-origin desktop (static UI served by engine): relative paths
+    return url.startsWith('/api') || url.startsWith('/health')
+  }
+  return urlTargetsEngine(url, engine)
+}
+
+/**
+ * Attach engine token whenever the request is going to the local engine.
+ * Desktop v1: all business traffic is engine-bound — prefer always-on attach.
+ */
+export function attachEngineTokenHeaders(
+  headers: Record<string, string>,
+  url?: string,
+  officialBase?: string,
+): Record<string, string> {
+  if (!isDesktopMode()) return headers
+  // When URL is known, only attach for engine targets; otherwise attach (desktop default).
+  if (url != null && officialBase != null && !isExecutionUrl(url, officialBase)) {
+    return headers
+  }
+  try {
+    const bridge = getDesktopBridge()
+    if (bridge?.engineToken) {
+      headers[ENGINE_TOKEN_HEADER] = bridge.engineToken
+    }
+  } catch {
+    // ignore
+  }
+  return headers
 }

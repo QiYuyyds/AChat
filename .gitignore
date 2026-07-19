@@ -84,3 +84,18 @@ next-env.d.ts
 # Tauri / Rust build outputs
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
+
+# Local debug dumps (may contain JWTs / session data)
+.tmp_*
+.tmp/
+
+# Desktop packaged binaries & built static UI (generate via packaging scripts)
+apps/desktop/resources/ui/
+apps/desktop/src-tauri/resources/ui/
+apps/desktop/src-tauri/resources/engine/**
+!apps/desktop/src-tauri/resources/engine/.gitkeep
+apps/desktop/src-tauri/resources/engine.bak/
+
+# Desktop local infra overrides (defaults stay machine-local; do not commit secrets)
+apps/desktop/configs/infra.default.*.json
+apps/desktop/src-tauri/infra.default.json

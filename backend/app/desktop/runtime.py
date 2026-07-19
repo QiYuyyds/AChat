@@ -7,6 +7,10 @@ import os
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.desktop.config import DesktopConfig
 
 _RUNTIME: DesktopRuntime | None = None
 
@@ -17,12 +21,17 @@ class DesktopRuntime:
     port: int = 0
     data_dir: Path = field(default_factory=lambda: Path.home() / "AppData" / "Roaming" / "AChat")
     engine_token: str = ""
-    official_api_url: str = ""
+    official_api_url: str = ""  # legacy v0 optional
     allowed_origins: list[str] = field(default_factory=list)
     actual_port: int | None = None
+    infra_config_path: Path | None = None
+    ui_dir: Path | None = None
+    desktop_config: DesktopConfig | None = None
+    feature_direct_infra: bool = True
+    feature_cloud_api_client: bool = False
 
     def ensure_layout(self) -> None:
-        for rel in ("logs", "sqlite", "runtime", "workspaces"):
+        for rel in ("logs", "sqlite", "runtime", "workspaces", "config", "ui"):
             (self.data_dir / rel).mkdir(parents=True, exist_ok=True)
 
     def write_handshake(self, port: int, pid: int) -> Path:
@@ -34,6 +43,7 @@ class DesktopRuntime:
             "pid": pid,
             "bind": self.bind,
             "tokenPresent": bool(self.engine_token),
+            "uiOrigin": f"http://{self.bind if self.bind != '0.0.0.0' else '127.0.0.1'}:{port}",
         }
         path.write_text(json.dumps(payload), encoding="utf-8")
         return path
@@ -47,6 +57,23 @@ class DesktopRuntime:
 
 def is_desktop_mode() -> bool:
     return os.environ.get("ACHAT_RUNTIME", "").lower() == "desktop" or _RUNTIME is not None
+
+
+def cloud_api_client_enabled() -> bool:
+    """v0 CloudApiClient path — off by default in v1 (direct infra)."""
+    if os.environ.get("ACHAT_FEATURE_CLOUD_API_CLIENT", "").strip() in ("1", "true", "yes"):
+        return True
+    rt = _RUNTIME
+    return bool(rt and rt.feature_cloud_api_client)
+
+
+def direct_infra_enabled() -> bool:
+    if os.environ.get("ACHAT_FEATURE_DIRECT_INFRA", "1").strip() in ("0", "false", "no"):
+        return False
+    rt = _RUNTIME
+    if rt is not None:
+        return rt.feature_direct_infra
+    return True
 
 
 def get_desktop_runtime() -> DesktopRuntime | None:
@@ -66,6 +93,10 @@ def set_desktop_runtime(runtime: DesktopRuntime) -> DesktopRuntime:
     if runtime.allowed_origins:
         os.environ["ACHAT_ALLOWED_ORIGINS"] = ",".join(runtime.allowed_origins)
         os.environ["CORS_ORIGINS"] = ",".join(runtime.allowed_origins)
+    if runtime.ui_dir:
+        os.environ["ACHAT_UI_DIR"] = str(runtime.ui_dir)
+    os.environ["ACHAT_FEATURE_DIRECT_INFRA"] = "1" if runtime.feature_direct_infra else "0"
+    os.environ["ACHAT_FEATURE_CLOUD_API_CLIENT"] = "1" if runtime.feature_cloud_api_client else "0"
     # Keep workspace under desktop data dir by default.
     os.environ.setdefault("WORKSPACE_ROOT", str(runtime.data_dir / "workspaces"))
     os.environ.setdefault("DATA_DIR", str(runtime.data_dir))
@@ -73,12 +104,23 @@ def set_desktop_runtime(runtime: DesktopRuntime) -> DesktopRuntime:
 
 
 def allocate_port(bind: str, preferred: int) -> int:
-    """Bind briefly to discover an free port when preferred == 0."""
+    """Bind briefly to discover a free port when preferred == 0."""
     if preferred and preferred > 0:
         return preferred
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind((bind, 0))
-        return int(sock.getsockname()[1])
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind((bind, 0))
+            return int(sock.getsockname()[1])
+    except OSError as e:
+        # WinError 10106 (WSAEPROVIDERFAILEDINIT) = broken Winsock inside a
+        # frozen Anaconda build that shipped private ucrtbase/api-ms-win DLLs.
+        raise OSError(
+            e.errno,
+            f"failed to allocate loopback port on {bind!r}: {e}. "
+            "On Windows packaged builds this is often WinError 10106 from "
+            "bundled Anaconda UCRT forwarders (api-ms-win-*.dll / ucrtbase.dll) "
+            "— rebuild with build_engine_windows.ps1 (strips those DLLs).",
+        ) from e
 
 
 def assert_loopback_bind(bind: str) -> None:

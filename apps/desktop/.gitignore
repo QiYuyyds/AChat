@@ -3,3 +3,14 @@ dist/
 *.log
 src-tauri/target/
 src-tauri/gen/
+
+# Built static UI + packaged engine (local/CI artifacts)
+resources/ui/
+src-tauri/resources/ui/
+src-tauri/resources/engine/**
+!src-tauri/resources/engine/.gitkeep
+src-tauri/resources/engine.bak/
+
+# Machine-local infra defaults (may contain secrets)
+configs/infra.default.*.json
+src-tauri/infra.default.json

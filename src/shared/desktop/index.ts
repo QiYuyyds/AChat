@@ -2,6 +2,7 @@ export {
   ENGINE_TOKEN_HEADER,
   getDesktopBridge,
   isDesktopMode,
+  waitForEngineToken,
   type AchatDesktopBridge,
   type AchatDesktopWindow,
   type DesktopEngineStatus,
@@ -13,3 +14,10 @@ export {
   engineUrl,
   probeEngineHealth,
 } from './engine-client'
+
+export {
+  alignLoopbackHost,
+  isLoopbackHostname,
+  sameLoopbackService,
+  urlTargetsEngine,
+} from './url'

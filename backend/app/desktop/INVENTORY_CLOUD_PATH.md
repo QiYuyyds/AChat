@@ -1,32 +1,32 @@
-# Desktop online path inventory (task 3.1)
+# Desktop path inventory (v1 pivot)
 
-Services that today write PG / infra directly and **must** go through official HTTPS API when `ACHAT_RUNTIME=desktop` (online):
+## Authority model (2026-07-19)
 
-| Area | Modules (examples) | Desktop online path |
+| Area | Desktop online path |
+|---|---|
+| Auth / register / refresh | **Local engine** REST → primary **PostgreSQL** (packaged default or user override) |
+| Conversations / messages / agents / settings | **Local engine** SQLAlchemy against primary PG |
+| Provider API keys | `user_settings` on primary store (local read) — **no** mandatory CloudApiClient key fetch |
+| RAG / memory / KG | Optional infra via `infra/factory` **direct** (Milvus/ES/Neo4j) when configured; degrade when absent |
+| Workspace files | **Local disk** |
+| Agent runs / stream | **Local engine** bus + `/api/stream` |
+| Offline | SQLite under `%APPDATA%/AChat/sqlite`; outbox flush → **primary DB** (not official business API) |
+
+## Feature flags
+
+| Flag | Default | Meaning |
 |---|---|---|
-| Conversations / messages | `services/*conversation*`, `api/messages.py`, `api/conversations.py` | Cloud HTTP via `CloudApiClient` / existing REST |
-| Agents / settings / keys | `api/agents.py`, `api/settings.py`, `services/settings_service.py` | Cloud HTTP; keys from `/api/settings` |
-| Artifacts metadata | `api/artifacts.py`, `services/artifact_service.py` | Cloud HTTP for durable metadata |
-| RAG / memory / KG | `services/rag_service.py`, `memory/*`, `graph/*`, `infra/factory.py` | **No** direct Milvus/ES/Neo4j from desktop package; call official cloud APIs |
-| Auth | `api/auth.py` | Official cloud only (webview) |
-| Workspace files | `api/fs.py`, tools fs/bash | **Local disk** (not cloud DB) |
-| Agent runs / stream | `services/agent_runner.py`, `api/stream.py` | **Local engine** execution; persist results via cloud client when online |
+| `featureFlags.directInfra` / `ACHAT_FEATURE_DIRECT_INFRA` | **on** | Wire `DATABASE_URL` + optional infra from desktop config |
+| `featureFlags.cloudApiClient` / `ACHAT_FEATURE_CLOUD_API_CLIENT` | **off** | Legacy v0: CloudApiClient + `/api/auth/me` resolve |
 
-Offline: SQLite outbox under `%APPDATA%/AChat/sqlite` (`OfflineStore`).
+## Retired / optional
 
-## Sync API (task 10.1)
+- **Mandatory** official AChat business HTTPS hop for online persistence — **retired**
+- `CloudApiClient` — kept under feature flag for emergency compatibility
+- Dual-plane frontend (`DESKTOP_OFFICIAL_CLOUD_PATH_PREFIXES`) — desktop routes **all** business traffic to `engineBaseUrl`
 
-Cloud endpoint used by desktop durable writes / outbox flush:
+## Config files
 
-- `POST /api/sync/messages` — UPSERT message rows for owned conversations; **does not** start Agent runs.
-  Body: `{ "messages": [ { id, conversationId, role, parts, status, ... } ] }`
-  Response: `{ "ok": true, "upserted": N }`
-  Conflicts: engine treats HTTP 409/412 as conflict (no silent overwrite).
-
-Legacy fallback (older cloud): `POST /api/conversations/{id}/messages` — may start a cloud run; avoid when sync is available.
-
-## Settings key path (task 10.2)
-
-- Desktop engine pulls `GET /api/settings` over HTTPS with the user access token only after session handoff.
-- Keys never logged; resolution remains `agent.api_key` → user_settings → env.
-- Least privilege: engine only needs the authenticated user's own settings row (existing ownership on `/api/settings`).
+- Packaged: `infra.default.json` (or `--infra-config`)
+- User override: `%APPDATA%/AChat/config/infra.user.json`
+- Settings API: `GET/PUT/DELETE /api/desktop/infra-config`

@@ -8,7 +8,10 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri",
-    "check:config": "node ./scripts/check-official-config.mjs"
+    "build:ui": "node ./scripts/build-ui.mjs",
+    "build:ui:placeholder": "node ./scripts/build-ui-placeholder.mjs",
+    "check:config": "node ./scripts/check-official-config.mjs",
+    "check:infra": "node ./scripts/check-infra-config.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"

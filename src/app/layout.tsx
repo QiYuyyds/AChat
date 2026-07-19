@@ -43,9 +43,11 @@ export default function RootLayout({
     >
       <body className="h-dvh overflow-hidden">
         <ThemeProvider>
-          <AuthGate>
-            <StreamProvider>{children}</StreamProvider>
-          </AuthGate>
+          {/* StreamProvider must sit outside AuthGate's loading spinner branch,
+              otherwise desktop SSE is torn down on every / ↔ /login paint. */}
+          <StreamProvider>
+            <AuthGate>{children}</AuthGate>
+          </StreamProvider>
         </ThemeProvider>
         <GlobalSearch />
       </body>

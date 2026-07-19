@@ -21,7 +21,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { editAndResendMessage, regenerateLastResponse, toggleMessagePin, withdrawMessage } from '@/lib/api'
-import { API_BASE_URL } from '@/lib/config'
+import { getApiBaseUrl } from '@/lib/config'
 import { formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { MessageRow } from '@/db/schema'
@@ -183,7 +183,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
       ) : isUser ? (
         <Avatar className="size-8 shrink-0 bg-primary text-primary-foreground">
           {userAvatarUrl && (
-            <AvatarImage src={`${API_BASE_URL}${userAvatarUrl}`} alt="我" />
+            <AvatarImage src={`${getApiBaseUrl()}${userAvatarUrl}`} alt="我" />
           )}
           <AvatarFallback className="bg-primary text-sm text-primary-foreground">
             我

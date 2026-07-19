@@ -4,18 +4,27 @@ import type { NextConfig } from 'next'
 // /deployments/* 透明转发到后端（previewPath 解析为 window.location.origin 同源）。
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000'
 
-const nextConfig: NextConfig = {
-  // Electron 打包用：生成 .next/standalone 自包含 server（详见 Spec 12 §2 / §6）
-  output: 'standalone',
+/** Desktop installable UI: pure static files served by local engine (D26). */
+const DESKTOP_STATIC = process.env.ACHAT_DESKTOP_STATIC === '1'
 
-  // 同源资源(iframe 预览等 —— 删 TS 后端后前端已无 /api 路由)透明转发到 Python 后端。
-  // 注:普通 REST/SSE 走绝对 API_BASE_URL 直连后端,不经此 rewrite;同源生产建议用真实反代。
-  async rewrites() {
-    return [
-      { source: '/deployments/:path*', destination: `${BACKEND_URL}/deployments/:path*` },
-      { source: '/api/:path*', destination: `${BACKEND_URL}/api/:path*` },
-    ]
-  },
+const nextConfig: NextConfig = {
+  // Electron: standalone server. Desktop Tauri package: static export into resources/ui.
+  output: DESKTOP_STATIC ? 'export' : 'standalone',
+
+  // Static export cannot optimize images through the Next image server.
+  images: DESKTOP_STATIC ? { unoptimized: true } : undefined,
+
+  // rewrites cannot be used with `output: 'export'`; desktop talks to engineBaseUrl directly.
+  ...(DESKTOP_STATIC
+    ? {}
+    : {
+        async rewrites() {
+          return [
+            { source: '/deployments/:path*', destination: `${BACKEND_URL}/deployments/:path*` },
+            { source: '/api/:path*', destination: `${BACKEND_URL}/api/:path*` },
+          ]
+        },
+      }),
 
   // 不让 webpack bundle native / SDK 依赖；运行时走 require/import，保留 native binding 与子进程能力
   serverExternalPackages: [

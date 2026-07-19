@@ -1,4 +1,4 @@
-import { API_BASE_URL } from '@/lib/config'
+import { getApiBaseUrl } from '@/lib/config'
 import { authFetch } from '@/lib/api'
 
 async function json<T>(req: Promise<Response>): Promise<T> {
@@ -85,7 +85,7 @@ export async function fetchLongTermMemories(params: {
   if (params.size) search.set('size', String(params.size))
   const qs = search.toString()
   return json<LongTermMemoryListResponse>(
-    authFetch(`${API_BASE_URL}/api/memory/long-term${qs ? '?' + qs : ''}`),
+    authFetch(`${getApiBaseUrl()}/api/memory/long-term${qs ? '?' + qs : ''}`),
   )
 }
 
@@ -94,7 +94,7 @@ export async function updateLongTermMemory(
   body: LTMUpdateBody,
 ): Promise<{ ok: boolean }> {
   return json<{ ok: boolean }>(
-    authFetch(`${API_BASE_URL}/api/memory/long-term/${id}`, {
+    authFetch(`${getApiBaseUrl()}/api/memory/long-term/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -104,7 +104,7 @@ export async function updateLongTermMemory(
 
 export async function deleteLongTermMemory(id: number): Promise<{ ok: boolean }> {
   return json<{ ok: boolean }>(
-    authFetch(`${API_BASE_URL}/api/memory/long-term/${id}`, {
+    authFetch(`${getApiBaseUrl()}/api/memory/long-term/${id}`, {
       method: 'DELETE',
     }),
   )
@@ -114,7 +114,7 @@ export async function deleteLongTermMemory(id: number): Promise<{ ok: boolean }>
 
 export async function fetchPreferences(): Promise<PreferenceListResponse> {
   return json<PreferenceListResponse>(
-    authFetch(`${API_BASE_URL}/api/memory/preferences`),
+    authFetch(`${getApiBaseUrl()}/api/memory/preferences`),
   )
 }
 
@@ -123,7 +123,7 @@ export async function updatePreference(
   value: string,
 ): Promise<{ ok: boolean }> {
   return json<{ ok: boolean }>(
-    authFetch(`${API_BASE_URL}/api/memory/preferences/${encodeURIComponent(key)}`, {
+    authFetch(`${getApiBaseUrl()}/api/memory/preferences/${encodeURIComponent(key)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value }),
@@ -133,7 +133,7 @@ export async function updatePreference(
 
 export async function deletePreference(key: string): Promise<{ ok: boolean }> {
   return json<{ ok: boolean }>(
-    authFetch(`${API_BASE_URL}/api/memory/preferences/${encodeURIComponent(key)}`, {
+    authFetch(`${getApiBaseUrl()}/api/memory/preferences/${encodeURIComponent(key)}`, {
       method: 'DELETE',
     }),
   )
@@ -143,7 +143,7 @@ export async function deletePreference(key: string): Promise<{ ok: boolean }> {
 
 export async function fetchSessionMemories(): Promise<SessionMemoryListResponse> {
   return json<SessionMemoryListResponse>(
-    authFetch(`${API_BASE_URL}/api/memory/sessions`),
+    authFetch(`${getApiBaseUrl()}/api/memory/sessions`),
   )
 }
 
@@ -151,6 +151,6 @@ export async function fetchSessionMemoryDetail(
   conversationId: string,
 ): Promise<SessionMemoryDetail> {
   return json<SessionMemoryDetail>(
-    authFetch(`${API_BASE_URL}/api/memory/session/${conversationId}`),
+    authFetch(`${getApiBaseUrl()}/api/memory/session/${conversationId}`),
   )
 }

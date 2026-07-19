@@ -23,7 +23,7 @@ import {
   uploadAvatar,
   type ProfileUpdateBody,
 } from '@/lib/api'
-import { API_BASE_URL } from '@/lib/config'
+import { getApiBaseUrl } from '@/lib/config'
 import { useAuthStore } from '@/stores/auth-store'
 
 interface ProfileForm {
@@ -110,7 +110,7 @@ export function ProfileDialog({
     try {
       // Profile fields go through the profile API
       const patch: ProfileUpdateBody = {}
-      const profileKeys: Array<keyof ProfileForm> = ['name', 'location', 'hometown', 'preferences', 'bio']
+      const profileKeys = ['name', 'location', 'hometown', 'preferences', 'bio'] as const
       for (const key of profileKeys) {
         const current = form[key].trim()
         const original = initial[key].trim()
@@ -155,7 +155,7 @@ export function ProfileDialog({
   }
 
   const avatarSrc = authUser?.avatarUrl
-    ? `${API_BASE_URL}${authUser.avatarUrl}`
+    ? `${getApiBaseUrl()}${authUser.avatarUrl}`
     : undefined
 
   return (
@@ -313,7 +313,7 @@ export function ProfileButton() {
   const [open, setOpen] = useState(false)
   const user = useAuthStore((s) => s.user)
   const avatarSrc = user?.avatarUrl
-    ? `${API_BASE_URL}${user.avatarUrl}`
+    ? `${getApiBaseUrl()}${user.avatarUrl}`
     : undefined
 
   return (

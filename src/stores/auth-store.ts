@@ -2,7 +2,12 @@
 
 import { create } from 'zustand'
 
-import { API_BASE_URL } from '@/lib/config'
+import { getApiBaseUrl } from '@/lib/config'
+import {
+  attachEngineTokenHeaders,
+  isDesktopMode,
+  waitForEngineToken,
+} from '@/lib/desktop'
 
 export interface AuthUser {
   id: string
@@ -32,10 +37,14 @@ interface AuthState {
 }
 
 const TOKEN_STORAGE_KEY = 'agenthub_access_token'
+const REFRESH_STORAGE_KEY = 'agenthub_refresh_token'
 
-function storeToken(token: string): void {
+function storeToken(token: string, refreshToken?: string | null): void {
   try {
     localStorage.setItem(TOKEN_STORAGE_KEY, token)
+    if (refreshToken) {
+      localStorage.setItem(REFRESH_STORAGE_KEY, refreshToken)
+    }
   } catch {
     // localStorage may be unavailable (SSR, privacy mode)
   }
@@ -44,16 +53,52 @@ function storeToken(token: string): void {
 function clearToken(): void {
   try {
     localStorage.removeItem(TOKEN_STORAGE_KEY)
+    localStorage.removeItem(REFRESH_STORAGE_KEY)
   } catch {
     // best-effort
   }
 }
 
-/** Hand user JWT to local engine for cloud API calls (desktop only; never logs token). */
+function getRefreshToken(): string | null {
+  try {
+    return localStorage.getItem(REFRESH_STORAGE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function authRequestInit(init?: RequestInit): RequestInit {
+  const headers: Record<string, string> = {
+    ...(init?.headers ? Object.fromEntries(new Headers(init.headers).entries()) : {}),
+  }
+  // Desktop: always attach engine token for local engine auth endpoints.
+  attachEngineTokenHeaders(headers)
+  return {
+    ...init,
+    credentials: isDesktopMode() ? 'omit' : 'include',
+    headers,
+  }
+}
+
+async function ensureDesktopEngineReady(): Promise<void> {
+  if (typeof window === 'undefined') return
+  const w = window as Window & { __TAURI_INTERNALS__?: unknown; __TAURI__?: unknown }
+  const looksDesktop =
+    w.__TAURI_INTERNALS__ != null ||
+    w.__TAURI__ != null ||
+    window.achatDesktop?.isDesktop === true
+  if (!looksDesktop) return
+  await waitForEngineToken(8000)
+}
+
+/**
+ * Optional legacy handoff for cloud_api_client feature flag.
+ * v1 local JWT does not require this; keep best-effort no-op on failure.
+ */
 async function handoffDesktopSession(token: string | null, userId?: string | null): Promise<void> {
   try {
-    const { engineFetch, isDesktopMode } = await import('@/lib/desktop')
-    if (!isDesktopMode()) return
+    const { engineFetch, isDesktopMode: desk } = await import('@/lib/desktop')
+    if (!desk()) return
     if (token) {
       await engineFetch('/api/desktop/session', {
         method: 'POST',
@@ -64,7 +109,7 @@ async function handoffDesktopSession(token: string | null, userId?: string | nul
       await engineFetch('/api/desktop/session', { method: 'DELETE' })
     }
   } catch {
-    // best-effort; engine may still be starting
+    // best-effort
   }
 }
 
@@ -86,9 +131,33 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   initialize: async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/api/auth/me`, {
-        credentials: 'include',
-      })
+      // Desktop WebView: wait for shell token before any /api/auth/* call.
+      await ensureDesktopEngineReady()
+
+      const base = getApiBaseUrl()
+      const token = getAccessToken()
+      const headers: Record<string, string> = {}
+      if (token) headers.Authorization = `Bearer ${token}`
+      // Desktop without a bearer token cannot use cookies across engine origin —
+      // treat as logged-out and show login (do not hang on failed cookie me).
+      if (isDesktopMode() && !token) {
+        const configRes = await fetch(`${base}/api/auth/config`, authRequestInit())
+        const config = configRes.ok ? await configRes.json() : {}
+        set({
+          user: null,
+          config: {
+            allowRegistration: config.allowRegistration ?? false,
+            vipLoginEnabled: config.vipLoginEnabled ?? false,
+          },
+          isAuthenticated: false,
+          isLoading: false,
+        })
+        return
+      }
+      const res = await fetch(
+        `${base}/api/auth/me`,
+        authRequestInit({ headers }),
+      )
       if (res.ok) {
         const data = await res.json()
         set({
@@ -100,18 +169,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           isAuthenticated: true,
           isLoading: false,
         })
-        // Desktop engine needs the JWT for cloud mirror; cookie-only sessions
-        // may not have localStorage token — refresh to obtain one.
+        // Cookie session may be valid without a localStorage access token.
+        // Do NOT force refreshToken() here: empty-body refresh fails on desktop
+        // and previously cleared auth, which can flap AuthGate between / and /login.
         const existing = getAccessToken()
         if (existing) {
           void handoffDesktopSession(existing, data.user?.id)
-        } else {
-          void get().refreshToken()
         }
       } else {
-        const configRes = await fetch(`${API_BASE_URL}/api/auth/config`, {
-          credentials: 'include',
-        })
+        const configRes = await fetch(`${base}/api/auth/config`, authRequestInit())
         const config = configRes.ok ? await configRes.json() : {}
         set({
           user: null,
@@ -129,19 +195,33 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   login: async (email: string, password: string) => {
-    const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ email, password }),
-    })
+    await ensureDesktopEngineReady()
+    const base = getApiBaseUrl()
+    const doLogin = () =>
+      fetch(
+        `${base}/api/auth/login`,
+        authRequestInit({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        }),
+      )
+    let res = await doLogin()
+    // One retry after waiting for a late shell reinject (cold start race).
+    if (res.status === 401 && isDesktopMode()) {
+      const body = await res.clone().text()
+      if (body.includes('Invalid engine token') || body.includes('Engine token')) {
+        await waitForEngineToken(3000)
+        res = await doLogin()
+      }
+    }
     if (!res.ok) {
       const body = await res.text()
       throw new Error(body || `Login failed (${res.status})`)
     }
     const data = await res.json()
     const token = data.tokens?.access_token ?? ''
-    storeToken(token)
+    storeToken(token, data.tokens?.refresh_token ?? null)
     set({
       user: data.user,
       config: {
@@ -154,19 +234,32 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   vipLogin: async (password: string) => {
-    const res = await fetch(`${API_BASE_URL}/api/auth/vip-login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ password }),
-    })
+    await ensureDesktopEngineReady()
+    const base = getApiBaseUrl()
+    const doVip = () =>
+      fetch(
+        `${base}/api/auth/vip-login`,
+        authRequestInit({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password }),
+        }),
+      )
+    let res = await doVip()
+    if (res.status === 401 && isDesktopMode()) {
+      const body = await res.clone().text()
+      if (body.includes('Invalid engine token') || body.includes('Engine token')) {
+        await waitForEngineToken(3000)
+        res = await doVip()
+      }
+    }
     if (!res.ok) {
       const body = await res.text()
       throw new Error(body || `VIP login failed (${res.status})`)
     }
     const data = await res.json()
     const token = data.tokens?.access_token ?? ''
-    storeToken(token)
+    storeToken(token, data.tokens?.refresh_token ?? null)
     set({
       user: data.user,
       config: {
@@ -179,19 +272,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   register: async (email: string, name: string, password: string) => {
-    const res = await fetch(`${API_BASE_URL}/api/auth/register`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({ email, name, password }),
-    })
+    const base = getApiBaseUrl()
+    const res = await fetch(
+      `${base}/api/auth/register`,
+      authRequestInit({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, name, password }),
+      }),
+    )
     if (!res.ok) {
       const body = await res.text()
       throw new Error(body || `Registration failed (${res.status})`)
     }
     const data = await res.json()
     const token = data.tokens?.access_token ?? ''
-    storeToken(token)
+    storeToken(token, data.tokens?.refresh_token ?? null)
     set({
       user: data.user,
       config: {
@@ -205,10 +301,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: async () => {
     try {
-      await fetch(`${API_BASE_URL}/api/auth/logout`, {
-        method: 'POST',
-        credentials: 'include',
-      })
+      const base = getApiBaseUrl()
+      await fetch(`${base}/api/auth/logout`, authRequestInit({ method: 'POST' }))
     } catch {
       // best-effort
     }
@@ -221,14 +315,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (refreshPromise) return refreshPromise
     refreshPromise = (async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
-          method: 'POST',
-          credentials: 'include',
-        })
+        const base = getApiBaseUrl()
+        const refresh = getRefreshToken()
+        // Desktop (cross-origin) has no cookie: must send refreshToken in body.
+        // Web can rely on cookie; body still works when present.
+        const res = await fetch(
+          `${base}/api/auth/refresh`,
+          authRequestInit({
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(
+              refresh ? { refreshToken: refresh } : {},
+            ),
+          }),
+        )
         if (res.ok) {
           const data = await res.json()
           const token = data.tokens?.access_token ?? ''
-          storeToken(token)
+          storeToken(token, data.tokens?.refresh_token ?? refresh)
           set({
             user: data.user,
             config: {

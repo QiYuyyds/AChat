@@ -4,12 +4,13 @@ import {
   isDesktopMode,
   type DesktopEngineStatus,
 } from './bridge'
+import { alignLoopbackHost } from './url'
 
 /** Build absolute URL against the local engine when desktop mode is active. */
 export function engineUrl(path: string): string | null {
   const bridge = getDesktopBridge()
   if (!bridge) return null
-  const base = bridge.engineBaseUrl.replace(/\/$/, '')
+  const base = alignLoopbackHost(bridge.engineBaseUrl)
   const suffix = path.startsWith('/') ? path : `/${path}`
   return `${base}${suffix}`
 }

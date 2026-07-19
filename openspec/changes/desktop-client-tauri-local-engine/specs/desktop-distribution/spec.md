@@ -1,22 +1,36 @@
 ## ADDED Requirements
 
-### Requirement: Windows installer SHALL bundle shell and local engine runtime
+### Requirement: Windows installer SHALL bundle shell, local engine runtime, and static frontend
 
-The v1 distribution artifact MUST be a Windows installer or packaged app that includes the Tauri shell and the local engine runtime dependencies required to start without a pre-installed Python from the user. It MUST NOT require the user to clone the git repository.
+The v1 distribution artifact MUST be a Windows installer or packaged app that includes the Tauri shell, the local engine runtime dependencies required to start without a pre-installed Python from the user, and the packaged static frontend assets. It MUST NOT require the user to clone the git repository.
 
 #### Scenario: Clean machine install
 - **WHEN** a user without the AChat repo installs the desktop package on Windows
-- **THEN** they can launch the app and reach the official login UI after engine start
-- **AND** they are not instructed to install Python as a hard prerequisite for basic launch.
+- **THEN** they can launch the app and reach the local login UI after engine start
+- **AND** they are not instructed to install Python or Node as a hard prerequisite for basic launch.
 
-### Requirement: Package SHALL embed official endpoint configuration
+### Requirement: Package SHALL embed default infrastructure configuration and allow user overrides
 
-The package MUST contain fixed official frontend and API base URLs (or build-flavor equivalents) used by the shell and local engine. v1 MUST NOT require the end user to enter infrastructure connection strings for PostgreSQL/Milvus.
+The package MUST contain default infrastructure connection configuration for official servers (PostgreSQL and optional search/vector/graph services as required). End users MUST NOT be forced through a first-run wizard to paste infra URLs for the default official path. The product MUST still allow users to override infra settings to their own servers after install (settings UI or documented config file).
 
 #### Scenario: First launch configuration burden
-- **WHEN** a new user finishes installation and launches the app
+- **WHEN** a new user finishes installation and launches the app with network access to default infra
 - **THEN** they are not forced through a wizard to paste Postgres/Milvus URLs for default official use
-- **AND** the app targets the packaged official endpoints.
+- **AND** the app targets the packaged default infrastructure endpoints.
+
+#### Scenario: User switches to self-hosted infrastructure
+- **WHEN** a user enters valid custom infrastructure settings and saves them
+- **THEN** the local engine uses those settings on subsequent operations
+- **AND** the change does not require rebuilding the installer.
+
+### Requirement: Package SHALL NOT depend on a remote official business frontend at runtime
+
+The installed app MUST be able to present its primary UI from packaged local assets served on loopback. A remote official AChat business web deployment MUST NOT be a hard runtime dependency for opening the main UI.
+
+#### Scenario: Official business web is unreachable
+- **WHEN** the remote official product website is down but default infrastructure and local engine can start
+- **THEN** the desktop app can still load its local UI
+- **AND** online features that need the primary database behave according to infra reachability, not business-web reachability.
 
 ### Requirement: Distribution channel SHALL support first manual download and later in-app whole-package update
 
@@ -49,7 +63,7 @@ Desktop packages MUST NOT include Anthropic Claude Code CLI or OpenAI Codex CLI 
 
 ### Requirement: Desktop data directory SHALL live under per-user application data
 
-Local engine state (logs, SQLite offline store, runtime files) MUST default under the Windows per-user application data location for AChat, not under Program Files.
+Local engine state (logs, SQLite offline store, user infra overrides, runtime files) MUST default under the Windows per-user application data location for AChat, not under Program Files.
 
 #### Scenario: Engine writes offline cache
 - **WHEN** the local engine creates SQLite offline data
@@ -70,8 +84,3 @@ Regeneration pipeline (documented for maintainers):
 - **WHEN** a user installs a desktop package whose build used the current generated icons
 - **THEN** the shortcut/taskbar/window icon is recognizably the product brand mark from `src/app/favicon.ico`
 - **AND** the package does not rely on empty or corrupt scaffold `icons/*` placeholders.
-
-#### Scenario: Regenerating icons for a new release
-- **WHEN** maintainers update the source brand file and run the generate-icons script, then rebuild the installer
-- **THEN** the new package embeds the updated icons without inventing a second unrelated logo
-- **AND** shipping only updated files under `icons/` without a new package build is not considered a complete release step.

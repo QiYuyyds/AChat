@@ -22,7 +22,8 @@ class _FakeClient:
         return _FakeResp(self.status_code)
 
 
-def test_enqueue_and_flush_success(tmp_path):
+def test_enqueue_and_flush_success_via_legacy_cloud_client(tmp_path):
+    """When a cloud client is injected, outbox still flushes over HTTP (legacy)."""
     store = OfflineStore(tmp_path / "offline.db")
     item_id = store.enqueue(
         "message.create",

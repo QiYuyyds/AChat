@@ -15,6 +15,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const { isLoading, isAuthenticated, initialize, user } = useAuthStore()
   const setUserId = useAppStore((s) => s.setUserId)
   const initialized = useRef(false)
+  const lastRedirect = useRef<string | null>(null)
 
   useEffect(() => {
     if (!initialized.current) {
@@ -32,12 +33,23 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isLoading) return
 
+    let target: string | null = null
     if (!isAuthenticated && !isPublicRoute) {
-      router.replace('/login')
+      target = '/login'
     } else if (isAuthenticated && isPublicRoute) {
-      router.replace('/')
+      target = '/'
     }
-  }, [isLoading, isAuthenticated, isPublicRoute, router])
+
+    // Avoid hammering router.replace on every render / unstable router identity.
+    // Also ignore when we just redirected to the same target (Strict Mode / remount).
+    if (!target || target === pathname || lastRedirect.current === target) {
+      if (target === null) lastRedirect.current = null
+      return
+    }
+    lastRedirect.current = target
+    // Use replace with scroll:false to reduce visible "full refresh" flash.
+    router.replace(target, { scroll: false })
+  }, [isLoading, isAuthenticated, isPublicRoute, pathname, router])
 
   // Loading / redirecting: always paint a solid background so WebView is never blank.
   if (isLoading || (!isAuthenticated && !isPublicRoute) || (isAuthenticated && isPublicRoute)) {

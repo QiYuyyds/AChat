@@ -2,10 +2,10 @@
 
 ### Requirement: Frontend SHALL detect desktop mode only via shell injection
 
-The official frontend MUST treat the session as desktop mode when `window.achatDesktop?.isDesktop === true`. Absence of the injection MUST keep pure web behavior. The frontend MUST NOT permanently switch to desktop mode solely because an arbitrary localhost port responds.
+The frontend MUST treat the session as desktop mode when `window.achatDesktop?.isDesktop === true`. Absence of the injection MUST keep pure web behavior. The frontend MUST NOT permanently switch to desktop mode solely because an arbitrary localhost port responds.
 
 #### Scenario: Browser visit without injection
-- **WHEN** a user opens the official frontend in a normal browser without Tauri injection
+- **WHEN** a user opens the web frontend in a normal browser without Tauri injection
 - **THEN** desktop-only bridge APIs are not required
 - **AND** the app behaves as the existing web client.
 
@@ -13,23 +13,34 @@ The official frontend MUST treat the session as desktop mode when `window.achatD
 - **WHEN** the page runs inside the desktop shell with `window.achatDesktop` injected
 - **THEN** the frontend enables desktop engine integration paths.
 
-### Requirement: Frontend SHALL call local engine with engine token
+### Requirement: Frontend SHALL call the local engine for all business APIs in desktop mode
 
-In desktop mode, requests to the local engine base URL MUST include the session engine token using the agreed header (for example `X-Engine-Token`). The frontend MUST obtain the token from `window.achatDesktop`, not from user-typed input.
+In desktop mode, REST and SSE business APIs (including auth, conversations, settings, agents, messages, and stream) MUST target the local engine base URL (or same-origin local UI host that reverse-proxies to it). Requests to the local engine MUST include the session engine token using the agreed header (for example `X-Engine-Token`) when required by the engine. The frontend MUST obtain the token from `window.achatDesktop`, not from user-typed input.
 
 #### Scenario: Desktop starts an agent run on the local engine
-- **WHEN** the desktop frontend invokes a local engine API
-- **THEN** the request targets `engineBaseUrl`
-- **AND** includes the injected engine token.
+- **WHEN** the desktop frontend invokes a business or execution API
+- **THEN** the request targets `engineBaseUrl` (or same-origin local host)
+- **AND** includes the injected engine token when required.
 
-### Requirement: Frontend SHALL continue using official cloud auth for account APIs
+#### Scenario: Desktop login stays on local engine
+- **WHEN** the user submits credentials on the login page inside the desktop shell
+- **THEN** authentication is performed against the local engine auth API
+- **AND** the client does not require a remote official AChat business API host for login.
 
-Login, registration, token refresh, and cloud-authoritative resource APIs MUST continue to use the existing user auth mechanisms against the official API. Engine token MUST NOT replace user JWT/cookies for cloud authorization.
+### Requirement: Frontend SHALL treat loopback host aliases as one engine service
 
-#### Scenario: User logs in from desktop window
-- **WHEN** the user submits credentials on the official login page inside the desktop shell
-- **THEN** authentication is performed against the official cloud auth API
-- **AND** subsequent cloud calls use the established user session.
+In desktop mode, the frontend MUST treat `localhost`, `127.0.0.1`, and IPv6 loopback (`::1`) with the **same port** as the same local engine service when resolving `engineBaseUrl`, deciding whether a request targets the engine, and attaching the session engine token. The browser Origin model compares hostnames as strings (`http://localhost` ≠ `http://127.0.0.1`); the product MUST NOT assume same-machine implies same-origin, and MUST NOT half-align URLs (rewrite host in one layer while matching tokens with an unaligned string in another).
+
+#### Scenario: Dev UI on localhost, engine on 127.0.0.1
+- **WHEN** the page origin is `http://localhost:3000` (or similar)
+- **AND** `window.achatDesktop.engineBaseUrl` is `http://127.0.0.1:<port>`
+- **THEN** business REST calls to the local engine still include the injected engine token (for example `X-Engine-Token`)
+- **AND** URL matching does not fail solely because the request host string is `localhost` while the bridge reports `127.0.0.1`.
+
+#### Scenario: Half-alignment is forbidden
+- **WHEN** any layer rewrites the engine base host to match the page hostname
+- **THEN** token attachment and “is this the local engine?” checks MUST use the same loopback-aware logic
+- **AND** a protected engine API MUST NOT return 401 solely due to a missing engine token caused by host-string mismatch.
 
 ### Requirement: Frontend SHALL surface local engine status
 

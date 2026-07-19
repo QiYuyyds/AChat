@@ -1,289 +1,296 @@
 ## Context
 
-AChat 是 local-first 的多 Agent 协作平台：前端 Next.js、后端 FastAPI、主库存 PostgreSQL，可选 Milvus/ES/Neo4j/Redis 等。当前已能在服务器上部署完整 Web，用户浏览器访问；Agent 工具与 workspace 语义依赖「执行面与磁盘同机」。
+AChat 是多 Agent 协作平台：前端 Next.js、后端 FastAPI、主库存 PostgreSQL，可选 Milvus/ES/Neo4j/Redis 等。Web 形态前后端可分部署；桌面形态需要 Windows 安装包。
 
-旧桌面方案（`desktop-electron` / change `desktop-electron-python`）假设壳内再起 Next +（或）本机连库/填 infra。与已定产品目标冲突：
+### 历史 v0（已实现骨架，产品方向已 pivot）
 
-- 前端**已经**部署在固定服务器地址
-- PG/Milvus 等 infra 在服务器，客户端**不直连数据库**
-- 需要 Windows 安装包分发给他人：登录同一账号体系即可用
-- 仍需本机目录、CLI、弱网续跑 → 本机必须有引擎进程
+早期决策：**Tauri 壳 + 本机引擎 + 远端官方前端/API**。引擎不直连 PG/infra，在线权威经官方 HTTPS API；前端双平面（云权威 + 本机执行）。对应实现与 tasks 1–12 已完成勾选。
 
-本设计定义新权威桌面架构：**Tauri 壳 + 本机引擎 + 远端官方前端/API**。
+### 当前 v1 产品方向（2026-07-19 用户对齐）
+
+```
+用户电脑（安装包）
+├─ Tauri 壳
+├─ 本地静态前端   ← 只访问本机后端；不访问官方业务站/业务 API
+└─ 本地后端引擎   ← 完整 FastAPI 业务进程
+        │
+        ├─ 直连默认官方基础设施（PG / Milvus / ES / Neo4j …）
+        ├─ 设置页可改为用户自己的 infra
+        ├─ 模型：用户 API Key 直连厂商 + 本机 Claude/Codex CLI
+        └─ 本机 SQLite 缓存 + 服务器 PG 主库
+```
+
+**不依赖**：官方 AChat 业务 Web / 官方业务 API 中转。  
+**仍依赖（默认）**：服务器上的基础设施。  
+**可选**：用户自配 infra。
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Windows 安装包：双击安装 → 启动壳与本机引擎 → 打开官方前端 → 登录后使用与 Web 同一套 AChat
-- Agent 循环、工具、本机 workspace/CLI 在本机引擎执行；模型按现有逻辑直连厂商
-- 在线主数据经 HTTPS 写云端 API（PG 权威）；不暴露 DB 连接串给客户端
-- 离线用本机 SQLite 续跑，上线尽力同步；多设备冲突 v1 仅提示
-- 本机引擎防任意网页调用（engine token + 官方前端 Origin）
-- 整包自动更新；v1 不代码签名
-- 与现有服务器部署对接，不强制先拆分前端/API/infra 拓扑
+- Windows 安装包：安装 → 启动壳与本机引擎 → 打开**本机静态前端** → 登录（同一多用户体系，本机后端对主库鉴权）→ 使用与 Web 同构的产品能力
+- 前端业务请求只打本机引擎；无桥时纯 Web 行为不变
+- 本机引擎完整提供 REST/SSE；Agent/工具/workspace 在本机
+- 默认直连官方 infra；设置可覆盖为用户服务器
+- 主库 PG 权威 + 本机 SQLite 缓存/outbox；弱网续跑；冲突可见
+- 模型：API Key 本机直连 + CLI 检测不捆绑
+- loopback + engine token + 本机 Origin；沙箱/黑名单
+- 整包更新；v1 可不签名
 
 **Non-Goals（v1）:**
 
 - macOS / Linux 安装包
 - 代码签名 / 微软商店
-- 用户可配置第三方服务器地址（安装包写死官方 URL）
 - 捆绑 Claude/Codex CLI
-- 模型请求统一云端代理
-- 多设备离线精致合并 / CRDT
-- 在本机再起 Next 或打包第二份前端业务 UI
-- 重做 Web/桌面功能产品矩阵（同一产品）
+- 模型统一云端代理
+- 多设备离线 CRDT
+- 把 infra 进程（PG/Milvus…）打进安装包
+- 继续以**远程官方前端**作为桌面主 UI（v0 路径退役）
+- 强制用户只能用官方 infra、不可自配（已明确要可自配）
 
 ## Decisions
 
-### D1: 交付形态 = 远端前端 + 本机引擎（非纯套壳、非本机全栈 UI）
+### 状态说明
 
-**Choice**: Tauri 窗口加载固定 `OFFICIAL_WEB_URL`；安装包含壳 + 本机引擎运行时；不打包/不启动本机 Next。
+| 编号 | 状态 |
+|---|---|
+| D1–D13、D18 部分、D19 中「官方远程前端」假设 | **Superseded** by D21+（实现可残留，须按 D21+ 改造） |
+| D14–D17、D20 | **仍有效**（SSE 本机、读路径、AuthGate、图标），语义上「官方」改为「本机引擎/主库」处见修订注 |
+| D21–D31 | **当前权威** |
 
-**Rationale**: 前端已在服务器维护一份即可；本机目录/CLI/离线要求必须有本机进程，故不能纯套壳。
+---
 
-**Alternatives**: 纯套壳（无本机能力）；本机再起前端（重复部署、包更大）。
+### D21: 交付形态 = 本机静态前端 + 本机完整后端 + 远程 infra（权威）
 
-### D2: 壳技术 = Tauri 2
+**Choice**: 安装包内嵌静态前端资源 + local engine（完整 FastAPI）。壳在引擎 health 就绪后导航到**本机** UI origin（通常 `http://127.0.0.1:<enginePort>/`）。**不**导航远程 `OFFICIAL_WEB_URL` 作为主路径。
 
-**Choice**: Windows 上用 Tauri 2 做窗口、托盘、单实例、更新、原生目录对话框、注入桥接。
+**Rationale**: 用户要求前后端不访问官方业务服务器；infra 仍可在服务器。静态内嵌（方案 A）避免本机再起 Node/Next 长驻。
 
-**Rationale**: 业务不在壳内；Tauri 包体与系统 WebView 更合适。架构与 Electron 可替换，但本 change 锁定 Tauri。
+**Alternatives**: v0 远程前端（已否决）；本机再起 Next standalone（更重，方案 B，非本轮）。
 
-**Alternatives**: Electron（更熟、包更大）；Wails 等（生态弱于 Tauri 对本项目）。
+**Supersedes**: D1, D12 步骤 5–6 的远程导航假设, D13 双平面云路由表。
 
-### D3: 本机引擎 = 现有后端 desktop 模式，Agent 在本机跑
+### D22: 壳技术 = Tauri 2（不变）
 
-**Choice**: 同一套 FastAPI/服务代码，`ACHAT_RUNTIME=desktop`；负责 AgentRunner/工具/CLI/workspace；在线持久化走云端 HTTP 客户端；离线走 SQLite。
+同 D2。业务仍不在壳内；壳只做窗口/生命周期/桥/更新。
 
-**Rationale**: 复用 Adapter/工具/沙箱；避免「云端跑 Agent 再遥控本机文件」的复杂桥。
-
-**Alternatives**: 云端跑 Agent + 本机 tool bridge（链路长、离线差）；完全独立第二后端（双份逻辑）。
-
-### D4: 数据平面 = 在线云端 PG 权威 + 本机 SQLite 离线缓存
+### D23: 本机引擎 = 完整业务后端 + 直连 infra
 
 **Choice**:
 
-| 状态 | 会话/消息/Agent/Key | workspace 文件 | RAG/记忆 |
+- 同一套 FastAPI 应用在 `ACHAT_RUNTIME=desktop` 下启动
+- 提供登录/注册、会话、消息、设置、Agent、stream 等完整 API（与 Web 后端同构）
+- **直连** `DATABASE_URL` 及 Milvus/ES/Neo4j 等（经 `infra/factory` 既有降级语义）
+- 默认连接串来自打包配置；用户设置可覆盖并持久化到本机（加密/权限按实现选定，不得打日志）
+- **不再**要求在线路径必须经官方业务 HTTPS API client（v0 CloudApiClient 主路径退役为可选兼容或删除）
+
+**Rationale**: 「不访问业务服务器」+「infra 还在服务器」= 客户端进程直连 infra。
+
+**Supersedes**: D3 中「在线持久化走云端 HTTP 客户端」；D4 表中「仅经云端 API 访 infra」；local-engine spec 旧「MUST NOT open direct database connections」。
+
+### D24: 数据平面 = 远端 PG 主库 + 本机 SQLite 缓存
+
+**Choice**:
+
+| 状态 | 账号/会话/消息/设置 | workspace 文件 | RAG/记忆 |
 |---|---|---|---|
-| 在线 | 云端 API → PG | 用户本机磁盘 | 云端 API → infra |
-| 离线 | 本机 SQLite 队列/缓存 | 用户本机磁盘 | 不可用或只读缓存（若有） |
+| 在线 | 本机引擎 **直连** PG 读写 | 用户本机磁盘 | 本机引擎直连 infra（可降级） |
+| 弱网/离线 | 本机 SQLite 缓存/outbox 续跑 | 用户本机磁盘 | 不可用或只读缓存 |
+| 恢复 | outbox 尽力同步回主库；冲突提示，不静默覆盖 | — | — |
 
-上线后：本机引擎上传离线产生的变更；冲突不静默覆盖，提示用户。v1 不承诺双机同时离线无感合并。
+**Rationale**: 用户选择数据模型 C。
 
-**Rationale**: 满足「服务器放 PG/Milvus」与「核心可降级」；控制同步复杂度。
+**Note**: v0 outbox「上传到官方业务 API」改为「同步到主库 PG / 本机引擎既有写入路径」。
 
-**Alternatives**: 仅在线不可用（体验差）；本机永远主存（与云端权威矛盾）。
-
-### D5: 安全 = loopback + engine token + 官方 Origin
+### D25: 前端 API 一律本机（desktop 模式）
 
 **Choice**:
-
-1. 引擎只 bind `127.0.0.1`，端口动态分配，写入壳与 `window.achatDesktop`
-2. 启动时生成 `engineToken`（进程级随机），注入前端；本机 API 校验 header（如 `X-Engine-Token`）
-3. 校验 `Origin` 为配置的官方前端 origin（可配置列表）
-4. 用户 JWT 仍用于云端 API；与 engine token 分离
-
-**Rationale**: https 页面调 http://127.0.0.1 时，必须防其它站点滥用本机引擎；token 不依赖「有没有品牌官网」，官方前端固定 URL 可做 Origin 辅校验。
-
-**Alternatives**: 仅 Origin（可被绕过）；仅 token；命名管道/自定义协议（实现重，v1 不做）。
-
-### D6: 桌面识别 = `window.achatDesktop` 注入
-
-**Choice**: 壳在加载官方前端后注入：
-
-```ts
-window.achatDesktop = {
-  isDesktop: true,
-  engineBaseUrl: string,  // http://127.0.0.1:<port>
-  engineToken: string,
-  appVersion: string,
-  selectDirectory(): Promise<string | null>,
-  openPath(path: string): Promise<void>,
-  getEngineStatus(): Promise<'starting' | 'ready' | 'error'>,
-  restartEngine(): Promise<void>,
-}
-```
-
-前端以 `isDesktop` 为准启用本机能力；另可 ping 引擎 health 展示状态。
-
-**Alternatives**: URL query `?desktop=1`（易伪造）；纯探测 127.0.0.1（易误判）。
-
-### D7: 模型 Key = 云端存储，本机直连厂商
-
-**Choice**: Key 存在云端 `user_settings`（既有）；本机引擎在用户登录后经云端 API 拉取（传输必须 HTTPS）；Adapter 仍本机直连模型 API，不经云端代理。
-
-**Rationale**: 与现有 `build_adapter_input` / Custom Adapter 路径一致。
-
-**Alternatives**: 云端统一代理（更安全藏 Key，但 v1 成本高）。
-
-### D8: CLI = 检测不捆绑
-
-**Choice**: 引擎启动或首次用 CLI Agent 时检测 `claude`/`codex` 是否在 PATH；缺失则 UI 引导安装；不把 CLI 打进安装包。
-
-### D9: 更新 = 整包，预留分轨
-
-**Choice**: v1 使用 Tauri updater（或等价）整包替换壳+引擎；manifest 与安装包同发版通道。架构上版本号可区分 shell/engine 以便日后分轨。
-
-### D10: 签名 = v1 不做
-
-**Choice**: 接受 SmartScreen；文档说明「仍要运行」。正式对外再签。
-
-### D11: 与旧 spec/change 关系
-
-**Choice**: 本 change 为桌面权威实现。`openspec/specs/desktop-electron` 需求整体切换语义（名称可暂保留以免大范围 rename，内容指向 Tauri 路线）；`openspec/changes/desktop-electron-python` 标记 superseded，不继续实施。
-
-### D12: 进程与启动时序
-
-```
-1. 用户启动 AChat.exe（单实例锁）
-2. 壳分配/读取 data dir（%APPDATA%/AChat）
-3. 生成 engineToken，spawn 本机引擎：
-   achat-engine serve --bind 127.0.0.1 --port 0 --data-dir ... --engine-token ...
-4. 等待 GET /healthz（含 token）成功或超时错误页
-5. 注入 achatDesktop，导航至 OFFICIAL_WEB_URL
-6. 用户登录云端；前端用 cookie/JWT 调云端，用 engineToken 调本机
-7. 退出：SIGTERM/优雅停引擎 → 刷盘 SQLite → 退出壳
-```
-
-### D13: 前端 API 分流（概念）
 
 | 调用 | 目标 |
 |---|---|
-| 登录/注册/会话列表/设置/云端权威 CRUD/RAG | `OFFICIAL_API_URL` |
-| 启动 run、工具、本机 SSE/事件流（desktop） | `engineBaseUrl` |
-| 会话消息历史（desktop 读路径） | **优先本机引擎**（见 D16）；失败再回官方 API |
-| 选目录 | `window.achatDesktop.selectDirectory` |
+| 一切业务 REST/SSE（auth、会话、设置、Agent、stream…） | `engineBaseUrl`（或同源本机托管） |
+| 选目录 / 引擎状态 / 重启 | `window.achatDesktop` |
+| 纯 Web（无桥） | 现有 `API_BASE_URL` 行为不变 |
 
-具体哪些 REST 仍打云端、哪些打本机，以「Agent 执行在本机、权威持久化在云端」为原则列路由表（tasks 中落地）。原则：
+**Rationale**: 用户「只改前端访问本地」在完整语义下 = 桌面 WebView 内无官方业务 API 依赖。
 
-- **写权威业务数据**：云端（在线）或 SQLite 队列（离线）
-- **跑 Agent / 工具 / 本机 SSE**：本机引擎
-- **读本机刚跑完的消息**：desktop 优先引擎本地 DB（Agent 回复先落引擎；云端 mirror 可能滞后）
-- **读云端会话列表 / 多设备权威视图**：官方 API
+**Supersedes**: D13 分流表；`DESKTOP_OFFICIAL_CLOUD_PATH_PREFIXES` 默认桌面路径。
 
-### D14: SSE 用户鉴权 = 与 REST 同一桌面路径（非本地 JWT_SECRET）
-
-**Choice**: 桌面模式下本机引擎的 `/api/stream` 与受保护 REST 一样，用 `resolve_desktop_user`（官方 access token → 官方 `/api/auth/me` → 本地 shadow User）解析 `user_id`，再订阅进程内 `event_bus`。引擎本地 `JWT_SECRET` 可与官方不同（甚至随机），**不得**作为桌面 SSE 认人的唯一依据。engine token 仍由 middleware 校验「是不是本机壳」。
-
-**Rationale**: Agent 事件发在本机引擎 bus 上；前端 EventSource 必须订同一进程。官方 JWT 由官方 API 签发，引擎若只用本地 secret 验签会 401，出现「POST/Agent 已完成、UI 无流式回复」。**不要**把官方 `JWT_SECRET` 拷进桌面引擎当正修。
-
-**Alternatives**: 强制引擎与官方共用 `JWT_SECRET`（本机可 hack、生产把官方密钥塞进桌面进程不可接受）；仅 cookie 同源（桌面跨 origin + credentials omit 不可行）。
-
-### D15: 桌面 SSE 连接时序 = 等桥注入后再订引擎
-
-**Choice**: `StreamProvider` 在检测到 Tauri 壳 / `window.achatDesktop` 未就绪时，**不得**把 EventSource 永久订到官方 API bus。须等待 `engineBaseUrl` + `engineToken` + access token；桥晚到则重连到本机引擎。
-
-**Rationale**: 壳先 navigate 官方前端、后 eval 注入桥；若登录后立刻按「无桥 = web」连 `:8000`，模块级 singleton 会锁死在错误进程，本地 Agent 事件永远到不了 UI。
-
-**Alternatives**: 仅初始化脚本保证桥先于页面 JS（实现脆弱）；强制用户手动刷新（体验差）。
-
-### D16: 桌面消息读路径 = 引擎优先 + 发送后兜底拉取
+### D26: 静态前端构建与托管
 
 **Choice**:
 
-1. `fetchMessages` 在 desktop 优先 `GET {engineBaseUrl}/api/conversations/{id}/messages`，失败/空再回官方 API。
-2. 引擎侧 `GET/POST .../messages` 均先 `ensure_conversation_context`（mirror）再 ownership，与本地 SQLite 空库兼容。
-3. 发送成功若有 `runIds`，UI 可在短延迟后 best-effort 再拉一次引擎消息（SSE 丢包/迟到时仍能显示完整回复）。
+1. 增加 desktop 前端构建产物（静态 export 或「构建后由引擎挂载的资产目录」；实现阶段选定可离线路径，处理 `next/font/google` 等）
+2. 资源进入安装包，例如 `resources/ui/**` 或引擎可服务目录
+3. 引擎在 desktop 模式挂载静态文件与 SPA fallback（`/` → `index.html`）
+4. 壳 `navigate` 到 `http://127.0.0.1:{port}/`（与 API 同 origin 可简化 cookie；若 token 已走 Bearer，同源仍更简单）
 
-**Rationale**: Agent 回复先写引擎 DB；UI 不靠 POST body 拿正文。仅订官方 bus 或仅读官方历史 → 「库里有回复、屏幕没有」。
+**Rationale**: 方案 A 安装包内嵌；与引擎同端口可避免 CORS/mixed 复杂度。
 
-### D17: 未认证 UI = 转登录，不白屏
+### D27: 配置模型 = 默认官方 infra + 用户可覆盖
 
-**Choice**: `AuthGate` 在 loading / 未认证受保护路由 / 已认证访问登录页时，渲染带背景的 spinner 并 `router.replace`，**禁止** `return null` 导致 WebView 白板。
+**Choice**:
 
-**Rationale**: 桌面 WebView 无浏览器默认 chrome，空白页不可诊断。
+- 打包内嵌 `infra.default.json`（或扩展现 `official.json`）：
+  - `databaseUrl` / 各 infra 端点与必要密钥引用方式
+  - `allowedOrigins` 本机相关
+  - **不再**要求远程 `webUrl` 作为运行时主入口
+- 首次启动用默认配置
+- 设置页：「使用自定义服务器」→ 用户填写/导入 → 写入 `%APPDATA%/AChat/config`（覆盖默认）
+- 未填自定义时始终用打包默认
 
-### D18: 打包
+**Rationale**: 用户选择配置模型 C。
 
-- 壳：Tauri bundler → NSIS/MSI 安装器
-- 引擎：嵌入式 Python 或 PyInstaller/Nuitka 产物作为 sidecar，置于资源目录
-- 配置：编译期或安装包内 `official.json`：`webUrl`、`apiUrl`、`allowedOrigins`
-- 目标体积：中等（约 300–600MB），主要来自 Python 运行时与依赖
+**Security**: 默认连接串视为敏感；文档说明泄露面；用户自定义凭据禁止 log；生产应用最小权限 DB 账号。
 
-### D19: https 前端 → http://127.0.0.1
+### D28: 登录与 Key
 
-**Choice**: 本机引擎启用 CORS：允许官方 Origin；浏览器 mixed content 对 loopback 在 Chromium 系通常允许访问 localhost。实现阶段用 WebView2 验证；若受阻则备选：壳做 `plugin` 反向代理把本机引擎挂到自定义协议或壳内 localhost 网关。
+**Choice**:
 
-**Rationale**: 先走标准 HTTP loopback；备选不阻塞主设计。
+- 多用户注册/登录 API 由本机引擎提供，校验与存储落在主库 PG（与 Web 同一 schema/策略）
+- JWT 由本机引擎签发/校验（使用本机配置的 `JWT_SECRET` 或与部署约定一致的 secret——实现阶段：桌面直连同一 PG 时需与 Web 部署协调 token 互通策略；若桌面与 Web 需同一 token 互认，则共享 secret 或统一 issuer；**默认**：桌面独立会话即可，不要求与浏览器 cookie 互通）
+- 用户 API Key 存主库 `user_settings`；本机引擎本地读库即可，无需「云 handoff 拉 key」
+- CLI Agent：PATH 检测，不捆绑
 
-### D20: 品牌图标 = 单一源资产 + 派生桌面多尺寸 + 编译嵌入 + 运行时 set_icon
+**Rationale**: 用户选择登录 A、模型 C。
 
-**本轮范围**：以**桌面壳**（窗口 / 任务栏 / 快捷方式 / 安装包）图标为准。Web 站点 favicon 与登录页品牌图**不是本轮验收对象**（源文件可复用，但不要求改 Web UI 或做 Web 专项验收）。
+**Supersedes**: D7「仅从云端 API 拉 key」；D14 中「必须 resolve 官方 /api/auth/me」在纯本地权威下可简化为本地 JWT；若仍保留兼容桥可双路径。
 
-**Choice（与实现一致）**：
+### D29: 安全 = loopback + engine token + 本机 Origin
 
-| 角色 | 路径 / 代码 | 说明 |
-|---|---|---|
-| **源资产（权威）** | `src/app/favicon.ico` | 单层 256×256 32bpp ICO（PNG 压缩 payload）；换 logo 只改此文件（或替换后重跑脚本） |
-| **派生输出** | `apps/desktop/src-tauri/icons/*` | `icon.png`（256）、`32x32.png`、`128x128.png`、`henry.w@example.net`、多尺寸 `icon.ico`（16/24/32/48/64/128/256）、`icon.icns` |
-| **再生脚本** | `apps/desktop/scripts/generate-icons.py` | Pillow 从源 ICO 解 PNG → 写全套 icons；文档见 `apps/desktop/README.md`「Brand icons」 |
-| **打包配置** | `apps/desktop/src-tauri/tauri.conf.json` → `bundle.icon` | 列表含 `icons/icon.png`、`icons/icon.ico`、`32x32`、`128x128`、`henry.w@example.net`、`icon.icns` |
-| **运行时窗口图标** | `apps/desktop/src-tauri/src/lib.rs` | `include_bytes!("../icons/icon.png")` + `Image::from_bytes` + `window.set_icon(...)`，避免仅依赖旧 exe 资源表 |
-| **Cargo feature** | `apps/desktop/src-tauri/Cargo.toml` | `tauri = { features = ["image-png"] }`（否则 `Image::from_bytes` 不可用） |
-| **非目标** | `public/agent-icons/*`；完整 brand kit | Agent 头像不是产品 logo；不强制 SVG wordmark / 多主题套装 |
+**Choice**:
 
-**派生与生效规则（必须按序）**：
+1. 引擎 bind `127.0.0.1`，端口动态
+2. 进程级 `engineToken`，前端经桥注入；受保护本机 API 校验
+3. Origin allowlist 包含本机 UI origin（如 `http://127.0.0.1:<port>`）；不再依赖远程官方前端 origin 作为唯一合法来源
+4. 用户 JWT 与 engine token 分离（用户身份 vs 壳会话）
 
-1. 源：`src/app/favicon.ico`
-2. 运行 `python apps/desktop/scripts/generate-icons.py`，**覆盖** `apps/desktop/src-tauri/icons/`
-3. 删除嵌套残留 `apps/desktop/apps/`（若再出现）
-4. **必须重新编译壳**：`cd apps/desktop && pnpm dev` 或 `cargo build` / `pnpm build`  
-   - **只换 icons 文件、不 rebuild = 窗口/任务栏仍可能是旧图**（图标嵌在 exe / 安装包资源里）
-5. 运行时：`setup` 内对 `main` WebviewWindow 再 `set_icon` 一次（双保险）
-6. 验收（桌面）：新编 exe / 新安装包的**窗口标题栏图标**；安装版另验开始菜单/快捷方式（可能受 Windows 图标缓存影响）
+**Rationale**: UI 与 API 均在本机后，Origin 模型从「官方 https 站」改为「本机托管页」。
 
-**Rationale**: 桌面交付必须有正确产品 mark；源复用仓库已有 favicon 避免第二套 logo；`set_icon` + rebuild 是 Windows 上「文件已换但 UI 仍旧」的实际修复路径。
+**Note**: 浏览器/WebView 的 Origin 比较是**主机名字符串**，`localhost` ≠ `127.0.0.1`。开发态若 UI 与引擎使用不同 loopback 主机名，仍属跨源；见 **D31**。
 
-**Alternatives**: 仅靠 `bundle.icon` 不 set_icon（易被旧资源/缓存坑）；手改各尺寸不写脚本（易漂移）；新建独立 `brand/`（v1 多余）。
+### D30: 启动时序（v1）
 
-**实现落点（已实现，方案与代码对齐）**：
+```
+1. 用户启动 AChat.exe（单实例）
+2. 壳准备 data dir（%APPDATA%/AChat）
+3. 生成 engineToken，spawn 引擎：
+   achat-engine serve --bind 127.0.0.1 --port 0 --data-dir ... --engine-token ...
+   [--infra-config ...]
+4. 等待 GET /healthz 成功
+5. 注入 window.achatDesktop（engineBaseUrl/token/...）
+6. 导航至 http://127.0.0.1:<port>/  （静态前端）
+7. 用户在本机 UI 登录 → 本机 API → 主库 PG
+8. Agent 本机执行；infra 按配置直连
+9. 退出：停引擎 → 刷盘 → 退壳
+```
 
-| 项 | 落点 |
-|---|---|
-| 生成脚本 | `apps/desktop/scripts/generate-icons.py` |
-| 文档 | `apps/desktop/README.md` § Brand icons |
-| 运行时 set_icon | `apps/desktop/src-tauri/src/lib.rs`（`APP_ICON_PNG`） |
-| image-png | `Cargo.toml` `tauri` features |
-| bundle.icon | `tauri.conf.json`（含 `icon.png` 为首项之一） |
+**Supersedes**: D12 步骤 5–6 远程 URL。
+
+**Dev note**: `tauri dev` 可继续打开 Next `http://localhost:3000`（或 config `webUrl`），引擎仍在 `http://127.0.0.1:<port>`。此为跨源常态，不得依赖「碰巧同源」才能鉴权；必须满足 **D31**。
+
+### D31: Loopback 主机名等价 + 禁止半对齐（权威）
+
+**Context / incident**:
+
+```
+网络层:  localhost 通常解析到 127.0.0.1（或 ::1）
+浏览器:  Origin = scheme + host + port
+         http://localhost:3000  ≠  http://127.0.0.1:12066
+
+dev 典型形态:
+  UI  → http://localhost:3000
+  API → http://127.0.0.1:<enginePort>     ← 跨源
+
+半对齐 bug（已观测）:
+  getApiBaseUrl / URL 对齐 → http://localhost:<port>
+  isExecutionUrl / 挂 token 仍按 bridge 的 127.0.0.1 字符串判断
+  → 业务 REST 漏 X-Engine-Token → 401
+  → SSE 因 ?token=&engineToken= 仍可 200
+  → 用户体感为「SSE 没连上 / 桌面半残」
+```
+
+**Choice**:
+
+1. **事实写入契约**：浏览器/WebView 不把 `localhost` 与 `127.0.0.1` 当同一 origin；不得假设「同一台机器 = 同源」。
+2. **前端 MUST 提供统一 loopback helper**（如 `alignLoopbackHost` / `sameLoopbackService` / `urlTargetsEngine`），`getApiBaseUrl`、`executionBaseUrl`、`isExecutionUrl`、`engineUrl`、StreamProvider base 共用同一套逻辑。
+3. **桌面业务 REST MUST 对本机引擎请求始终附带 `X-Engine-Token`**（从 `window.achatDesktop` 读取）。判断「是否引擎目标」时，`localhost` 与 `127.0.0.1`（及 `::1`）在**相同端口**上视为同一 loopback 服务。
+4. **SSE**：EventSource 无法设自定义 header 时，继续允许 `?token=` + `?engineToken=`；fetch-sse 兜底可走 header。用户 JWT 与 engine token 仍分离。
+5. **禁止半对齐**：不得只在某一层把 host 改写为页面 host，却在 token 挂载 / URL 匹配层仍用未对齐字符串做 `startsWith`。
+6. **禁止伪根治**：仅靠「全改成 127.0.0.1」或「全改成 localhost」不作为唯一根治；Windows 上 `localhost` 还可能解析到 `::1`，字符串统一易漏。
+7. **prod 优先同源**：发布态仍优先 D26/D30——静态 UI 与 API 同引擎 origin（`http://127.0.0.1:<port>/`），降低 CORS/cookie 复杂度；dev 跨源是额外必须覆盖的路径。
+8. **回归门槛**：`page.hostname=localhost` + `bridge.engineBaseUrl=http://127.0.0.1:<port>` 时，`/api/agents`、`/api/conversations` 等业务 REST **不得**因漏 engine token 而 401；SSE 与 REST 不得因 host 别名出现「一边 200 一边 401」的分裂。
+
+**Rationale**: engine token 是壳会话门闩，与用户 JWT 无关；跨源是 dev 常态；半对齐会导致「登录/me/SSE 看起来好了、会话列表全挂」的假性 SSE 故障，必须在设计层封死。
+
+**Implementation pointers**（非绑定路径，供 tasks 对齐）:
+
+- `src/shared/desktop/url.ts` — loopback 等价
+- `src/lib/desktop.ts` — `executionBaseUrl` / `isExecutionUrl` / `attachEngineTokenHeaders`
+- `src/lib/api.ts` `authFetch`、`src/stores/auth-store.ts`、`src/components/stream-provider.tsx`
+
+---
+
+### 仍有效的既有决策（摘要 + 修订注）
+
+#### D14–D17（SSE / 读路径 / AuthGate）
+
+- **D14 SSE**：事件仍在本机引擎 bus；SSE 订本机 `/api/stream`。修订：身份以**本机 JWT / 本机会话**为主；不再依赖「官方 access token + /api/auth/me」作为唯一路径（可保留为兼容）。跨 loopback 主机名时的 token 挂载见 **D31**。
+- **D15 等桥**：仍必须等 `achatDesktop` 再订 SSE，避免订错基址。
+- **D16 消息读**：desktop 读本机引擎即可（已是权威执行+本地 API）；「回落官方 API」改为可选/删除。
+- **D17 AuthGate**：禁止白屏，仍有效。
+
+#### D18 打包（修订）
+
+- 壳 + **引擎 sidecar** + **静态前端资源** + **默认 infra 配置**
+- 引擎：PyInstaller one-folder（v0 已选）
+- 体积预期上升（前端资产 + 引擎）
+
+#### D19 mixed content（修订）
+
+- 主路径同源 `http://127.0.0.1` 静态+API，**不再**依赖 https 远程页调 http loopback
+- 备选壳内代理仅在特殊拆分部署时需要
+- **dev** 允许 `localhost:3000` UI → `127.0.0.1` 引擎（跨源 + D31）
+
+#### D20 品牌图标
+
+- 完全保留：源 favicon → generate-icons.py → bundle + runtime set_icon + 必须 rebuild
+
+#### D8 CLI / D9 更新 / D10 签名 / D11 旧 change
+
+- 保留；D11：本 change 仍是桌面权威；`desktop-electron-python` 仍 superseded
+
+---
 
 ## Risks / Trade-offs
 
 | Risk | Mitigation |
 |---|---|
-| WebView2 缺失/过旧导致白屏 | 安装器检测/引导安装 WebView2 Evergreen；启动失败诊断页；AuthGate 不 `return null`（D17） |
-| https→http://127.0.0.1 被策略拦截 | D19 备选壳内代理；CI 真机验证 |
-| 官方 JWT 与引擎 JWT_SECRET 不一致导致 SSE 401 | D14：`resolve_desktop_user`，不共享官方 secret |
-| 桥注入晚于登录，SSE 订到官方 bus | D15：等桥 + 迟到重连 |
-| Agent 已落引擎 DB，UI 只读官方历史看不到回复 | D16：读路径引擎优先 + 发送后兜底拉取 |
-| 离线同步冲突丢数据 | v1 明确提示；上传前版本/时间戳校验；冲突箱可二期 |
-| 本机引擎被恶意页面探测端口 | 动态端口 + 强 token + Origin；不监听 0.0.0.0 |
-| Key 进入本机内存 | 仅登录后拉取；内存持有；不做日志打印；后续可加 DPAPI 可选 |
-| 包体偏大 / 杀软误报 | 中等包体预期；v1 不签名换速度；文档说明 |
-| 与旧 Electron 代码并存混淆 | 新目录 `apps/desktop`；旧 electron 路径标记 deprecated |
-| ES/Milvus 等 infra 在桌面引擎日志刷屏 | 可降级，不阻断 Agent；后续可关桌面直连 infra |
-| 云端 API 缺少「离线上传/批量同步」 | tasks 列增量 API；无则先消息级 POST 复用现有接口 |
-| 官方 URL 写死难以换环境 | 构建 flavor：`official.json` 分 dev/staging/prod，非用户配置项 |
-| 桌面仍用 scaffold 占位图标 / 损坏 ico | D20：`generate-icons.py` 覆盖 icons；禁止提交百字节级占位图 |
-| 只换 icons 不 rebuild，桌面仍无新 logo | D20 强制 rebuild；`lib.rs` runtime `set_icon`；文档写明流程 |
-| 旧安装包/快捷方式 + Windows 图标缓存 | 重装或清缓存；验收以新编 `target/debug|release` exe 窗口图标为准 |
-| 误嵌套 `apps/desktop/apps/...` 图标双份 | 删除残留；只保留 `apps/desktop/src-tauri/icons` |
-| 缺 `image-png` feature 导致 set_icon 编不过 | `Cargo.toml` 固定 `features = ["image-png"]` |
-| 仅换 ico 未换 png 导致糊图 | 脚本一次生成全套尺寸 |
+| 默认 DB/infra 连接串打进安装包泄露 | 最小权限账号；TLS；定期轮换；文档威胁模型；敏感项可后期改远程下发引导 |
+| 用户网络访问不到官方 infra | 设置改自有服务器；清晰错误；降级提示 |
+| Next 静态导出与 App Router 不兼容点 | 实现阶段 spike；不行则引擎侧轻量托管 standalone 静态摘出或内嵌最小静态壳+已构建客户端 |
+| C 盘空间不足导致打包失败 | `CARGO_TARGET_DIR`/构建目录放 D 盘；清理 debug target |
+| 直连 PG 与 Web 多实例 schema 迁移 | 桌面与服务器共用 schema 版本纪律；启动检查 alembic/revision |
+| 旧 v0 代码路径（CloudApiClient、双平面路由）残留 | tasks 明确删除或 feature-flag；避免双写混乱 |
+| `localhost` vs `127.0.0.1` 半对齐导致业务 401、假性 SSE 故障 | **D31**：统一 loopback helper；引擎 URL 判断与 `X-Engine-Token` 挂载共用；回归测 page=localhost + bridge=127.0.0.1 |
+| JWT 与 Web 不互通 | v1 接受桌面独立登录会话；文档说明 |
+| 静态资源与 API 不同 port 的 CORS | 优先同端口托管 |
+| 图标/壳已完成但产品方向变 | 不重做图标；只改加载与数据面 |
 
 ## Migration Plan
 
-1. **文档与 spec**：合并本 change；标注 `desktop-electron-python` superseded
-2. **云端**：保持现有部署；按需加同步/Key 下发接口（向后兼容）
-3. **前端**：合并 bridge 代码；无注入时行为与现网 Web 一致
-4. **本机引擎**：desktop 模式可本地 `pnpm/pytest` 旁路验证
-5. **壳**：Windows 安装包内测通道
-6. **回滚**：用户卸载桌面端；Web 不受影响。前端 bridge 在无注入时 no-op，可保留
+1. **文档**：本 proposal/design/specs/tasks 以 D21+ 为准；标注 v0 已实现部分与待改造部分  
+2. **代码**：在现有 `apps/desktop` + `backend/app/desktop` 上改造，不新建平行 change 目录  
+3. **前端**：desktop 构建流水线 + API 基址本机化  
+4. **引擎**：直连 infra 配置加载；静态托管；弱化/移除强制 official API client  
+5. **壳**：navigate 本机 URL  
+6. **验证**：本机登录 → 列会话 → 发消息 → 绑目录 → 断网缓存 → 恢复同步  
+7. **回滚**：用户卸载桌面；Web 部署不受影响  
 
 ## Open Questions
 
-1. 官方 `webUrl` / `apiUrl` 的正式生产值与是否同域（影响 cookie）
-2. 桌面模式下 SSE：本机引擎事件 vs 云端事件是否双通道，如何去重
-3. 离线 SQLite schema 范围（全量镜像 vs 仅 outbox + 最近缓存）
-4. 引擎打包最终选型（embeddable CPython + venv vs PyInstaller one-folder）
-5. 登录 cookie 在 Tauri WebView 加载跨站官方前端时的 SameSite 行为是否要改用 Bearer 镜像（前端已有 cross-origin `authFetch` 路径可复用）
+1. Next 静态导出的最终技术路径（`output: 'export'` vs 构建产物摘取 vs 其它）与 `next/font` 离线处理  
+2. 默认 infra 连接信息由谁维护、如何在不进 git 明文的前提下注入 CI/打包（secrets 管线）  
+3. 桌面 JWT 是否必须与 Web 互认（当前倾向否）  
+4. 用户自定义 infra 的配置 schema 与校验 UX 细节  
+5. 主库不可达时，注册/登录是否允许纯本地临时模式（v1 倾向：否，仅已登录会话的缓存续跑）  

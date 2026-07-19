@@ -2,28 +2,28 @@
 
 ### Requirement: Desktop shell SHALL be a Tauri 2 Windows application
 
-AChat desktop delivery MUST use a Tauri 2 shell on Windows as the OS window host. The shell MUST provide the application window, lifecycle, and native OS integrations. The shell MUST NOT embed business Agent logic or replace the AChat frontend application.
+AChat desktop delivery MUST use a Tauri 2 shell on Windows as the OS window host. The shell MUST provide the application window, lifecycle, and native OS integrations. The shell MUST NOT embed business Agent logic or replace the AChat frontend application bundle.
 
 #### Scenario: User launches installed app
 - **WHEN** the user starts the installed AChat desktop application on Windows
 - **THEN** a Tauri-hosted native window is created
 - **AND** the shell begins local engine startup before or while presenting the UI surface.
 
-### Requirement: Shell SHALL open the official deployed frontend
+### Requirement: Shell SHALL open the local embedded frontend after engine ready
 
-The shell MUST navigate the window to a build-time or package-configured official frontend URL (`OFFICIAL_WEB_URL`). The shell MUST NOT start a local Next.js server as the primary UI host in v1.
+The shell MUST navigate the window to the **local** UI origin served by the local engine (or an equivalent loopback origin that hosts the packaged static frontend). The shell MUST NOT use a remote official product web URL as the primary UI host in the v1 product direction (design D21).
 
 #### Scenario: Engine becomes ready
 - **WHEN** the local engine health check succeeds
-- **THEN** the shell loads `OFFICIAL_WEB_URL` in the application webview
-- **AND** the visible product UI is the same AChat frontend served by the official deployment.
+- **THEN** the shell loads the local UI origin (for example `http://127.0.0.1:<enginePort>/`) in the application webview
+- **AND** the visible product UI is the packaged AChat frontend, not a remote SaaS page.
 
 ### Requirement: Shell SHALL inject the desktop bridge object
 
-After creating the webview context for the official frontend, the shell MUST inject `window.achatDesktop` with at least: `isDesktop=true`, `engineBaseUrl`, `engineToken`, `appVersion`, `selectDirectory()`, `getEngineStatus()`, and `restartEngine()`.
+After creating the webview context for the local frontend, the shell MUST inject `window.achatDesktop` with at least: `isDesktop=true`, `engineBaseUrl`, `engineToken`, `appVersion`, `selectDirectory()`, `getEngineStatus()`, and `restartEngine()`.
 
 #### Scenario: Frontend detects desktop mode
-- **WHEN** the official frontend script reads `window.achatDesktop`
+- **WHEN** the local frontend script reads `window.achatDesktop`
 - **THEN** `isDesktop` is true
 - **AND** `engineBaseUrl` points at the loopback engine HTTP origin for this session
 - **AND** `engineToken` is a non-empty session secret.
@@ -39,7 +39,7 @@ Launching a second instance MUST focus the existing window instead of starting a
 
 ### Requirement: Shell SHALL manage local engine lifecycle
 
-The shell MUST spawn the local engine process, wait for health readiness, surface startup failures, and terminate the engine on application quit. The shell MUST pass data directory, bind address `127.0.0.1`, selected port or port `0`, and engine token to the engine.
+The shell MUST spawn the local engine process, wait for health readiness, surface startup failures, and terminate the engine on application quit. The shell MUST pass data directory, bind address `127.0.0.1`, selected port or port `0`, engine token, and infra/config references required by the engine.
 
 #### Scenario: Engine fails to start
 - **WHEN** the engine does not become healthy within the configured timeout
@@ -62,12 +62,12 @@ The shell MUST expose a native folder picker through `window.achatDesktop.select
 
 ### Requirement: Shell SHALL support whole-package auto-update entrypoints
 
-The shell MUST include an auto-update mechanism that can check for and apply a whole-package update of shell and bundled engine artifacts. v1 MAY ship without code signing.
+The shell MUST include an auto-update mechanism that can check for and apply a whole-package update of shell, bundled engine, and bundled frontend artifacts. v1 MAY ship without code signing.
 
 #### Scenario: Update is available
 - **WHEN** the updater finds a newer package on the configured update feed
 - **THEN** the user can install the whole-package update through the desktop app flow
-- **AND** both shell and engine bits from that package are updated together in v1.
+- **AND** shell, engine, and frontend bits from that package are updated together in v1.
 
 ### Requirement: Shell window and package icons SHALL use the product brand mark
 
@@ -79,12 +79,7 @@ The shell MUST:
 2. Rebuild so icons are embedded in the binary/installer resources — changing files on disk without rebuild is not sufficient
 3. At runtime, set the main window icon from the embedded `icon.png` bytes (`include_bytes` + `Image::from_bytes` + `WebviewWindow::set_icon`), requiring the Tauri `image-png` feature
 
-#### Scenario: Window chrome brand after rebuild
-- **WHEN** the user launches a desktop shell binary built after the current icon assets were generated
-- **THEN** the main window icon shows the product brand mark
-- **AND** the mark matches the mark in `src/app/favicon.ico` (same visual source).
-
-#### Scenario: Icons regenerated without rebuild
-- **WHEN** maintainers only overwrite `src-tauri/icons/*` and run an older pre-existing exe
-- **THEN** the old window/taskbar icon may still appear
-- **AND** the documented fix is to regenerate icons (if needed) and rebuild the shell, not to expect live reload of icon resources.
+#### Scenario: Freshly built desktop binary shows product mark
+- **WHEN** a developer or release pipeline rebuilds the desktop shell after generating icons
+- **THEN** the main window title-bar icon shows the product brand mark
+- **AND** the package does not rely on empty scaffold placeholders.

@@ -111,6 +111,67 @@ async def authenticate_default_user(
     return AuthResult(user=_user_profile(user), tokens=_tokens_for_user(user))
 
 
+_STUB_PASSWORD_PREFIXES = ("!",)  # e.g. "!desktop-local-mirror!" — not a bcrypt hash
+
+
+def _is_unusable_password_hash(password_hash: str | None) -> bool:
+    """True when the stored hash can never verify a real password (stub / empty)."""
+    if not password_hash:
+        return True
+    if password_hash.startswith(_STUB_PASSWORD_PREFIXES):
+        return True
+    # bcrypt hashes start with $2b$ / $2a$ / $2y$
+    return not password_hash.startswith("$2")
+
+
+async def ensure_default_local_user(db: AsyncSession) -> User | None:
+    """Create or repair the configured default local account.
+
+    Used at process startup so desktop SQLite / fresh DBs can log in with
+    ``DEFAULT_USER_EMAIL`` + ``DEFAULT_USER_PASSWORD`` without a manual migration.
+
+    - Missing user → create with bcrypt hash of ``DEFAULT_USER_PASSWORD``
+    - Existing user with unusable/stub hash → repair hash (does not touch real bcrypt)
+    - No-op when ``DEFAULT_USER_PASSWORD`` is empty
+    """
+    settings = get_settings()
+    email = (settings.default_user_email or "").strip()
+    password = settings.default_user_password or ""
+    if not email or not password:
+        return None
+
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+    now = now_ms()
+
+    if user is None:
+        import nanoid
+
+        user = User(
+            id=nanoid.generate(),
+            email=email,
+            name="Default User",
+            password_hash=hash_password(password),
+            token_version=0,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(user)
+        await db.flush()
+        db.expunge(user)
+        return user
+
+    if _is_unusable_password_hash(user.password_hash):
+        user.password_hash = hash_password(password)
+        user.token_version = int(user.token_version or 0) + 1
+        user.updated_at = now
+        await db.flush()
+        db.expunge(user)
+        return user
+
+    return user
+
+
 async def refresh_access_token(
     db: AsyncSession, refresh_token: str
 ) -> AuthTokens:

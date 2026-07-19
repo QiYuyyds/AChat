@@ -57,6 +57,21 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     settings = get_settings()
 
+    # Ensure DEFAULT_USER_EMAIL can log in (desktop SQLite stub hashes, fresh DBs).
+    try:
+        from app.auth.service import ensure_default_local_user
+        from app.db.engine import get_db
+
+        async with get_db() as db:
+            seeded = await ensure_default_local_user(db)
+        if seeded is not None:
+            logger.info(
+                "Default local user ready: %s",
+                settings.default_user_email,
+            )
+    except Exception as e:
+        logger.warning("Default local user ensure failed: %s", e)
+
     # ─── Optional source intelligence ───
     try:
         from app.code_intelligence.bootstrap import (
@@ -789,7 +804,7 @@ def create_app() -> FastAPI:
     except Exception as e:
         logger.warning("Sync routes not attached: %s", e)
 
-    # Desktop-only session handoff / sync routes
+    # Desktop-only session / infra-config / sync routes
     try:
         from app.desktop.runtime import is_desktop_mode
 
@@ -797,7 +812,7 @@ def create_app() -> FastAPI:
             from app.desktop.session_routes import router as desktop_router
 
             app.include_router(desktop_router)
-            logger.info("Desktop session/sync routes enabled")
+            logger.info("Desktop session/sync/infra-config routes enabled")
     except Exception as e:
         logger.warning("Desktop routes not attached: %s", e)
 
@@ -823,6 +838,24 @@ def create_app() -> FastAPI:
         except Exception:
             pass
         return {"status": "ok", "runtime": "server"}
+
+    # Desktop: serve packaged static frontend last (SPA fallback must not steal /api).
+    try:
+        from app.desktop.runtime import get_desktop_runtime, is_desktop_mode
+        from app.desktop.static_ui import mount_static_ui, resolve_ui_dir
+
+        if is_desktop_mode():
+            rt = get_desktop_runtime()
+            ui = resolve_ui_dir(
+                explicit=rt.ui_dir if rt else None,
+                data_dir=rt.data_dir if rt else None,
+            )
+            if ui is not None:
+                mount_static_ui(app, ui)
+            else:
+                logger.warning("Desktop static UI dir not found; shell may show blank page")
+    except Exception as e:
+        logger.warning("Desktop static UI not mounted: %s", e)
 
     return app
 

@@ -617,6 +617,7 @@ export const useAppStore = create<AppState>()(
           runId: null,
           usage: null,
           createdAt: Date.now(),
+          hidden: false,
         }
         s.messageIdsByConv[conversationId] ??= []
         s.messageIdsByConv[conversationId].push(tempId)
@@ -731,6 +732,7 @@ export const useAppStore = create<AppState>()(
               runId: event.runId,
               usage: null,
               createdAt: event.timestamp,
+              hidden: false,
             }
             s.messageIdsByConv[event.conversationId] ??= []
             if (!s.messageIdsByConv[event.conversationId].includes(event.messageId)) {
@@ -757,7 +759,10 @@ export const useAppStore = create<AppState>()(
           case 'message.added': {
             // 其它客户端创建的用户消息（如手机端发、桌面端在看）。按 id 幂等 upsert：
             // 发送方自己已对账过同 id，这里无副作用；第二个客户端靠这条插入。
-            s.messages[event.message.id] = event.message
+            s.messages[event.message.id] = {
+              ...event.message,
+              hidden: event.message.hidden ?? false,
+            }
             s.messageIdsByConv[event.message.conversationId] ??= []
             if (!s.messageIdsByConv[event.message.conversationId].includes(event.message.id)) {
               s.messageIdsByConv[event.message.conversationId].push(event.message.id)
@@ -1270,6 +1275,18 @@ function areMessagePartsEquivalent(a: MessagePart, b: MessagePart): boolean {
         a.size === b.size &&
         a.mimeType === b.mimeType
       )
+    case 'file_write_preview':
+      return (
+        b.type === 'file_write_preview' &&
+        a.path === b.path &&
+        a.content === b.content &&
+        a.callId === b.callId &&
+        a.status === b.status &&
+        a.language === b.language &&
+        a.oldContent === b.oldContent
+      )
+    default:
+      return false
   }
 }
 

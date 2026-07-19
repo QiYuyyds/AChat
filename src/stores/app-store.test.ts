@@ -53,6 +53,7 @@ function agentMessage(id: string, runId: string, createdAt: number): MessageRow 
     runId,
     usage: null,
     createdAt,
+    hidden: false,
   }
 }
 

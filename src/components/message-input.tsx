@@ -193,6 +193,12 @@ function renderMessagePartForExport(part: MessageRow['parts'][number]): string {
     case 'image_attachment':
     case 'file_attachment':
       return `[Attachment: ${part.fileName} (${part.attachmentId}, ${part.mimeType}, ${part.size} bytes)]`
+    case 'execution_plan':
+      return `[Execution plan: ${part.planId} (${part.complexity}, ${part.steps.length} steps)]`
+    case 'file_write_preview':
+      return `[File write preview: ${part.path} (${part.status})]`
+    default:
+      return `[Part: ${'type' in part ? String((part as { type: string }).type) : 'unknown'}]`
   }
 }
 
@@ -814,17 +820,26 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
       replaceLocalMessageId(tempId, result.messageId)
       upsertReturnedMessages(result.messages)
 
-      // Desktop safety net: if SSE is late/missed, pull messages from the engine
-      // after the run has had a moment to finish (local SQLite is source of truth
-      // for engine-side replies).
+      // Desktop safety net: poll messages while SSE is disconnected or lagging.
+      // Matches the "refresh then I see the reply" symptom without a full reload.
       if (result.runIds?.length) {
         void (async () => {
           try {
             const { isDesktopMode } = await import('@/lib/desktop')
             if (!isDesktopMode()) return
-            await new Promise((r) => setTimeout(r, 2500))
-            const list = await fetchMessages(conversationId)
-            for (const message of list) upsertMessage(message)
+            const delays = [800, 1600, 2800, 4500, 7000]
+            for (const ms of delays) {
+              await new Promise((r) => setTimeout(r, ms))
+              const state = useAppStore.getState()
+              const streamOk = state.streamConnected
+              const runs = state.runsByConv[conversationId] ?? {}
+              const stillRunning = Object.values(runs).some(
+                (run) => run.status === 'running' || run.status === 'queued',
+              )
+              const list = await fetchMessages(conversationId)
+              for (const message of list) upsertMessage(message)
+              if (streamOk && !stillRunning) break
+            }
           } catch {
             // best-effort
           }

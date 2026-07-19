@@ -52,12 +52,12 @@ async def get_current_user(
 
     token = _extract_token(request)
 
-    # Desktop engine: cloud JWT is not signed with local JWT_SECRET. Prefer
-    # official HTTPS validation + local shadow User, then fall back to local JWT.
+    # Desktop v1: local JWT is primary (same as web). Optional legacy cloud resolve
+    # only when ACHAT_FEATURE_CLOUD_API_CLIENT is enabled.
     try:
-        from app.desktop.runtime import is_desktop_mode
+        from app.desktop.runtime import cloud_api_client_enabled, is_desktop_mode
 
-        if is_desktop_mode():
+        if is_desktop_mode() and cloud_api_client_enabled():
             from app.desktop.auth import resolve_desktop_user
             from app.desktop.cloud_client import get_cloud_session
 
