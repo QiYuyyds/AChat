@@ -35,6 +35,18 @@ export type SidebarMode =
 
 export type MemoryTab = 'long-term' | 'preferences' | 'session'
 
+/** Workspace env hint card state (per conversation). */
+export interface WorkspaceEnvState {
+  /** Whether the hint card is visible (language=python, no venv, user hasn't decided). */
+  hintVisible: boolean
+  /** Current venv creation status: idle / creating / ready / failed. */
+  status: 'idle' | 'creating' | 'ready' | 'failed'
+  /** Venv path (when status='ready'). */
+  venvPath?: string
+  /** Error message (when status='failed'). */
+  error?: string
+}
+
 export interface DispatchState {
   runId: string                                    // Orchestrator 的 runId
   messageId: string                                // 触发 plan 的 Orchestrator message id
@@ -121,6 +133,9 @@ interface AppState {
 
   // ─── MCP 工具调用审批等待队列（按 conversationId 分桶）─
   pendingMcpCallsByConv: Record<string, PendingMcpCall[]>
+
+  // ─── Workspace 环境提示卡片状态（按 conversationId 分桶）─
+  workspaceEnvByConv: Record<string, WorkspaceEnvState>
 
   // ─── 未读计数（流式响应到达时，非 active 会话 +1；切到该会话清零）
   unreadByConv: Record<string, number>
@@ -249,6 +264,7 @@ export const useAppStore = create<AppState>()(
     pendingBashCommandsByConv: {},
     pendingQuestionsByConv: {},
     pendingMcpCallsByConv: {},
+    workspaceEnvByConv: {},
     unreadByConv: {},
     mobileSidebarOpen: false,
     sidebarMode: 'conversations',
@@ -292,6 +308,7 @@ export const useAppStore = create<AppState>()(
         delete s.pendingBashCommandsByConv[id]
         delete s.pendingQuestionsByConv[id]
         delete s.pendingMcpCallsByConv[id]
+        delete s.workspaceEnvByConv[id]
         if (s.activeConversationId === id) s.activeConversationId = null
       }),
 
@@ -472,6 +489,7 @@ export const useAppStore = create<AppState>()(
         delete s.pendingQuestionsByConv[conversationId]
         delete s.pendingMcpCallsByConv[conversationId]
         delete s.unreadByConv[conversationId]
+        delete s.workspaceEnvByConv[conversationId]
         if (s.highlightedMessageId && messageIds.has(s.highlightedMessageId)) {
           s.highlightedMessageId = null
         }
@@ -1091,6 +1109,44 @@ export const useAppStore = create<AppState>()(
           case 'summary.updated': {
             const conv = s.conversations[event.conversationId]
             if (conv) conv.summary = event.summary
+            return
+          }
+
+          case 'workspace_env_hint': {
+            // Idempotent: only show the hint if the user hasn't already decided.
+            const existing = s.workspaceEnvByConv[event.conversationId]
+            if (existing && existing.status !== 'idle') return
+            s.workspaceEnvByConv[event.conversationId] = {
+              hintVisible: true,
+              status: 'idle',
+            }
+            return
+          }
+
+          case 'workspace_env_status': {
+            const prev = s.workspaceEnvByConv[event.conversationId]
+            // If the user already dismissed the hint (env_preference set),
+            // don't re-show it — but still update status for in-flight creation.
+            const hintVisible = prev?.hintVisible ?? false
+            if (event.status === 'creating') {
+              s.workspaceEnvByConv[event.conversationId] = {
+                hintVisible: true,
+                status: 'creating',
+              }
+            } else if (event.status === 'ready') {
+              s.workspaceEnvByConv[event.conversationId] = {
+                hintVisible: false,
+                status: 'ready',
+                venvPath: event.venvPath,
+              }
+            } else {
+              // failed
+              s.workspaceEnvByConv[event.conversationId] = {
+                hintVisible: hintVisible,
+                status: 'failed',
+                error: event.error,
+              }
+            }
             return
           }
 

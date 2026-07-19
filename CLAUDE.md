@@ -372,6 +372,7 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `specs/user-profile/spec.md` — 用户资料管理
 - `specs/agent-trace-observability/spec.md` — Agent 全链路可观测能力（OTel SDK + Phoenix + Level 4 埋点）
 - `specs/agent-evaluation/spec.md` — Agent 评测能力（在线规则评测 + 离线 LLM-as-Judge + 5+4 维指标体系）
+- `specs/run-internal-compaction/spec.md` — ReAct loop 内压缩（五阶段 pipeline）
 
 ### `specs/`（编号版详细规格）
 

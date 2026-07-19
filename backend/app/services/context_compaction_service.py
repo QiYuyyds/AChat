@@ -14,7 +14,6 @@ Full compaction flow (LLM-backed, triggered by the explicit /compact action):
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 
@@ -25,6 +24,10 @@ from app.db.models import Agent, AgentRun, Attachment, ContextSummary, Conversat
 from app.schemas.events import MessageAddedEvent, MessageRecord
 from app.schemas.messages import ContextSummaryRecord
 from app.services.event_bus import event_bus
+from app.services.transcript_renderer import (
+    estimate_full_message_tokens,
+    render_tool_aware_transcript,
+)
 from app.utils.clock import now_ms
 from app.utils.ids import new_context_summary_id, new_message_id
 from app.utils.model_registry import estimate_tokens
@@ -167,10 +170,7 @@ async def estimate_uncompacted_tokens(conversation_id: str) -> int:
             .scalars()
             .all()
         )
-    total = 0
-    for m in rows:
-        total += _message_token_estimate(m)
-    return total
+    return estimate_full_message_tokens(rows)
 
 
 def render_conversation_summary_block(summary: ContextSummary) -> str:
@@ -288,13 +288,11 @@ async def compact_conversation(
 
     agent_names = await _load_agent_names(agent_ids)
     prior = latest.summary if latest else None
-    full_transcript = _render_transcript(to_compact, agent_names)
+    full_transcript = render_tool_aware_transcript(to_compact, agent_names)
 
     # ctx-before: the full uncompacted tail that the next turn would otherwise
     # carry (prior summary block, if any, + every message after the cut-off).
-    ctx_before = estimate_tokens(full_transcript) + sum(
-        estimate_tokens(_message_text(m)) for m in kept
-    )
+    ctx_before = estimate_tokens(full_transcript) + estimate_full_message_tokens(kept)
     if prior:
         ctx_before += estimate_tokens(prior)
 
@@ -321,7 +319,7 @@ async def compact_conversation(
             m for m in to_compact
             if float(m.created_at) > session_mem.covers_up_to
         ]
-        gap_transcript = _render_transcript(gap_messages, agent_names)
+        gap_transcript = render_tool_aware_transcript(gap_messages, agent_names)
 
         if estimate_tokens(full_transcript) < MIN_COMPACT_TOKENS:
             raise (
@@ -383,9 +381,7 @@ async def compact_conversation(
         raise ValueError("摘要生成失败：模型返回为空")
 
     # ctx-after: the new summary block + only the kept recent messages.
-    ctx_after = estimate_tokens(summary_text) + sum(
-        estimate_tokens(_message_text(m)) for m in kept
-    )
+    ctx_after = estimate_tokens(summary_text) + estimate_full_message_tokens(kept)
 
     # h) persist ContextSummary
     last = to_compact[-1]
@@ -553,51 +549,6 @@ async def _get_agent_system_prompt(agent_id: str) -> str:
     return agent.system_prompt or ""
 
 
-def _render_transcript(messages: list[Message], agent_names: dict[str, str]) -> str:
-    """Render messages as a plain-text transcript for the summariser."""
-    lines: list[str] = []
-    for msg in messages:
-        text = _message_text(msg)
-        if not text:
-            continue
-        if msg.role == "user":
-            who = "用户"
-        elif msg.role == "system":
-            who = "系统"
-        else:
-            who = agent_names.get(msg.agent_id or "", msg.agent_id or "Agent")
-        lines.append(f"{who}：{text}")
-    return "\n".join(lines)
-
-
-def _message_text(msg: Message) -> str:
-    """Extract plain text from a message's parts."""
-    texts = [
-        p.get("content", "")
-        for p in msg.parts_list
-        if p.get("type") == "text" and p.get("content")
-    ]
-    return "\n".join(texts).strip()
-
-
-def _message_token_estimate(msg: Message) -> int:
-    """Estimate token count for ALL parts of a message (text, tool_use, tool_result, thinking)."""
-    total = 0
-    for p in msg.parts_list:
-        ptype = p.get("type")
-        if ptype in ("text", "thinking", "effective_prompt"):
-            total += estimate_tokens(p.get("content", ""))
-        elif ptype == "tool_use":
-            total += estimate_tokens(json.dumps(p.get("args", {}), ensure_ascii=False))
-        elif ptype == "tool_result":
-            result = p.get("result", "")
-            if isinstance(result, str):
-                total += estimate_tokens(result)
-            else:
-                total += estimate_tokens(json.dumps(result, ensure_ascii=False))
-    return total
-
-
 async def _summarise(
     transcript: str,
     prior_summary: str | None,
@@ -629,6 +580,9 @@ async def _summarise(
         "- 关键决策与结论\n"
         "- 已产出的产物（含 artifact/deployment id）\n"
         "- 尚未完成或待跟进的事项\n"
+        "- 已探索的文件/目录结构（路径 + 关键发现）\n"
+        "- 执行过的关键命令及其结果摘要\n"
+        "- 架构理解与代码结构发现\n"
         "只输出摘要正文，不要加前缀、标题或引号。\n\n"
         f"对话内容：\n{transcript}"
     )

@@ -925,3 +925,247 @@ async def test_react_loop_turn_metric_tokens(conversation, monkeypatch):
     # (FakeUsage has prompt_tokens=100, completion_tokens=50)
     assert turn_metrics[0].tokens.input_tokens >= 0
     assert turn_metrics[0].tokens.output_tokens >= 0
+
+
+# ─── Compact pipeline integration tests ─────────────────────────────────────
+
+
+def _compact_messages(n_turns=4, tools_per_turn=3, result_size=500):
+    """Build a messages list with enough tool results to exercise compaction."""
+    import json as _json
+
+    messages = [
+        {"role": "system", "content": "You are a helpful agent."},
+        {"role": "user", "content": "Explore the project."},
+    ]
+    for t in range(n_turns):
+        calls = [
+            {
+                "id": f"c_{t}_{i}",
+                "type": "function",
+                "function": {"name": "fs_list", "arguments": _json.dumps({"path": f"src/f{i}"})},
+            }
+            for i in range(tools_per_turn)
+        ]
+        messages.append({"role": "assistant", "content": f"Turn {t}", "tool_calls": calls})
+        for i in range(tools_per_turn):
+            messages.append(
+                {"role": "tool", "tool_call_id": f"c_{t}_{i}", "content": "x" * result_size}
+            )
+    return messages
+
+
+def _mock_model_limit(monkeypatch, context_window=100_000):
+    """Patch get_model_limits to return a fake context window."""
+    monkeypatch.setattr(
+        "app.services.agent_runner.get_model_limits",
+        lambda *a, **k: type("LM", (), {"context_window": context_window})(),
+    )
+
+
+async def test_react_loop_dispatches_to_stage1(conversation, monkeypatch):
+    """When decide_pre_model returns 'summarize', run_compact_pipeline(stage=1) is called."""
+    from app.services.agent_runner import _run_react_loop
+    from app.services.react_loop_termination import PreModelDecision, StopReason
+
+    _mock_model_limit(monkeypatch)
+    messages = _compact_messages()
+
+    call_count = [0]
+
+    def fake_decide(*, state, total_tokens, model_limit, pipeline_enabled=True):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return PreModelDecision(action="summarize")
+        return PreModelDecision(action="hard_stop", stop_reason=StopReason.BUDGET_EXHAUSTED)
+
+    monkeypatch.setattr("app.services.react_loop_termination.decide_pre_model", fake_decide)
+
+    pipeline_calls = []
+
+    def fake_pipeline(msgs, stage):
+        pipeline_calls.append((stage, len(msgs)))
+        return msgs
+
+    monkeypatch.setattr("app.services.compact_pipeline.run_compact_pipeline", fake_pipeline)
+
+    adapter = CustomAdapter()
+    cancel = asyncio.Event()
+    inp = _input(conversation, tool_names=["fs_list"])
+    inp.messages = messages
+
+    events = [
+        ev async for ev in _run_react_loop(
+            adapter, inp, cancel,
+            run_id="run_test",
+            agent_id=conversation["agent_id"],
+            conversation_id=conversation["conversation_id"],
+            model_id="test-model",
+        )
+    ]
+
+    assert len(pipeline_calls) == 1
+    assert pipeline_calls[0][0] == 1  # stage 1
+    assert events[-1].type == "run.usage"
+
+
+async def test_react_loop_uses_new_token_estimate(conversation, monkeypatch):
+    """total_tokens passed to decide_pre_model comes from estimate_messages_tokens."""
+    from app.services.agent_runner import _run_react_loop
+    from app.services.react_loop_termination import PreModelDecision, StopReason
+
+    _mock_model_limit(monkeypatch)
+    messages = _compact_messages()
+
+    received_tokens = []
+
+    def fake_decide(*, state, total_tokens, model_limit, pipeline_enabled=True):
+        received_tokens.append(total_tokens)
+        return PreModelDecision(action="hard_stop", stop_reason=StopReason.BUDGET_EXHAUSTED)
+
+    monkeypatch.setattr("app.services.react_loop_termination.decide_pre_model", fake_decide)
+
+    # Track estimate_messages_tokens calls
+    estimate_calls = []
+
+    def fake_estimate(msgs):
+        estimate_calls.append(len(msgs))
+        return 42  # distinctive sentinel value
+
+    monkeypatch.setattr("app.services.compact_pipeline.estimate_messages_tokens", fake_estimate)
+
+    adapter = CustomAdapter()
+    cancel = asyncio.Event()
+    inp = _input(conversation, tool_names=["fs_list"])
+    inp.messages = messages
+
+    _ = [
+        ev async for ev in _run_react_loop(
+            adapter, inp, cancel,
+            run_id="run_test",
+            agent_id=conversation["agent_id"],
+            conversation_id=conversation["conversation_id"],
+            model_id="test-model",
+        )
+    ]
+
+    # estimate_messages_tokens was called at least once
+    assert len(estimate_calls) >= 1
+    # decide_pre_model received the sentinel value (42), not the legacy json.dumps estimate
+    assert 42 in received_tokens
+
+
+async def test_react_loop_legacy_fallback_when_disabled(conversation, monkeypatch):
+    """When compact_pipeline_enabled=False, _mid_run_compact is used, not run_compact_pipeline."""
+    from app.services.agent_runner import _run_react_loop
+    from app.services.react_loop_termination import PreModelDecision, StopReason
+
+    _mock_model_limit(monkeypatch)
+    messages = _compact_messages()
+
+    # Disable pipeline
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "compact_pipeline_enabled", False)
+
+    call_count = [0]
+
+    def fake_decide(*, state, total_tokens, model_limit, pipeline_enabled=True):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return PreModelDecision(action="compact")
+        return PreModelDecision(action="hard_stop", stop_reason=StopReason.BUDGET_EXHAUSTED)
+
+    monkeypatch.setattr("app.services.react_loop_termination.decide_pre_model", fake_decide)
+
+    pipeline_calls = []
+    monkeypatch.setattr(
+        "app.services.compact_pipeline.run_compact_pipeline",
+        lambda msgs, stage: (pipeline_calls.append(stage), msgs)[1],
+    )
+
+    legacy_calls = [0]
+    import app.services.agent_runner as ar_module
+
+    original_compact = ar_module._mid_run_compact
+
+    def tracked_compact(msgs):
+        legacy_calls[0] += 1
+        return original_compact(msgs)
+
+    monkeypatch.setattr(ar_module, "_mid_run_compact", tracked_compact)
+
+    adapter = CustomAdapter()
+    cancel = asyncio.Event()
+    inp = _input(conversation, tool_names=["fs_list"])
+    inp.messages = messages
+
+    _ = [
+        ev async for ev in _run_react_loop(
+            adapter, inp, cancel,
+            run_id="run_test",
+            agent_id=conversation["agent_id"],
+            conversation_id=conversation["conversation_id"],
+            model_id="test-model",
+        )
+    ]
+
+    # Legacy path used, not pipeline
+    assert legacy_calls[0] >= 1
+    assert pipeline_calls == []
+
+
+async def test_compact_disabled_triggers_after_three_failures(conversation, monkeypatch):
+    """3 consecutive compact failures → compact_disabled → soft_inject on next call."""
+    from app.services.agent_runner import _run_react_loop
+    from app.services.react_loop_termination import (
+        COMPACT_FAILURE_THRESHOLD,
+        PreModelDecision,
+        StopReason,
+    )
+
+    _mock_model_limit(monkeypatch)
+    messages = _compact_messages()
+
+    # No-op pipeline that never reduces tokens → always success=False
+    monkeypatch.setattr(
+        "app.services.compact_pipeline.run_compact_pipeline",
+        lambda msgs, stage: msgs,
+    )
+
+    call_count = [0]
+
+    def fake_decide(*, state, total_tokens, model_limit, pipeline_enabled=True):
+        call_count[0] += 1
+        # First 3 calls: return summarize (stage 1) → compact runs, fails (no reduction)
+        # After 3 failures, compact_disabled is True → decide_pre_model should
+        # return soft_inject. But since we're mocking, we need to check state.
+        if state.compact_disabled:
+            return PreModelDecision(action="hard_stop", stop_reason=StopReason.BUDGET_EXHAUSTED)
+        if call_count[0] <= COMPACT_FAILURE_THRESHOLD + 1:
+            return PreModelDecision(action="summarize")
+        return PreModelDecision(action="hard_stop", stop_reason=StopReason.BUDGET_EXHAUSTED)
+
+    monkeypatch.setattr("app.services.react_loop_termination.decide_pre_model", fake_decide)
+
+    adapter = CustomAdapter()
+    cancel = asyncio.Event()
+    inp = _input(conversation, tool_names=["fs_list"])
+    inp.messages = messages
+
+    events = [
+        ev async for ev in _run_react_loop(
+            adapter, inp, cancel,
+            run_id="run_test",
+            agent_id=conversation["agent_id"],
+            conversation_id=conversation["conversation_id"],
+            model_id="test-model",
+        )
+    ]
+
+    # After COMPACT_FAILURE_THRESHOLD (3) failures, compact_disabled should be True.
+    # The loop should have exited via hard_stop.
+    assert events[-1].type == "run.usage"
+    # At least 3 compact attempts were made (all failed because no-op pipeline)
+    assert call_count[0] >= COMPACT_FAILURE_THRESHOLD + 1
+

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -19,6 +20,9 @@ from app.code_intelligence.runtime import ResolvedRuntime, RuntimeManager
 
 CodeGraphOperation = Literal["init", "sync", "rebuild", "status", "explore"]
 MAX_CAPTURE_CHARS = 1_000_000
+POST_INDEX_STATUS_TIMEOUT = 180.0
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -57,12 +61,23 @@ class CodeGraphCommandRunner:
             cancel_event=cancel_event,
             on_stdout_line=on_stdout_line if progress_callback is not None else None,
         )
-        status = await self._execute(
-            runtime,
-            "status",
-            project,
-            cancel_event=cancel_event,
-        )
+        try:
+            status = await self._execute(
+                runtime,
+                "status",
+                project,
+                cancel_event=cancel_event,
+                timeout_override=POST_INDEX_STATUS_TIMEOUT,
+            )
+        except (TimeoutError, RuntimeError) as exc:
+            logger.warning(
+                "CodeGraph status failed after %s for %s; "
+                "index is valid but counts unavailable: %s",
+                operation,
+                project,
+                exc,
+            )
+            return {"files": 0, "symbols": 0, "relationships": 0}
         return parse_status_counts(status.stdout)
 
     async def explore(
@@ -87,12 +102,19 @@ class CodeGraphCommandRunner:
         cancel_event: asyncio.Event,
     ) -> bool:
         runtime = self._verified_runtime()
-        result = await self._execute(
-            runtime,
-            "status",
-            Path(project_path).resolve(),
-            cancel_event=cancel_event,
-        )
+        try:
+            result = await self._execute(
+                runtime,
+                "status",
+                Path(project_path).resolve(),
+                cancel_event=cancel_event,
+            )
+        except TimeoutError:
+            logger.warning(
+                "CodeGraph status timed out for %s; assuming not stale",
+                project_path,
+            )
+            return False
         try:
             pending = json.loads(result.stdout).get("pendingChanges", {})
         except (json.JSONDecodeError, AttributeError) as exc:
@@ -108,6 +130,7 @@ class CodeGraphCommandRunner:
         cancel_event: asyncio.Event,
         query: str | None = None,
         on_stdout_line: Callable[[str], None] | None = None,
+        timeout_override: float | None = None,
     ) -> ProcessResult:
         argv = self.build_argv(
             runtime,
@@ -118,7 +141,10 @@ class CodeGraphCommandRunner:
         for required in argv[:2]:
             if Path(required).is_absolute() and not Path(required).exists():
                 raise RuntimeError(f"Verified CodeGraph runtime file is missing: {required}")
-        timeout = 600.0 if operation in {"init", "rebuild"} else 180.0 if operation == "sync" else 60.0
+        if timeout_override is not None:
+            timeout = timeout_override
+        else:
+            timeout = 600.0 if operation in {"init", "rebuild"} else 180.0 if operation == "sync" else 60.0
         env = os.environ.copy()
         env.update(
             {

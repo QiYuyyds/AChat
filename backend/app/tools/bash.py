@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -31,6 +32,7 @@ from app.services.bash_command_approval import (
 )
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
 from app.utils.dispatch_run_evidence import RunCommandEvidence, record_run_command
+from app.utils.env_isolation import build_tool_env, detect_project_venv
 from app.utils.platform import IS_WINDOWS
 from app.utils.security import find_banned_pattern
 from app.utils.subprocess_compat import spawn_subprocess
@@ -44,6 +46,17 @@ MAX_TIMEOUT_MS = 15 * 60_000
 MAX_OUTPUT_CHARS = 10_000
 _ORPHANED_STDIO_GRACE_S = 0.5
 _POSIX_LOGIN_INTERACTIVE_SHELLS = {"bash", "zsh"}
+
+# Matches `pip install`, `pip3 install`, `python -m pip install`, etc.
+# Used by the non-blocking advisory — false positives are acceptable (the
+# env-isolation layer has already hardened the actual execution env).
+_PIP_INSTALL_RE = re.compile(r"\bpip\d?\s+install\b")
+
+_ENV_ADVISORY = (
+    "\n\n[AChat Env Advisory] 检测到 pip install 但项目无 .venv。"
+    "包将安装到系统 Python（AChat 运行环境已隔离）。"
+    "建议创建项目 venv。"
+)
 
 
 @dataclass
@@ -163,7 +176,7 @@ async def execute_bash_command(args: BashExecutionArgs, ctx: ToolContext) -> Too
         if not approved:
             return err(f"User rejected command execution: {approval.reason}")
 
-    return await _run_shell_command(args, cwd, ctx)
+    return await _run_shell_command(args, cwd, ctx, workspace.env_preference)
 
 
 def _clamp_timeout(timeout_ms: int | None) -> int:
@@ -235,14 +248,21 @@ def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
 
 
 async def _run_shell_command(
-    args: BashExecutionArgs, cwd: str, ctx: ToolContext
+    args: BashExecutionArgs, cwd: str, ctx: ToolContext, env_preference: str | None = None
 ) -> ToolResult:
     timeout_ms = _clamp_timeout(args.timeout_ms)
     cmd, cmd_args = _build_shell_invocation(args.command)
 
+    # Build an isolated env: drop AChat venv markers / internal secrets from
+    # the inherited os.environ, scrub AChat venv off PATH, and prepend a
+    # project-level .venv (if present) so `pip install` lands in the project
+    # venv rather than AChat's site-packages. See specs/workspace-env-isolation.
+    project_venv = detect_project_venv(cwd)
+    tool_env = build_tool_env(cwd=cwd, project_venv_path=project_venv)
+
     kwargs: dict[str, Any] = {
         "cwd": cwd,
-        "env": os.environ.copy(),
+        "env": tool_env,
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
@@ -338,6 +358,18 @@ async def _run_shell_command(
     )
     trunc_note = f"\n\n[TRUNCATED at {MAX_OUTPUT_CHARS} chars]" if truncated else ""
 
+    # Non-blocking pip install advisory: if the command contains `pip install`,
+    # there's no project venv, and the user hasn't chosen system_python, append
+    # a hint. The env-isolation layer already prevents pollution of AChat's
+    # own venv — this is a UX nudge, not a safety barrier.
+    advisory = ""
+    if (
+        not project_venv
+        and env_preference != "system_python"
+        and _PIP_INSTALL_RE.search(args.command)
+    ):
+        advisory = _ENV_ADVISORY
+
     record_run_command(
         ctx.run_id,
         RunCommandEvidence(
@@ -355,7 +387,7 @@ async def _run_shell_command(
             "cwd": cwd,
             "command": args.command,
             "exitCode": exit_code,
-            "output": buffer + trunc_note + note + orphan_note,
+            "output": buffer + trunc_note + note + orphan_note + advisory,
             "truncated": truncated,
             "timedOut": timed_out,
         }

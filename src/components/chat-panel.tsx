@@ -17,6 +17,7 @@ import { PendingMcpCallsPanel } from '@/components/pending-mcp-call-card'
 import { PendingWritesPanel } from '@/components/pending-writes-panel'
 import { diffTabPendingId, isDiffTabId } from '@/components/pending-writes-panel'
 import { PinnedMessagesBar } from '@/components/pinned-messages-bar'
+import { WorkspaceEnvHintCard } from '@/components/workspace-env-hint-card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -264,6 +265,7 @@ export function ChatPanel() {
       {activeTab === 'chat' || !openFiles.includes(activeTab) ? (
         <>
           <PinnedMessagesBar conversationId={conv.id} />
+          <WorkspaceEnvHintCard conversationId={conv.id} />
           <MessageList conversationId={conv.id} />
           <PendingBashCommandsPanel conversationId={conv.id} />
           <PendingMcpCallsPanel conversationId={conv.id} />

@@ -58,6 +58,8 @@ from app.schemas.events import (
     StreamEvent,
     ToolCallEvent,
     ToolResultEvent,
+    WorkspaceEnvHintEvent,
+    WorkspaceEnvStatusEvent,
 )
 from app.schemas.messages import (
     ArtifactRefPart,
@@ -81,6 +83,7 @@ from app.schemas.requests import (
     CreateAgentRequest,
     CreateArtifactVersionRequest,
     CreateConversationRequest,
+    CreateVenvResponse,
     EditMessageRequest,
     ErrorResponse,
     FsListEntry,
@@ -107,6 +110,7 @@ from app.schemas.requests import (
     SettingsResponse,
     UpdateAgentRequest,
     UpdateConversationRequest,
+    UpdateEnvPreferenceRequest,
     UpdateSettingsRequest,
     UploadAttachmentResponse,
     UsageBucket,
@@ -115,6 +119,7 @@ from app.schemas.requests import (
     UsageSummaryResponse,
     UsageTopConversation,
     VipLoginRequest,
+    WorkspaceEnvStatusResponse,
 )
 
 __all__ = [
@@ -156,6 +161,8 @@ __all__ = [
     "ToolResultEvent",
     "ArtifactCreateEvent",
     "HeartbeatEvent",
+    "WorkspaceEnvHintEvent",
+    "WorkspaceEnvStatusEvent",
     # Messages
     "MessagePart",
     "MessageUsage",
@@ -206,6 +213,10 @@ __all__ = [
     "MobileTokenResponse",
     "MobileSnapshotResponse",
     "ErrorResponse",
+    # Workspace env
+    "UpdateEnvPreferenceRequest",
+    "WorkspaceEnvStatusResponse",
+    "CreateVenvResponse",
     # Auth
     "RegisterRequest",
     "LoginRequest",

@@ -254,6 +254,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
             isUser && 'border-l-2 border-primary bg-transparent shadow-none',
             message.status === 'error' && 'border-destructive/40 bg-destructive/10',
             message.status === 'aborted' && 'border-muted-foreground/40 bg-muted/60',
+            message.status === 'interrupted' && 'border-muted-foreground/40 bg-muted/60',
             editing && 'w-full max-w-xl',
             isHighlighted && 'message-glow',
           )}

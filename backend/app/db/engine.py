@@ -112,6 +112,8 @@ async def _migrate_columns(conn) -> None:  # type: ignore[no-untyped-def]
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
         "CREATE INDEX IF NOT EXISTS idx_documents_source_path ON documents (source_path)",
         "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS obsidian_vault_path VARCHAR(1024)",
+        # ─── Workspace env preference (workspace-env-isolation change) ───
+        "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS env_preference VARCHAR",
     ]
     for stmt in statements:
         # dialects without IF NOT EXISTS (sqlite) / pre-existing column → no-op

@@ -123,7 +123,7 @@ async def invalidate_user_settings_cache(user_id: str) -> None:
     await cache.delete(f"user_settings:{user_id}")
 
 
-_WORKSPACE_COLUMNS = ["id", "conversation_id", "root_path", "mode", "bound_path", "created_at"]
+_WORKSPACE_COLUMNS = ["id", "conversation_id", "root_path", "mode", "bound_path", "env_preference", "created_at"]
 
 
 def _serialize_workspace(ws: Workspace) -> dict[str, Any]:

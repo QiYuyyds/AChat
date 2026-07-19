@@ -113,7 +113,7 @@ function PartRenderer({
 }) {
   switch (part.type) {
     case 'text':
-      return <TextPart content={part.content} />
+      return <TextPart content={part.content} isStreaming={isStreaming} />
     case 'thinking':
       return <ThinkingPart content={part.content} startedAt={part.startedAt} endedAt={part.endedAt} isStreaming={isStreaming} />
     case 'code':
@@ -205,8 +205,21 @@ function ExecutionPlanPart({
 }
 
 // ─── Text ──────────────────────────────────────────────
-function TextPart({ content }: { content: string }) {
+function TextPart({ content, isStreaming = false }: { content: string; isStreaming?: boolean }) {
   if (!content) return null
+
+  // Streaming fallback: plain <pre> to avoid O(N×S) markdown re-parsing per delta.
+  // Font-sans matches the markdown body text; container styling matches complete render.
+  if (isStreaming) {
+    return (
+      <div className="text-sm leading-6 text-foreground">
+        <pre className="whitespace-pre-wrap break-words font-sans">
+          {content}
+        </pre>
+      </div>
+    )
+  }
+
   // 把消息体里 <quoted_selection ...>...</quoted_selection> 块抠出来，渲染成卡片；
   // 剩余文本走 Markdown。规避了纯文本里裸 XML 显丑的问题。
   const segments = splitQuotedSelections(content)
@@ -687,10 +700,10 @@ function FileWritePreviewPart({
       {status === 'streaming' && (
         <div ref={scrollRef} className="max-h-[24rem] overflow-auto">
           <div className="relative">
-            <CodeBlock
-              code={content}
-              language={derivedLanguage || 'text'}
-            />
+            {/* Streaming fallback: plain <pre> to avoid O(N×S) Shiki re-highlight per delta */}
+            <pre className="px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
+              {content}
+            </pre>
             {isStreaming && (
               <span className="absolute bottom-1 right-2 inline-block size-2 animate-pulse rounded-full bg-green-500" />
             )}

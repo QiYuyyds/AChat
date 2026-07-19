@@ -731,6 +731,7 @@ def create_app() -> FastAPI:
         runs_misc,
         skills,
         stream,
+        workspaces,
     )
     from app.api import (
         settings as settings_router,
@@ -759,6 +760,7 @@ def create_app() -> FastAPI:
     app.include_router(memory.router, prefix="", tags=["memory"])
     app.include_router(skills.router, prefix="/api", tags=["skills"])
     app.include_router(mcp.router, prefix="/api", tags=["mcp"])
+    app.include_router(workspaces.router, prefix="/api", tags=["workspaces"])
     # deployment preview assets served at root /deployments/{id}/... (no /api prefix);
     # the previewPath the agent emits is /deployments/{id}. Frontend proxies via rewrite.
     app.include_router(deployments.router, tags=["deployments"])
@@ -783,4 +785,15 @@ if __name__ == "__main__":
         host=settings.host,
         port=settings.port,
         reload=settings.debug,
+        # Limit hot-reload watching to the application source directory so that
+        # `.venv` / `.agenthub-data` / `node_modules` / `__pycache__` changes
+        # (e.g. from an agent's `pip install`) don't trigger a reload that
+        # crashes AChat with ModuleNotFoundError. See specs/workspace-env-isolation.
+        reload_dirs=["app"],
+        reload_excludes=[
+            "**/.venv/**",
+            "**/.agenthub-data/**",
+            "**/node_modules/**",
+            "**/__pycache__/**",
+        ],
     )

@@ -48,10 +48,53 @@ def test_decide_continue_when_under_budget():
 
 
 def test_decide_compact_band():
+    """Legacy single-point compact only fires when pipeline is disabled."""
     state = TerminationState()
     tokens = int(COMPACT_RATIO * 1000) + 1
-    d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000)
+    d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000, pipeline_enabled=False)
     assert d.action == "compact"
+
+
+def test_decide_pre_model_stage1_at_0_70():
+    """ratio=0.72 → action='summarize' (stage 1) when pipeline enabled."""
+    state = TerminationState()
+    tokens = 720  # ratio = 0.72
+    d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000)
+    assert d.action == "summarize"
+
+
+def test_decide_pre_model_stage2_at_0_80():
+    """ratio=0.82 → action='prune' (stage 2)."""
+    state = TerminationState()
+    tokens = 820
+    d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000)
+    assert d.action == "prune"
+
+
+def test_decide_pre_model_stage3_at_0_88():
+    """ratio=0.89 → action='fold' (stage 3), not legacy 'compact'."""
+    state = TerminationState()
+    tokens = 890  # ratio = 0.89
+    d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000)
+    assert d.action == "fold"
+
+
+def test_decide_pre_model_legacy_when_disabled():
+    """When pipeline_enabled=False, ratio=0.86 returns legacy 'compact'."""
+    state = TerminationState()
+    tokens = 860  # ratio = 0.86 >= COMPACT_RATIO (0.85)
+    d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000, pipeline_enabled=False)
+    assert d.action == "compact"
+
+
+def test_decide_stage_skipped_when_compact_disabled():
+    """When compact_disabled=True, stages 1/2/3 are skipped → soft_inject."""
+    state = TerminationState()
+    state.compact_disabled = True
+    tokens = 890  # would be stage 3 if not disabled
+    d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000)
+    assert d.action == "soft_inject"
+    assert state.soft_trigger_reason == StopReason.COMPACT_FAILURE_BREAKER
 
 
 def test_decide_soft_band():

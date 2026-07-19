@@ -474,6 +474,11 @@ class Workspace(Base):
     bound_path: Mapped[str | None] = mapped_column(
         String, name="bound_path", nullable=True
     )
+    # User's choice for workspace env isolation: null = not yet prompted,
+    # 'venv_created' / 'skip' / 'system_python'. See specs/workspace-env-isolation.
+    env_preference: Mapped[str | None] = mapped_column(
+        String, name="env_preference", nullable=True, default=None
+    )
     created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
 
     # Relationships

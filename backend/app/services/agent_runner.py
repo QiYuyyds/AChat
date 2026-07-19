@@ -890,6 +890,8 @@ async def _run_react_loop(  # noqa: C901
     """
     from app.adapters.custom_adapter import _RunUsage, _to_run_usage
     from app.config import get_settings
+    from app.services.compact_markers import CompactSuccessJudge
+    from app.services.compact_pipeline import estimate_messages_tokens, run_compact_pipeline
     from app.services.hook_registry import HookContext, HookEvent
     from app.services.react_loop_termination import (
         SAFETY_MAX_MODEL_CALLS,
@@ -957,6 +959,9 @@ async def _run_react_loop(  # noqa: C901
     max_tool_turns = raw_fuse if isinstance(raw_fuse, int) and raw_fuse > 0 else None
     term = TerminationState(max_tool_turns=max_tool_turns)
 
+    # Read the compaction pipeline toggle once (avoid per-turn config reads).
+    compact_pipeline_enabled = bool(getattr(settings, "compact_pipeline_enabled", True))
+
     # ── on_run_start hook ──
     if hook_registry and hook_registry.has_handlers(HookEvent.ON_RUN_START):
         run_start_result = await hook_registry.dispatch(HookContext(
@@ -964,6 +969,7 @@ async def _run_react_loop(  # noqa: C901
             run_id=run_id,
             agent_id=agent_id,
             conversation_id=conversation_id,
+            user_id=user_id,
             messages=messages,
             tool_names=full_tool_names,
         ))
@@ -1006,15 +1012,18 @@ async def _run_react_loop(  # noqa: C901
                 break
 
             turn_start = time.monotonic()
-            total_tokens = (
-                estimate_tokens(json.dumps(messages, ensure_ascii=False))
-                if model_limit > 0
-                else 0
-            )
+            if model_limit > 0:
+                if compact_pipeline_enabled:
+                    total_tokens = estimate_messages_tokens(messages)
+                else:
+                    total_tokens = estimate_tokens(json.dumps(messages, ensure_ascii=False))
+            else:
+                total_tokens = 0
             decision = decide_pre_model(
                 state=term,
                 total_tokens=total_tokens,
                 model_limit=model_limit,
+                pipeline_enabled=compact_pipeline_enabled,
             )
 
             if decision.action == "hard_stop":
@@ -1025,22 +1034,42 @@ async def _run_react_loop(  # noqa: C901
                 yield _emit_run_usage(decision.stop_reason or StopReason.BUDGET_EXHAUSTED)
                 break
 
-            if decision.action == "compact":
+            # ── Compaction (stages 1/2/3 pipeline OR legacy single-point) ──
+            if decision.action in ("summarize", "prune", "fold", "compact"):
                 pre_compact_count = len(messages)
                 pre_tokens = total_tokens
+                _stage_map = {"summarize": 1, "prune": 2, "fold": 3}
                 try:
-                    messages = _mid_run_compact(messages)
-                    post_tokens = estimate_tokens(json.dumps(messages, ensure_ascii=False))
-                    # Treat as success if something changed or tokens dropped/stable
-                    success = post_tokens < pre_tokens or len(messages) < pre_compact_count
-                    # Even no-op compact is "success" structurally; only exceptions fail
-                    mark_compact_result(term, success=True)
+                    if compact_pipeline_enabled and decision.action in _stage_map:
+                        stage = _stage_map[decision.action]
+                        messages = run_compact_pipeline(messages, stage=stage)
+                        logger.info(
+                            "[AgentRunner] compact stage %d (%s): %d -> %d messages",
+                            stage, decision.action, pre_compact_count, len(messages),
+                        )
+                    else:
+                        # Legacy single-point compact path (pipeline disabled)
+                        messages = _mid_run_compact(messages)
+                        logger.info(
+                            "[AgentRunner] legacy mid-run compact: %d -> %d messages",
+                            pre_compact_count, len(messages),
+                        )
+                    # Recompute tokens with the same estimator used pre-compact.
+                    if compact_pipeline_enabled:
+                        post_tokens = estimate_messages_tokens(messages)
+                    else:
+                        post_tokens = estimate_tokens(json.dumps(messages, ensure_ascii=False))
+                    # Strict success: token must drop ≥15% (not just len change).
+                    success = CompactSuccessJudge.judge(
+                        pre_tokens, post_tokens, pre_compact_count, len(messages),
+                    )
+                    mark_compact_result(term, success=success)
                     logger.info(
-                        "[AgentRunner] mid-run compact: %d -> %d messages, %d -> %d tokens",
-                        pre_compact_count, len(messages), pre_tokens, post_tokens,
+                        "[AgentRunner] compact result: success=%s %d -> %d tokens",
+                        success, pre_tokens, post_tokens,
                     )
                 except Exception as compact_err:  # noqa: BLE001
-                    logger.warning("[AgentRunner] mid-run compact failed: %s", compact_err)
+                    logger.warning("[AgentRunner] compact failed: %s", compact_err)
                     mark_compact_result(term, success=False)
                 # Re-evaluate after compact on same iteration
                 continue
@@ -1081,6 +1110,7 @@ async def _run_react_loop(  # noqa: C901
                     run_id=run_id,
                     agent_id=agent_id,
                     conversation_id=conversation_id,
+                    user_id=user_id,
                     turn_number=turn,
                 ))
 
@@ -1192,6 +1222,7 @@ async def _run_react_loop(  # noqa: C901
                         run_id=run_id,
                         agent_id=agent_id,
                         conversation_id=conversation_id,
+                        user_id=user_id,
                         turn_number=turn,
                         message_id=message_id,
                         tool_calls=[],
@@ -1204,6 +1235,7 @@ async def _run_react_loop(  # noqa: C901
                         run_id=run_id,
                         agent_id=agent_id,
                         conversation_id=conversation_id,
+                        user_id=user_id,
                         turn_number=turn,
                     ))
                 if force_final:
@@ -1332,6 +1364,7 @@ async def _run_react_loop(  # noqa: C901
                     run_id=run_id,
                     agent_id=agent_id,
                     conversation_id=conversation_id,
+                    user_id=user_id,
                     turn_number=turn,
                     message_id=message_id,
                     tool_calls=[{"id": tc.id, "name": tc.name, "args": tc.args} for tc in tool_calls],
@@ -1380,6 +1413,7 @@ async def _run_react_loop(  # noqa: C901
                 run_id=run_id,
                 agent_id=agent_id,
                 conversation_id=conversation_id,
+                user_id=user_id,
             ))
 
 
@@ -2662,47 +2696,68 @@ async def finalize(
 ) -> RunResult:
     finished_at = now_ms()
 
+    # During shutdown the DB engine may already be closed; each DB-touching
+    # step degrades independently so RunEndEvent still reaches the frontend.
+    db_down = False
+
     if status in ("failed", "aborted"):
-        await _persist_unresolved_tool_failures(
-            run_id, args.conversation_id, status, error, finished_at,
-            user_id=args.user_id,
-        )
-
-    async with get_db() as db:
-        run = (
-            await db.execute(select(AgentRun).where(AgentRun.id == run_id))
-        ).scalar_one_or_none()
-        if run is not None:
-            run.status = status
-            run.finished_at = finished_at
-            run.error = error
-            # Write plan usage stats into usage JSONB (computed in consume_stream)
-            if result.plan_stats is not None:
-                usage = dict(run.usage or {})
-                usage["plan"] = result.plan_stats
-                run.usage = usage
-
-        # any message still 'streaming' for this run -> terminal status
-        streaming = (
-            await db.execute(
-                select(Message).where(
-                    and_(Message.run_id == run_id, Message.status == "streaming")
-                )
+        try:
+            await _persist_unresolved_tool_failures(
+                run_id, args.conversation_id, status, error, finished_at,
+                user_id=args.user_id,
             )
-        ).scalars().all()
-        terminal = "complete" if status == "complete" else "aborted" if status == "aborted" else "error"
-        for msg in streaming:
-            msg.status = terminal
+        except RuntimeError as e:
+            db_down = True
+            logger.warning("[finalize] skip _persist_unresolved_tool_failures: %s", e)
+
+    try:
+        async with get_db() as db:
+            run = (
+                await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+            ).scalar_one_or_none()
+            if run is not None:
+                run.status = status
+                run.finished_at = finished_at
+                run.error = error
+                if result.plan_stats is not None:
+                    usage = dict(run.usage or {})
+                    usage["plan"] = result.plan_stats
+                    run.usage = usage
+
+            streaming = (
+                await db.execute(
+                    select(Message).where(
+                        and_(Message.run_id == run_id, Message.status == "streaming")
+                    )
+                )
+            ).scalars().all()
+            terminal = "complete" if status == "complete" else "aborted" if status == "aborted" else "error"
+            for msg in streaming:
+                msg.status = terminal
+    except RuntimeError as e:
+        db_down = True
+        logger.warning("[finalize] skip AgentRun/Message update: %s", e)
 
     if status in ("failed", "aborted"):
-        await _emit_error_visualisation(run_id, args, status, error, result.output_message_ids)
+        try:
+            await _emit_error_visualisation(run_id, args, status, error, result.output_message_ids)
+        except RuntimeError as e:
+            db_down = True
+            logger.warning("[finalize] skip _emit_error_visualisation: %s", e)
 
-    async with get_db() as db:
-        conv = (
-            await db.execute(select(Conversation).where(Conversation.id == args.conversation_id))
-        ).scalar_one_or_none()
-        if conv is not None:
-            conv.updated_at = finished_at
+    try:
+        async with get_db() as db:
+            conv = (
+                await db.execute(select(Conversation).where(Conversation.id == args.conversation_id))
+            ).scalar_one_or_none()
+            if conv is not None:
+                conv.updated_at = finished_at
+    except RuntimeError as e:
+        db_down = True
+        logger.warning("[finalize] skip Conversation update: %s", e)
+
+    if db_down:
+        logger.warning("[finalize] run=%s status=%s finalized with DB unavailable", run_id, status)
 
     publish(
         RunEndEvent(

@@ -527,6 +527,18 @@ export type StreamEvent = BaseEvent &
         toolCalls: string[]
         durationMs: number
       }
+    | {
+        type: 'workspace_env_hint'
+        language: 'python'
+        venvPresent: boolean
+        options: ('create' | 'skip' | 'system_python')[]
+      }
+    | {
+        type: 'workspace_env_status'
+        status: 'creating' | 'ready' | 'failed'
+        venvPath?: string
+        error?: string
+      }
   )
 
 /** RunUsage 事件 payload。与 db/schema.ts 的 RunUsage 同形，重复定义避开 client/server 边界 import。 */
@@ -585,7 +597,7 @@ export interface MessageRecord {
   role: 'user' | 'agent' | 'system'
   agentId: string | null
   parts: MessagePart[]
-  status: 'streaming' | 'complete' | 'error' | 'aborted'
+  status: 'streaming' | 'complete' | 'error' | 'aborted' | 'interrupted'
   parentMessageId: string | null
   mentionedAgentIds: string[]
   runId: string | null

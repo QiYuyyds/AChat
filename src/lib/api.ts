@@ -1315,3 +1315,48 @@ export async function uploadAvatar(file: File): Promise<{ avatarUrl: string }> {
   }
   return res.json()
 }
+
+// ─── Workspace Env ─────────────────────────────────────
+
+export interface WorkspaceEnvStatus {
+  workspaceMode: 'sandbox' | 'local'
+  language: 'python' | 'nodejs' | 'java' | 'go' | 'unknown'
+  venvPresent: boolean
+  envPreference: 'venv_created' | 'skip' | 'system_python' | null
+}
+
+/** POST /api/workspaces/:id/create-venv — triggers async venv creation (202). */
+export async function createProjectVenv(conversationId: string): Promise<void> {
+  const res = await authFetch(
+    `${API_BASE_URL}/api/workspaces/${conversationId}/create-venv`,
+    { method: 'POST' },
+  )
+  if (!res.ok && res.status !== 202) {
+    const text = await res.text()
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+  }
+}
+
+/** PATCH /api/workspaces/:id/env-preference — persist user's env choice. */
+export async function updateEnvPreference(
+  conversationId: string,
+  preference: 'venv_created' | 'skip' | 'system_python',
+): Promise<void> {
+  await authJson(
+    `${API_BASE_URL}/api/workspaces/${conversationId}/env-preference`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preference }),
+    },
+  )
+}
+
+/** GET /api/workspaces/:id/env-status — current detection + preference. */
+export async function fetchWorkspaceEnvStatus(
+  conversationId: string,
+): Promise<WorkspaceEnvStatus> {
+  return authJson<WorkspaceEnvStatus>(
+    `${API_BASE_URL}/api/workspaces/${conversationId}/env-status`,
+  )
+}

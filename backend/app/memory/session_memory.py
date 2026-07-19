@@ -19,6 +19,10 @@ from sqlalchemy import and_, asc, desc, select
 
 from app.db.engine import get_db
 from app.db.models import ContextSummary, Message
+from app.services.transcript_renderer import (
+    estimate_full_message_tokens,
+    render_tool_aware_transcript,
+)
 from app.utils.ids import new_context_summary_id
 from app.utils.model_registry import estimate_tokens
 
@@ -79,7 +83,7 @@ class SessionMemory:
         if not _at_natural_breakpoint(messages):
             return False
 
-        total_tokens = sum(estimate_tokens(_message_text(m)) for m in messages)
+        total_tokens = estimate_full_message_tokens(messages)
         if total_tokens < MINIMUM_TOKENS_TO_INIT:
             return False
 
@@ -110,7 +114,7 @@ class SessionMemory:
             if not messages:
                 return
 
-            recent_transcript = _render_transcript(messages)
+            recent_transcript = render_tool_aware_transcript(messages)
             if not recent_transcript.strip():
                 return
 
@@ -120,6 +124,9 @@ class SessionMemory:
                 "你是会话摘要助手。以下是当前会话的已有摘要和新增对话内容。"
                 "请将新增内容整合进已有摘要，保持摘要简洁但信息完整。"
                 "务必保留：用户核心目标、关键决策、已产出产物、待跟进事项。"
+                "同时保留：已探索的文件/目录结构（路径 + 关键发现）、"
+                "执行过的关键命令及其结果摘要、"
+                "架构理解与代码结构发现。"
                 "只输出摘要正文。"
             )
             user_msg = (
@@ -282,30 +289,3 @@ def _count_tool_uses(messages: list[Message]) -> int:
             if p.get("type") == "tool_use":
                 count += 1
     return count
-
-
-def _render_transcript(messages: list[Message]) -> str:
-    """Render messages as a plain-text transcript for the summariser."""
-    lines: list[str] = []
-    for msg in messages:
-        text = _message_text(msg)
-        if not text:
-            continue
-        if msg.role == "user":
-            who = "用户"
-        elif msg.role == "system":
-            who = "系统"
-        else:
-            who = "Agent"
-        lines.append(f"{who}：{text}")
-    return "\n".join(lines)
-
-
-def _message_text(msg: Message) -> str:
-    """Extract plain text from a message's parts."""
-    texts = [
-        p.get("content", "")
-        for p in msg.parts_list
-        if p.get("type") == "text" and p.get("content")
-    ]
-    return "\n".join(texts).strip()

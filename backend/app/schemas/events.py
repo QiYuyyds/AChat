@@ -85,7 +85,7 @@ class MessageRecord(BaseModel):
     role: Literal["user", "agent", "system"]
     agent_id: str | None = Field(default=None, alias="agentId")
     parts: list[dict]  # Will be parsed to MessagePart list
-    status: Literal["streaming", "complete", "error", "aborted"]
+    status: Literal["streaming", "complete", "error", "aborted", "interrupted"]
     parent_message_id: str | None = Field(default=None, alias="parentMessageId")
     mentioned_agent_ids: list[str] = Field(alias="mentionedAgentIds")
     run_id: str | None = Field(default=None, alias="runId")
@@ -482,6 +482,45 @@ class FileWritePreviewCompleteEvent(BaseEvent):
     model_config = {"populate_by_name": True}
 
 
+# ─── Workspace Env Events ─────────────────────────────────────────────────
+# See specs/workspace-env-isolation. These events drive the frontend env hint
+# card that prompts the user to create a project venv when a Python project
+# is bound without one.
+
+class WorkspaceEnvHintEvent(BaseEvent):
+    """Notify the frontend that a Python project without a venv needs a decision.
+
+    The frontend renders a banner card with three options: create a .venv,
+    skip, or use system Python. The user's choice is persisted to
+    ``Workspace.env_preference`` so the hint is not shown again.
+    """
+
+    type: Literal["workspace_env_hint"] = "workspace_env_hint"
+    language: Literal["python"] = "python"
+    venv_present: bool = Field(alias="venvPresent")
+    options: list[Literal["create", "skip", "system_python"]] = Field(
+        default_factory=lambda: ["create", "skip", "system_python"]
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkspaceEnvStatusEvent(BaseEvent):
+    """Report progress / result of a venv creation request.
+
+    - ``status='creating'``  — ``python -m venv`` started.
+    - ``status='ready'``     — venv created; ``venv_path`` carries the path.
+    - ``status='failed'``    — venv creation failed; ``error`` carries the msg.
+    """
+
+    type: Literal["workspace_env_status"] = "workspace_env_status"
+    status: Literal["creating", "ready", "failed"]
+    venv_path: str | None = Field(default=None, alias="venvPath")
+    error: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Union Type ─────────────────────────────────────
 StreamEvent = Annotated[
     Union[  # noqa: UP007 - keep Union[] for the Pydantic discriminated union
@@ -537,6 +576,9 @@ StreamEvent = Annotated[
         PlanStepUpdateEvent,
         # File write preview events
         FileWritePreviewCompleteEvent,
+        # Workspace env events
+        WorkspaceEnvHintEvent,
+        WorkspaceEnvStatusEvent,
     ],
     Field(discriminator="type"),
 ]
