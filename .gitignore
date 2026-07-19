@@ -81,3 +81,6 @@ next-env.d.ts
 
 
 /.claude
+# Tauri / Rust build outputs
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/

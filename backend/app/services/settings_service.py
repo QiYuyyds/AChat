@@ -66,13 +66,68 @@ def _empty_settings() -> AppSettings:
 
 
 async def get_user_settings(user_id: str) -> UserSettings:
-    """Return the per-user settings row, or an all-default transient instance."""
+    """Return the per-user settings row, or an all-default transient instance.
+
+    Desktop online mode: fetch account settings (including provider keys) from the
+    official cloud API over HTTPS when a session handoff token is present. Never
+    log secret values.
+    """
+    try:
+        from app.desktop.runtime import is_desktop_mode
+
+        if is_desktop_mode():
+            cloud_row = await _get_user_settings_from_cloud(user_id)
+            if cloud_row is not None:
+                return cloud_row
+    except Exception:
+        # Fall through to local cache/DB path
+        pass
+
     from app.infra.cache_helpers import get_user_settings_cached
 
     cached = await get_user_settings_cached(user_id)
     if cached is not None:
         return cached
     return _empty_user_settings(user_id)
+
+
+async def _get_user_settings_from_cloud(user_id: str) -> UserSettings | None:
+    """Pull settings via CloudApiClient; returns None if offline/unauthenticated."""
+    from app.desktop.cloud_client import get_cloud_client, get_cloud_session
+
+    session = get_cloud_session()
+    if not session.is_authenticated:
+        return None
+    try:
+        data = await get_cloud_client().fetch_user_settings()
+    except Exception:
+        return None
+    settings_obj = data.get("settings") if isinstance(data, dict) else None
+    if not isinstance(settings_obj, dict):
+        return None
+    row = _empty_user_settings(user_id)
+    # Wire shape is camelCase from official API
+    row.anthropic_api_key = settings_obj.get("anthropicApiKey") or settings_obj.get(
+        "anthropic_api_key"
+    )
+    row.anthropic_base_url = settings_obj.get("anthropicBaseUrl") or settings_obj.get(
+        "anthropic_base_url"
+    )
+    row.openai_api_key = settings_obj.get("openaiApiKey") or settings_obj.get("openai_api_key")
+    row.deepseek_api_key = settings_obj.get("deepseekApiKey") or settings_obj.get(
+        "deepseek_api_key"
+    )
+    row.ark_api_key = settings_obj.get("arkApiKey") or settings_obj.get("ark_api_key")
+    row.companion_mode = (
+        settings_obj.get("companionMode") or settings_obj.get("companion_mode") or "off"
+    )
+    row.mobile_device_token = settings_obj.get("mobileDeviceToken") or settings_obj.get(
+        "mobile_device_token"
+    )
+    row.obsidian_vault_path = settings_obj.get("obsidianVaultPath") or settings_obj.get(
+        "obsidian_vault_path"
+    )
+    return row
 
 
 class UserSettingsPatch(TypedDict, total=False):

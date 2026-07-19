@@ -1,0 +1,23 @@
+{
+  "name": "@agenthub/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AChat Windows desktop shell (Tauri 2 + local engine)",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri",
+    "check:config": "node ./scripts/check-official-config.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-process": "^2.3.0",
+    "@tauri-apps/plugin-shell": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.9.0"
+  }
+}

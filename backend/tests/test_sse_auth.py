@@ -33,6 +33,73 @@ async def test_sse_with_valid_token_resolves_user(db, test_user):
     assert user_id == test_user["id"]
 
 
+async def test_sse_desktop_mode_uses_resolve_desktop_user(db, monkeypatch, tmp_path):
+    """Desktop SSE must not require local JWT_SECRET; use cloud identity path."""
+    from types import SimpleNamespace
+
+    from app.api.stream import _resolve_sse_user
+    from app.desktop.runtime import DesktopRuntime, set_desktop_runtime
+    import app.desktop.runtime as runtime_mod
+
+    set_desktop_runtime(
+        DesktopRuntime(
+            bind="127.0.0.1",
+            port=0,
+            data_dir=tmp_path,
+            engine_token="eng-token",
+            official_api_url="http://127.0.0.1:8000",
+            allowed_origins=["http://localhost:3000"],
+        )
+    )
+    monkeypatch.setenv("ACHAT_RUNTIME", "desktop")
+
+    async def _fake_resolve(token, user_id_hint=None):
+        assert token == "cloud-access-token"
+        return SimpleNamespace(id="cloud_user_1")
+
+    monkeypatch.setattr("app.desktop.auth.resolve_desktop_user", _fake_resolve)
+
+    try:
+        user_id = await _resolve_sse_user(None, "cloud-access-token")
+        assert user_id == "cloud_user_1"
+    finally:
+        runtime_mod._RUNTIME = None
+        monkeypatch.delenv("ACHAT_RUNTIME", raising=False)
+
+
+async def test_sse_desktop_mode_rejects_when_cloud_resolve_fails(
+    db, monkeypatch, tmp_path
+):
+    """If desktop cloud resolve fails and local JWT is wrong secret, SSE is unauth."""
+    from app.api.stream import _resolve_sse_user
+    from app.desktop.runtime import DesktopRuntime, set_desktop_runtime
+    import app.desktop.runtime as runtime_mod
+
+    set_desktop_runtime(
+        DesktopRuntime(
+            bind="127.0.0.1",
+            port=0,
+            data_dir=tmp_path,
+            engine_token="eng-token",
+            official_api_url="http://127.0.0.1:8000",
+            allowed_origins=["http://localhost:3000"],
+        )
+    )
+    monkeypatch.setenv("ACHAT_RUNTIME", "desktop")
+
+    async def _none_resolve(token, user_id_hint=None):
+        return None
+
+    monkeypatch.setattr("app.desktop.auth.resolve_desktop_user", _none_resolve)
+
+    try:
+        user_id = await _resolve_sse_user(None, "foreign-cloud-jwt")
+        assert user_id is None
+    finally:
+        runtime_mod._RUNTIME = None
+        monkeypatch.delenv("ACHAT_RUNTIME", raising=False)
+
+
 async def test_event_bus_filters_by_user_id():
     """EventBus only delivers events to matching user_id subscribers."""
     from app.api.stream import _event_stream

@@ -213,6 +213,21 @@ async def set_rag_mode(conversation_id: str, req: Request, user: User = Depends(
 # ─── /conversations/{id}/messages ────────────────────────────────────────────
 @router.get("/conversations/{conversation_id}/messages")
 async def list_messages(conversation_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
+    # Desktop: same as POST — mirror cloud conversation before local ownership.
+    try:
+        from app.desktop.runtime import is_desktop_mode
+
+        if is_desktop_mode():
+            from app.desktop.mirror import ensure_conversation_context
+
+            await ensure_conversation_context(conversation_id, user.id)
+    except ValueError as err:
+        msg = str(err)
+        status = 404 if "not found" in msg.lower() else 400
+        return _err(msg, status)
+    except Exception:
+        pass
+
     await verify_conversation_ownership(conversation_id, user.id)
     messages = await conversation_service.list_messages(conversation_id)
     return JSONResponse(content={"messages": _model(messages)})
@@ -220,6 +235,23 @@ async def list_messages(conversation_id: str, user: User = Depends(get_current_u
 
 @router.post("/conversations/{conversation_id}/messages")
 async def send_message(conversation_id: str, req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
+    # Desktop: cloud conversations live on official API; mirror into local engine DB
+    # before ownership checks (local SQLite starts empty each engine process).
+    try:
+        from app.desktop.runtime import is_desktop_mode
+
+        if is_desktop_mode():
+            from app.desktop.mirror import ensure_conversation_context
+
+            await ensure_conversation_context(conversation_id, user.id)
+    except ValueError as err:
+        msg = str(err)
+        status = 404 if "not found" in msg.lower() else 400
+        return _err(msg, status)
+    except Exception:
+        # Non-desktop import paths / transient cloud errors: fall through to ownership.
+        pass
+
     await verify_conversation_ownership(conversation_id, user.id)
     raw = await _read_json(req)
     try:
@@ -246,9 +278,12 @@ async def send_message(conversation_id: str, req: Request, user: User = Depends(
             mentioned_agent_ids=body.mentioned_agent_ids,
             parent_message_id=body.parent_message_id,
             attachment_ids=body.attachment_ids,
+            user_id=user.id,
         )
     except ValueError as err:
-        return _err(str(err), 400)
+        msg = str(err)
+        status = 404 if msg.startswith("Conversation not found") else 400
+        return _err(msg, status)
     return JSONResponse(status_code=202, content=_send_message_result(result))
 
 

@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { listDirectory } from '@/lib/api'
+import { isDesktopMode, selectLocalDirectory } from '@/lib/desktop'
 import { cn } from '@/lib/utils'
 
 interface DirEntry {
@@ -61,12 +62,32 @@ export function DirPickerDialog({
     }
   }, [])
 
+  // Desktop: native OS folder dialog instead of server-side listdir tree.
+  useEffect(() => {
+    if (!open || !isDesktopMode()) return
+    let cancelled = false
+    void (async () => {
+      const path = await selectLocalDirectory()
+      if (cancelled) return
+      if (path) onSelect(path)
+      onOpenChange(false)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [open, onOpenChange, onSelect])
+
   // 打开时初始化（家目录，由后端默认）；关闭时不清理（下次打开继承）。
   useEffect(() => {
-    if (open && !currentPath) {
+    if (open && !currentPath && !isDesktopMode()) {
       void navigate()
     }
   }, [open, currentPath, navigate])
+
+  if (isDesktopMode()) {
+    // Native picker is driven by the effect above; keep dialog shell minimal.
+    return null
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

@@ -14,7 +14,7 @@
 
 > 把多 Agent 协作做成 IM 群聊体验 —— Agent 是「联系人」，对话是「工作空间」，Orchestrator 是「群里的项目经理」。
 
-前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus + ES + Neo4j）、**分层记忆系统**、**Document + Version 知识库**、**Redis 元数据缓存 + 异步 DB 写入**，并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
+前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus + ES + Neo4j）、**分层记忆系统**、**Document + Version 知识库**、**Redis 元数据缓存 + 异步 DB 写入**。Windows 桌面权威路线为 **Tauri 2 壳 + 本机引擎 + 远端官方前端/API**（`apps/desktop/`，change `desktop-client-tauri-local-engine`）；旧 `electron/` 路径已废弃。另有移动端伴随 App 脚手架。
 
 ### 2. 五层架构 + 数据流
 
@@ -87,7 +87,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **Web 搜索** | ✅ | Tavily API（`web_search` 工具，需 `TAVILY_API_KEY`） |
 | **生命周期 Hooks 系统** | ✅ | 7 个内置 Hook（审计/压缩/检查点/记忆/技能/摘要/审批）· 10 个生命周期事件 · Agent 按 `hook_names` 启用 |
 | **Checkpoint 检查点** | ✅ | SDK Agent turn 级检查点保存与恢复（`agent_run_checkpoints` 表）|
-| Electron 桌面版 | ⚠️ | 打包脚本就绪；内嵌 Next 已无后端，需改启 Python |
+| 桌面版（Tauri + 本机引擎） | 🚧 | 权威路线：`apps/desktop/` Tauri 2 + `backend/app/desktop` 本机引擎 + 远端官方前端；旧 Electron 废弃 |
 | 移动端伴随 App | ⏳ | 响应式 Web 已适配；Capacitor 原生壳脚手架已建，配对通信待打通 |
 | **用户认证与多用户隔离** | ✅ | JWT(access 1h + refresh 7d) + bcrypt · 登录/注册页 · auth-gate · 个人资料弹窗 · CSRF 防护 · 所有用户数据表 `user_id` 隔离 |
 | **Redis 元数据缓存 + 异步 DB** | ✅ | KV 缓存(Agent/Settings/Workspace/Preference) · Redis Stream write-behind(part.delta 等批量落 PG) · 启动恢复扫描 |
@@ -268,8 +268,9 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 ### 共享类型（`src/shared/`）
 `types.ts`（**`StreamEvent` / `MessagePart` 等跨层类型，改动牵一发动全身**） · `constants.ts` · `model-registry.ts` · `ppt-theme.ts` · `codex-compat.ts` · `openai-compatible.ts` 等 15 个文件。前端纯类型，与后端 `backend/app/schemas/` 保持 camelCase 兼容。
 
-### 桌面（`electron/`）& 移动（`apps/mobile/`）
-- Electron：`main.ts`（主进程） · `paths.ts`（userData 路径迁移） · `server-bootstrap.ts`。`specs/12`。
+### 桌面（`apps/desktop/`）& 移动（`apps/mobile/`）
+- **权威桌面**：`apps/desktop/`（Tauri 2 壳）· `backend/app/desktop/`（本机引擎 CLI / token 中间件 / data-dir）· `src/shared/desktop/`（`window.achatDesktop` 桥接类型）。加载写死的官方 `webUrl`，不在本机起 Next。OpenSpec：`openspec/changes/desktop-client-tauri-local-engine`。
+- **已废弃**：根目录 `electron/`（内嵌 Next 旧方案）与 change `desktop-electron-python`（见其 `SUPERSEDED.md`）。
 - 移动：`apps/mobile/`（Capacitor 伴随客户端，monorepo workspace `@agenthub/mobile`）。`specs/14`。
 
 ### 测试
@@ -317,7 +318,7 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 - OpenSpec 主 specs 同步（orchestrator / tools / stream-events / persistence / core-domain 需更新以反映统一 Agent Loop）
 - OpenSpec 主 specs 同步（persistence / platform-security / frontend 需更新以反映用户认证与多用户隔离）
 - OpenSpec 主 specs 同步（persistence 需更新以反映 Redis 缓存 + 异步 DB 写入）
-- Electron 桌面版改为启动 Python 后端（当前内嵌 Next 已无后端）
+- 桌面版（Tauri + 本机引擎）：完成在线云端客户端、离线 SQLite 同步、壳生命周期与 Windows 安装包冒烟（见 change `desktop-client-tauri-local-engine` tasks）
 - 移动端伴随 App 配对通信打通
 - E2E 测试补充（产物预览/导出 + 群聊调度，需测试假 adapter）
 - Codex CLI 适配器端到端联调与测试（代码已就绪）

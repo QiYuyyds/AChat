@@ -39,22 +39,13 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     }
   }, [isLoading, isAuthenticated, isPublicRoute, router])
 
-  if (isLoading) {
+  // Loading / redirecting: always paint a solid background so WebView is never blank.
+  if (isLoading || (!isAuthenticated && !isPublicRoute) || (isAuthenticated && isPublicRoute)) {
     return (
-      <div className="flex h-dvh items-center justify-center bg-background">
+      <div className="flex h-dvh items-center justify-center bg-background text-foreground">
         <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </div>
     )
-  }
-
-  // On public routes, render regardless of auth state (redirect handled above)
-  if (isPublicRoute) {
-    return <>{children}</>
-  }
-
-  // On protected routes, only render if authenticated
-  if (!isAuthenticated) {
-    return null
   }
 
   return <>{children}</>

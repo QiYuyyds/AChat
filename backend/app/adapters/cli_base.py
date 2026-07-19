@@ -422,6 +422,32 @@ class CLIAdapterBase(AgentPlatformAdapter, ABC):
         self._executable_path = executable_path
         self._extra_env = extra_env or {}
 
+    def _ensure_cli_present(self, exec_path: str) -> None:
+        """Raise a clear, actionable error when the CLI binary is missing."""
+        from app.desktop.cli_detect import missing_cli_error
+
+        # Absolute / relative paths: require the file to exist.
+        if os.sep in exec_path or (os.altsep and os.altsep in exec_path):
+            if not os.path.isfile(exec_path):
+                base = os.path.basename(exec_path).lower()
+                kind = "claude" if "claude" in base else "codex" if "codex" in base else base
+                raise FileNotFoundError(missing_cli_error(kind) if kind in ("claude", "codex") else (
+                    f"{self.name}: CLI executable not found at {exec_path!r}"
+                ))
+            return
+
+        resolved = shutil.which(exec_path)
+        if resolved:
+            return
+        base = exec_path.lower()
+        if "claude" in base:
+            raise FileNotFoundError(missing_cli_error("claude"))
+        if "codex" in base:
+            raise FileNotFoundError(missing_cli_error("codex"))
+        raise FileNotFoundError(
+            f"{self.name}: CLI '{exec_path}' not found on PATH. Install it and restart AChat."
+        )
+
     # ── subclasses MUST implement ──────────────────────────────
 
     @abstractmethod
@@ -458,6 +484,9 @@ class CLIAdapterBase(AgentPlatformAdapter, ABC):
                 f"{self.name}: executable_path is required; configure it on the "
                 "agent or pass it via AdapterInput"
             )
+
+        # Fail fast with install guidance when CLI is missing from PATH.
+        self._ensure_cli_present(exec_path)
 
         # On Windows, resolve .cmd wrappers to the underlying .exe so stdio
         # pipes connect directly without cmd.exe in the middle.

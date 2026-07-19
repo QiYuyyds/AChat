@@ -13,6 +13,7 @@ import { McpServerLibrary } from '@/components/mcp-server-library'
 import { SkillLibrary } from '@/components/skill-library'
 import { NewConversationDialog } from '@/components/new-conversation-dialog'
 import { ProfileButton } from '@/components/profile-dialog'
+import { DesktopEngineStatus } from '@/components/desktop-engine-status'
 import { SettingsButton } from '@/components/settings-dialog'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { UsageDashboard } from '@/components/usage-dashboard'
@@ -244,10 +245,11 @@ export function Sidebar() {
             )}
           >
             {/* AChat 标题（移动端省略，节省竖向空间；图标轨已提供导航） */}
-            <div className="flex shrink-0 items-center border-b px-4 py-3 max-md:hidden">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-3 max-md:hidden">
               <div className="min-w-0">
                 <h1 className="truncate text-base font-semibold">AChat</h1>
               </div>
+              <DesktopEngineStatus />
             </div>
 
             {mode === 'conversations' ? (

@@ -49,6 +49,25 @@ function clearToken(): void {
   }
 }
 
+/** Hand user JWT to local engine for cloud API calls (desktop only; never logs token). */
+async function handoffDesktopSession(token: string | null, userId?: string | null): Promise<void> {
+  try {
+    const { engineFetch, isDesktopMode } = await import('@/lib/desktop')
+    if (!isDesktopMode()) return
+    if (token) {
+      await engineFetch('/api/desktop/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: token, user_id: userId ?? null }),
+      })
+    } else {
+      await engineFetch('/api/desktop/session', { method: 'DELETE' })
+    }
+  } catch {
+    // best-effort; engine may still be starting
+  }
+}
+
 export function getAccessToken(): string | null {
   try {
     return localStorage.getItem(TOKEN_STORAGE_KEY)
@@ -81,6 +100,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           isAuthenticated: true,
           isLoading: false,
         })
+        // Desktop engine needs the JWT for cloud mirror; cookie-only sessions
+        // may not have localStorage token — refresh to obtain one.
+        const existing = getAccessToken()
+        if (existing) {
+          void handoffDesktopSession(existing, data.user?.id)
+        } else {
+          void get().refreshToken()
+        }
       } else {
         const configRes = await fetch(`${API_BASE_URL}/api/auth/config`, {
           credentials: 'include',
@@ -113,7 +140,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       throw new Error(body || `Login failed (${res.status})`)
     }
     const data = await res.json()
-    storeToken(data.tokens?.access_token ?? '')
+    const token = data.tokens?.access_token ?? ''
+    storeToken(token)
     set({
       user: data.user,
       config: {
@@ -122,6 +150,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       },
       isAuthenticated: true,
     })
+    void handoffDesktopSession(token || null, data.user?.id)
   },
 
   vipLogin: async (password: string) => {
@@ -136,7 +165,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       throw new Error(body || `VIP login failed (${res.status})`)
     }
     const data = await res.json()
-    storeToken(data.tokens?.access_token ?? '')
+    const token = data.tokens?.access_token ?? ''
+    storeToken(token)
     set({
       user: data.user,
       config: {
@@ -145,6 +175,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       },
       isAuthenticated: true,
     })
+    void handoffDesktopSession(token || null, data.user?.id)
   },
 
   register: async (email: string, name: string, password: string) => {
@@ -159,7 +190,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       throw new Error(body || `Registration failed (${res.status})`)
     }
     const data = await res.json()
-    storeToken(data.tokens?.access_token ?? '')
+    const token = data.tokens?.access_token ?? ''
+    storeToken(token)
     set({
       user: data.user,
       config: {
@@ -168,6 +200,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       },
       isAuthenticated: true,
     })
+    void handoffDesktopSession(token || null, data.user?.id)
   },
 
   logout: async () => {
@@ -179,6 +212,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     } catch {
       // best-effort
     }
+    void handoffDesktopSession(null)
     clearToken()
     set({ user: null, isAuthenticated: false })
   },
@@ -193,7 +227,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         })
         if (res.ok) {
           const data = await res.json()
-          storeToken(data.tokens?.access_token ?? '')
+          const token = data.tokens?.access_token ?? ''
+          storeToken(token)
           set({
             user: data.user,
             config: {
@@ -202,8 +237,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             },
             isAuthenticated: true,
           })
+          void handoffDesktopSession(token || null, data.user?.id)
           return true
         }
+        void handoffDesktopSession(null)
         clearToken()
         set({ user: null, isAuthenticated: false })
         return false

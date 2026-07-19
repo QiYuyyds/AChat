@@ -2571,6 +2571,36 @@ async def persist_event(
                     run_id,
                     exc_info=True,
                 )
+        # Desktop: mirror completed agent message to official cloud (or outbox).
+        # Hidden clone-subagent messages stay local-only.
+        if not hidden:
+            try:
+                from app.desktop.runtime import is_desktop_mode
+
+                if is_desktop_mode():
+                    from app.desktop.persistence import persist_message_online_or_outbox
+
+                    await persist_message_online_or_outbox(
+                        event.conversation_id,
+                        {
+                            "id": event.message_id,
+                            "conversationId": event.conversation_id,
+                            "role": "agent",
+                            "agentId": agent_id,
+                            "parts": final_parts,
+                            "status": "complete",
+                            "runId": run_id,
+                            "createdAt": event.timestamp,
+                        },
+                        local_message_id=event.message_id,
+                        role="agent",
+                    )
+            except Exception:
+                logger.warning(
+                    "[persist_event] desktop cloud mirror failed message=%s",
+                    event.message_id,
+                    exc_info=True,
+                )
         return
     if etype == "artifact.create":
         artifact_ids.append(event.artifact.id)

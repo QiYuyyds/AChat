@@ -26,6 +26,12 @@ import type {
 import type { AgentConfigDraft, AgentDraftRequest } from '@/shared/agent-builder-config'
 
 import { API_BASE_URL } from '@/lib/config'
+import {
+  ENGINE_TOKEN_HEADER,
+  executionBaseUrl,
+  isDesktopMode,
+  isExecutionUrl,
+} from '@/lib/desktop'
 
 export interface ArtifactListItem {
   id: string
@@ -86,13 +92,23 @@ export async function authFetch(
   init?: RequestInit,
 ): Promise<Response> {
   const token = _getStoredToken()
+  const headers: Record<string, string> = {
+    ...(init?.headers ? Object.fromEntries(new Headers(init.headers).entries()) : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  }
+  // Local engine calls need the session engine token (desktop only).
+  if (isDesktopMode() && isExecutionUrl(input, API_BASE_URL)) {
+    try {
+      const bridge = window.achatDesktop
+      if (bridge?.engineToken) headers[ENGINE_TOKEN_HEADER] = bridge.engineToken
+    } catch {
+      // ignore
+    }
+  }
   const merged: RequestInit = {
     ...init,
-    credentials: 'include',
-    headers: {
-      ...(init?.headers ?? {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    credentials: isExecutionUrl(input, API_BASE_URL) ? 'omit' : 'include',
+    headers,
   }
 
   let res = await fetch(input, merged)
@@ -546,6 +562,25 @@ export async function rejectPendingDispatchPlan(
 }
 
 export async function fetchMessages(conversationId: string): Promise<MessageRow[]> {
+  // Desktop: Agent replies live on the local engine DB first. Prefer engine so
+  // refresh / re-open conversation shows replies even if cloud mirror lagged or
+  // SSE was missed. Fall back to official API (cloud authority / web).
+  if (isDesktopMode()) {
+    const engineBase = executionBaseUrl(API_BASE_URL)
+    if (engineBase && engineBase !== API_BASE_URL) {
+      try {
+        const { messages } = await json<{ messages: MessageRow[] }>(
+          authFetch(`${engineBase}/api/conversations/${conversationId}/messages`),
+        )
+        if (Array.isArray(messages) && messages.length > 0) {
+          return messages
+        }
+      } catch {
+        // fall through to official
+      }
+    }
+  }
+
   const { messages } = await json<{ messages: MessageRow[] }>(
     authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/messages`),
   )
@@ -616,8 +651,10 @@ export async function sendMessage(
   conversationId: string,
   body: SendMessageBody,
 ): Promise<SendMessageResult> {
+  // Desktop: start Agent runs on the local engine; web keeps official API.
+  const base = executionBaseUrl(API_BASE_URL)
   return json<SendMessageResult>(
-    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/messages`, {
+    authFetch(`${base}/api/conversations/${conversationId}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -688,7 +725,8 @@ export async function compactConversation(
 }
 
 export async function abortRun(runId: string): Promise<void> {
-  await json<{ ok: true }>(authFetch(`${API_BASE_URL}/api/runs/${runId}/abort`, { method: 'POST' }))
+  const base = executionBaseUrl(API_BASE_URL)
+  await json<{ ok: true }>(authFetch(`${base}/api/runs/${runId}/abort`, { method: 'POST' }))
 }
 
 // ─── Messages: withdraw / edit ──────────────────
@@ -796,7 +834,8 @@ export async function getServerPlatform(): Promise<ServerPlatform> {
 
 export async function listDirectory(targetPath?: string): Promise<ListDirResult> {
   const qs = targetPath ? `?path=${encodeURIComponent(targetPath)}` : ''
-  return json<ListDirResult>(authFetch(`${API_BASE_URL}/api/fs/listdir${qs}`))
+  const base = executionBaseUrl(API_BASE_URL)
+  return json<ListDirResult>(authFetch(`${base}/api/fs/listdir${qs}`))
 }
 
 // ─── Filesystem (conversation-scoped, 文件浏览器面板用) ────────

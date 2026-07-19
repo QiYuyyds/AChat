@@ -365,7 +365,7 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `specs/frontend/spec.md` — 前端状态与渲染
 - `specs/agent-builder/spec.md` — Agent 创建/编辑
 - `specs/platform-security/spec.md` — 平台安全与命令黑名单
-- `specs/desktop-electron/spec.md` — Electron 桌面版
+- `specs/desktop-electron/spec.md` — 桌面版（历史名；权威实现为 Tauri + 本机引擎，见 change `desktop-client-tauri-local-engine`）
 - `specs/conversation-context/spec.md` — 跨 run 上下文
 - `specs/mobile-companion/spec.md` — 移动伴随 App
 - `specs/user-auth/spec.md` — 用户认证与多用户隔离
@@ -386,7 +386,7 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `09-frontend-architecture.md` — 前端状态结构与事件应用
 - `10-agent-builder.md` — 自建 Agent 流程
 - `11-platform.md` — 平台抽象（POSIX / Windows shell 选择、双平台黑名单、子进程清理）
-- `12-desktop-electron.md` — 桌面版（Electron 打包 DMG / EXE）
+- `12-desktop-electron.md` — 桌面版历史规格；新实现：`apps/desktop/`（Tauri 2）+ `backend/app/desktop`
 - `13-conversation-context.md` — 跨 run 对话历史序列化
 - `14-mobile-remote.md` — 移动端伴随 App（Capacitor / Tailscale / 远程审批）
 - `15-external-mcp.md` — 外部 MCP 工具接入（设计提案）

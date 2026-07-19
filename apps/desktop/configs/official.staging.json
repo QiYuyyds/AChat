@@ -1,0 +1,9 @@
+{
+  "webUrl": "https://staging.achat.example.com",
+  "apiUrl": "https://staging-api.achat.example.com",
+  "allowedOrigins": [
+    "https://staging.achat.example.com"
+  ],
+  "updateFeedUrl": "https://updates.achat.example.com/staging/latest.json",
+  "flavor": "staging"
+}

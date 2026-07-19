@@ -694,12 +694,30 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Desktop local-engine auth (token + official Origin). No-op when not desktop.
+    try:
+        from app.desktop.runtime import is_desktop_mode
+        if is_desktop_mode():
+            from app.desktop.middleware import EngineAuthMiddleware
+
+            app.add_middleware(EngineAuthMiddleware)
+            logger.info("Desktop EngineAuthMiddleware enabled")
+    except Exception as e:
+        logger.warning("Desktop middleware not attached: %s", e)
+
     # CSRF: reject mutation requests from unallowed origins
     _allowed_origins = set(settings.cors_origins_list)
 
     @app.middleware("http")
     async def csrf_origin_check(request: Request, call_next):
         """Reject POST/PATCH/DELETE requests whose Origin header doesn't match allowed origins."""
+        # Desktop engine uses its own Origin/token middleware; skip duplicate CSRF there.
+        try:
+            from app.desktop.runtime import is_desktop_mode
+            if is_desktop_mode():
+                return await call_next(request)
+        except Exception:
+            pass
         if request.method in ("POST", "PATCH", "PUT", "DELETE"):
             origin = request.headers.get("origin") or request.headers.get("referer")
             if origin and origin not in _allowed_origins:
@@ -763,10 +781,48 @@ def create_app() -> FastAPI:
     # the previewPath the agent emits is /deployments/{id}. Frontend proxies via rewrite.
     app.include_router(deployments.router, tags=["deployments"])
 
+    # Cloud-side durable UPSERT for desktop outbox / engine message sync (no Agent run).
+    try:
+        from app.api.sync import router as sync_router
+
+        app.include_router(sync_router, prefix="/api", tags=["sync"])
+    except Exception as e:
+        logger.warning("Sync routes not attached: %s", e)
+
+    # Desktop-only session handoff / sync routes
+    try:
+        from app.desktop.runtime import is_desktop_mode
+
+        if is_desktop_mode():
+            from app.desktop.session_routes import router as desktop_router
+
+            app.include_router(desktop_router)
+            logger.info("Desktop session/sync routes enabled")
+    except Exception as e:
+        logger.warning("Desktop routes not attached: %s", e)
+
     @app.get("/health")
     async def health_check() -> dict[str, str]:
         """Health check endpoint."""
         return {"status": "ok"}
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, object]:
+        """Readiness probe for desktop shell (and general liveness)."""
+        try:
+            from app.desktop.runtime import get_desktop_runtime, is_desktop_mode
+
+            if is_desktop_mode():
+                rt = get_desktop_runtime()
+                return {
+                    "status": "ok",
+                    "runtime": "desktop",
+                    "bind": rt.bind if rt else "127.0.0.1",
+                    "port": rt.actual_port if rt else None,
+                }
+        except Exception:
+            pass
+        return {"status": "ok", "runtime": "server"}
 
     return app
 

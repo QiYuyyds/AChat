@@ -51,6 +51,31 @@ async def get_current_user(
     )
 
     token = _extract_token(request)
+
+    # Desktop engine: cloud JWT is not signed with local JWT_SECRET. Prefer
+    # official HTTPS validation + local shadow User, then fall back to local JWT.
+    try:
+        from app.desktop.runtime import is_desktop_mode
+
+        if is_desktop_mode():
+            from app.desktop.auth import resolve_desktop_user
+            from app.desktop.cloud_client import get_cloud_session
+
+            user = await resolve_desktop_user(
+                token,
+                user_id_hint=get_cloud_session().user_id,
+            )
+            if user is not None:
+                return user
+            if not token and get_cloud_session().is_authenticated:
+                user = await resolve_desktop_user(None)
+                if user is not None:
+                    return user
+    except HTTPException:
+        raise
+    except Exception:
+        logger.debug("desktop user resolve failed; trying local JWT", exc_info=True)
+
     if not token:
         raise credentials_exception
 
@@ -88,6 +113,22 @@ async def get_current_user_optional(
     in dev mode where the token may come from a query param).
     """
     token = _extract_token(request)
+    try:
+        from app.desktop.runtime import is_desktop_mode
+
+        if is_desktop_mode():
+            from app.desktop.auth import resolve_desktop_user
+            from app.desktop.cloud_client import get_cloud_session
+
+            user = await resolve_desktop_user(
+                token,
+                user_id_hint=get_cloud_session().user_id,
+            )
+            if user is not None:
+                return user
+    except Exception:
+        logger.debug("desktop optional user resolve failed", exc_info=True)
+
     if not token:
         return None
     try:

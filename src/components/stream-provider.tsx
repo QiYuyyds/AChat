@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 
 import type { StreamEvent } from '@/shared/types'
 import { API_BASE_URL } from '@/lib/config'
+import { executionBaseUrl, isDesktopMode } from '@/lib/desktop'
 import { useAppStore } from '@/stores/app-store'
 import { useAuthStore, getAccessToken } from '@/stores/auth-store'
 
@@ -11,15 +12,85 @@ import { useAuthStore, getAccessToken } from '@/stores/auth-store'
  * StreamProvider — 全局唯一 SSE 连接，把 /api/stream 推过来的事件
  * 转发到 Zustand store。详见 specs/02-stream-events.md §SSE 编码。
  *
- * 在 layout.tsx 中挂载一次。React StrictMode 在 dev 下会双 mount，
- * 这里用 module 级 ref 防止重复连接。
- *
- * 仅在已认证时建立 SSE 连接（AuthGate 保证此组件只在认证后才渲染）。
- * 跨域 dev 模式下通过 ?token= 传递 JWT（EventSource 无法设置 header）。
+ * Desktop: must subscribe to the local engine bus (not official :8000).
+ * Bridge injection and JWT handoff can lag auth; wait/retry so we don't
+ * permanently lock onto the wrong base URL.
  */
 
 let activeSource: EventSource | null = null
+let activeUrl: string | null = null
 let refCount = 0
+
+function isLikelyTauriShell(): boolean {
+  if (typeof window === 'undefined') return false
+  const w = window as Window & {
+    __TAURI_INTERNALS__?: unknown
+    __TAURI__?: unknown
+  }
+  return (
+    window.achatDesktop?.isDesktop === true ||
+    w.__TAURI_INTERNALS__ != null ||
+    w.__TAURI__ != null
+  )
+}
+
+function buildStreamUrl(): string | null {
+  const base = executionBaseUrl(API_BASE_URL)
+  const token = getAccessToken()
+  const params = new URLSearchParams()
+  if (token) params.set('token', token)
+
+  if (isDesktopMode()) {
+    // Desktop engine requires engineToken; without bridge/token we are not ready.
+    if (!token) return null
+    const engineToken = window.achatDesktop?.engineToken
+    if (!engineToken) return null
+    // Must not fall back to official API while bridge is partial.
+    if (!window.achatDesktop?.engineBaseUrl) return null
+    params.set('engineToken', engineToken)
+  }
+
+  const qs = params.toString()
+  return qs ? `${base}/api/stream?${qs}` : `${base}/api/stream`
+}
+
+function openStream(
+  url: string,
+  onOpen: () => void,
+  onError: () => void,
+  onEvent: (event: StreamEvent | { type: 'connected' | 'heartbeat'; timestamp?: number }) => void,
+): EventSource {
+  const source = new EventSource(url, {
+    withCredentials: !isDesktopMode(),
+  })
+
+  source.onopen = () => {
+    onOpen()
+  }
+
+  source.onerror = () => {
+    // EventSource auto-reconnects for transient errors.
+    onError()
+  }
+
+  source.onmessage = (e) => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(e.data)
+    } catch {
+      return
+    }
+    if (!parsed || typeof parsed !== 'object') return
+    const obj = parsed as { type?: string }
+    if (obj.type === 'connected' || obj.type === 'heartbeat') {
+      onOpen()
+      return
+    }
+    onEvent(parsed as StreamEvent)
+  }
+
+  return source
+}
 
 export function StreamProvider({ children }: { children: React.ReactNode }) {
   const applyEvent = useAppStore((s) => s.applyEvent)
@@ -30,52 +101,77 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
     if (!isAuthenticated) return
 
     refCount++
+    let cancelled = false
+    let waitTimer: number | null = null
+    let watchTimer: number | null = null
 
-    if (!activeSource) {
-      // For cross-origin dev, pass token via query param (EventSource can't set headers)
-      const token = getAccessToken()
-      const url = token
-        ? `${API_BASE_URL}/api/stream?token=${encodeURIComponent(token)}`
-        : `${API_BASE_URL}/api/stream`
-
-      activeSource = new EventSource(url, { withCredentials: true })
-
-      activeSource.onopen = () => {
-        setStreamConnected(true)
+    const closeActive = () => {
+      if (activeSource) {
+        activeSource.close()
+        activeSource = null
+        activeUrl = null
       }
-
-      activeSource.onerror = () => {
-        // EventSource 会自动重连，无需我们做事
-        setStreamConnected(false)
-      }
-
-      activeSource.onmessage = (e) => {
-        let parsed: unknown
-        try {
-          parsed = JSON.parse(e.data)
-        } catch {
-          return
-        }
-        if (!parsed || typeof parsed !== 'object') return
-
-        const obj = parsed as { type?: string }
-        if (obj.type === 'connected') {
-          setStreamConnected(true)
-          return
-        }
-
-        applyEvent(parsed as StreamEvent)
-      }
+      setStreamConnected(false)
     }
 
+    const ensureConnected = () => {
+      if (cancelled) return
+
+      // Tauri shell: wait for achatDesktop + engineBaseUrl + access token.
+      if (isLikelyTauriShell() && !isDesktopMode()) {
+        waitTimer = window.setTimeout(ensureConnected, 150)
+        return
+      }
+      if (isDesktopMode() && !getAccessToken()) {
+        waitTimer = window.setTimeout(ensureConnected, 150)
+        return
+      }
+
+      const url = buildStreamUrl()
+      if (!url) {
+        waitTimer = window.setTimeout(ensureConnected, 150)
+        return
+      }
+
+      // Already on the correct URL.
+      if (activeSource && activeUrl === url) return
+
+      // Reconnect if bridge appeared late and we were on official API.
+      closeActive()
+      activeUrl = url
+      activeSource = openStream(
+        url,
+        () => {
+          if (!cancelled) setStreamConnected(true)
+        },
+        () => {
+          if (!cancelled) setStreamConnected(false)
+        },
+        (event) => {
+          if (!cancelled) applyEvent(event as StreamEvent)
+        },
+      )
+    }
+
+    ensureConnected()
+
+    // Watch for late bridge inject / token refresh while module singleton is open.
+    watchTimer = window.setInterval(() => {
+      if (cancelled || refCount <= 0) return
+      const next = buildStreamUrl()
+      if (next && next !== activeUrl) {
+        ensureConnected()
+      }
+    }, 500)
+
     return () => {
+      cancelled = true
+      if (waitTimer != null) window.clearTimeout(waitTimer)
+      if (watchTimer != null) window.clearInterval(watchTimer)
       refCount--
-      // 全部组件都卸载时关闭，避免 dev 模式 StrictMode 双 mount 反复断开
       if (refCount <= 0) {
-        activeSource?.close()
-        activeSource = null
+        closeActive()
         refCount = 0
-        setStreamConnected(false)
       }
     }
   }, [applyEvent, setStreamConnected, isAuthenticated])

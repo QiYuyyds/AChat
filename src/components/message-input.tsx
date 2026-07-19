@@ -813,6 +813,23 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
       })
       replaceLocalMessageId(tempId, result.messageId)
       upsertReturnedMessages(result.messages)
+
+      // Desktop safety net: if SSE is late/missed, pull messages from the engine
+      // after the run has had a moment to finish (local SQLite is source of truth
+      // for engine-side replies).
+      if (result.runIds?.length) {
+        void (async () => {
+          try {
+            const { isDesktopMode } = await import('@/lib/desktop')
+            if (!isDesktopMode()) return
+            await new Promise((r) => setTimeout(r, 2500))
+            const list = await fetchMessages(conversationId)
+            for (const message of list) upsertMessage(message)
+          } catch {
+            // best-effort
+          }
+        })()
+      }
     } catch (err) {
       console.error('[MessageInput] send failed', err)
     } finally {

@@ -26,9 +26,35 @@ async def _resolve_sse_user(request: Request, token: str | None) -> str | None:
     """Resolve the user_id for an SSE connection.
 
     Token may come from the cookie (same-origin / production) or from the
-    ``?token=`` query param (cross-origin dev — EventSource cannot set
+    ``?token=`` query param (cross-origin dev / desktop — EventSource cannot set
     Authorization headers). Returns the user_id or None if unauthenticated.
+
+    Desktop mode: cloud JWTs are not signed with the local engine JWT_SECRET.
+    Resolve identity the same way as REST (``resolve_desktop_user`` via official
+    ``/api/auth/me`` + local shadow User), then fall back to local verify.
     """
+    # Desktop engine: prefer official-cloud validation (not local JWT_SECRET).
+    try:
+        from app.desktop.runtime import is_desktop_mode
+
+        if is_desktop_mode():
+            from app.desktop.auth import resolve_desktop_user
+            from app.desktop.cloud_client import get_cloud_session
+
+            user = await resolve_desktop_user(
+                token,
+                user_id_hint=get_cloud_session().user_id,
+            )
+            if user is not None:
+                return user.id
+            if not token and get_cloud_session().is_authenticated:
+                user = await resolve_desktop_user(None)
+                if user is not None:
+                    return user.id
+    except Exception:
+        # Fall through to local JWT path (web / tests).
+        pass
+
     if not token:
         return None
     try:

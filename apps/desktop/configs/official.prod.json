@@ -1,0 +1,9 @@
+{
+  "webUrl": "https://app.achat.example.com",
+  "apiUrl": "https://api.achat.example.com",
+  "allowedOrigins": [
+    "https://app.achat.example.com"
+  ],
+  "updateFeedUrl": "https://updates.achat.example.com/prod/latest.json",
+  "flavor": "prod"
+}

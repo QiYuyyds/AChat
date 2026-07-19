@@ -746,22 +746,37 @@ async def send_message(
     mentioned_agent_ids: list[str] | None = None,
     parent_message_id: str | None = None,
     attachment_ids: list[str] | None = None,
+    user_id: str | None = None,
 ) -> SendMessageResult:
     mentioned_agent_ids = mentioned_agent_ids or []
     attachment_ids = attachment_ids or []
 
+    # Desktop online: mirror cloud conversation/agents into local SQLite before run.
+    try:
+        from app.desktop.runtime import is_desktop_mode
+
+        if is_desktop_mode() and user_id:
+            from app.desktop.mirror import ensure_conversation_context
+
+            await ensure_conversation_context(conversation_id, user_id)
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - mirror is best-effort helper; ownership still applies
+        logging.getLogger(__name__).warning(
+            "desktop mirror before send_message failed: %s", exc
+        )
+
     now = now_ms()
     message_id = new_message_id()
+    parts: list[dict] = []
+    if content and content.strip():
+        parts.append({"type": "text", "content": content})
 
     async with get_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
         conv_user_id = conv.user_id
-
-        parts: list[dict] = []
-        if content and content.strip():
-            parts.append({"type": "text", "content": content})
 
         if attachment_ids:
             att_result = await db.execute(
@@ -795,6 +810,33 @@ async def send_message(
         msg.mentioned_agent_ids_list = mentioned_agent_ids
         db.add(msg)
         conv.updated_at = now
+
+    # Desktop: durable user message → cloud when online, else SQLite outbox.
+    try:
+        from app.desktop.runtime import is_desktop_mode
+
+        if is_desktop_mode():
+            from app.desktop.persistence import persist_message_online_or_outbox
+
+            await persist_message_online_or_outbox(
+                conversation_id,
+                {
+                    "id": message_id,
+                    "conversationId": conversation_id,
+                    "role": "user",
+                    "parts": parts,
+                    "status": "complete",
+                    "parentMessageId": parent_message_id,
+                    "mentionedAgentIds": mentioned_agent_ids,
+                    "createdAt": now,
+                },
+                local_message_id=message_id,
+                role="user",
+            )
+    except Exception as exc:  # noqa: BLE001 - local run must continue even if cloud sync fails
+        logging.getLogger(__name__).warning(
+            "desktop user-message cloud persist failed: %s", exc
+        )
 
     # Broadcast the new user message so other connected clients insert it live.
     # The sender reconciles via optimistic update + POST return; idempotent by id.
