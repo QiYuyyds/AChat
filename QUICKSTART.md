@@ -1,6 +1,6 @@
 # AChat 快速启动指南
 
-> 本指南帮助你从零搭建 AChat 本地开发环境。项目为前后端分离架构：前端 Next.js + 后端 Python FastAPI + PostgreSQL 主库 + 可选基础设施（Milvus / Elasticsearch / Neo4j / Redis / Phoenix 可观测性后端）。
+> 本指南帮助你从零搭建 AChat 本地开发环境。项目为前后端分离架构：前端 Next.js + 后端 Python FastAPI + PostgreSQL 主库 + 可选基础设施（Milvus / Elasticsearch / Neo4j / Redis / Phoenix 可观测性后端）。后端还集成了代码图谱智能（CodeGraph 本地运行时）、Obsidian 知识同步、外部 MCP 接入等增强能力。
 
 ## 环境要求
 
@@ -135,6 +135,16 @@ PHOENIX_ENDPOINT=http://localhost:4317  # OTLP gRPC endpoint
 PHOENIX_UI_URL=http://localhost:6006    # Phoenix Web UI
 EVAL_RULE_ENABLED=true       # 在线规则评测（默认开启）
 EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge（默认关闭）
+
+# ── 代码图谱智能（可选，留空=禁用）──
+# CodeGraph 运行时首次使用时会自动下载到 .agenthub-data/runtimes/codegraph/
+# 用户也可在 UI 中手动确认下载
+
+# ── Obsidian 同步（可选）──
+# 在 UI 的知识库面板中配置 Obsidian vault 路径，无需环境变量
+
+# ── 外部 MCP Server（可选）──
+# 在 UI 的设置面板中配置 MCP Server（command / args / env / transport_type）
 ```
 
 > **降级说明**：Milvus / ES / Neo4j / Embedding / Redis / Phoenix 任一不配，后端仍能正常启动和对话，只是对应功能降级（向量检索退化为 TF cosine、无全文检索、无图谱、无语义召回、退化为同步 DB 读写、无 Trace/Eval 数据）。启动时后端会打印状态面板，一目了然。
@@ -165,6 +175,10 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"; pnpm dev
 访问：`http://localhost:3000`
 
 首次启动时，后端会自动建表并 seed 内置 Agent（Orchestrator / PM 小灰 / UI 设计师 / 前端工程师 / Reviewer）。首次访问需要注册一个账号（注册页面 `http://localhost:3000/register`），登录后即可开始使用。
+
+**创建自定义 Agent**：在 Agent 库中点击「创建 Agent」，选择 4 种角色预设之一（程序员 / 调研员 / 协调者 / 写作），预设自带匹配的 system prompt 和工具推荐。所有 custom agent 自带 9 个基础工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment），另可勾选 5 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search）。
+
+**代码图谱智能**：在 Local 模式的会话中，侧栏会显示代码图谱开关。首次启用时会提示下载 CodeGraph 运行时（自动下载到 `.agenthub-data/runtimes/codegraph/`），完成后 Agent 可通过 `code_explore` 工具探索项目代码结构。
 
 ---
 

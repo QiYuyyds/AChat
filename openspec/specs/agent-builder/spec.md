@@ -17,11 +17,11 @@ New agents MUST default to `adapterName='custom'` unless the user selects Claude
 
 ### Requirement: New custom agents SHALL start with an editable harness prompt
 
-The create dialog MUST prefill `systemPrompt` with a concise Custom agent scaffold that explains goal handling, context loading, tool use, artifact output, workspace safety, and final response expectations.
+The create dialog MUST prefill `systemPrompt` with the coder role template that covers role positioning, production strategy, behavior constraints, and quality standards. The template SHALL NOT duplicate tool usage guidance (handled by layer-3 prompt) or plan/dispatch guidance (handled by layer-2 suffix).
 
 #### Scenario: User opens create dialog
 - **WHEN** no existing agent is being edited
-- **THEN** the System Prompt field contains the default Custom agent scaffold
+- **THEN** the System Prompt field contains the coder role template
 - **AND** the user can edit or replace it before saving.
 
 ### Requirement: Custom agents SHALL require provider and model
@@ -40,28 +40,37 @@ Claude Code and Codex agents MUST persist `toolNames=[]` because their tools com
 - **WHEN** the form is submitted
 - **THEN** the saved agent has no custom tool names.
 
-### Requirement: Custom agents SHALL expose structured question tooling
+### Requirement: Custom agents SHALL have baseline tools always enabled
 
-The agent builder MUST allow custom agents to enable `ask_user`, and newly created custom agents SHOULD include it in the default tool set.
-
-#### Scenario: User creates a custom agent
-- **WHEN** the create dialog opens for a Custom adapter agent
-- **THEN** `ask_user` is available in the tool checklist
-- **AND** it is selected by default.
-
-### Requirement: Custom agents SHALL provide tool presets
-
-The agent builder MUST provide one-click tool presets for common custom-agent roles, including all-purpose, local-code, artifact, and review workflows.
-
-#### Scenario: User selects local-code preset
-- **WHEN** the user clicks the local-code tool preset
-- **THEN** the selected tools include `deploy_workspace`, `read_artifact`, `fs_read`, `fs_write`, and `bash`
-- **AND** artifact creation tools are not selected unless the user adds them manually.
+Every custom adapter agent MUST have 9 baseline tools (`read_attachment`, `ask_user`, `fs_list`, `fs_read`, `fs_write`, `fs_edit`, `fs_grep`, `fs_glob`, `bash`) automatically merged at runtime by `agent_runner.py`. These tools are NOT selectable in the UI — they are displayed as a read-only hint. SDK agents (claude-code / codex) do NOT participate in baseline merge; they use CLI built-in tools.
 
 #### Scenario: User creates a custom agent
 - **WHEN** the create dialog opens for a Custom adapter agent
-- **THEN** the default preset is all-purpose
-- **AND** both artifact tools and local workspace file/command tools are selected.
+- **THEN** the tools tab shows a read-only baseline tools section listing all 9 tools
+- **AND** the baseline tools are not checkboxes and cannot be toggled off.
+
+#### Scenario: Old agent with baseline tools in toolNames
+- **WHEN** an existing agent has baseline tools persisted in `toolNames`
+- **THEN** runtime merge deduplicates them (order preserved, baseline first)
+- **AND** the 5 UI-selectable tool selections remain unchanged.
+
+### Requirement: Custom agents SHALL provide 4 role presets
+
+The agent builder MUST provide one-click tool presets for 4 custom-agent roles: coder, researcher, orchestrator, and writer. Each preset binds a subset of the 5 UI-selectable tools and a `systemPromptTemplate` covering role positioning, production strategy, behavior constraints, and quality standards.
+
+#### Scenario: User selects coder preset
+- **WHEN** the user clicks the coder tool preset
+- **THEN** the selected tools include `deploy_workspace` and `read_artifact`
+- **AND** `write_artifact` is not selected unless the user adds it manually.
+
+#### Scenario: User selects researcher preset
+- **WHEN** the user clicks the researcher tool preset
+- **THEN** the selected tools include `write_artifact`, `read_artifact`, and `web_search`.
+
+#### Scenario: User creates a custom agent
+- **WHEN** the create dialog opens for a Custom adapter agent
+- **THEN** the default preset is coder
+- **AND** `deploy_workspace` and `read_artifact` are selected.
 
 ### Requirement: Codex agent configuration SHALL reject unsupported base URLs
 

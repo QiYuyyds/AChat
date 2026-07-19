@@ -14,7 +14,7 @@
 - 行为：systemPrompt
 - 模型：custom 走 modelProvider + modelId；SDK adapter 走 modelId
 - 凭据：可选 apiKey / apiBaseUrl（per-agent override）
-- 能力：custom 走 toolNames（勾选）+ supportsVision；SDK adapter 使用各自内置工具集
+- 能力：custom 走 toolNames（5 个可选工具勾选 + 9 个 baseline 自动合并）+ supportsVision；SDK adapter 使用各自内置工具集
 
 **自建不可成为 Orchestrator**：当前 service 把 `isOrchestrator` 写死为 `false`（`agent-service.ts:44`）。Orchestrator 只能通过 seed 数据预置（`src/db/seed.ts`）。UI 没有创建 Orchestrator 的入口。**TODO**：未来如要支持「自建 Orchestrator」，需要：
 1. CreateAgentDialog 加 `isOrchestrator` toggle
@@ -37,7 +37,7 @@
 | `modelId` | string | — | provider 默认 | 切换 provider 时自动重置 |
 | `apiKey` | string | — | `''` | 命名 provider 留空走 env var；`openai-compatible` 必填 per-agent key |
 | `apiBaseUrl` | string | — | `''` | Claude Code 可填 Anthropic 兼容 endpoint；Codex 仅可填 Codex/Responses 兼容 endpoint；Custom `openai-compatible` 必填 Chat Completions 兼容 endpoint |
-| `toolNames` | string[] | — | 全栈通用预设 | 当前可勾选：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `read_attachment` / `ask_user` / `fs_read` / `fs_write` / `bash` |
+| `toolNames` | string[] | — | coder 预设 | UI 可勾选 5 个：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `web_search`；另有 9 个 baseline 工具（`read_attachment` / `ask_user` / `fs_list` / `fs_read` / `fs_write` / `fs_edit` / `fs_grep` / `fs_glob` / `bash`）对所有 custom agent 自动启用，UI 不可选，运行时由 `agent_runner.py` 合并 |
 | `mcpServerIds` | string[] | — | `[]` | 启用的 MCP server ID 列表；仅 `adapterName === 'custom'` 时显示选择区（Spec 15） |
 | `supportsVision` | boolean | — | `true` | 决定是否把图片 base64 注入 messages |
 | `avatar` | string | — | `'🤖'` | service 层默认（UI 当前不暴露） |
@@ -103,31 +103,43 @@ Custom provider 实现在 `custom-provider-client.ts` 的 `resolveCustomProvider
 
 ## 工具勾选
 
-源：`src/shared/agent-builder-config.ts`
+源：`src/shared/agent-builder-config.ts`（前端）、`backend/app/api/agents.py`（后端 draft 服务镜像）
+
+### Baseline 工具（9 个，自动启用，UI 不可选）
 
 ```typescript
-const AVAILABLE_AGENT_TOOLS = ['write_artifact', 'deploy_artifact', 'deploy_workspace', 'read_artifact', 'read_attachment', 'ask_user', 'plan_tasks', 'fs_list', 'fs_read', 'fs_write', 'fs_edit', 'fs_grep', 'fs_glob', 'bash', 'web_search'] as const
+const BASELINE_AGENT_TOOLS = [
+  'read_attachment', 'ask_user',
+  'fs_list', 'fs_read', 'fs_write', 'fs_edit', 'fs_grep', 'fs_glob',
+  'bash',
+] as const
 ```
 
-UI 允许勾选产物、附件、workspace 和本地代码工具。`plan_tasks` 在列表里但不在任何角色预设中——它是 Orchestrator 专用，自建 agent 只在勾选 Orchestrator 角色时自动装备。
+所有 custom adapter agent 在运行时自动合并这 9 个 baseline 工具（由 `agent_runner.py:execute_simple_run` 的 `dict.fromkeys(_BASELINE_AGENT_TOOLS + configured)` 去重合并）。UI 展示为只读提示区，不可勾选。SDK adapter（claude-code / codex）不参与 baseline 合并，使用 CLI 内置工具。
 
-每个勾选项展示面向用户的中文 label + 一句权限说明 + 原始工具名（来自同文件的 `AGENT_TOOL_META`），而不是只露裸工具名。
+### UI 可选工具（5 个）
 
-工具区提供 9 个角色预设，每个预设绑定工具集 + 系统提示词模板：
+```typescript
+const AVAILABLE_AGENT_TOOLS = [
+  'write_artifact', 'deploy_artifact', 'deploy_workspace',
+  'read_artifact', 'web_search',
+] as const
+```
 
-| 预设 | 工具 | 用途 |
+UI 只展示这 5 个 checkbox。每个勾选项展示面向用户的中文 label + 一句权限说明 + 原始工具名（来自 `AGENT_TOOL_META`）。
+
+### 角色预设（4 个）
+
+工具区提供 4 个角色预设，每个预设绑定 5 个可选工具的子集 + 系统提示词模板。systemPromptTemplate 职责收窄为 4 件事：角色定位、产出策略、行为约束、质量标准。工具用法、多步骤计划引导、子任务派发引导由第 2/3 层 prompt 负责，不在 template 中重复。
+
+| 预设 | UI 可选工具 | systemPromptTemplate 要点 |
 |---|---|---|
-| 全栈通用 | 全部 `AVAILABLE_AGENT_TOOLS`（排除 `plan_tasks` / `web_search`） | 默认；既能创建 artifact，也能直接读写本地 workspace 并运行命令 |
-| 本地代码 | `deploy_workspace` / `read_artifact` / `read_attachment` / `ask_user` / `fs_list` / `fs_read` / `fs_write` / `fs_edit` / `fs_grep` / `fs_glob` / `bash` | 读取上游产物，直接在当前 workspace 初始化、修改、验证项目源码，并部署已构建静态目录 |
-| 产物交付 | `write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `read_attachment` / `ask_user` | PRD、设计稿、网页原型、文档等聊天内交付；也可发布已有 workspace 静态目录 |
-| 审查验证 | `read_artifact` / `read_attachment` / `ask_user` / `fs_list` / `fs_read` / `bash` | 读取产物或本地代码并运行检查，不默认写文件 |
-| 技术写作 | `write_artifact` / `read_artifact` / `read_attachment` / `ask_user` / `fs_read` / `fs_list` / `fs_glob` / `fs_grep` | 采集源码信息产出结构化文档，不修改源码 |
-| 测试 QA | `bash` / `fs_read` / `fs_list` / `fs_glob` / `fs_grep` / `fs_write` / `read_artifact` / `ask_user` / `write_artifact` | 编写测试用例并运行验证；含 `fs_write` 但不含 `fs_edit`（不改业务代码） |
-| 前端/设计 | `write_artifact` / `deploy_artifact` / `read_artifact` / `ask_user` / `fs_read` / `fs_list` / `fs_glob` / `fs_grep` / `fs_write` / `fs_edit` | 创建 UI 产物与修改前端源码 |
-| 调研员 | `web_search` / `ask_user` / `read_attachment` / `write_artifact` / `read_artifact` | 联网搜索与交叉验证，不使用 fs_*/bash |
-| 数据分析 | `bash` / `fs_read` / `fs_write` / `fs_list` / `fs_glob` / `read_attachment` / `write_artifact` / `ask_user` | 清洗数据、运行处理脚本、生成图表 |
+| 程序员 (coder) | `deploy_workspace` / `read_artifact` | workspace 内直接改源码、运行命令、验证结果；代码落盘不用 artifact |
+| 调研员 (researcher) | `write_artifact` / `read_artifact` / `web_search` | 联网搜索 + 交叉验证 + 结构化调研报告；标注来源时效 |
+| 协调者 (orchestrator) | `write_artifact` / `read_artifact` | 群聊项目经理：拆分 / 派发 / 聚合；自己不直接执行业务工作 |
+| 写作 (writer) | `write_artifact` / `deploy_artifact` / `read_artifact` | 技术文档 / 内容文案 / 审查报告 / 网页原型四类场景 |
 
-**新增工具时**：除了在 `src/server/tools/registry.ts` 注册，还要在 `src/shared/agent-builder-config.ts` 的 `AVAILABLE_AGENT_TOOLS` 加上、并在 `AGENT_TOOL_META` 补一条文案，才能在 UI 正常勾选（详见 Spec 07 「新增工具步骤」）。
+**新增工具时**：除了在 `src/server/tools/registry.ts` 注册，还要判断该工具属于 baseline 还是 UI 可选——前者加到 `BASELINE_AGENT_TOOLS` + `BASELINE_AGENT_TOOL_META`，后者加到 `AVAILABLE_AGENT_TOOLS` + `AGENT_TOOL_META`，才能在 UI 正常展示（详见 Spec 07 「新增工具步骤」）。
 
 ---
 
@@ -252,7 +264,7 @@ zod 校验 body 在每个 route 文件内。
 
 ## 表单 UX 注意点
 
-- **新建 Custom agent 预填 system prompt**：创建态默认填入全栈通用角色的系统提示词模板（6 条工作原则骨架），强调先判断上下文、少而准地用工具、产物走 `write_artifact`、网页完成后 `deploy_artifact`、`fs_write` / `bash` 只在 workspace 范围内必要时使用。切换角色预设时自动覆盖为该角色的模板，用户仍可手动微调
+- **新建 Custom agent 预填 system prompt**：创建态默认填入 coder 角色的系统提示词模板（定位 + 产出策略 + 行为约束 + 质量标准），切换角色预设时自动覆盖为该角色的模板，用户仍可手动微调。systemPromptTemplate 只管角色定位与行为约束，不重复工具用法（由第 3 层 `_build_agent_hub_tool_guidance` 负责）和计划/派发引导（由第 2 层 suffix 负责）
 - **Provider 切换重置 modelId**：避免 `provider=openai, modelId=deepseek-v4-flash` 这种串味；`openai-compatible` 默认 modelId 为空，强制用户填写目标平台模型名
 - **API key 输入是 password 类型 + autocomplete=off**：防止浏览器把它存进 form autofill
 - **错误提示就近显示**：submit 失败时在 footer 上方显示 inline red banner，不用 toast

@@ -34,6 +34,7 @@ import {
   AGENT_TOOL_META as TOOL_META,
   AGENT_TOOL_PRESETS as TOOL_PRESETS,
   AVAILABLE_AGENT_TOOLS,
+  BASELINE_AGENT_TOOLS as BASELINE_TOOLS,
   CLAUDE_CODE_DEFAULT_MODEL,
   CODEX_DEFAULT_MODEL,
   DEFAULT_CUSTOM_AGENT_TOOLS,
@@ -53,8 +54,25 @@ import { useAppStore } from '@/stores/app-store'
 type AgentTab = 'basic' | 'model' | 'toolsPrompt' | 'skills' | 'mcp'
 type CreateStep = 'choose' | 'wizard' | 'detail'
 
-/** All-purpose preset's system prompt template — used as the default prompt for new custom agents. */
+/** Coder preset's system prompt template — used as the default prompt for new custom agents. */
 const DEFAULT_CUSTOM_SYSTEM_PROMPT = TOOL_PRESETS[0].systemPromptTemplate
+
+/**
+ * Infer the active preset from persisted toolNames by matching only the
+ * 5 UI-selectable tools (baseline tools are always-on and filtered out).
+ * Returns null if no exact match is found (user's custom configuration).
+ */
+function inferPresetFromToolNames(tools: readonly string[]): AgentToolPresetId | null {
+  const baselineSet = new Set<string>(BASELINE_TOOLS)
+  const optionalTools = tools.filter((t) => !baselineSet.has(t))
+  return (
+    TOOL_PRESETS.find(
+      (p) =>
+        optionalTools.length === p.tools.length &&
+        p.tools.every((t) => optionalTools.includes(t)),
+    )?.id ?? null
+  )
+}
 
 /**
  * 创建 / 编辑 Agent 的对话框。
@@ -98,7 +116,7 @@ export function CreateAgentDialog({
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<AgentTab>('basic')
   const [createStep, setCreateStep] = useState<CreateStep>('choose')
-  const [activePresetId, setActivePresetId] = useState<AgentToolPresetId | null>('all-purpose')
+  const [activePresetId, setActivePresetId] = useState<AgentToolPresetId | null>('coder')
 
   // 每次打开 / 切换 agent 时，重置表单到该 agent 的当前值（或创建态的默认）。
   useEffect(() => {
@@ -126,32 +144,28 @@ export function CreateAgentDialog({
               : PROVIDER_DEFAULTS[p].defaultModel),
       )
       setToolNames(new Set(agent.toolNames))
-      // Infer activePresetId from persisted toolNames (exact match only);
-      // do NOT overwrite the persisted systemPrompt.
-      const inferredPresetId = TOOL_PRESETS.find(
-        (p) =>
-          agent.toolNames.length === p.tools.length &&
-          p.tools.every((t) => agent.toolNames.includes(t)),
-      )?.id ?? null
-      setActivePresetId(inferredPresetId)
+      // Infer activePresetId from persisted toolNames by matching only the
+      // 5 UI-selectable tools (baseline tools are filtered out before match).
+      // Do NOT overwrite the persisted systemPrompt.
+      setActivePresetId(inferPresetFromToolNames(agent.toolNames))
       setSkillNames(new Set(agent.skillNames))
       setMcpServerIds(new Set(agent.mcpServerIds ?? []))
       setSupportsVision(agent.supportsVision)
       setIsOrchestrator(agent.isOrchestrator)
       setApiKey(agent.apiKey ?? '')
       setApiBaseUrl(agent.apiBaseUrl ?? '')
-      setExecutablePath((agent as any).executablePath ?? '')
-      setCustomArgsText(((agent as any).customArgs ?? []).join('\n'))
+      setExecutablePath(agent.executablePath ?? '')
+      setCustomArgsText((agent.customArgs ?? []).join('\n'))
     } else {
       setAdapterKind('custom')
       setName('')
-      setDescription('')
-      setCapabilitiesText('')
+      setDescription(TOOL_PRESETS[0].defaultDescription)
+      setCapabilitiesText(TOOL_PRESETS[0].defaultCapabilities.join('、'))
       setSystemPrompt(DEFAULT_CUSTOM_SYSTEM_PROMPT)
       setProvider('deepseek')
       setModelId(PROVIDER_DEFAULTS.deepseek.defaultModel)
       setToolNames(new Set(DEFAULT_CUSTOM_AGENT_TOOLS))
-      setActivePresetId('all-purpose')
+      setActivePresetId('coder')
       setSkillNames(new Set())
       setMcpServerIds(new Set())
       setSupportsVision(true)
@@ -185,19 +199,6 @@ export function CreateAgentDialog({
       .catch((err) => console.error('[CreateAgentDialog] load MCP servers failed', err))
   }, [open])
 
-  const handleOrchestratorChange = (checked: boolean) => {
-    setIsOrchestrator(checked)
-    if (checked) {
-      // Orchestrator needs ask_user for clarification; task_dispatch is auto-injected
-      // by the coordinated loop, so it doesn't need to be in the agent's tool list.
-      setToolNames((prev) => {
-        const next = new Set(prev)
-        next.add('ask_user')
-        return next
-      })
-    }
-    // When unchecked, do NOT auto-remove tools (user may need them for other purposes)
-  }
 
   const handleAdapterKindChange = (kind: AdapterKind) => {
     setAdapterKind(kind)
@@ -209,12 +210,9 @@ export function CreateAgentDialog({
       setModelId(PROVIDER_DEFAULTS[provider].defaultModel)
       if (toolNames.size === 0) {
         setToolNames(new Set(DEFAULT_CUSTOM_AGENT_TOOLS))
-        setActivePresetId('all-purpose')
+        setActivePresetId('coder')
       } else {
-        const inferred = TOOL_PRESETS.find(
-          (p) => toolNames.size === p.tools.length && p.tools.every((t) => toolNames.has(t)),
-        )?.id ?? null
-        setActivePresetId(inferred)
+        setActivePresetId(inferPresetFromToolNames(Array.from(toolNames)))
       }
       setSystemPrompt((prev) => (prev.trim() ? prev : DEFAULT_CUSTOM_SYSTEM_PROMPT))
     }
@@ -253,15 +251,23 @@ export function CreateAgentDialog({
     })
   }
 
-  const applyToolPreset = (preset: {
-    id: AgentToolPresetId
-    tools: readonly ToolName[]
-    systemPromptTemplate: string
-  }) => {
-    setToolNames(new Set(preset.tools))
-    setSystemPrompt(preset.systemPromptTemplate)
-    setActivePresetId(preset.id)
-  }
+const applyToolPreset = (preset: {
+id: AgentToolPresetId
+tools: readonly ToolName[]
+systemPromptTemplate: string
+defaultDescription: string
+defaultCapabilities: readonly string[]
+}) => {
+setToolNames(new Set(preset.tools))
+setSystemPrompt(preset.systemPromptTemplate)
+setActivePresetId(preset.id)
+// 同步填充基本信息：描述 + 能力标签，与 systemPrompt 一起随预设联动
+setDescription(preset.defaultDescription)
+setCapabilitiesText(preset.defaultCapabilities.join('、'))
+// Selecting the orchestrator preset automatically marks the agent as
+// an orchestrator; selecting any other preset clears it.
+setIsOrchestrator(preset.id === 'orchestrator')
+}
 
   const applyDraftToForm = (draft: AgentConfigDraft) => {
     const kind = draft.adapterName
@@ -281,10 +287,7 @@ export function CreateAgentDialog({
             : PROVIDER_DEFAULTS[p].defaultModel),
     )
     setToolNames(new Set(draft.toolNames))
-    const inferredPresetId = TOOL_PRESETS.find(
-      (p) => draft.toolNames.length === p.tools.length && p.tools.every((t) => draft.toolNames.includes(t)),
-    )?.id ?? null
-    setActivePresetId(inferredPresetId)
+    setActivePresetId(inferPresetFromToolNames(draft.toolNames))
     setSkillNames(new Set())
     setMcpServerIds(new Set())
     setSupportsVision(draft.supportsVision)
@@ -526,28 +529,6 @@ export function CreateAgentDialog({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                  <Label>角色</Label>
-                  <label
-                    className={cn(
-                      'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
-                      isOrchestrator && 'border-primary bg-primary/5',
-                    )}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={isOrchestrator}
-                      onChange={(e) => handleOrchestratorChange(e.target.checked)}
-                      className="mt-0.5 accent-primary"
-                    />
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium">设为协调者 (Orchestrator)</div>
-                      <div className="mt-0.5 text-[10px] text-muted-foreground">
-                        协调者负责群聊中的任务拆解与分派，会自动启用 <code className="font-mono">task_dispatch</code> 和 <code className="font-mono">ask_user</code> 工具。
-                      </div>
-                    </div>
-                  </label>
-                </div>
               </TabsContent>
 
               <TabsContent value="model" className="mt-0 space-y-3 py-1">
@@ -895,7 +876,7 @@ export function CreateAgentDialog({
               <TabsContent value="toolsPrompt" className="mt-0 space-y-3 py-1">
                 {adapterKind === 'custom' ? (
                   <>
-                    {/* Horizontal role bar — flex-wrap wraps to multiple rows */}
+                    {/* Horizontal role bar — 4 preset buttons */}
                     <div className="flex flex-wrap gap-1.5">
                       {TOOL_PRESETS.map((preset) => (
                         <button
@@ -913,10 +894,10 @@ export function CreateAgentDialog({
                     </div>
                     {/* Left-right split: tools (left) + prompt (right) */}
                     <div className="grid grid-cols-2 gap-3">
-                      {/* Left: tool checklist multi-column grid */}
+                      {/* Left: tool checklist — 5 UI-selectable tools */}
                       <div className="space-y-2">
-                        <div className="text-xs text-muted-foreground">工具集</div>
-                        <div className="grid grid-cols-2 gap-1.5">
+                        <div className="text-xs text-muted-foreground">可选工具</div>
+                        <div className="grid grid-cols-1 gap-1.5">
                           {AVAILABLE_AGENT_TOOLS.map((t) => {
                             const meta = TOOL_META[t]
                             return (

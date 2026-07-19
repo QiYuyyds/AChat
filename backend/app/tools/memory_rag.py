@@ -240,8 +240,12 @@ rag_delete_document_tool = ToolDef(
 
 memory_recall_tool = ToolDef(
     name="memory_recall",
-    description="Recall relevant long-term memories and user preferences. "
-                "Use this to remember past conversations and user preferences.",
+    description=(
+        "Recall relevant long-term memories and user preferences by semantic search. "
+        "Use this at the start of a task to check for past context, "
+        "or when the user references prior work. "
+        "Query with natural-language questions or specific keywords."
+    ),
     parameters={
         "type": "object",
         "properties": {
