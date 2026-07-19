@@ -17,13 +17,19 @@
 ### 核心能力
 
 - IM 范式的会话管理（单聊 / 群聊 / 多会话并行）
-- 统一适配器层接入 Claude、Custom(OpenAI 兼容) Agent + 自建 Agent
-- Orchestrator 自动拆任务、并行调度、聚合结果
+- 统一适配器层接入 Claude、Codex（CLI 子进程路线）、Custom(OpenAI 兼容) Agent + 自建 Agent
+- Orchestrator 自动拆任务、并行调度、聚合结果（统一 Agent Loop）
 - 产物（代码、网页、文档、PPT）内联预览与二次编辑
 - 每个会话独立 workspace，Agent 可读写文件、跑命令
+- **代码图谱智能**（CodeGraph 本地运行时 + `code_explore` 工具）
+- **执行计划工具**（`create_plan` / `plan_step` / `add_plan_steps` 结构化计划卡片）
 - **RAG 混合检索**（Milvus 向量 + Elasticsearch 全文 + Neo4j 知识图谱）
-- **分层记忆系统**（短期 / 长期 / 偏好 / 图谱记忆 + 自动固化与衰减）
+- **分层记忆系统**（短期 / 会话 / 长期 / 偏好 / 图谱记忆 + 自动固化与衰减）
 - **Document + Version 知识库**（全局文档版本化、解析入库、按需召回）
+- **Obsidian 知识同步**（vault 同步 + 预处理 + RAG 入库）
+- **外部 MCP 接入**（MCP Server 配置管理 + client_manager + 调用审批）
+- **Run 内压缩**（五阶段递进压缩 pipeline，纯结构化裁剪无 LLM）
+- **Worktree 隔离**（DAG 波调度并行任务用 git worktree 隔离）
 
 ### 运行形态
 
@@ -84,11 +90,11 @@
 L5 UI 组件                     src/components/
 L4 State + Transport           src/stores/ + src/lib/ (Zustand store + SSE 客户端)
 ─── HTTP (REST + SSE) ─── 跨进程边界 ───
-L3 Application Services        backend/app/services/ (AgentRunner · Orchestrator · ConversationService · EventBus · ToolExecutor · RAGService · ...)
+L3 Application Services        backend/app/services/ (AgentRunner · AgentLoop · Orchestrator · ConversationService · EventBus · ToolExecutor · RAGService · CompactPipeline · WorktreeService · ...)
 L2 Agent Platform Adapters     backend/app/adapters/ (ClaudeCLI / CodexCLI / Custom / Mock) + mcp_bridge.py
 L1 Persistence                 backend/app/db/ (SQLAlchemy + PostgreSQL + workspace 文件系统)
 ─── 基础设施层 (可选, 独立降级) ───
-   Milvus · Elasticsearch · Neo4j · Kafka · Redis · Phoenix   backend/app/infra/ + rag/ + memory/ + graph/ + observability/
+   Milvus · Elasticsearch · Neo4j · Kafka · Redis · Phoenix   backend/app/infra/ + rag/ + memory/ + graph/ + code_intelligence/ + observability/
 ```
 
 **铁律**：
@@ -139,13 +145,24 @@ message.parts = [
 - `task_dispatch` 的 `agentId` 参数是可选的：省略时 clone-self（`hidden` 消息），指定时 group-member 派发（`visible` 消息）
 - 递归深度上限 `MAX_DISPATCH_DEPTH = 3`，达到上限时 `task_dispatch` 不注入
 - clone-subagent 消息 `hidden=true`，从 `build_history_for` 和前端渲染中排除
+- DAG 波调度并行任务可用 `worktree_service` 做 git worktree 隔离
 - 详见 `specs/19-unified-agent-loop.md`
 
-### 3.7 RAG / 记忆是可选增强，不是硬依赖
+### 3.7 Custom Agent 工具架构：Baseline + 可选
+
+Custom agent（SDK 路线）的工具分两层：
+
+- **Baseline 工具（9 个，必备不可选）**：`read_attachment` / `ask_user` / `fs_list` / `fs_read` / `fs_write` / `fs_edit` / `fs_grep` / `fs_glob` / `bash`。这些工具在运行时由 `agent_runner.execute_simple_run` 自动合并，**不存入 `agent.tool_names`**。
+- **可选工具（5 个，UI 勾选）**：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `web_search`。这些存入 `agent.tool_names`。
+- 运行时合并：`effective_tools = BASELINE_AGENT_TOOLS + agent.tool_names + 自动注入工具`
+- CLI agent（Claude Code / Codex）**不参与** baseline 合并，使用各自 CLI 内置工具集
+- 前端 `src/shared/agent-builder-config.ts` 与后端 `backend/app/api/agents.py` 的 `_BASELINE_AGENT_TOOLS` 必须保持一致
+
+### 3.8 RAG / 记忆是可选增强，不是硬依赖
 
 RAG 混合检索和分层记忆系统通过 `PromptAssembler` 注入 Agent 上下文，但它们**降级时不应阻断核心对话流**。基础设施不可用时，Agent 仍能正常对话（只是没有知识增强）。
 
-### 3.8 可观测性是可选增强，不是硬依赖
+### 3.9 可观测性是可选增强，不是硬依赖
 
 OpenTelemetry 全链路追踪和评测系统通过 `@traced` 装饰器包裹关键函数，但 `trace_enabled=False` 时全部变为 no-op，**不影响 Agent 运行**。Phoenix 不可达时 OTel SDK `BatchSpanProcessor` 缓冲后静默丢弃，不报错。可观测性模块代码在 `backend/app/observability/`，独立于业务逻辑（仅包裹 span + eval hook，不改被包裹函数的返回值与异常传播）。
 

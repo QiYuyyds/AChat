@@ -563,6 +563,24 @@ CLI_ADAPTERS = frozenset({"claude-code", "codex"})
 SDK_ADAPTERS = frozenset({"custom"})
 # mock is neither CLI nor SDK; it is test-only and ignored by tool injection.
 
+# Baseline tools always enabled for every SDK (custom) agent at runtime.
+# These are NOT selectable in the UI — they are implicitly always-on and merged
+# into the tool list by execute_simple_run. Must match _BASELINE_AGENT_TOOLS in
+# app/api/agents.py (both are internal mirrors of the same design contract).
+# CLI agents (claude-code / codex) use their own CLI built-in tools and skip
+# this merge.
+_BASELINE_AGENT_TOOLS: tuple[str, ...] = (
+    "read_attachment",
+    "ask_user",
+    "fs_list",
+    "fs_read",
+    "fs_write",
+    "fs_edit",
+    "fs_grep",
+    "fs_glob",
+    "bash",
+)
+
 # Deprecated product default removed: Custom loop ends on model-done / budget /
 # breakers. Absolute safety bound lives in react_loop_termination.SAFETY_MAX_MODEL_CALLS.
 # Kept as alias for any external imports; do not use as a product max-steps cap.
@@ -1821,7 +1839,18 @@ async def execute_simple_run(
     if workspace is None:
         raise ValueError(f"Workspace not found for conversation: {args.conversation_id}")
 
-    base_tool_names = args.override_tool_names or agent.tool_names_list
+    # Merge baseline tools for SDK (custom) agents. Baseline tools are always-on
+    # and not UI-selectable; they are prepended here so the agent always has
+    # fs_read / fs_write / bash / etc. Old agents that already have baseline
+    # tools in toolNames are deduped (order preserved, baseline first).
+    # CLI agents (claude-code / codex) skip this merge — they use CLI built-ins.
+    configured = args.override_tool_names or agent.tool_names_list
+    if agent.adapter_name in SDK_ADAPTERS:
+        base_tool_names = list(dict.fromkeys(
+            list(_BASELINE_AGENT_TOOLS) + list(configured)
+        ))
+    else:
+        base_tool_names = list(configured)
 
     # Reset task memory buffer at the start of a new task (clears previous observations)
     buf = _get_task_mem_buffer()
@@ -3455,34 +3484,75 @@ def _build_agent_hub_tool_guidance(
         file_lines = [
             "### 文件探索与操作工具",
             "路径必须解析在 workspace 内。各工具适用场景：",
-            "- fs_list：查看目录内容，支持 depth 参数递归展开。分析项目结构时用 fs_list({ depth: 3 }) 一次性获取多级目录概览，避免逐目录遍历",
-            "- fs_glob：按模式批量查找文件（如 **/*.py），一次调用覆盖整个项目",
-            "- fs_grep：按正则搜索文件内容，定位符号位置而不用读全文",
-            "- 如果任务需要系统性探索（如分析项目、理解代码库），先调 create_plan 创建计划再按步骤探索，不要直接开始读文件。",
         ]
-        if workspace.mode == "local" and "code_explore" in tools:
+        if "fs_list" in tools:
             file_lines.append(
-                "- code_explore：基于代码图谱回答结构性问题（入口、调用链、依赖）"
+                "- fs_list：查看目录内容，支持 depth 参数递归展开。分析项目结构时用 fs_list({ depth: 3 }) 一次性获取多级目录概览，避免逐目录遍历"
             )
-        file_lines.extend([
-            "- fs_read：读取文件内容，支持三种模式：full（默认完整读取）、outline（只返回结构骨架，token 消耗约 1/10）、head（只读前 N 行）",
-            "- 探索项目时的推荐流程：先用 fs_list({ depth: 3 }) 获取项目结构概览，再用 fs_read({ path: \"...\", mode: \"outline\" }) 快速了解各文件结构，最后对关键文件用 fs_read({ path: \"...\" }) 完整读取",
-            "- fs_write / fs_edit：写入新文件 / 精准修改已有文件",
-            "- bash：运行构建、测试、安装等 shell 命令",
-            "",
-            'fs_list 正确案例：fs_list({ path: "", depth: 3 }) 获取项目多级结构概览；'
-            'fs_list({ path: "src/server" }) 查看单个子目录；'
-            '需要查看 .env.example 等隐藏文件时用 fs_list({ showHidden: true })。',
-            'fs_glob 正确案例：fs_glob({ pattern: "**/*.py" }) 一次拿到全部 Python 文件清单。',
-            'fs_grep 正确案例：fs_grep({ pattern: "def |class ", glob: "*.py" }) 定位所有函数和类定义。',
-            'fs_read 正确案例：fs_read({ path: "src/app/page.tsx", mode: "outline" }) 快速了解文件结构；'
-            'fs_read({ path: "src/app/page.tsx" }) 完整读取先看现有代码再改；'
-            'fs_read({ path: "...", mode: "head" }) 快速预览文件开头；'
-            '大文件截断后用 fs_read({ path: "...", offset: 200, limit: 100 }) 继续读取。',
-            'fs_write 正确案例：fs_write({ path: "src/app/page.tsx", content: "完整的新文件内容" })；content 是完整文件内容，不是 diff patch。',
-            'bash 正确案例：bash({ command: "pnpm typecheck" })；子目录命令用 bash({ command: "pnpm build", cwd: "frontend", timeoutMs: 300000 })，不要写 cd frontend && pnpm build。',
-        ])
+        if "fs_glob" in tools:
+            file_lines.append("- fs_glob：按模式批量查找文件（如 **/*.py），一次调用覆盖整个项目")
+        if "fs_grep" in tools:
+            file_lines.append("- fs_grep：按正则搜索文件内容，定位符号位置而不用读全文")
+        file_lines.append(
+            "- 如果任务需要系统性探索（如分析项目、理解代码库），先调 create_plan 创建计划再按步骤探索，不要直接开始读文件。"
+        )
+        if "fs_read" in tools:
+            file_lines.append(
+                "- fs_read：读取文件内容，支持三种模式：full（默认完整读取）、outline（只返回结构骨架，token 消耗约 1/10）、head（只读前 N 行）"
+            )
+        if "fs_list" in tools and "fs_read" in tools:
+            file_lines.append(
+                '- 探索项目时的推荐流程：先用 fs_list({ depth: 3 }) 获取项目结构概览，再用 fs_read({ path: "...", mode: "outline" }) 快速了解各文件结构，最后对关键文件用 fs_read({ path: "..." }) 完整读取'
+            )
+        if "fs_write" in tools or "fs_edit" in tools:
+            parts = []
+            if "fs_write" in tools:
+                parts.append("fs_write")
+            if "fs_edit" in tools:
+                parts.append("fs_edit")
+            file_lines.append(f"- {' / '.join(parts)}：写入新文件 / 精准修改已有文件")
+        if "bash" in tools:
+            file_lines.append("- bash：运行构建、测试、安装等 shell 命令")
+
+        file_lines.append("")
+        if "fs_list" in tools:
+            file_lines.append(
+                'fs_list 正确案例：fs_list({ path: "", depth: 3 }) 获取项目多级结构概览；'
+                'fs_list({ path: "src/server" }) 查看单个子目录；'
+                '需要查看 .env.example 等隐藏文件时用 fs_list({ showHidden: true })。'
+            )
+        if "fs_glob" in tools:
+            file_lines.append('fs_glob 正确案例：fs_glob({ pattern: "**/*.py" }) 一次拿到全部 Python 文件清单。')
+        if "fs_grep" in tools:
+            file_lines.append('fs_grep 正确案例：fs_grep({ pattern: "def |class ", glob: "*.py" }) 定位所有函数和类定义。')
+        if "fs_read" in tools:
+            file_lines.append(
+                'fs_read 正确案例：fs_read({ path: "src/app/page.tsx", mode: "outline" }) 快速了解文件结构；'
+                'fs_read({ path: "src/app/page.tsx" }) 完整读取先看现有代码再改；'
+                'fs_read({ path: "...", mode: "head" }) 快速预览文件开头；'
+                '大文件截断后用 fs_read({ path: "...", offset: 200, limit: 100 }) 继续读取。'
+            )
+        if "fs_write" in tools:
+            file_lines.append(
+                'fs_write 正确案例：fs_write({ path: "src/app/page.tsx", content: "完整的新文件内容" })；content 是完整文件内容，不是 diff patch。'
+            )
+        if "bash" in tools:
+            file_lines.append(
+                'bash 正确案例：bash({ command: "pnpm typecheck" })；子目录命令用 bash({ command: "pnpm build", cwd: "frontend", timeoutMs: 300000 })，不要写 cd frontend && pnpm build。'
+            )
         add(file_lines)
+
+    if "code_explore" in tools:
+        add(
+            [
+                "### code_explore",
+                "用途：基于代码图谱回答结构性问题（项目入口、调用链、模块依赖、修改影响范围）。",
+                '适用问题："主要流程是什么""X 从哪里被调用""改这个函数会影响哪些模块"。',
+                "不适用问题：读某个文件的具体内容（用 fs_read）、搜索某个字符串（用 fs_grep）。",
+                '正确案例：理解项目架构时，先 code_explore({ query: "项目入口和主要流程" }) 获取全局视角，再针对性读文件。',
+                '降级方案：如果返回"图谱未就绪"，改用 fs_list({ depth: 3 }) + fs_grep + fs_read(mode="outline") 手动探索。',
+            ]
+        )
 
     if "task_dispatch" in tools:
         add(
@@ -3498,9 +3568,22 @@ def _build_agent_hub_tool_guidance(
         add(
             [
                 "### memory_recall",
-                "用途：检索长期记忆与用户偏好，自动在对话中积累和回忆信息。",
-                "正确案例：当用户提到之前的偏好或历史上下文时，调用 memory_recall({ query: \"用户偏好\" }) 检索相关记忆。",
-                "无需手动调用：记忆系统会在每次对话后自动存储，需要时检索即可。",
+                "用途：按语义检索长期记忆与用户偏好，在任务开始时或用户引用历史时主动召回。",
+                '正确案例：用户说"上次那个项目"，调用 memory_recall({ query: "用户上次提到的项目" }) 确认具体指什么。',
+                "query 写法：用自然语言问题或具体关键词，不要只写分类标签如\"偏好\"。",
+                "注意：记忆存储是自动的（对话后系统自动提取），你只需负责召回；召回结果为空说明没有相关记忆，不要反复重试。",
+            ]
+        )
+
+    if "memory_store" in tools:
+        add(
+            [
+                "### memory_store",
+                "用途：主动存储长期稳定的记忆，跨会话持久化。",
+                '正确案例：发现用户项目用 React 19 + Next.js 16，调用 memory_store({ content: "用户项目使用 React 19 + Next.js 16 App Router", category: "fact", importance: 0.8 })。',
+                '错误案例：存储"用户刚才问了登录问题"（临时对话细节）、"项目有 package.json"（可从代码推导）。',
+                "category 选择：fact=技术事实/环境约束，policy=用户偏好/规则，tool_failure=工具失败经验。",
+                "不要滥用：单次操作结果、临时上下文、可从代码或对话推导的信息都不要存。",
             ]
         )
 

@@ -113,9 +113,15 @@ For `web_app` artifacts and ready deployment status parts, the UI MUST provide o
 
 ### Requirement: Agent builder SHALL expose adapter-specific fields
 
-Create/edit agent UI MUST show provider, model, tool, key, and base URL fields according to selected adapter semantics.
+Create/edit agent UI MUST show provider, model, tool, key, and base URL fields according to selected adapter semantics. For Custom adapter, the tools tab MUST display a read-only baseline tools section (9 tools) and 5 UI-selectable tool checkboxes, plus 4 role preset buttons (coder / researcher / orchestrator / writer). For SDK adapters, tool checkboxes and baseline hints MUST be hidden.
 
 #### Scenario: User selects Codex adapter
 - **WHEN** `adapterKind='codex'`
 - **THEN** provider and AChat tool checkboxes are hidden
 - **AND** Base URL copy says it must support Codex/Responses.
+
+#### Scenario: User selects Custom adapter
+- **WHEN** `adapterKind='custom'`
+- **THEN** the tools tab shows a read-only section listing 9 baseline tools
+- **AND** 5 UI-selectable tool checkboxes are displayed below
+- **AND** 4 role preset buttons (coder / researcher / orchestrator / writer) are available.

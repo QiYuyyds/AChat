@@ -34,7 +34,11 @@ AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的
   - [Orchestrator 与任务调度](#orchestrator-与任务调度)
   - [RAG 混合检索与知识库](#rag-混合检索与知识库)
   - [分层记忆系统](#分层记忆系统)
+  - [Workspace 文件与审批](#workspace-文件与审批)
   - [产物与部署预览](#产物与部署预览)
+  - [代码图谱智能与执行计划](#代码图谱智能与执行计划)
+  - [Obsidian 知识同步与外部 MCP](#obsidian-知识同步与外部-mcp)
+  - [Run 内压缩](#run-内压缩)
   - [生命周期 Hooks 与 Checkpoint](#生命周期-hooks-与-checkpoint)
   - [Agent 可观测性与评测](#agent-可观测性与评测)
 - [技术栈](#技术栈)
@@ -99,7 +103,7 @@ AChat 正是为这套工作流而生。它默认本地运行，使用 PostgreSQL
 
 > Claude Code 与 Codex 走 **CLI 子进程路线**：工具执行、沙箱、审批由 CLI 自管，AChat 只翻译事件流。后续还规划接入 Hermes、OpenClaw、OpenCode 等 CLI agent。迁移方案见 `openspec/changes/migrate-claude-codex-to-cli/`。
 
-你可以在 UI 里创建自定义 Agent，自带模型、provider、system prompt、base URL、API key、工具集和 Skills。
+你可以在 UI 里创建自定义 Agent，自带模型、provider、system prompt、base URL、API key、工具集和 Skills。Custom Agent 提供 4 种角色预设（程序员 / 调研员 / 协调者 / 写作），每种预设自带匹配的 system prompt 和工具推荐。所有 custom agent 自带 9 个基础工具（文件读写、bash、ask_user 等），另可从 5 个可选工具中勾选（产物创建、部署、web 搜索等）。
 
 ### Orchestrator 与任务调度
 
@@ -135,6 +139,7 @@ AChat 集成了完整的 RAG（检索增强生成）管线：
 Agent 拥有跨会话的记忆能力：
 
 - **短期记忆（STM）**：滑动窗口内的对话历史。
+- **会话记忆（SessionMemory）**：跨 run 的会话级上下文。
 - **长期记忆（LTM）**：embedding 语义召回，带重要性评分。
 - **用户偏好（Preference）**：从对话中提取的 KV 偏好。
 - **图谱记忆（GraphMemory）**：Neo4j 存储记忆节点与关系。
@@ -149,6 +154,8 @@ Agent 拥有跨会话的记忆能力：
 - 文件工具 `fs_read`、`fs_write`、`fs_edit`、`fs_list`、`fs_glob`、`fs_grep` 和 `bash` 都被限制在生效的 workspace 目录内。
 - Review 模式可以在文件写入前要求审批。
 - 高风险 bash 命令可以在执行前要求审批。
+- **Worktree 隔离**：DAG 波调度并行任务可用 git worktree 隔离，非 git 目录用目录拷贝降级，自动 merge-back。
+- **环境变量隔离**：按会话/用户隔离环境变量，CLI Agent 的 `HOME`/`USERPROFILE` 按用户隔离。
 
 ### 产物与部署预览
 
@@ -162,6 +169,28 @@ Agent 可以创建并引用结构化产物：
 - `diff`：版本对比
 
 对于本地前端项目，Agent 可以把 `dist`、`build`、`out`、`client/dist` 等静态输出目录发布到一张本地预览卡片里。
+
+### 代码图谱智能与执行计划
+
+- **代码图谱智能**：集成 CodeGraph 本地运行时，Agent 可以通过 `code_explore` 工具探索项目代码结构（符号索引、引用查找、类型层级）。支持后台异步索引、防抖同步、状态机管理。
+- **执行计划工具**：Agent 可以用 `create_plan` 创建结构化执行计划，用 `plan_step` / `add_plan_steps` 更新步骤状态。计划以卡片形式渲染在聊天 UI 中，用户可实时看到工作进度。
+
+### Obsidian 知识同步与外部 MCP
+
+- **Obsidian vault 同步**：把 Obsidian vault 同步到 AChat 知识库，自动解析 wikilink 和 frontmatter，预处理后入 RAG。
+- **外部 MCP 接入**：支持配置外部 MCP Server（stdio / SSE 传输），Agent 可调用外部 MCP 工具。MCP 调用可配置审批。AChat 自身的平台工具也通过 MCP bridge 暴露给 CLI agent。
+
+### Run 内压缩
+
+SDK Agent 在 ReAct loop 中内置五阶段递进压缩 pipeline，在 context window 占用达到阈值时自动触发：
+
+- Stage 1（ratio ≥ 0.70）：语义摘要旧 tool 结果
+- Stage 2（ratio ≥ 0.80）：更激进地重裁 Stage 1 摘要
+- Stage 3（ratio ≥ 0.88）：将更旧轮次折叠为单个 marker
+- Stage 4（ratio ≥ 0.93）：软收尾注入
+- Stage 5（ratio ≥ 0.95）：强制终止
+
+Stage 1/2/3 为纯结构化裁剪（无 LLM 调用），独立于跨 run 的上下文压缩。
 
 ### 生命周期 Hooks 与 Checkpoint
 
@@ -460,6 +489,7 @@ pnpm electron:build                # 桌面打包
 .agenthub-data/workspaces/     # workspace 文件
 .agenthub-data/deployments/    # 部署产物
 .agenthub-data/skills/         # Agent Skills
+.agenthub-data/worktrees/      # git worktree 隔离
 ```
 
 ---
@@ -499,7 +529,7 @@ AChat 采用前后端分离架构：
 └──────────────────────────────────────────┘
 ```
 
-核心契约是 `StreamEvent`。适配器输出、工具活动、产物创建、待审批、调度状态、用量更新，都先汇入这个事件模型，再通过 SSE 到达前端 UI。工具执行经过 `HookRegistry` 拦截（pre/post），支持审批拦截、自动压缩、检查点保存等可插拔 Hook。
+核心契约是 `StreamEvent`。适配器输出、工具活动、产物创建、待审批、调度状态、用量更新，都先汇入这个事件模型，再通过 SSE 到达前端 UI。工具执行经过 `HookRegistry` 拦截（pre/post），支持审批拦截、自动压缩、检查点保存等可插拔 Hook。SDK Agent 运行时自动合并 9 个 baseline 工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment），确保所有 custom agent 都具备基础文件操作能力。
 
 关键文档：
 

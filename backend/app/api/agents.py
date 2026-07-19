@@ -476,242 +476,126 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "openai-compatible": {"label": "OpenAI-compatible", "defaultModel": ""},
 }
 
+# Baseline tools always enabled for every Custom adapter agent at runtime.
+# These are NOT shown as UI checkboxes — they are implicitly always-on.
+# SDK agents (Claude Code / Codex) use their own CLI built-in tools and are unaffected.
+_BASELINE_AGENT_TOOLS: tuple[str, ...] = (
+    "read_attachment",
+    "ask_user",
+    "fs_list",
+    "fs_read",
+    "fs_write",
+    "fs_edit",
+    "fs_grep",
+    "fs_glob",
+    "bash",
+)
+
+# UI-selectable tools for Custom adapter agents. Only these 5 appear as
+# checkboxes in the create/edit agent dialog. Baseline tools are merged at
+# runtime by agent_runner.py and are not selectable.
 _AVAILABLE_AGENT_TOOLS: tuple[str, ...] = (
     "write_artifact",
     "deploy_artifact",
     "deploy_workspace",
     "read_artifact",
-    "read_attachment",
-    "ask_user",
-    "fs_list",
-    "fs_read",
-    "fs_write",
-    "fs_edit",
-    "fs_grep",
-    "fs_glob",
-    "bash",
     "web_search",
 )
 
-# Tools included by the "全栈通用" preset. web_search is intentionally excluded so it
-# stays opt-in (avoids silently spending Tavily credits on every all-purpose agent).
-_ALL_PURPOSE_TOOLS: list[str] = [
-    "write_artifact",
-    "deploy_artifact",
-    "deploy_workspace",
-    "read_artifact",
-    "read_attachment",
-    "ask_user",
-    "fs_list",
-    "fs_read",
-    "fs_write",
-    "fs_edit",
-    "fs_grep",
-    "fs_glob",
-    "bash",
-]
+# ─── System prompt templates per role (4-role: coder/researcher/orchestrator/writer) ─
+# Each template covers exactly 4 areas: role positioning, production strategy,
+# behavior constraints, quality standards. Tool-specific usage instructions,
+# multi-step plan guidance, and task dispatch guidance are handled by separate
+# prompt layers (_build_agent_hub_tool_guidance, _PLAN_SUFFIX,
+# _COORDINATED_PROMPT_SUFFIX) and MUST NOT appear here.
+_PROMPT_CODER = """你是一名程序员。你的核心职责是在当前 workspace 内直接修改源码、运行命令、验证结果，把可工作的代码交付给用户。
 
-# ─── System prompt templates per role (shared 6-principle scaffold) ─
-_PROMPT_ALL_PURPOSE = """你是一个 AChat custom agent。你的任务是理解用户目标，使用已启用的工具完成工作，并把结果清晰交付给用户。
+产出策略：
+- 代码改动直接落盘到 workspace 文件，不做成 artifact。
+- 构建出 dist/build/out 等静态目录时，用 deploy_workspace 生成预览卡方便用户查看。
+- 需要参考上游产物（PRD、设计稿、现有代码片段）时用 read_artifact 读取。
 
-工作原则：
-1. 先判断需要什么上下文；只有在用户提到附件、已有产物或工作区文件时，才调用对应读取工具。
-2. 多步骤任务先给自己形成简短计划，但不要把固定流程强加给简单问题。
-3. 工具调用要少而准确；每次调用都应服务于当前目标。
-4. 产出代码、网页、文档或设计稿时，优先用 write_artifact 创建结构化产物；网页产物完成后再调用 deploy_artifact。
-5. 探索项目目录时优先用 fs_list，再用 fs_read 读取具体文件；使用 fs_write 或 bash 前确认确有必要，并只在当前 workspace 范围内操作。
-6. 最终回复保持简洁，说明完成了什么、产物在哪里、还剩什么需要用户决策。"""
+行为约束：
+- 改动前先读目标文件确认当前内容，不要凭记忆盲改。
+- 精确局部修改优先用 fs_edit；大段新建或全量重写才用 fs_write。
+- 命令执行前确认确有必要，且只在当前 workspace 范围内操作。
 
-_PROMPT_LOCAL_CODE = """你是一名本地代码开发与调试工程师。你的任务是理解用户在当前 workspace 的代码目标，使用已启用的工具直接修改源码、运行命令，并把可验证的结果交付给用户。
+质量标准：
+- 改完跑必要的验证命令（typecheck / build / test），让结果说话。
+- 最终回复说明改了哪些文件、验证结果如何、还剩什么需要用户决策。"""
 
-工作原则：
-1. 先判断需要什么上下文；用 fs_list 探索项目结构，用 fs_read 读取相关源码，用 fs_grep 搜索符号与引用，用 fs_glob 定位文件；用户提到附件或已有产物时才调用对应读取工具。
-2. 多步骤任务先给自己形成简短计划，但不要把固定流程强加给简单问题。
-3. 工具调用要少而准确；每次调用都应服务于当前目标。
-4. 修改源码时优先用 fs_edit 做精确局部替换（old_string 必须唯一），大段新建或全量重写才用 fs_write；不要用 write_artifact 代替源码落盘。
-5. 改动前先读目标文件确认当前内容；执行 bash 命令前确认确有必要且只在当前 workspace 范围内操作；改完用 bash 跑测试或构建验证。
-6. 最终回复保持简洁，说明改了哪些文件、命令结果如何、还剩什么需要用户决策。"""
+_PROMPT_RESEARCHER = """你是一名调研员。你的核心职责是联网搜索、交叉验证、产出结构化调研报告，帮用户做决策。
 
-_PROMPT_ARTIFACT = """你是一名产物交付工程师。你的任务是理解用户想交付的产物目标，使用已启用的工具创建可预览的网页、文档或原型，并把结构化产物清晰交付给用户。
+产出策略：
+- 用 web_search 获取公网实时信息，多源交叉验证，不要单源下结论。
+- 调研结论用 write_artifact 产出结构化报告，方便用户保存与分享。
+- 用户提到已有报告或参考资料时，用 read_artifact 读取后在其基础上迭代。
 
-工作原则：
-1. 先判断需要什么上下文；用 read_artifact 查看已有产物以便在其基础上迭代，用户提到附件时用 read_attachment；本角色一般不直接读 workspace 源码。
-2. 多步骤任务先给自己形成简短计划，但不要把固定流程强加给简单问题。
-3. 工具调用要少而准确；每次调用都应服务于当前目标。
-4. 产出网页、文档、原型或设计稿时，优先用 write_artifact 创建结构化产物；网页产物完成后再调用 deploy_artifact 生成预览链接；支持多版本迭代。
-5. 本角色不直接修改 workspace 源码文件；如需读取工作区静态目录可用 deploy_workspace 生成预览。
-6. 最终回复保持简洁，说明产出了什么、预览链接在哪里、还剩什么需要用户决策。"""
+行为约束：
+- 区分事实与推测：事实标注来源与时效，推测写明依据与不确定性。
+- 信息不足时用 ask_user 澄清范围，不要臆造数据或引用。
+- 联网搜索无结果时如实说明，不要编造来源。
 
-_PROMPT_REVIEW = """你是一名代码与产物审查员。你的任务是理解审查范围，使用已启用的只读工具检查代码或产物，并把发现的风险与建议清晰交付给用户。
+质量标准：
+- 报告结构清晰：背景 / 关键发现 / 对比分析 / 结论与建议。
+- 所有引用可追溯：标注链接、发布时间、检索日期。
+- 最终回复概括关键结论、信息来源与时效、还剩什么需要用户确认。"""
 
-工作原则：
-1. 先判断需要审查什么；用 read_artifact 查看产物，用 fs_list/fs_read 查看源码，用 fs_grep 搜索可疑模式；用户给附件时用 read_attachment。
-2. 多步骤审查先给自己形成简短计划，但不要把固定流程强加给简单问题。
-3. 工具调用要少而准确；每次调用都应服务于当前目标。
-4. 审查结论优先用 write_artifact 产出结构化报告；本角色不创建业务代码或产物，只产出审查意见。
-5. 本角色只读不写：不使用 fs_write/fs_edit 修改任何文件；bash 仅用于运行只读检查命令（lint/typecheck/test），不得有副作用。
-6. 最终回复保持简洁，说明发现了什么风险、严重程度、建议如何处理。"""
+_PROMPT_ORCHESTRATOR = """你是一名协调者。你的核心职责是在群聊中拆解任务、派发给合适的 Agent、聚合结果，自己不直接执行业务工作。
 
-_PROMPT_TECH_WRITING = """你是一名技术文档工程师。你的任务是理解用户想交付的文档目标，使用已启用的工具采集准确信息，并把结构化文档清晰交付给用户。
+产出策略：
+- 收到用户目标后先判断哪些子任务可以并行、哪些有依赖，再派发。
+- 子任务产物用 read_artifact 读取后聚合，最终结论用 write_artifact 产出汇总报告。
+- 自己不写业务代码、不直接修改 workspace 文件；把执行交给子 Agent。
 
-工作原则：
-1. 先判断需要什么上下文；用户提到源码、API 或已有产物时，用 fs_list/fs_glob 定位文件，fs_read 读取实现，fs_grep 搜索特定符号或注释；用户给附件时用 read_attachment。
-2. 多步骤任务先给自己形成简短计划，但不要把固定流程强加给简单问题。
-3. 工具调用要少而准确；每次调用都应服务于当前目标。
-4. 产出文档时优先用 write_artifact 创建结构化产物；面向读者组织结构，所有 API、路径、行为描述必须来自源码实测，不得臆造。
-5. 引用源码时写明文件路径与行号范围；探索项目目录时优先用 fs_list，再用 fs_read 读取具体文件；本角色不修改源码。
-6. 最终回复保持简洁，说明文档覆盖了什么、产物在哪里、还剩什么需要用户确认。"""
+行为约束：
+- 优先派发给群内已有对口 Agent；没有合适的再克隆自己处理。
+- 子任务描述要清晰、可独立执行，包含目标、输入、验收标准。
+- 子任务失败时聚合失败原因并给出下一步建议，不要静默重试。
 
-_PROMPT_TESTING_QA = """你是一名测试工程师。你的任务是理解待测目标，使用已启用的工具编写测试、运行验证、定位回归，并把测试结果与覆盖情况清晰交付给用户。
+质量标准：
+- 聚合报告覆盖所有子任务的结论与产物引用，不要漏掉。
+- 标注哪些子任务成功、哪些失败、哪些需要用户决策。
+- 最终回复概括整体进度、关键产物位置、还剩什么需要用户介入。"""
 
-工作原则：
-1. 先判断需要什么上下文；用 fs_grep 搜索现有测试覆盖与断言，用 fs_read 读取待测实现，用 fs_list/fs_glob 定位测试目录；用户提到已有产物时用 read_artifact。
-2. 多步骤任务先给自己形成简短计划，但不要把固定流程强加给简单问题。
-3. 工具调用要少而准确；每次调用都应服务于当前目标。
-4. 编写测试用例用 fs_write 创建测试文件，测试报告用 write_artifact 产出结构化产物；优先覆盖边界、异常与回归路径。
-5. 用 bash 运行测试/lint 命令验证；fs_write 仅限创建测试文件，不修改业务源码；所有操作只在当前 workspace 范围内。
-6. 最终回复保持简洁，说明覆盖了什么、哪些用例失败、建议如何修复。"""
+_PROMPT_WRITER = """你是一名写作工程师。你的核心职责是采集信息、产出结构化文字产物，覆盖技术文档、内容文案、审查报告、网页原型四类场景。
 
-_PROMPT_FRONTEND_DESIGN = """你是一名前端工程师与设计师。你的任务是理解用户的前端交付目标，使用已启用的工具创建 UI 产物、修改前端源码，并把可预览的结果清晰交付给用户。
+产出策略：
+- 技术文档：从源码实测 API、路径与行为，用 write_artifact 产出结构化文档。
+- 内容文案：围绕目标读者组织结构，用 write_artifact 产出可分享的内容。
+- 审查报告：用 read_artifact 读取被审查产物，用 write_artifact 产出审查意见；不修改被审查对象。
+- 网页原型：用 write_artifact 创建 web_app，完成后用 deploy_artifact 生成预览链接。
 
-工作原则：
-1. 先判断需要什么上下文；用 fs_list/fs_glob 定位组件与样式文件，用 fs_read 读取现有实现，用 fs_grep 搜索样式或组件引用；用户提到已有产物时用 read_artifact。
-2. 多步骤任务先给自己形成简短计划，但不要把固定流程强加给简单问题。
-3. 工具调用要少而准确；每次调用都应服务于当前目标。
-4. 创建可预览的网页/原型用 write_artifact，完成后调用 deploy_artifact 生成预览；修改前端源码用 fs_edit 做精确替换或 fs_write 新建组件。
-5. 改动前先读目标文件确认当前内容；遵循组件化、响应式与可访问性（a11y）原则；所有操作只在当前 workspace 范围内。
-6. 最终回复保持简洁，说明改了哪些文件或产出了什么、预览链接在哪里、还剩什么需要用户决策。"""
+行为约束：
+- 引用源码或产物时写明文件路径、行号范围或 artifactId，不要凭记忆描述。
+- 审查场景下 bash 仅用于运行只读检查命令（lint/typecheck/test），不修改被审查的代码或产物。
+- 所有描述必须来自实测，不得臆造 API、路径或行为。
 
-_PROMPT_RESEARCHER = """你是一名调研分析师。你的任务是理解用户的调研目标，使用已启用的工具联网搜索、交叉验证，并把结构化调研报告清晰交付给用户。
-
-工作原则：
-1. 先判断需要什么上下文；用 web_search 搜索公网获取实时信息，用户给参考资料时用 read_attachment；本角色不直接读 workspace 源码。
-2. 多步骤任务先给自己形成简短计划，但不要把固定流程强加给简单问题。
-3. 工具调用要少而准确；每次调用都应服务于当前目标。
-4. 调研结论优先用 write_artifact 产出结构化报告；多源交叉验证，标注来源与时效性，区分事实与推测。
-5. 本角色不使用 fs_*/bash 等本地代码工具；所有信息来自 web_search 与用户提供的附件。
-6. 最终回复保持简洁，说明调研了什么、关键结论、信息来源与时效、还剩什么需要用户确认。"""
-
-_PROMPT_DATA_ANALYSIS = """你是一名数据分析师。你的任务是理解用户的数据分析目标，使用已启用的工具清洗数据、运行处理脚本、生成图表，并把分析结论清晰交付给用户。
-
-工作原则：
-1. 先判断需要什么上下文；用 read_attachment 读取用户上传的 csv/json 数据，用 fs_list/fs_glob 定位工作区数据文件，用 fs_read 读取已有脚本。
-2. 多步骤任务先给自己形成简短计划，但不要把固定流程强加给简单问题。
-3. 工具调用要少而准确；每次调用都应服务于当前目标。
-4. 数据清洗与处理脚本用 fs_write 创建，处理结果与图表用 write_artifact 产出结构化产物；所有结论必须基于实际数据，不得臆造。
-5. 用 bash 运行处理脚本验证结果；数据清洗优先于分析；标注样本量与局限性；所有操作只在当前 workspace 范围内。
-6. 最终回复保持简洁，说明分析了什么、关键结论、数据来源与局限、还剩什么需要用户决策。"""
+质量标准：
+- 产物结构面向读者：目录 / 摘要 / 正文 / 附录清晰分层。
+- 网页原型符合组件化、响应式与可访问性（a11y）原则。
+- 最终回复说明产出了什么、预览链接在哪里、还剩什么需要用户决策。"""
 
 _AGENT_TOOL_PRESETS: dict[str, dict[str, Any]] = {
-    "all-purpose": {
-        "label": "全栈通用",
-        # _ALL_PURPOSE_TOOLS already excludes web_search (opt-in, consumes Tavily credits).
-        "tools": list(_ALL_PURPOSE_TOOLS),
-        "systemPromptTemplate": _PROMPT_ALL_PURPOSE,
-    },
-    "local-code": {
-        "label": "本地代码",
-        "tools": [
-            "deploy_workspace",
-            "read_artifact",
-            "read_attachment",
-            "ask_user",
-            "fs_list",
-            "fs_read",
-            "fs_write",
-            "fs_edit",
-            "fs_grep",
-            "fs_glob",
-            "bash",
-        ],
-        "systemPromptTemplate": _PROMPT_LOCAL_CODE,
-    },
-    "artifact": {
-        "label": "产物交付",
-        "tools": [
-            "write_artifact",
-            "deploy_artifact",
-            "deploy_workspace",
-            "read_artifact",
-            "read_attachment",
-            "ask_user",
-        ],
-        "systemPromptTemplate": _PROMPT_ARTIFACT,
-    },
-    "review": {
-        "label": "审查验证",
-        "tools": ["read_artifact", "read_attachment", "ask_user", "fs_list", "fs_read", "bash"],
-        "systemPromptTemplate": _PROMPT_REVIEW,
-    },
-    "tech-writing": {
-        "label": "技术写作",
-        "tools": [
-            "write_artifact",
-            "read_artifact",
-            "read_attachment",
-            "ask_user",
-            "fs_read",
-            "fs_list",
-            "fs_glob",
-            "fs_grep",
-        ],
-        "systemPromptTemplate": _PROMPT_TECH_WRITING,
-    },
-    "testing-qa": {
-        "label": "测试 QA",
-        "tools": [
-            "bash",
-            "fs_read",
-            "fs_list",
-            "fs_glob",
-            "fs_grep",
-            "fs_write",
-            "read_artifact",
-            "ask_user",
-            "write_artifact",
-        ],
-        "systemPromptTemplate": _PROMPT_TESTING_QA,
-    },
-    "frontend-design": {
-        "label": "前端/设计",
-        "tools": [
-            "write_artifact",
-            "deploy_artifact",
-            "read_artifact",
-            "ask_user",
-            "fs_read",
-            "fs_list",
-            "fs_glob",
-            "fs_grep",
-            "fs_write",
-            "fs_edit",
-        ],
-        "systemPromptTemplate": _PROMPT_FRONTEND_DESIGN,
+    "coder": {
+        "label": "程序员",
+        "tools": ["deploy_workspace", "read_artifact"],
+        "systemPromptTemplate": _PROMPT_CODER,
     },
     "researcher": {
         "label": "调研员",
-        "tools": [
-            "web_search",
-            "ask_user",
-            "read_attachment",
-            "write_artifact",
-            "read_artifact",
-        ],
+        "tools": ["write_artifact", "read_artifact", "web_search"],
         "systemPromptTemplate": _PROMPT_RESEARCHER,
     },
-    "data-analysis": {
-        "label": "数据分析",
-        "tools": [
-            "bash",
-            "fs_read",
-            "fs_write",
-            "fs_list",
-            "fs_glob",
-            "read_attachment",
-            "write_artifact",
-            "ask_user",
-        ],
-        "systemPromptTemplate": _PROMPT_DATA_ANALYSIS,
+    "orchestrator": {
+        "label": "协调者",
+        "tools": ["write_artifact", "read_artifact"],
+        "systemPromptTemplate": _PROMPT_ORCHESTRATOR,
+    },
+    "writer": {
+        "label": "写作",
+        "tools": ["write_artifact", "deploy_artifact", "read_artifact"],
+        "systemPromptTemplate": _PROMPT_WRITER,
     },
 }
 
@@ -732,6 +616,13 @@ _AGENT_TOOL_META: dict[str, dict[str, str]] = {
         "label": "读取产物",
         "desc": "查看会话中已有产物的完整内容，便于在其基础上继续改",
     },
+    "web_search": {
+        "label": "联网搜索",
+        "desc": "用 Tavily 搜索公网获取实时信息；调用会消耗 Tavily 额度",
+    },
+}
+
+_BASELINE_AGENT_TOOL_META: dict[str, dict[str, str]] = {
     "read_attachment": {"label": "读取附件", "desc": "读取用户上传的文本 / 文件附件内容"},
     "ask_user": {
         "label": "结构化提问",
@@ -744,10 +635,6 @@ _AGENT_TOOL_META: dict[str, dict[str, str]] = {
     "fs_grep": {"label": "搜索文本", "desc": "用正则在 workspace 文件中搜索，返回结构化匹配结果；跳过二进制和依赖目录"},
     "fs_glob": {"label": "查找文件", "desc": "用 glob 模式递归查找文件（如 **/*.tsx），返回路径和大小"},
     "bash": {"label": "执行命令", "desc": "在工作区内运行命令行；受命令黑名单与沙箱目录约束"},
-    "web_search": {
-        "label": "联网搜索",
-        "desc": "用 Tavily 搜索公网获取实时信息；调用会消耗 Tavily 额度",
-    },
 }
 
 
@@ -784,6 +671,11 @@ def _clean_name(text: str) -> str:
 
 
 def _normalize_agent_tool_names(tool_names: list[str]) -> list[str]:
+    """Filter persisted toolNames to only the 5 UI-selectable tools.
+
+    Baseline tools are not filtered here — they are merged at runtime by
+    agent_runner.py.
+    """
     allowed = set(_AVAILABLE_AGENT_TOOLS)
     seen: set[str] = set()
     out: list[str] = []
@@ -804,40 +696,27 @@ def _build_tool_permission_summaries(tool_names: list[str]) -> list[dict[str, st
 
 def _infer_agent_tool_preset(intent: str, follow_up: str) -> str:
     text = f"{intent}\n{follow_up}".lower()
-    wants_to_write = bool(
-        re.search(r"写|实现|开发|生成|创建|搭建|部署|build|implement|create|write|ship", text)
-        or re.search(r"修改(?!建议)", text)
-    )
-    wants_review = bool(
-        re.search(r"审查|评审|检查|验证|验收|风险|review|audit|inspect|validate|verify", text)
-    )
-    if wants_review and not wants_to_write:
-        return "review"
-    # Specific roles — checked before general roles to avoid overlap
-    # (e.g. "测试" should match testing-qa, not local-code).
-    if re.search(r"调研|联网搜索|搜索公网|market.?research|竞品|research|文献综述", text):
+    # Specific roles — checked before coder to avoid overlap
+    # (e.g. "调研" should match researcher, not coder).
+    if re.search(r"调研|联网搜索|搜索公网|market.?research|竞品|research|文献综述|行业分析", text):
         return "researcher"
-    if re.search(r"数据分析|数据清洗|数据可视化|统计|csv|excel|data.?analy|数据处理", text):
-        return "data-analysis"
-    if re.search(r"技术文档|api文档|写文档|tech.?writ|documentation|文档工程师", text):
-        return "tech-writing"
-    if re.search(r"测试|qa|用例|断言|test|回归|覆盖率", text):
-        return "testing-qa"
-    if re.search(r"前端|ui设计|界面|样式|css|react|vue|组件|frontend|web.?design|交互设计", text):
-        return "frontend-design"
+    if re.search(r"协调|派发|项目管理|拆分任务|orchestrat|coordinat|项目经理|群聊", text):
+        return "orchestrator"
     if re.search(
-        r"代码|源码|仓库|本地|文件|命令|终端|测试|修复|重构|调试|"
-        r"workspace|repo|repository|code|cli|bash|test|lint|debug|refactor",
+        r"文档|文案|报告|审查|评审|原型|网页|ppt|幻灯片|演示|"
+        r"tech.?writ|documentation|review|prototype|presentation|slides",
         text,
     ):
-        return "local-code"
+        return "writer"
+    # coder 关键词覆盖最广，放最后
     if re.search(
-        r"产物|网页|页面|原型|文档|报告|幻灯片|演示|图示|图表|设计稿|"
-        r"ppt|slides|presentation|website|document|diagram|mermaid|prototype",
+        r"代码|实现|开发|bug|重构|测试|前端|后端|源码|仓库|本地|文件|命令|终端|"
+        r"修复|调试|workspace|repo|code|implement|build|ship|cli|bash|"
+        r"test|lint|debug|refactor|frontend|backend",
         text,
     ):
-        return "artifact"
-    return "all-purpose"
+        return "coder"
+    return "coder"
 
 
 def _infer_agent_name(text: str, preset_id: str) -> str:
@@ -851,38 +730,29 @@ def _infer_agent_name(text: str, preset_id: str) -> str:
 
     lower = text.lower()
     if re.search(r"ppt|幻灯片|演示|presentation|slides", lower):
-        return "PPT 设计师"
+        return "PPT 写作助手"
     if re.search(r"图示|图表|流程图|mermaid|diagram", lower):
-        return "图示架构师"
+        return "图示写作助手"
     if re.search(r"文档|报告|document|report", lower):
         return "文档写作助手"
     if re.search(r"网页|页面|原型|website|prototype|landing", lower):
-        return "网页原型助手"
+        return "网页写作助手"
 
     return {
-        "local-code": "代码工程师",
-        "artifact": "产物设计师",
-        "review": "审查验证助手",
-        "all-purpose": "专属助手",
-        "tech-writing": "技术文档工程师",
-        "testing-qa": "测试工程师",
-        "frontend-design": "前端工程师",
+        "coder": "代码工程师",
         "researcher": "调研分析师",
-        "data-analysis": "数据分析师",
+        "orchestrator": "任务协调者",
+        "writer": "写作工程师",
     }[preset_id]
 
 
 def _infer_description(text: str, preset_id: str) -> str:
     target = _truncate(text, 72)
     prefix = {
-        "local-code": "围绕本地代码与命令行任务提供实现、修改和验证支持",
-        "artifact": "围绕网页、文档、PPT 等产物提供规划、生成和迭代支持",
-        "review": "围绕已有产物或代码提供审查、验证和风险发现",
-        "tech-writing": "围绕技术文档采集与结构化文档交付提供支持",
-        "testing-qa": "围绕测试用例编写、运行验证与回归定位提供支持",
-        "frontend-design": "围绕前端 UI 产物与源码修改提供设计和实现支持",
-        "researcher": "围绕联网搜索与交叉验证提供结构化调研报告",
-        "data-analysis": "围绕数据清洗、处理脚本与分析结论提供支持",
+        "coder": "围绕本地代码修改、命令执行与验证结果提供实现支持",
+        "researcher": "围绕联网搜索、交叉验证与调研报告提供决策支持",
+        "orchestrator": "围绕任务拆解、子 Agent 派发与结果聚合提供协调支持",
+        "writer": "围绕技术文档、内容文案、审查报告与网页原型提供写作支持",
     }.get(preset_id, "围绕用户目标提供规划、执行和交付支持")
     return _truncate(f"{prefix}：{target}", 280)
 
@@ -890,14 +760,10 @@ def _infer_description(text: str, preset_id: str) -> str:
 def _infer_capabilities(text: str, preset_id: str) -> list[str]:
     lower = text.lower()
     capabilities = {
-        "local-code": ["代码实现", "本地验证", "命令行"],
-        "artifact": ["产物交付", "内容生成", "原型设计"],
-        "review": ["审查验证", "风险发现", "改进建议"],
-        "tech-writing": ["文档交付", "源码采集", "结构化写作"],
-        "testing-qa": ["测试编写", "运行验证", "回归定位"],
-        "frontend-design": ["UI 设计", "前端实现", "产物交付"],
+        "coder": ["代码实现", "本地验证", "命令行"],
         "researcher": ["联网搜索", "交叉验证", "调研报告"],
-        "data-analysis": ["数据清洗", "统计分析", "图表生成"],
+        "orchestrator": ["任务拆解", "子 Agent 派发", "结果聚合"],
+        "writer": ["文档交付", "内容创作", "产物交付"],
     }.get(preset_id, ["需求澄清", "任务执行", "交付自检"])
     capabilities = list(capabilities)
 
@@ -922,11 +788,15 @@ def _build_system_prompt(
     intent: str,
     follow_up: str,
     preset_label: str,
-    permission_summaries: list[dict[str, str]],
+    permission_summaries: list[dict[str, str]] | None = None,
 ) -> str:
-    permission_line = "、".join(
-        f"{s['label']}({s['toolName']})" for s in permission_summaries
-    )
+    """Build a generic system prompt aligned with the 4-role template style.
+
+    NOTE: This function is currently unused — ``build_heuristic_agent_config_draft``
+    uses the preset's ``systemPromptTemplate`` directly. Kept for future use
+    and style alignment. Does NOT list tool permissions (baseline tools are
+    always-on and don't need to be enumerated).
+    """
     lines = [
         f"你是 {name}。",
         "",
@@ -939,7 +809,7 @@ def _build_system_prompt(
         "- 执行前简要说明计划，执行中保持结果可检查，交付前做自检。",
         "- 涉及文件写入、命令执行或部署时，明确说明影响范围和结果。",
         "",
-        f"默认工具策略：{preset_label}。可用权限包括：{permission_line or 'SDK 内置工具集'}。",
+        f"默认角色预设：{preset_label}。所有 custom agent 自带基础工具（fs_read / fs_write / fs_edit / bash 等），可选工具按预设配置。",
         "不要尝试使用未授权工具；普通自建 Agent 不承担 Orchestrator 的任务拆分职责。",
     ]
     return "\n".join(line for line in lines if line != "")  # noqa: PLC1901
