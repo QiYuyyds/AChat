@@ -126,7 +126,10 @@ class ClearConversationHistoryResult:
 
 # ─── Conversion helpers ─────────────────────────────────────────────────────
 def _conversation_response(
-    conv: Conversation, ws_mode: str, ws_bound_path: str | None
+    conv: Conversation,
+    ws_mode: str,
+    ws_bound_path: str | None,
+    ws_env_preference: str | None = None,
 ) -> ConversationResponse:
     return ConversationResponse(
         id=conv.id,
@@ -145,6 +148,7 @@ def _conversation_response(
         updated_at=conv.updated_at,
         workspace_mode=ws_mode,
         workspace_bound_path=ws_bound_path,
+        workspace_env_preference=ws_env_preference,
     )
 
 
@@ -165,17 +169,19 @@ def _message_record(msg: Message) -> MessageRecord:
     )
 
 
-async def _ws_meta(db, conversation_id: str) -> tuple[str, str | None]:
-    """Return (mode, bound_path) for a conversation's workspace (sandbox default)."""
+async def _ws_meta(
+    db, conversation_id: str
+) -> tuple[str, str | None, str | None]:
+    """Return (mode, bound_path, env_preference) for a conversation's workspace."""
     result = await db.execute(
-        select(Workspace.mode, Workspace.bound_path).where(
+        select(Workspace.mode, Workspace.bound_path, Workspace.env_preference).where(
             Workspace.conversation_id == conversation_id
         )
     )
     row = result.first()
     if row is None:
-        return ("sandbox", None)
-    return (row[0], row[1])
+        return ("sandbox", None, None)
+    return (row[0], row[1], row[2])
 
 
 def _default_title_for(names: list[str]) -> str:
@@ -420,6 +426,15 @@ async def create_conversation(
             download_approved=True,
         )
 
+        # Fire-and-forget project env detection: if the bound project is
+        # Python without a .venv, emit a WorkspaceEnvHintEvent so the frontend
+        # can prompt the user. Must never block conversation creation.
+        from app.services.workspace_env_service import detect_and_hint
+
+        asyncio.create_task(
+            detect_and_hint(conversation_id, user_id)
+        )
+
     return ConversationResponse(
         id=conversation_id,
         title=resolved_title,
@@ -436,6 +451,7 @@ async def create_conversation(
         updated_at=now,
         workspace_mode=workspace_mode,
         workspace_bound_path=resolved_bound_path,
+        workspace_env_preference=None,
     )
 
 
@@ -455,24 +471,27 @@ async def list_conversations(user_id: str | None = None) -> list[ConversationRes
 
         conv_ids = [c.id for c in convs]
         ws_result = await db.execute(
-            select(Workspace.conversation_id, Workspace.mode, Workspace.bound_path).where(
-                Workspace.conversation_id.in_(conv_ids)
-            )
+            select(
+                Workspace.conversation_id,
+                Workspace.mode,
+                Workspace.bound_path,
+                Workspace.env_preference,
+            ).where(Workspace.conversation_id.in_(conv_ids))
         )
-        ws_map = {row[0]: (row[1], row[2]) for row in ws_result.all()}
+        ws_map = {row[0]: (row[1], row[2], row[3]) for row in ws_result.all()}
 
     out: list[ConversationResponse] = []
     for c in convs:
-        mode, bound_path = ws_map.get(c.id, ("sandbox", None))
-        out.append(_conversation_response(c, mode, bound_path))
+        mode, bound_path, env_pref = ws_map.get(c.id, ("sandbox", None, None))
+        out.append(_conversation_response(c, mode, bound_path, env_pref))
     return out
 
 
 async def get_conversation(conversation_id: str) -> ConversationResponse:
     async with get_db() as db:
         conv = await _require_conversation(db, conversation_id)
-        mode, bound_path = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, mode, bound_path)
+        mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
+        return _conversation_response(conv, mode, bound_path, env_pref)
 
 
 # ─── Pin / archive / rename / approval-mode ─────────────────────────────────
@@ -480,8 +499,8 @@ async def toggle_pin_conversation(conversation_id: str) -> ConversationResponse:
     async with get_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv.pinned_at = None if conv.pinned_at else now_ms()
-        mode, bound_path = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, mode, bound_path)
+        mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
+        return _conversation_response(conv, mode, bound_path, env_pref)
 
 
 async def toggle_archive_conversation(conversation_id: str) -> ConversationResponse:
@@ -490,8 +509,8 @@ async def toggle_archive_conversation(conversation_id: str) -> ConversationRespo
     async with get_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv.archived = not conv.archived
-        mode, bound_path = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, mode, bound_path)
+        mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
+        return _conversation_response(conv, mode, bound_path, env_pref)
 
 
 async def rename_conversation(conversation_id: str, title: str) -> ConversationResponse:
@@ -505,8 +524,8 @@ async def rename_conversation(conversation_id: str, title: str) -> ConversationR
         conv = await _require_conversation(db, conversation_id)
         conv.title = trimmed
         conv.updated_at = now_ms()
-        mode, bound_path = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, mode, bound_path)
+        mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
+        return _conversation_response(conv, mode, bound_path, env_pref)
 
 
 async def update_conversation_summary(
@@ -524,8 +543,8 @@ async def update_conversation_summary(
         conv = await _require_conversation(db, conversation_id)
         conv.summary = trimmed
         conv.updated_at = now_ms()
-        mode, bound_path = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, mode, bound_path)
+        mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
+        return _conversation_response(conv, mode, bound_path, env_pref)
 
 
 async def set_conversation_approval_mode(
@@ -535,8 +554,8 @@ async def set_conversation_approval_mode(
         conv = await _require_conversation(db, conversation_id)
         conv.fs_write_approval_mode = mode
         conv.updated_at = now_ms()
-        ws_mode, bound_path = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, ws_mode, bound_path)
+        ws_mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
+        return _conversation_response(conv, ws_mode, bound_path, env_pref)
 
 
 async def set_rag_mode(
@@ -547,8 +566,8 @@ async def set_rag_mode(
         conv = await _require_conversation(db, conversation_id)
         conv.rag_enabled = enabled
         conv.updated_at = now_ms()
-        ws_mode, bound_path = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, ws_mode, bound_path)
+        ws_mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
+        return _conversation_response(conv, ws_mode, bound_path, env_pref)
 
 
 async def set_dispatch_mode(
@@ -559,8 +578,8 @@ async def set_dispatch_mode(
         conv = await _require_conversation(db, conversation_id)
         conv.dispatch_mode = dispatch_mode
         conv.updated_at = now_ms()
-        ws_mode, bound_path = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, ws_mode, bound_path)
+        ws_mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
+        return _conversation_response(conv, ws_mode, bound_path, env_pref)
 
 
 # ─── Bookmark / pin a message ───────────────────────────────────────────────
@@ -622,8 +641,8 @@ async def add_agents_to_conversation(
         conv.agent_ids_list = merged
         conv.mode = "group" if len(merged) >= 2 else "single"
         conv.updated_at = now_ms()
-        mode, bound_path = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, mode, bound_path)
+        mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
+        return _conversation_response(conv, mode, bound_path, env_pref)
 
 
 # ─── List messages ──────────────────────────────────────────────────────────
@@ -731,8 +750,8 @@ async def clear_conversation_history(
         conv.pinned_message_ids_list = []
         conv.bookmarked_message_ids_list = []
         conv.updated_at = now
-        mode, bound_path = await _ws_meta(db, conversation_id)
-        response = _conversation_response(conv, mode, bound_path)
+        mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
+        response = _conversation_response(conv, mode, bound_path, env_pref)
 
     clear_claude_code_session(conversation_id)
     clear_codex_session(conversation_id)

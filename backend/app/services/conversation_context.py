@@ -15,6 +15,9 @@ context assembly while preserving backward compatibility for existing callers.
 
 from __future__ import annotations
 
+import json
+import logging
+from collections import Counter
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -23,6 +26,13 @@ from sqlalchemy import select
 from app.db.engine import get_db
 from app.db.models import Agent, Artifact, Conversation, Message
 from app.infra.cache_helpers import get_agent_cached
+from app.services.compact_markers import CompactMarkerBuilder
+from app.services.compact_pipeline import (
+    FOLD_TURN_THRESHOLD,
+    KEEP_RECENT_TURNS,
+    LEGACY_RECENT_KEEP,
+    summarize_tool_result_full,
+)
 from app.services.context_compaction_service import (
     get_latest_context_summary,
     render_conversation_summary_block,
@@ -32,15 +42,16 @@ from app.services.prompt_assembler import (
     Query,
     RuntimeContext,
 )
-from app.utils.model_registry import estimate_tokens
+from app.services.transcript_renderer import estimate_dict_message_tokens
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_TURNS = 20
 
-# O1: context compaction thresholds
-TOOL_RESULT_PRUNE_THRESHOLD = 2000
-TOOL_RESULT_RECENT_TURNS = 3
-FOLD_THRESHOLD = 30
-FOLD_KEEP_RECENT = 20
+# Cross-run replay: cap tool_result text to avoid blowing the history budget.
+# prune_old_tool_results already replaces large results with a marker, but this
+# is a second safety net for results that slip through (e.g. recent turns).
+TOOL_RESULT_REPLAY_CHAR_CAP = 4000
 
 # OpenAI ChatCompletionMessageParam, as a loose dict (kept camelCase-free; pure shape).
 ChatMessage = dict
@@ -71,80 +82,234 @@ class _Item:
 # ─── O1: context compaction layers (read-path, no DB writes) ────────────────
 
 
-def prune_old_tool_results(
-    messages: list[Message],
-    model: str | None = None,
-    recent_turns: int = TOOL_RESULT_RECENT_TURNS,
-    prune_threshold: int = TOOL_RESULT_PRUNE_THRESHOLD,
-) -> list[Message]:
-    """Replace large old tool_result parts with a truncation marker.
+def _extract_tool_result_text(part: dict) -> str:
+    """Extract a readable string from a tool_result part's 'result' field.
 
-    Messages older than *recent_turns* from the end are scanned for
-    ``tool_result`` parts whose estimated token count exceeds *prune_threshold*.
-    Matching parts are replaced with a short text marker so the LLM knows the
-    result existed but doesn't waste tokens on stale verbose output.
+    The persisted shape is ``{"type": "tool_result", "result": dict|list|str|None, ...}``
+    (see ``persist_event`` in ``agent_runner.py``). Earlier code read ``content``
+    which never exists on tool_result parts — this fixes the field mismatch.
     """
-    if len(messages) <= recent_turns:
+    result = part.get("result", "")
+    if result is None:
+        return ""
+    if isinstance(result, str):
+        return result
+    try:
+        return json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(result)
+
+
+def _find_turn_boundaries_messages(messages: list) -> list[tuple[int, int]]:
+    """Identify complete ReAct turns in a list of DB Message objects.
+
+    A turn = one ``role=="agent"`` Message whose ``parts_list`` contains a
+    ``tool_use`` part. In the DB, ``tool_use`` and ``tool_result`` parts are
+    typically in the same Message (written at ``message.end``), so the turn's
+    start and end index are the same. Messages without tool_use don't constitute
+    a turn. Returns ``[(start_index, end_index), ...]``.
+    """
+    boundaries: list[tuple[int, int]] = []
+    for i, msg in enumerate(messages):
+        if getattr(msg, "role", None) != "agent":
+            continue
+        parts = msg.parts_list or []
+        if any(p.get("type") == "tool_use" for p in parts):
+            boundaries.append((i, i))
+    return boundaries
+
+
+def _keep_recent_turns_messages(
+    messages: list,
+    k: int = KEEP_RECENT_TURNS,
+) -> tuple[list, list]:
+    """Split messages into (recent, old) on turn boundaries.
+
+    ``recent`` contains everything from the start of the k-th-from-last turn
+    onwards (inclusive of user messages between turns). ``old`` contains
+    everything before. When there are ``<= k`` complete turns, returns
+    ``(messages, [])``.
+    """
+    boundaries = _find_turn_boundaries_messages(messages)
+    if len(boundaries) <= k:
+        return list(messages), []
+    keep_from = boundaries[-k][0]
+    return list(messages[keep_from:]), list(messages[:keep_from])
+
+
+def _build_tool_use_map(parts: list[dict]) -> dict[str, tuple[str, dict]]:
+    """Build a ``callId -> (toolName, args)`` map from tool_use parts."""
+    mapping: dict[str, tuple[str, dict]] = {}
+    for p in parts:
+        if p.get("type") != "tool_use":
+            continue
+        call_id = p.get("callId", "")
+        tool_name = p.get("toolName", "")
+        args = p.get("args") or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (TypeError, ValueError):
+                args = {}
+        mapping[call_id] = (tool_name, args)
+    return mapping
+
+
+def _should_preserve_tool_result(tool_name: str, args: dict) -> bool:
+    """Check if a tool_result should be preserved verbatim (not pruned)."""
+    return (
+        tool_name == "code_explore"
+        or (tool_name == "fs_read" and args.get("mode") in ("outline", "head"))
+    )
+
+
+def prune_old_tool_results(
+    messages: list,
+    keep_recent_turns: int = KEEP_RECENT_TURNS,
+) -> list:
+    """Replace old tool_result parts with structured, recoverable markers.
+
+    Uses ``_keep_recent_turns_messages`` to find the cutoff (last
+    ``keep_recent_turns`` complete turns). For each ``tool_result`` part in the
+    old segment, dispatches to ``summarize_tool_result_full(stage=1)`` and
+    replaces the part with a ``CompactMarkerBuilder.build_tool_result_marker``.
+    ``code_explore`` and ``fs_read(mode=outline/head)`` results are preserved
+    verbatim.
+    """
+    recent, old = _keep_recent_turns_messages(messages, k=keep_recent_turns)
+    if not old:
         return messages
 
-    cutoff = len(messages) - recent_turns
-    for msg in messages[:cutoff]:
+    for msg in old:
         parts = msg.parts_list
+        tool_use_map = _build_tool_use_map(parts)
         modified = False
         for j, p in enumerate(parts):
             if p.get("type") != "tool_result":
                 continue
-            content = p.get("content", "")
-            if not isinstance(content, str):
-                content = str(content)
-            if estimate_tokens(content) > prune_threshold:
-                parts[j] = {
-                    "type": "text",
-                    "content": f"[tool_result 已裁剪, 详见 message_id={msg.id}]",
-                }
-                modified = True
+            call_id = p.get("callId", "")
+            tool_name, args = tool_use_map.get(call_id, ("", {}))
+            if _should_preserve_tool_result(tool_name, args):
+                continue
+            content = _extract_tool_result_text(p)
+            _new_content, summary, recover = summarize_tool_result_full(
+                tool_name, args, content, stage=1,
+            )
+            marker = CompactMarkerBuilder.build_tool_result_marker(
+                stage=1,
+                tool_name=tool_name or "unknown",
+                args=args,
+                summary=summary,
+                recover_hint=recover,
+            )
+            parts[j] = {"type": "text", "content": marker}
+            modified = True
         if modified:
             msg.parts_list = parts
     return messages
 
 
+def _collect_tool_names_in_span_messages(
+    messages: list, start: int, end: int,
+) -> Counter[str]:
+    """Count tool names invoked by agent messages in [start, end]."""
+    counts: Counter[str] = Counter()
+    for idx in range(start, end + 1):
+        msg = messages[idx]
+        if getattr(msg, "role", None) != "agent":
+            continue
+        for p in msg.parts_list or []:
+            if p.get("type") == "tool_use":
+                name = p.get("toolName", "")
+                if name:
+                    counts[name] += 1
+    return counts
+
+
+def _first_user_head_messages(messages: list, start: int, end: int) -> str | None:
+    for idx in range(start, end + 1):
+        msg = messages[idx]
+        if getattr(msg, "role", None) != "user":
+            continue
+        for p in msg.parts_list or []:
+            if p.get("type") == "text" and p.get("content", "").strip():
+                return p["content"].strip()[:80]
+    return None
+
+
+def _last_assistant_text_head_messages(
+    messages: list, start: int, end: int,
+) -> str | None:
+    for idx in range(end, start - 1, -1):
+        msg = messages[idx]
+        if getattr(msg, "role", None) != "agent":
+            continue
+        for p in msg.parts_list or []:
+            if p.get("type") == "text" and p.get("content", "").strip():
+                return p["content"].strip()[:80]
+    return None
+
+
 def fold_old_messages(
-    messages: list[Message],
-    fold_threshold: int = FOLD_THRESHOLD,
-    keep_recent: int = FOLD_KEEP_RECENT,
+    messages: list,
     pinned_ids: set[str] | None = None,
-) -> list[Message]:
-    """Fold old messages into a single marker when count exceeds threshold.
+) -> list:
+    """Fold old messages into a single structured marker when turns exceed threshold.
 
-    When the total message count exceeds *fold_threshold*, the oldest messages
-    (beyond the most recent *keep_recent*) are replaced with a single system
-    marker ``[已折叠 N 条消息 (时间 range)]``. Pinned messages are never folded.
+    Uses ``_find_turn_boundaries_messages`` to count complete turns. When the
+    turn count exceeds ``FOLD_TURN_THRESHOLD``, older turns (beyond the most
+    recent ``KEEP_RECENT_TURNS``) are replaced with a single fold marker built
+    by ``CompactMarkerBuilder.build_fold_marker``. Pinned messages are never
+    folded. If no complete turn is found, falls back to ``LEGACY_RECENT_KEEP``
+    (count-based) with a warning.
     """
-    if len(messages) <= fold_threshold:
-        return messages
-
     pinned_set = pinned_ids or set()
-    recent = messages[-keep_recent:]
-    old = messages[:-keep_recent]
+    boundaries = _find_turn_boundaries_messages(messages)
+
+    if not boundaries:
+        if len(messages) <= LEGACY_RECENT_KEEP:
+            return messages
+        logger.warning(
+            "[conversation-context] fold: no turn boundaries found, "
+            "falling back to recent_keep=%d",
+            LEGACY_RECENT_KEEP,
+        )
+        recent = list(messages[-LEGACY_RECENT_KEEP:])
+        old = list(messages[:-LEGACY_RECENT_KEEP])
+    elif len(boundaries) < FOLD_TURN_THRESHOLD:
+        return messages
+    else:
+        recent, old = _keep_recent_turns_messages(messages, k=KEEP_RECENT_TURNS)
+        if not old:
+            return messages
 
     folded = [m for m in old if m.id not in pinned_set]
     kept_from_old = [m for m in old if m.id in pinned_set]
-
     if not folded:
         return messages
 
+    tools_used = _collect_tool_names_in_span_messages(old, 0, len(old) - 1)
+    first_user = _first_user_head_messages(old, 0, len(old) - 1)
+    last_reply = _last_assistant_text_head_messages(old, 0, len(old) - 1)
+
+    folded_turns = len(_find_turn_boundaries_messages(folded))
+    summary = f"已折叠 {len(folded)} 条消息（{folded_turns} 个工具轮次）"
+    fold_marker_text = CompactMarkerBuilder.build_fold_marker(
+        stage=3,
+        turns_folded=folded_turns,
+        tools_used_counts=tools_used,
+        summary=summary,
+        first_user_msg_head=first_user,
+        last_assistant_text_head=last_reply,
+    )
+
     time_start = folded[0].created_at
-    time_end = folded[-1].created_at
-    fold_count = len(folded)
     fold_marker = SimpleNamespace(
-        id=f"folded_{fold_count}",
+        id=f"folded_{len(folded)}",
         created_at=time_start,
         role="user",
         agent_id=None,
-        parts_list=[{
-            "type": "text",
-            "content": f"[已折叠 {fold_count} 条消息 (时间 {time_start} ~ {time_end})]",
-        }],
+        parts_list=[{"type": "text", "content": fold_marker_text}],
     )
     return [*kept_from_old, fold_marker, *recent]
 
@@ -368,14 +533,19 @@ async def _build_history_legacy(
                 msg_id=latest_summary.id,
                 is_pinned=True,
                 serialized=[summary_message],
-                tokens=_estimate_chat_message_tokens(summary_message),
+                tokens=estimate_dict_message_tokens(
+                summary_message, include_reasoning=False
+            ),
             )
         )
     for msg in merged:
         serialized = _serialize_message(msg, agent_id, artifact_titles, agent_names)
         if not serialized:
             continue
-        tokens = sum(_estimate_chat_message_tokens(m) for m in serialized)
+        tokens = sum(
+            estimate_dict_message_tokens(m, include_reasoning=False)
+            for m in serialized
+        )
         items.append(
             _Item(
                 msg_id=msg.id,
@@ -411,29 +581,6 @@ def _extract_message_text(msg: Message) -> str:
         if p.get("type") == "text" and p.get("content"):
             texts.append(p["content"])
     return "\n".join(texts).strip()
-
-
-# ─── token estimation (coarse, 4 chars ≈ 1 token) ───────────────────────────
-
-
-def _estimate_chat_message_tokens(m: ChatMessage) -> int:
-    s = ""
-    content = m.get("content")
-    if isinstance(content, str):
-        s += content
-    elif isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                s += part.get("text", "")
-            # multimodal image_url isn't in Phase A history (spec 13); skip.
-    tool_calls = m.get("tool_calls")
-    if tool_calls:
-        for tc in tool_calls:
-            if tc.get("type") == "function":
-                fn = tc.get("function", {})
-                s += fn.get("name", "") + fn.get("arguments", "")
-    # Each message has role/metadata overhead; add 4 tokens of slack.
-    return estimate_tokens(s) + 4
 
 
 # ─── serialization core ─────────────────────────────────────────────────────
@@ -527,6 +674,7 @@ def _render_other_agent_as_user(
 def _render_agent_public_text(
     parts: list[dict], artifact_titles: dict[str, str]
 ) -> str:
+    tool_use_map = _build_tool_use_map(parts)
     buf: list[str] = []
     for p in parts:
         t = p.get("type")
@@ -534,9 +682,18 @@ def _render_agent_public_text(
             if p.get("content"):
                 buf.append(p["content"])
         elif t == "tool_result":
-            content = p.get("content", "")
-            if content:
-                buf.append(f"[tool_result] {content}")
+            text = _extract_tool_result_text(p)
+            if text:
+                is_error = p.get("isError", False)
+                prefix = "[tool_error]" if is_error else "[tool_result]"
+                call_id = p.get("callId", "")
+                tool_name, args = tool_use_map.get(call_id, ("", {}))
+                if not _should_preserve_tool_result(tool_name, args) and len(text) > TOOL_RESULT_REPLAY_CHAR_CAP:
+                    text = (
+                        text[:TOOL_RESULT_REPLAY_CHAR_CAP]
+                        + f"...[truncated, {len(text)} chars total]"
+                    )
+                buf.append(f"{prefix} {text}")
         elif t == "artifact_ref":
             artifact_id = p.get("artifactId")
             title = artifact_titles.get(artifact_id, "")

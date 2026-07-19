@@ -134,6 +134,40 @@ interface PlanStep {
 
 ---
 
+## Delta 合并语义（Coalescing）
+
+Adapter **可以**在时间窗内合并同 key 的 `part.delta` 事件，减少 SSE 事件量。合并对下游完全透明：`part.delta` 的 schema 不变，`text` 仍是 append 语义，前端 reducer 无需修改。
+
+### 合并规则
+
+- **合并 key**：`(message_id, part_index, delta.type)`。每个 key 有独立的缓冲区和窗口起始时间
+- **默认窗口**：50ms。窗口大小可通过 adapter 构造参数配置
+- **合并行为**：窗口内的多个 delta 的 `text` 字段拼接为一条 `part.delta` 事件
+- **不同 key 独立**：`text.append` 和 `thinking.append` 各自独立合并；不同 `part_index` 各自独立合并
+
+### Flush 触发条件
+
+Adapter **必须**在以下情况 flush 所有 pending 的合并 delta：
+
+1. **窗口超时**：自窗口内第一个 delta 起 50ms 过去
+2. **`part.end`**：同一 part 的 `part.end` 即将发出前，flush 该 key 的 pending delta
+3. **非 delta 事件**：`tool.call` / `tool.result` / `part.start`（新 part）等非 delta 事件即将发出前，flush 所有 pending delta
+4. **turn 结束**：`message.end` 即将发出前，flush 所有 pending delta
+
+Flush 后，合并的 `part.delta` **必须在触发事件之前**发出，保证事件顺序：一个 part 的所有 delta 在其 `part.end` 之前。
+
+### 不合并的事件
+
+- `part.start` / `part.end` / `tool.call` / `tool.result` / `message.start` / `message.end` 等非 delta 事件**不合并**
+- 不同 `delta.type` 的 delta **不互相合并**
+- 不同 `part_index` 的 delta **不互相合并**
+
+### 兼容性
+
+旧客户端（不实现 rAF 批处理）收到合并后的 delta 仍能正确 append——`text` 字段语义不变，只是值更大。新客户端收到未合并的 delta 也能逐条 apply。无 breaking change。
+
+---
+
 ## 事件流场景示例
 
 ### 场景 A：单聊，Agent 回复一段文字 + 一个产物

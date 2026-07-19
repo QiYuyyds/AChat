@@ -181,6 +181,14 @@ export const workspaces = sqliteTable('workspaces', {
   mode: text('mode', { enum: ['sandbox', 'local'] }).notNull().default('sandbox'),
   /** mode='local' 时填，绝对路径；sandbox 时为 null */
   boundPath: text('bound_path'),
+  /**
+   * 用户对 workspace 环境隔离的选择（仅 local 模式有意义）：
+   * - null              未检测 / 未提示
+   * - 'venv_created'    用户已通过提示卡片创建 .venv
+   * - 'skip'            用户选择跳过（不再提示）
+   * - 'system_python'   用户选择使用系统 Python（不再提示 + 抑制 pip advisory）
+   */
+  envPreference: text('env_preference'),
   createdAt: integer('created_at').notNull(),
 })
 
@@ -313,6 +321,7 @@ export type ConversationInsert = typeof conversations.$inferInsert
 export interface ConversationWithMeta extends ConversationRow {
   workspaceMode: 'sandbox' | 'local'
   workspaceBoundPath: string | null
+  workspaceEnvPreference: 'venv_created' | 'skip' | 'system_python' | null
 }
 
 export type MessageRow = typeof messages.$inferSelect

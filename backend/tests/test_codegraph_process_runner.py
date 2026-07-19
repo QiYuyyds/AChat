@@ -175,3 +175,103 @@ def test_status_json_maps_to_bounded_counts() -> None:
     assert parse_status_counts(
         '{"fileCount": 5, "nodeCount": 40, "edgeCount": 12}'
     ) == {"files": 5, "symbols": 40, "relationships": 12}
+
+
+class _FakeRuntimeManager:
+    def __init__(self, runtime) -> None:
+        self._runtime = runtime
+
+    def resolve(self, platform_key=None, *, download_approved: bool):
+        return self._runtime
+
+
+@pytest.mark.asyncio
+async def test_run_index_returns_zero_counts_when_post_index_status_times_out(
+    tmp_path: Path,
+) -> None:
+    from app.code_intelligence.process_runner import CodeGraphCommandRunner, ProcessResult
+
+    runtime = _resolved_runtime(tmp_path)
+    calls: list[str] = []
+
+    class TestRunner(CodeGraphCommandRunner):
+        async def _execute(self, runtime, operation, project_path, **kwargs):
+            calls.append(operation)
+            if operation == "status":
+                raise TimeoutError("simulated timeout")
+            return ProcessResult(returncode=0, stdout="", stderr="")
+
+    runner = TestRunner(_FakeRuntimeManager(runtime))
+    result = await runner.run_index(tmp_path / "project", "init", asyncio.Event())
+
+    assert calls == ["init", "status"]
+    assert result == {"files": 0, "symbols": 0, "relationships": 0}
+
+
+@pytest.mark.asyncio
+async def test_run_index_returns_zero_counts_when_post_index_status_fails(
+    tmp_path: Path,
+) -> None:
+    from app.code_intelligence.process_runner import CodeGraphCommandRunner, ProcessResult
+
+    runtime = _resolved_runtime(tmp_path)
+
+    class TestRunner(CodeGraphCommandRunner):
+        async def _execute(self, runtime, operation, project_path, **kwargs):
+            if operation == "status":
+                raise RuntimeError("CodeGraph status failed with exit code 1")
+            return ProcessResult(returncode=0, stdout="", stderr="")
+
+    runner = TestRunner(_FakeRuntimeManager(runtime))
+    result = await runner.run_index(tmp_path / "project", "init", asyncio.Event())
+
+    assert result == {"files": 0, "symbols": 0, "relationships": 0}
+
+
+@pytest.mark.asyncio
+async def test_run_index_uses_extended_timeout_for_post_index_status(
+    tmp_path: Path,
+) -> None:
+    from app.code_intelligence.process_runner import (
+        POST_INDEX_STATUS_TIMEOUT,
+        CodeGraphCommandRunner,
+        ProcessResult,
+    )
+
+    runtime = _resolved_runtime(tmp_path)
+    status_kwargs: dict = {}
+
+    class TestRunner(CodeGraphCommandRunner):
+        async def _execute(self, runtime, operation, project_path, **kwargs):
+            if operation == "status":
+                status_kwargs.update(kwargs)
+                return ProcessResult(
+                    returncode=0,
+                    stdout='{"fileCount": 1, "nodeCount": 2, "edgeCount": 3}',
+                    stderr="",
+                )
+            return ProcessResult(returncode=0, stdout="", stderr="")
+
+    runner = TestRunner(_FakeRuntimeManager(runtime))
+    await runner.run_index(tmp_path / "project", "init", asyncio.Event())
+
+    assert status_kwargs.get("timeout_override") == POST_INDEX_STATUS_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_is_stale_returns_false_when_status_times_out(
+    tmp_path: Path,
+) -> None:
+    from app.code_intelligence.process_runner import CodeGraphCommandRunner
+
+    runtime = _resolved_runtime(tmp_path)
+
+    class TestRunner(CodeGraphCommandRunner):
+        async def _execute(self, runtime, operation, project_path, **kwargs):
+            assert operation == "status"
+            raise TimeoutError("simulated timeout")
+
+    runner = TestRunner(_FakeRuntimeManager(runtime))
+    result = await runner.is_stale(tmp_path / "project", asyncio.Event())
+
+    assert result is False

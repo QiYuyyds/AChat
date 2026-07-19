@@ -92,7 +92,7 @@ messages {
   role                text NOT NULL     // 'user'|'agent'|'system'
   agent_id            text  FK→agents.id  (no cascade)
   parts               text JSON         // MessagePart[]，见 Spec 03
-  status              text NOT NULL     // 'streaming'|'complete'|'error'|'aborted'
+  status              text NOT NULL     // 'streaming'|'complete'|'error'|'aborted'|'interrupted'
   parent_message_id   text              // 引用回复目标（同会话内自由引用，不建外键以容忍删除）
   mentioned_agent_ids text JSON         // string[]，default '[]'
   run_id              text              // 关联 agent_runs.id（不建外键，agent run 删除不影响消息保留）
@@ -141,6 +141,7 @@ workspaces {
   root_path       text NOT NULL        // 绝对路径，物理位于 .agenthub-data/workspaces/<conversationId>/
   mode            text NOT NULL default 'sandbox'  // 'sandbox' | 'local'
   bound_path      text                 // mode='local' 时填，绝对路径；sandbox 时为 null
+  env_preference  text                 // 'venv_created' | 'skip' | 'system_python' | null；见 specs/workspace-env-isolation
   created_at      int  NOT NULL
 }
 ```

@@ -98,7 +98,7 @@ interface Message {
 
   parts: MessagePart[]          // 详见 Spec 03（含 image_attachment / file_attachment 引用）
 
-  status: 'streaming' | 'complete' | 'error' | 'aborted'
+  status: 'streaming' | 'complete' | 'error' | 'aborted' | 'interrupted'
   parentMessageId?: string      // 回复 / 引用关系
   mentionedAgentIds: string[]   // 用户 @ 提及的 Agent
 
@@ -167,6 +167,15 @@ interface Workspace {
   mode: 'sandbox' | 'local'
   /** mode='local' 时填，绝对路径；sandbox 时为 null */
   boundPath: string | null
+  /**
+   * 用户对 workspace 环境隔离的选择（仅 local 模式有意义）：
+   * - null              未检测 / 未提示
+   * - 'venv_created'    用户已通过提示卡片创建 .venv
+   * - 'skip'            用户选择跳过（不再提示）
+   * - 'system_python'   用户选择使用系统 Python（不再提示 + 抑制 pip advisory）
+   * 见 specs/workspace-env-isolation。
+   */
+  envPreference: 'venv_created' | 'skip' | 'system_python' | null
   createdAt: number
 }
 ```

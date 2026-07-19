@@ -40,6 +40,8 @@ class HookContext:
     run_id: str
     agent_id: str
     conversation_id: str
+    # multi-user: owning user for data isolation (mirrors ToolContext.user_id)
+    user_id: str | None = None
     turn_number: int = 0
     # pre_tool_use / post_tool_use
     tool_name: str | None = None

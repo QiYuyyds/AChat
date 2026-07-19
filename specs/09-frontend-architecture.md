@@ -195,6 +195,38 @@ useEffect(() => {
 - `data:` 是单行 JSON，前端 `JSON.parse(e.data).type` 分发
 - 有一种特殊事件 `{ type: 'connected' }` —— SSE 端在首次握手时发，前端把 `streamConnected` 置 true（onopen 也会置，但 connected 是双保险）
 
+**rAF 批处理**：`StreamProvider.onmessage` 不再直接调用 `applyEvent`，而是把事件推入 `pendingRef` 数组，用 `requestAnimationFrame` 在下一帧统一 flush。同一动画帧内到达的多条 SSE 事件合并为一次 `applyEvent` 循环应用，减少 Zustand `set` 调用次数和 React 渲染轮次。
+
+- `heartbeat` 和 `connected` 元事件**立即处理**，不入队（它们不影响渲染，且需要即时反映连接状态）
+- flush 是同步循环 `applyEvent`，多个事件在一个 rAF 回调内应用——React 18+ automatic batching 自动处理
+- 组件卸载时 cancel rAF 并同步 flush 剩余事件，避免事件丢失
+
+与后端 delta 合并（见 Spec 02 §Delta 合并语义）叠加效果最好：后端把 1000 个 delta 压到 ~100 个，前端 rAF 再把 100 个压到 ~10 帧渲染轮次。
+
+---
+
+## 流式渲染降级（Streaming Fallback）
+
+源文件：`src/components/message-parts.tsx`
+
+在 Agent 流式输出大段内容时，每个 `part.delta` 都会触发对已累积完整内容的渲染。对于 `TextPart`（react-markdown 全量 AST 解析）和 `FileWritePreviewPart`（Shiki 全量语法高亮），这会导致 O(N×S) 的重复全量重算，主线程阻塞数十秒。
+
+**解决方案**：流式期间（`isStreaming=true`）使用轻量 `<pre>` fallback 渲染，流式结束后切回完整渲染。
+
+| Part 类型 | Streaming fallback | Complete 渲染 |
+|---|---|---|
+| `TextPart` | `<pre className="whitespace-pre-wrap break-words font-sans">` 纯文本 | `<Markdown>` (react-markdown + remark-gfm) |
+| `FileWritePreviewPart` | `<pre className="px-3 py-2 font-mono text-xs ...">` 纯文本 + 闪烁光标 | `<CodeBlock>` (Shiki) 或 `<DiffBlock>` |
+| `ThinkingPart` | 已有 streaming 分支（纯 `<div>` 风格），保持不变 | 已有 collapsed/expanded 分支，保持不变 |
+
+**`isStreaming` 判定**：`messageStatus === 'streaming' && partIndex === lastContentPartIndex`（在 `PartList` 中计算，通过 `PartRenderer` 传递）。
+
+**切换时机**：当 `message.status` 从 `streaming` 切到 `complete`（或 `error` / `aborted`），`PartList` 重新计算 `isStreaming=false`，fallback 组件卸载、完整渲染组件挂载。这是单向切换——一旦进入 complete 态，不会再回到 streaming。
+
+**容器样式一致性**：fallback 的容器样式（padding / border / 字体）与 complete 渲染一致，避免切换时布局抖动（layout shift）。`TextPart` fallback 用 `font-sans`（与 markdown 正文一致），`FileWritePreviewPart` 用 `font-mono`（与 CodeBlock 一致）。
+
+**自动滚动**：`FileWritePreviewPart` fallback 复用现有 `scrollRef` + `scrollTop = scrollHeight` 逻辑。`TextPart` 依赖 `MessageList` 的 `scheduleScrollToBottom`（80ms 节流），不引入新的滚动逻辑。
+
 ---
 
 ## 组件树

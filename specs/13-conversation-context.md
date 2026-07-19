@@ -2,6 +2,8 @@
 
 > 多轮对话里 agent 怎么「记住」之前发生的事。这个 spec 定义从 DB messages 表到 LLM 的 `messages` 数组的序列化契约。
 
+> Run 内 in-memory 压缩见 `openspec/specs/run-internal-compaction/spec.md`（五阶段 pipeline，只动 in-memory `messages[]`，不改 DB 持久化内容）。本 spec 的 context compaction 针对的是**跨 run** 的 DB messages → LLM history 序列化压缩，两者边界清晰、互不重叠。
+
 源文件：`src/server/conversation-context.ts`（`buildHistoryFor`），`src/server/adapters/types.ts`（`AdapterInput.history` 字段），`src/server/adapters/custom-agent-adapter.ts`（消费侧）。
 
 ---

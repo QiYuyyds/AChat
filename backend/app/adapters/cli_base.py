@@ -25,6 +25,7 @@ from enum import Enum
 
 from app.adapters.base import AdapterInput, AgentPlatformAdapter
 from app.schemas.events import StreamEvent
+from app.utils.env_isolation import build_tool_env, detect_project_venv
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +316,11 @@ def is_filtered_child_env_key(key: str) -> bool:
     leak into spawned child processes. User-facing config vars
     (CLAUDE_CODE_GIT_BASH_PATH, ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)
     are deliberately preserved.
+
+    This function only covers CLI-tool-internal markers. For AChat runtime
+    isolation (VIRTUAL_ENV, DATABASE_URL, …) see :func:`env_isolation.
+    is_internal_env_key`, which is applied by ``build_child_env`` via
+    ``build_tool_env`` before this filter runs.
     """
     internal_exact = {
         "CLAUDECODE",  # "1" when running inside Claude Code
@@ -338,16 +344,28 @@ def is_filtered_child_env_key(key: str) -> bool:
     return False
 
 
-def build_child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
-    """Build env dict for CLI subprocess.
+def build_child_env(
+    extra: dict[str, str] | None = None,
+    cwd: str | None = None,
+    project_venv_path: str | None = None,
+) -> dict[str, str]:
+    """Build env dict for a CLI subprocess.
 
-    Starts from ``os.environ``, strips internal runtime markers, then
-    merges ``extra`` on top (so per-agent API key overrides win).
+    Pipeline:
+      1. Start from :func:`env_isolation.build_tool_env` so AChat's
+         virtualenv markers, internal secrets, and the AChat venv PATH
+         segment are removed before anything else. ``project_venv_path`` is
+         forwarded so CLI subprocesses also pick up a project-level venv
+         (mirrors the bash tool behaviour).
+      2. Strip CLI-tool-internal markers via :func:`is_filtered_child_env_key`.
+      3. Merge ``extra`` on top so per-agent API key / HOME / USERPROFILE /
+         ``extra_env`` overrides win.
     """
-    env: dict[str, str] = {}
-    for key, value in os.environ.items():
-        if not is_filtered_child_env_key(key):
-            env[key] = value
+    env = build_tool_env(cwd=cwd, project_venv_path=project_venv_path)
+    # Strip CLI-internal markers that env_isolation doesn't know about.
+    for key in list(env.keys()):
+        if is_filtered_child_env_key(key):
+            del env[key]
     if extra:
         env.update(extra)
     return env
@@ -465,7 +483,13 @@ class CLIAdapterBase(AgentPlatformAdapter, ABC):
             exec_path = _resolve_windows_exe(exec_path)
 
         args = self._build_args(input)
-        env = build_child_env({**self._extra_env, **(input.extra_env or {})})
+        env = build_child_env(
+            {**self._extra_env, **(input.extra_env or {})},
+            cwd=input.workspace_path,
+            project_venv_path=detect_project_venv(input.workspace_path)
+            if input.workspace_path
+            else None,
+        )
         cwd = input.workspace_path or None
 
         # Ensure the workspace directory exists before spawning (sandbox dirs

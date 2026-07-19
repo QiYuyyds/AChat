@@ -17,6 +17,7 @@ async def _seed_conversation(
     async with get_db() as db:
         conv = Conversation(
             id=conv_id,
+            user_id="test_user_1",
             title="ctx test",
             mode="group" if len(agent_ids) > 1 else "single",
             archived=False,

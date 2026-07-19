@@ -120,6 +120,33 @@ const SHARED_BANNED: RegExp[] = [
 
 ---
 
+## 环境变量黑名单（env 隔离）
+
+> 见 `specs/workspace-env-isolation`。Agent 子进程（bash / CLI）继承的 env 必须清理 AChat 内部变量和全局污染变量，防止 agent 的 `pip install` 装到 AChat venv、或读取 AChat 内部密钥。
+
+**实现**：`backend/app/utils/env_isolation.py` 的 `build_tool_env()` 在 `os.environ.copy()` 基础上：
+
+1. **删除黑名单 key**（`_BLACKLISTED_KEYS`）：
+   - AChat venv 标记：`VIRTUAL_ENV` / `PYTHONHOME`
+   - AChat 内部密钥：`DATABASE_URL` / `SECRET_KEY` / `JWT_SECRET` / `REDIS_URL`
+   - 基础设施连接：`MILVUS_HOST` / `MILVUS_PORT` / `ES_HOST` / `ES_PORT` / `NEO4J_URI`
+   - 可观测性：`OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_EXPORTER_OTLP_HEADERS`
+   - 全局污染（影响 agent 项目工具链）：`NPM_CONFIG_PREFIX` / `M2_HOME` / `GOPATH` / `GOMODCACHE`
+
+2. **清理 PATH**（`_clean_path()`）：按 `os.pathsep` 分割 PATH，用 `os.path.normcase()` 比对删除 AChat venv 的 `Scripts`（Windows）/ `bin`（POSIX）段，保留其余段。
+
+3. **前置项目 venv**（`_detect_project_venv()`）：检测 `<cwd>/.venv`，存在则把其 `Scripts`/`bin` 前置到 PATH。
+
+**保留的系统变量**：`HOME` / `USERPROFILE` / `SystemRoot` / `LANG` / `PATH`（清理后）/ `TEMP` / `TMP` / `JAVA_HOME` / `ANDROID_SDK_ROOT` 等用户项目需要的变量。
+
+**双平台**：Windows 用 `Scripts`，POSIX 用 `bin`。`_detect_achat_venv()` 通过 `sys.executable` 反推 venv 根目录（非 venv 返回 `None`，降级而非报错）。
+
+**CLI 适配器复用**：`backend/app/adapters/cli_base.py` 的 `build_child_env` 调用 `build_tool_env()` 获取清理后的 env，再叠加 `HOME`/`USERPROFILE` 用户隔离和 `extra_env`。
+
+**修改黑名单时**：必须同步更新本节和 `backend/app/utils/env_isolation.py` 的 `_BLACKLISTED_KEYS`。黑名单是契约，单文档单数据源。
+
+---
+
 ## 工具描述按平台变体
 
 `src/server/tools/bash.ts` 的 `description` 字段从静态字符串改为基于 `currentPlatform()` 生成：

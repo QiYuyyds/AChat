@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from openai import AsyncOpenAI
 from sqlalchemy import select
 
+from app.adapters._delta_flusher import DeltaFlusher
 from app.adapters.base import (
     AdapterAttachment,
     AdapterInput,
@@ -453,6 +454,8 @@ class CustomAdapter(AgentPlatformAdapter):
         # Direction A: track fs_write tool calls for streaming preview
         preview_extractors: dict[int, _ContentExtractor] = {}
         preview_part_indices: dict[int, int] = {}
+        # Delta coalescer: merges same-key part.delta events within a 50ms window
+        flusher = DeltaFlusher()
 
         max_tokens = _compute_max_tokens(model_provider, model_id, messages)
 
@@ -518,6 +521,8 @@ class CustomAdapter(AgentPlatformAdapter):
                 if thinking_part_index < 0:
                     thinking_part_index = next_part_index
                     next_part_index += 1
+                    for ev in flusher.flush():
+                        yield ev
                     yield PartStartEvent(
                         conversation_id=input.conversation_id,
                         timestamp=now_ms(),
@@ -526,19 +531,20 @@ class CustomAdapter(AgentPlatformAdapter):
                         part={"type": "thinking", "content": ""},
                     )
                 reasoning_buffer += reasoning
-                yield PartDeltaEvent(
-                    conversation_id=input.conversation_id,
-                    timestamp=now_ms(),
-                    message_id=message_id,
-                    part_index=thinking_part_index,
-                    delta={"type": "thinking.append", "text": reasoning},
+                merged = flusher.feed(
+                    message_id, thinking_part_index, "thinking.append",
+                    reasoning, input.conversation_id,
                 )
+                if merged is not None:
+                    yield merged
 
             content = getattr(delta, "content", None)
             if isinstance(content, str) and len(content) > 0:
                 if text_part_index < 0:
                     text_part_index = next_part_index
                     next_part_index += 1
+                    for ev in flusher.flush():
+                        yield ev
                     yield PartStartEvent(
                         conversation_id=input.conversation_id,
                         timestamp=now_ms(),
@@ -547,13 +553,12 @@ class CustomAdapter(AgentPlatformAdapter):
                         part={"type": "text", "content": ""},
                     )
                 text_buffer += content
-                yield PartDeltaEvent(
-                    conversation_id=input.conversation_id,
-                    timestamp=now_ms(),
-                    message_id=message_id,
-                    part_index=text_part_index,
-                    delta={"type": "text.append", "text": content},
+                merged = flusher.feed(
+                    message_id, text_part_index, "text.append",
+                    content, input.conversation_id,
                 )
+                if merged is not None:
+                    yield merged
 
             for tcd in getattr(delta, "tool_calls", None) or []:
                 entry = tool_call_buffer.get_or_create(tcd.index)
@@ -566,6 +571,8 @@ class CustomAdapter(AgentPlatformAdapter):
                         preview_extractors[tcd.index] = _ContentExtractor()
                         preview_part_indices[tcd.index] = next_part_index
                         next_part_index += 1
+                        for ev in flusher.flush():
+                            yield ev
                         yield PartStartEvent(
                             conversation_id=input.conversation_id,
                             timestamp=now_ms(),
@@ -580,13 +587,13 @@ class CustomAdapter(AgentPlatformAdapter):
                         extractor = preview_extractors[tcd.index]
                         content_chunks = extractor.feed(tcd.function.arguments)
                         for chunk_text in content_chunks:
-                            yield PartDeltaEvent(
-                                conversation_id=input.conversation_id,
-                                timestamp=now_ms(),
-                                message_id=message_id,
-                                part_index=preview_part_indices[tcd.index],
-                                delta={"type": "file_write_preview.append", "text": chunk_text},
+                            merged = flusher.feed(
+                                message_id, preview_part_indices[tcd.index],
+                                "file_write_preview.append", chunk_text,
+                                input.conversation_id,
                             )
+                            if merged is not None:
+                                yield merged
                     logger.debug(
                         "[CustomAdapter] tool_call delta idx=%d id=%s name=%s args_chunk=%r",
                         tcd.index, tcd.id, tcd.function.name, tcd.function.arguments[:200],
@@ -596,6 +603,9 @@ class CustomAdapter(AgentPlatformAdapter):
                 finish_reason = choice.finish_reason
 
         if thinking_part_index >= 0:
+            ev = flusher.flush_for(thinking_part_index, "thinking.append")
+            if ev is not None:
+                yield ev
             yield PartEndEvent(
                 conversation_id=input.conversation_id,
                 timestamp=now_ms(),
@@ -603,6 +613,9 @@ class CustomAdapter(AgentPlatformAdapter):
                 part_index=thinking_part_index,
             )
         if text_part_index >= 0:
+            ev = flusher.flush_for(text_part_index, "text.append")
+            if ev is not None:
+                yield ev
             yield PartEndEvent(
                 conversation_id=input.conversation_id,
                 timestamp=now_ms(),
@@ -612,6 +625,9 @@ class CustomAdapter(AgentPlatformAdapter):
         # End file_write_preview parts (streaming phase done; tool execution will
         # produce file_write_preview.complete to finalize status)
         for idx in sorted(preview_part_indices.keys()):
+            ev = flusher.flush_for(preview_part_indices[idx], "file_write_preview.append")
+            if ev is not None:
+                yield ev
             yield PartEndEvent(
                 conversation_id=input.conversation_id,
                 timestamp=now_ms(),
@@ -620,6 +636,10 @@ class CustomAdapter(AgentPlatformAdapter):
             )
 
         tool_calls = [tc for tc in tool_call_buffer.entries.values() if tc.id and tc.name]
+
+        # Flush any remaining coalesced deltas before yielding non-delta events
+        for ev in flusher.flush():
+            yield ev
 
         # yield tool.call events (without executing — AgentRunner handles execution)
         for tc in tool_calls:
@@ -707,6 +727,10 @@ class CustomAdapter(AgentPlatformAdapter):
                 tool_name=tc.name,
                 args=args,
             )
+
+        # Safety net: flush any remaining coalesced deltas before message end
+        for ev in flusher.flush():
+            yield ev
 
         if msg_usage.input_tokens > 0 or msg_usage.output_tokens > 0:
             yield MessageUsageEventPayload(

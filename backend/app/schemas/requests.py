@@ -61,6 +61,9 @@ class ConversationResponse(BaseModel):
     updated_at: int = Field(alias="updatedAt")
     workspace_mode: Literal["sandbox", "local"] = Field(alias="workspaceMode")
     workspace_bound_path: str | None = Field(alias="workspaceBoundPath")
+    workspace_env_preference: str | None = Field(
+        default=None, alias="workspaceEnvPreference"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -454,6 +457,48 @@ class UsageSummaryResponse(BaseModel):
 
 
 # ─── Platform Response ─────────────────────────────────────
+# ─── Workspace Env Requests/Responses ─────────────────────────────────────
+class UpdateEnvPreferenceRequest(BaseModel):
+    """Request body for PATCH /api/workspaces/:id/env-preference.
+
+    ``preference`` is the user's choice for workspace env isolation:
+    'venv_created' / 'skip' / 'system_python'.
+    """
+
+    preference: Literal["venv_created", "skip", "system_python"]
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkspaceEnvStatusResponse(BaseModel):
+    """Response for GET /api/workspaces/:id/env-status.
+
+    Reports the current project environment detection result and the user's
+    persisted preference. The frontend uses this to decide whether to show
+    the env hint card on page load (e.g. after a refresh).
+    """
+
+    workspace_mode: Literal["sandbox", "local"] = Field(alias="workspaceMode")
+    language: Literal["python", "nodejs", "java", "go", "unknown"]
+    venv_present: bool = Field(alias="venvPresent")
+    env_preference: str | None = Field(default=None, alias="envPreference")
+
+    model_config = {"populate_by_name": True}
+
+
+class CreateVenvResponse(BaseModel):
+    """Response for POST /api/workspaces/:id/create-venv.
+
+    The actual venv creation runs asynchronously; the endpoint returns 202
+    immediately and progress is reported via ``WorkspaceEnvStatusEvent`` SSE.
+    This response just acknowledges the request was accepted.
+    """
+
+    accepted: bool = True
+
+    model_config = {"populate_by_name": True}
+
+
 class PlatformResponse(BaseModel):
     """Server host platform (GET /api/platform)."""
 

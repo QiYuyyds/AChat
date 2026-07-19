@@ -189,6 +189,25 @@ DeepSeek 等支持思考链的模型在 stream 中会单独输出 `delta.reasoni
 
 这是 DeepSeek 特殊协议要求；其它 provider 忽略此字段。
 
+### Delta 合并器（DeltaFlusher）
+
+源文件：`backend/app/adapters/_delta_flusher.py`
+
+`CustomAdapter.call_once` 使用 `DeltaFlusher` 对 `text.append` / `thinking.append` / `file_write_preview.append` 三类增量 delta 做时间窗合并（默认 50ms），减少 SSE 事件量。合并对下游完全透明——`part.delta` 的 schema 不变，`consume_stream` 和 `EventBus.publish` 无需修改。
+
+**合并规则**（详见 Spec 02 §Delta 合并语义）：
+- 合并 key 为 `(part_index, delta_type)`，每个 key 有独立的缓冲区和窗口起始时间
+- 窗口内的多个 delta 的 `text` 拼接为一条 `part.delta`
+- 窗口超时 / `part.end` / 非 delta 事件 / turn 结束时 flush
+
+**集成点**（`call_once` 内）：
+- 三处 delta yield 站点替换为 `flusher.feed(...)` + 条件 yield
+- 每个 `PartStartEvent`（新 part 开始前）：`flusher.flush()` flush 所有 pending delta
+- 每个 `PartEndEvent` 前：`flusher.flush_for(part_index, delta_type)` flush 该 key 的 pending delta
+- `ToolCallEvent` / `MessageEndEvent` 前：`flusher.flush()` flush 所有 pending delta（安全网）
+
+**窗口大小可配置**：`DeltaFlusher(window_ms=50)` 构造参数，便于调优。
+
 ### max_tokens 设置与截断检测
 
 CustomAdapter 的 `call_once` 和 `stream` 方法在调用 `client.chat.completions.create` 时 MUST 传入 `max_tokens` 参数。该值从 `get_model_limits(provider, model_id)` 动态推导：

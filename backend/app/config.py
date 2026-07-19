@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     # Optional Custom tool-turn fuse (None/0 = off). When hit, uses soft→forced
     # wrap-up pipeline — not a product default max-steps cap.
     max_tool_turns: int | None = None
+    # Five-stage in-memory compaction pipeline (stages 1/2/3). When True,
+    # ReAct loop uses escalating summarize→prune→fold at 0.70/0.80/0.88 ratios.
+    # When False, falls back to legacy single-point _mid_run_compact at 0.85.
+    compact_pipeline_enabled: bool = True
 
     # ─── Verify Stage (P2 O6) ───
     enable_verify_stage: bool = True

@@ -546,3 +546,67 @@ async def test_extract_skips_on_empty_llm_response(db):
 
     result = await sm.get(conv_id)
     assert result is None
+
+
+# ─── tool-aware transcript integration ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_should_extract_uses_full_token_estimate():
+    """should_extract counts tool_result tokens, not just text.
+
+    A conversation with small text but large tool_result should trigger
+    extraction — the legacy text-only estimate would have missed it.
+    """
+    sm = SessionMemory(generate_fn=lambda s, u: "summary")
+    with patch.object(sm, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = None
+        with patch(
+            "app.memory.session_memory._load_messages_since",
+            new_callable=AsyncMock,
+        ) as mock_load:
+            # Text is only ~1000 tokens (below 10000 threshold),
+            # but tool_result adds ~12500 tokens (above threshold).
+            mock_load.return_value = [
+                _make_msg("m1", 100, [
+                    {"type": "text", "content": "x" * 4000},  # ~1000 tokens
+                    {"type": "tool_use", "callId": "c1", "toolName": "fs_read", "args": {"path": "big.ts"}},
+                    {"type": "tool_result", "callId": "c1", "result": "y" * 50000, "isError": False},  # ~12500 tokens
+                ]),
+            ]
+            assert await sm.should_extract("conv1") is True
+
+
+@pytest.mark.asyncio
+async def test_extract_transcript_contains_tool_info():
+    """extract() passes a tool-aware transcript to the generate_fn.
+
+    The user_msg should contain ↳ tool_use: and ↳ tool_result: lines
+    when the conversation includes tool calls.
+    """
+    captured_args: dict = {}
+
+    def capturing_generate(system_prompt: str, user_msg: str) -> str:
+        captured_args["system_prompt"] = system_prompt
+        captured_args["user_msg"] = user_msg
+        return "summary with tool info"
+
+    sm = SessionMemory(generate_fn=capturing_generate)
+    with patch.object(sm, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = None
+        with patch(
+            "app.memory.session_memory._load_messages_since",
+            new_callable=AsyncMock,
+        ) as mock_load:
+            mock_load.return_value = [
+                _make_msg("m1", 100, [
+                    {"type": "text", "content": "让我看看项目结构"},
+                    {"type": "tool_use", "callId": "c1", "toolName": "fs_list", "args": {"path": "src", "depth": 3}},
+                    {"type": "tool_result", "callId": "c1", "result": [{"name": "index.ts", "relativePath": "src/index.ts", "isDirectory": False}], "isError": False},
+                ]),
+            ]
+            with patch.object(sm, "_upsert", new_callable=AsyncMock):
+                await sm.extract("conv1")
+
+    assert "↳ tool_use: fs_list" in captured_args.get("user_msg", "")
+    assert "↳ tool_result: [fs_list]" in captured_args.get("user_msg", "")

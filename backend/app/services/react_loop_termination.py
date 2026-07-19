@@ -20,7 +20,17 @@ from typing import Any, Literal
 logger = logging.getLogger(__name__)
 
 # ─── Thresholds (v1: code constants) ─────────────────────────────────────────
-COMPACT_RATIO = 0.90
+# Five-stage compaction pipeline. Stages 1/2/3 replace the single-point compact
+# when ``compact_pipeline_enabled`` is True (default). Stage 4 (soft_inject)
+# and stage 5 (force_final) are unchanged.
+STAGE1_RATIO = 0.70  # semantic summarization (regex-only, no LLM)
+STAGE2_RATIO = 0.80  # moderate pruning (re-prune stage-1 summaries)
+STAGE3_RATIO = 0.88  # turn-boundary folding (older turns → single marker)
+
+# Legacy single-point compact threshold. Lowered from 0.90 → 0.85 to compensate
+# for the content-only token estimator (excludes JSON metadata, ~15-25% lower).
+# Only used when ``compact_pipeline_enabled=False`` (legacy rollback path).
+COMPACT_RATIO = 0.85
 SOFT_RATIO = 0.93
 HARD_RATIO = 0.95
 
@@ -134,7 +144,13 @@ FORCED_FINAL_INSTRUCTION = (
 
 DecisionAction = Literal[
     "continue",
+    # Five-stage pipeline (stages 1/2/3, only when pipeline enabled)
+    "summarize",   # stage 1: semantic summarization of old tool results
+    "prune",       # stage 2: moderate re-pruning of stage-1 summaries
+    "fold",        # stage 3: fold older turns into a single marker
+    # Legacy single-point compact (only when pipeline disabled)
     "compact",
+    # Stage 4/5 (unchanged)
     "soft_inject",
     "force_final",
     "hard_stop",
@@ -303,8 +319,16 @@ def decide_pre_model(
     state: TerminationState,
     total_tokens: int,
     model_limit: int,
+    pipeline_enabled: bool = True,
 ) -> PreModelDecision:
-    """Single pre-model-call decision for the Custom termination pipeline."""
+    """Single pre-model-call decision for the Custom termination pipeline.
+
+    When ``pipeline_enabled`` is True (default), stages 1/2/3 replace the
+    single-point compact: ratio ≥ 0.70 → summarize, ≥ 0.80 → prune, ≥ 0.88 →
+    fold. When False, the legacy single-point ``compact`` at ``COMPACT_RATIO``
+    (0.85) is used instead. Stages 4/5 (soft_inject / force_final) are
+    unchanged regardless of the toggle.
+    """
     if state.forced_done:
         return PreModelDecision(
             action="hard_stop",
@@ -429,9 +453,19 @@ def decide_pre_model(
             stop_reason=StopReason.BUDGET_EXHAUSTED,
         )
 
-    # Compact band: only when below soft and compact still allowed
-    if model_limit > 0 and ratio >= COMPACT_RATIO and not state.compact_disabled:
-        return PreModelDecision(action="compact")
+    # Compact band: only when below soft and compact still allowed.
+    # When pipeline_enabled, use five-stage pipeline (stages 1/2/3).
+    # When not, use legacy single-point compact at COMPACT_RATIO.
+    if model_limit > 0 and not state.compact_disabled:
+        if pipeline_enabled:
+            if ratio >= STAGE3_RATIO:
+                return PreModelDecision(action="fold")
+            if ratio >= STAGE2_RATIO:
+                return PreModelDecision(action="prune")
+            if ratio >= STAGE1_RATIO:
+                return PreModelDecision(action="summarize")
+        elif ratio >= COMPACT_RATIO:
+            return PreModelDecision(action="compact")
 
     # Soft already done but model is continuing with tools below soft threshold
     # (e.g. soft was from breaker inject, model keeps going with tools)
