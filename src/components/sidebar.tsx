@@ -43,6 +43,7 @@ import {
   updateConversationSummary,
 } from '@/lib/api'
 import { subscribeUiCommand } from '@/lib/ui-command-events'
+import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 import { cn } from '@/lib/utils'
 import type { AgentRow, ConversationRow } from '@/db/schema'
 import { useAppStore, useConversationList, useUnreadCount } from '@/stores/app-store'
@@ -138,6 +139,10 @@ export function Sidebar() {
     fetchConversations().then(setConversations).catch(console.error)
     fetchAgents().then(setAgents).catch(console.error)
   }, [setConversations, setAgents])
+
+  // Guide agent side-effect: refresh agents/conversations when guide does management ops
+  useGuideSideEffectRefresh('agents', () => { fetchAgents().then(setAgents).catch(console.error) })
+  useGuideSideEffectRefresh('conversations', () => { fetchConversations().then(setConversations).catch(console.error) })
 
   useEffect(() => {
     return subscribeUiCommand((command) => {

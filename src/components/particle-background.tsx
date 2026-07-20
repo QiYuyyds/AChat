@@ -109,7 +109,7 @@ export function ParticleBackground({
         const py = p.y - half
 
         ctx!.beginPath()
-        if (ctx!.roundRect) {
+        if (typeof ctx!.roundRect === 'function') {
           ctx!.roundRect(px, py, particleSize, particleSize, 4)
         } else {
           ctx!.rect(px, py, particleSize, particleSize)

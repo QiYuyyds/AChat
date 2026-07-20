@@ -55,6 +55,9 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     await init_db()
 
+    # ─── Seed guide agent (小A) ───
+    await _seed_guide_agent()
+
     settings = get_settings()
 
     # ─── Optional source intelligence ───
@@ -304,6 +307,70 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         except Exception:
             pass
     await close_db()
+
+
+async def _seed_guide_agent() -> None:
+    """Idempotently seed the builtin guide agent (小A) at startup.
+
+    Creates the agent if it doesn't exist; does nothing if already present.
+    LLM provider/model/key/baseUrl are env-driven so users can pick any
+    OpenAI-compatible backend (DeepSeek, LongCat, etc.). Failures are logged
+    but never block startup.
+    """
+    import os
+
+    try:
+        from sqlalchemy import select
+
+        from app.db.engine import get_db
+        from app.db.models import Agent
+        from app.services.guide_prompt import GUIDE_SYSTEM_PROMPT
+        from app.utils.clock import now_ms
+
+        model_provider = os.environ.get("GUIDE_AGENT_MODEL_PROVIDER", "deepseek")
+        model_id = os.environ.get("GUIDE_AGENT_MODEL_ID", "deepseek-v4-flash")
+        api_key = os.environ.get("GUIDE_AGENT_API_KEY") or None
+        api_base_url = os.environ.get("GUIDE_AGENT_API_BASE_URL") or None
+
+        async with get_db() as db:
+            existing = (
+                await db.execute(select(Agent).where(Agent.is_guide.is_(True)))
+            ).scalar_one_or_none()
+            if existing is not None:
+                return
+
+            guide = Agent(
+                id="ag_guide_builtin",
+                name="小A",
+                avatar="🅰️",
+                description="系统管理引导 Agent，帮你管理 Agent / Skill / MCP / 知识库 / 记忆",
+                system_prompt=GUIDE_SYSTEM_PROMPT,
+                adapter_name="custom",
+                model_provider=model_provider,
+                model_id=model_id,
+                api_key=api_key,
+                api_base_url=api_base_url,
+                tool_names=[
+                    "manage_agents",
+                    "manage_skills",
+                    "manage_mcp",
+                    "manage_documents",
+                    "manage_memory",
+                    "manage_profile",
+                    "manage_conversations",
+                ],
+                is_builtin=True,
+                is_guide=True,
+                user_id=None,
+                created_at=now_ms(),
+            )
+            db.add(guide)
+        logger.info(
+            "Guide agent (小A) seeded successfully (provider=%s, model=%s)",
+            model_provider, model_id,
+        )
+    except Exception as e:
+        logger.warning("Guide agent seed failed: %s", e)
 
 
 async def _cleanup_orphan_worktrees(settings) -> None:

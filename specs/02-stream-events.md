@@ -71,6 +71,9 @@ type StreamEvent = BaseEvent & (
   // —— 心跳 ——
   | { type: 'heartbeat' }
 
+  // —— Guide Agent 管理操作副作用通知 ——
+  | { type: 'guide_side_effect', target: 'agents' | 'skills' | 'mcp' | 'documents' | 'memory' | 'profile' | 'conversations', action: 'create' | 'update' | 'delete' | 'refresh', payload?: unknown }
+
   // —— 执行计划（solo + coordinated mode Agent 的结构化进度追踪）——
   | { type: 'plan.created',  planId: string, steps: PlanStep[], complexity: 'simple' | 'moderate' | 'complex' }
   | { type: 'plan.step_update', planId: string, steps: PlanStep[] }

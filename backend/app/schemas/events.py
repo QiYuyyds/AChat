@@ -521,6 +521,21 @@ class WorkspaceEnvStatusEvent(BaseEvent):
     model_config = {"populate_by_name": True}
 
 
+# ─── Guide Side Effect Event ─────────────────────────────────
+class GuideSideEffectEvent(BaseEvent):
+    """Event when a guide agent management tool causes a side effect.
+
+    The frontend uses the ``target`` field to determine which panel to refresh.
+    """
+
+    type: Literal["guide_side_effect"] = "guide_side_effect"
+    target: Literal["agents", "skills", "mcp", "documents", "memory", "profile", "conversations"]
+    action: Literal["create", "update", "delete", "refresh", "optimize", "consolidate", "upload"]
+    payload: dict | None = None
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Union Type ─────────────────────────────────────
 StreamEvent = Annotated[
     Union[  # noqa: UP007 - keep Union[] for the Pydantic discriminated union
@@ -579,6 +594,8 @@ StreamEvent = Annotated[
         # Workspace env events
         WorkspaceEnvHintEvent,
         WorkspaceEnvStatusEvent,
+        # Guide side effect events
+        GuideSideEffectEvent,
     ],
     Field(discriminator="type"),
 ]

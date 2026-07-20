@@ -11,6 +11,7 @@ import {
   fetchLongTermMemories,
   updateLongTermMemory,
 } from '@/lib/api/memory'
+import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 
 const PAGE_SIZE = 10
 
@@ -54,6 +55,8 @@ export function LongTermMemoryPanel() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useGuideSideEffectRefresh('memory', () => { void load() })
 
   const startEdit = (item: LongTermMemoryItem) => {
     setEditingId(item.id)

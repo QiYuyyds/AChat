@@ -73,6 +73,7 @@ def _serialize(row: Agent) -> dict[str, Any]:
         "mcpServerIds": row.mcp_server_ids_list,
         "isBuiltin": row.is_builtin,
         "isOrchestrator": row.is_orchestrator,
+        "isGuide": row.is_guide,
         "supportsVision": row.supports_vision,
         "memoryEnabled": row.memory_enabled,
         "createdAt": row.created_at,

@@ -18,6 +18,7 @@ import {
   uploadDocument,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 import { useAppStore } from '@/stores/app-store'
 import type { DocumentRow, DocumentTree, FileNode, FolderNode, SyncReport, SyncStatus } from '@/shared/types'
 
@@ -274,6 +275,8 @@ function MyDocumentsSection() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  useGuideSideEffectRefresh('documents', () => { void refresh() })
 
   const handleDelete = async () => {
     if (!deleteTargetId) return

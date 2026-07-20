@@ -193,6 +193,8 @@ function renderMessagePartForExport(part: MessageRow['parts'][number]): string {
     case 'image_attachment':
     case 'file_attachment':
       return `[Attachment: ${part.fileName} (${part.attachmentId}, ${part.mimeType}, ${part.size} bytes)]`
+    default:
+      return ''
   }
 }
 

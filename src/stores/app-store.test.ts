@@ -52,6 +52,7 @@ function agentMessage(id: string, runId: string, createdAt: number): MessageRow 
     mentionedAgentIds: [],
     runId,
     usage: null,
+    hidden: false,
     createdAt,
   }
 }

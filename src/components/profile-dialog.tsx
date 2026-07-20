@@ -109,7 +109,7 @@ export function ProfileDialog({
     setBusy(true)
     try {
       // Profile fields go through the profile API
-      const patch: ProfileUpdateBody = {}
+      const patch: Record<string, string | null> = {}
       const profileKeys: Array<keyof ProfileForm> = ['name', 'location', 'hometown', 'preferences', 'bio']
       for (const key of profileKeys) {
         const current = form[key].trim()

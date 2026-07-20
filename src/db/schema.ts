@@ -52,6 +52,7 @@ export const agents = sqliteTable('agents', {
 
   isBuiltin: integer('is_builtin', { mode: 'boolean' }).notNull().default(false),
   isOrchestrator: integer('is_orchestrator', { mode: 'boolean' }).notNull().default(false),
+  isGuide: integer('is_guide', { mode: 'boolean' }).notNull().default(false),
   supportsVision: integer('supports_vision', { mode: 'boolean' }).notNull().default(false),
 
   createdAt: integer('created_at').notNull(),
@@ -63,7 +64,7 @@ export const conversations = sqliteTable(
   {
     id: text('id').primaryKey(),
     title: text('title').notNull(),
-    mode: text('mode', { enum: ['single', 'group'] }).notNull(),
+    mode: text('mode', { enum: ['single', 'group', 'guide'] }).notNull(),
     agentIds: text('agent_ids', { mode: 'json' }).$type<string[]>().notNull(),
     /** 注入 LLM 长期上下文的重要消息（agent-runner 用，UI 暂未暴露入口）。 */
     pinnedMessageIds: text('pinned_message_ids', { mode: 'json' })
@@ -115,7 +116,7 @@ export const messages = sqliteTable(
 
     parts: text('parts', { mode: 'json' }).$type<MessagePart[]>().notNull(),
 
-    status: text('status', { enum: ['streaming', 'complete', 'error', 'aborted'] }).notNull(),
+    status: text('status', { enum: ['streaming', 'complete', 'error', 'aborted', 'interrupted'] }).notNull(),
     parentMessageId: text('parent_message_id'),
     mentionedAgentIds: text('mentioned_agent_ids', { mode: 'json' })
       .$type<string[]>()

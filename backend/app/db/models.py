@@ -41,7 +41,7 @@ class Base(DeclarativeBase):
 # Type aliases matching TypeScript types
 AdapterName = Literal["claude-code", "codex", "custom", "mock"]
 ModelProvider = Literal["anthropic", "openai", "deepseek", "volcano-ark", "openai-compatible"]
-ConversationMode = Literal["single", "group"]
+ConversationMode = Literal["single", "group", "guide"]
 MessageRole = Literal["user", "agent", "system"]
 MessageStatus = Literal["streaming", "complete", "error", "aborted"]
 RunStatus = Literal["queued", "running", "complete", "failed", "aborted"]
@@ -162,6 +162,9 @@ class Agent(Base):
     )
     is_orchestrator: Mapped[bool] = mapped_column(
         Boolean, name="is_orchestrator", nullable=False, default=False
+    )
+    is_guide: Mapped[bool] = mapped_column(
+        Boolean, name="is_guide", nullable=False, default=False
     )
     supports_vision: Mapped[bool] = mapped_column(
         Boolean, name="supports_vision", nullable=False, default=False

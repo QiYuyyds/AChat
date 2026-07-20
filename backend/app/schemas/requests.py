@@ -10,7 +10,7 @@ class CreateConversationRequest(BaseModel):
     """Request to create a new conversation."""
 
     title: str | None = None
-    mode: Literal["single", "group"]
+    mode: Literal["single", "group", "guide"]
     agent_ids: list[str] = Field(alias="agentIds", min_length=1)
     bound_path: str | None = Field(default=None, alias="boundPath")
     # Deprecated: code intelligence now auto-enables for all local workspaces.
@@ -47,7 +47,7 @@ class ConversationResponse(BaseModel):
 
     id: str
     title: str
-    mode: Literal["single", "group"]
+    mode: Literal["single", "group", "guide"]
     agent_ids: list[str] = Field(alias="agentIds")
     pinned_message_ids: list[str] = Field(alias="pinnedMessageIds")
     bookmarked_message_ids: list[str] = Field(alias="bookmarkedMessageIds")

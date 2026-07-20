@@ -30,6 +30,7 @@ interface Agent {
 
   isBuiltin: boolean            // 内置（不可删；可改）
   isOrchestrator: boolean       // 标记为协调者；同会话最多 1 个
+  isGuide: boolean              // 标记为管理引导 Agent；跳过 baseline 工具合并，仅注入管理工具 + ask_user
   supportsVision: boolean       // 决定是否把图片附件以 multimodal 投递（详见 Spec 05）
 
   createdAt: number             // unix ms
@@ -47,6 +48,7 @@ type ModelProvider = 'anthropic' | 'openai' | 'deepseek' | 'volcano-ark' | 'open
 - `adapterName === 'claude-code'` 时 `modelProvider` 忽略；`modelId` 可选（默认走 SDK 默认模型 `claude-opus-4-7`）；`toolNames` 强制 `[]`（Claude Code 用 SDK 内置工具集，详见 Spec 07）
 - `adapterName === 'codex'` 时 `modelProvider` 忽略；`modelId` 可选（默认 `gpt-5-codex`）；`toolNames` 强制 `[]`（Codex 用 SDK 内置工具集，详见 Spec 05）；`apiBaseUrl` 必须是 Codex/Responses 兼容 endpoint
 - `apiKey` / `apiBaseUrl` 是 per-agent 凭据：`apiBaseUrl` 非空时，`apiKey` 作为对应 SDK / endpoint 的 token；Claude Code、Codex、Custom openai-compatible 的 Base URL 协议不相同，Chat Completions-only provider 走 Custom adapter
+- `isGuide: true` 的 Agent 必须 `isBuiltin: true`；不可修改、不可删除；跳过 baseline 工具合并（详见 Spec 05 §baseline 跳过）
 - `isBuiltin: true` 的 Agent 不可删除但可修改配置（详见 Spec 10）
 - 删除 Agent 不级联删除使用它的 Conversation；前端应展示「已停用 Agent」灰态
 
@@ -60,7 +62,7 @@ type ModelProvider = 'anthropic' | 'openai' | 'deepseek' | 'volcano-ark' | 'open
 interface Conversation {
   id: string                    // conv_<nanoid>
   title: string                 // 首条消息自动生成 or 用户改名
-  mode: 'single' | 'group'
+  mode: 'single' | 'group' | 'guide'
   agentIds: string[]            // 参与的 Agent（单聊 1 个；群聊 ≥ 2 个）
   pinnedMessageIds: string[]    // 用户 pin 的关键消息，作为长期上下文
 
@@ -77,7 +79,7 @@ interface Conversation {
 ```
 
 **约束**：
-- 单聊 `agentIds.length === 1`，群聊 `>= 2`
+- `mode: 'guide'` 的会话不可出现在 `list_conversations` 结果中、不可被用户删除；每个用户最多一个 guide 会话（单例）
 - 群聊里 `isOrchestrator: true` 的 Agent 最多 1 个
 - 创建 Conversation 时自动创建关联的 Workspace（1:1）
 - `pinnedMessageIds` 上限 **5 条**（常量 `PIN_LIMIT_PER_CONVERSATION` 定义在 `src/shared/constants.ts`，service 在超出时抛 `PIN_LIMIT_EXCEEDED`）。被 pin 的消息由 `agent-runner` 在拼 system prompt 时注入 `<pinned_messages>` 块。前端 UI 入口见 spec 09 `PinnedMessagesBar` 与 `MessageItem` 的 📌 按钮

@@ -3,6 +3,7 @@
 import { ArtifactPreviewPanel } from '@/components/artifact-preview-panel'
 import { ChatPanel } from '@/components/chat-panel'
 import { FileExplorerPanel } from '@/components/file-explorer-panel'
+import { GuideFloatingPanel } from '@/components/guide-floating-panel'
 import { KnowledgeMainPanel } from '@/components/knowledge-library'
 import { MemoryMainPanel } from '@/components/memory-library'
 import { MessageHighlightLayer } from '@/components/message-highlight-layer'
@@ -21,6 +22,7 @@ export default function Home() {
       <ArtifactPreviewPanel />
       <SelectionPopover />
       <MessageHighlightLayer />
+      <GuideFloatingPanel />
     </div>
   )
 }

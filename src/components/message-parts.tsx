@@ -29,7 +29,7 @@ export function PartList({
 }: {
   parts: MessagePart[]
   conversationId: string
-  messageStatus?: 'streaming' | 'complete' | 'error' | 'aborted'
+  messageStatus?: 'streaming' | 'complete' | 'error' | 'aborted' | 'interrupted'
 }) {
   // 把 tool_result 按 callId 提前到对应 tool_use 的状态里
   const resultByCallId = new Map<string, { result: unknown; isError: boolean; endedAt?: number }>()
