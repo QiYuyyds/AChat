@@ -26,9 +26,9 @@ export function Markdown({ children, className }: MarkdownProps) {
           h2: ({ children }) => <h2 className="mt-2 mb-1 text-base font-semibold">{children}</h2>,
           h3: ({ children }) => <h3 className="mt-2 mb-1 text-sm font-semibold">{children}</h3>,
           h4: ({ children }) => <h4 className="mt-2 mb-1 text-sm font-semibold">{children}</h4>,
-          p: ({ children }) => <p className="my-1.5 leading-6">{children}</p>,
-          ul: ({ children }) => <ul className="my-1.5 list-disc space-y-0.5 pl-5">{children}</ul>,
-          ol: ({ children }) => <ol className="my-1.5 list-decimal space-y-0.5 pl-5">{children}</ol>,
+          p: ({ children }) => <p className="my-2 leading-6">{children}</p>,
+          ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
+          ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
           li: ({ children }) => <li className="leading-6">{children}</li>,
           a: ({ href, children }) => (
             <a

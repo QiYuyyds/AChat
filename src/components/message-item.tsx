@@ -207,7 +207,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
       )}
 
       <div className={cn('flex max-w-[80%] min-w-0 flex-1 flex-col gap-1', isUser && 'items-end')}>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground font-mono">
+        <div className="flex items-center gap-2 text-xs text-muted-foreground font-sans tabular-nums">
           {!grouped && (
             <>
               <span className="font-medium">{name}</span>
@@ -230,7 +230,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
           {/* Agent 消息的 token 用量小标，hover 看拆分 */}
           {!isUser && message.usage && (
             <span
-              className="ml-auto cursor-help font-mono text-[10px] text-muted-foreground/60"
+              className="ml-auto cursor-help text-[10px] text-muted-foreground/60 tabular-nums"
               title={`新 Input: ${message.usage.inputTokens.toLocaleString()}\nOutput: ${message.usage.outputTokens.toLocaleString()}${message.usage.cacheReadTokens > 0 ? `\nCache 命中: ${message.usage.cacheReadTokens.toLocaleString()}` : ''}`}
             >
               {formatTokenShort(
@@ -250,11 +250,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
           data-selection-target="message"
           data-selection-label={isUser ? '我的消息' : `${name} 的消息`}
           className={cn(
-            'min-w-0 rounded-lg bg-card px-3 py-2 shadow-[var(--inset-hi)]',
-            isUser && 'border-l-2 border-primary bg-transparent shadow-none',
-            message.status === 'error' && 'border-destructive/40 bg-destructive/10',
-            message.status === 'aborted' && 'border-muted-foreground/40 bg-muted/60',
-            message.status === 'interrupted' && 'border-muted-foreground/40 bg-muted/60',
+            'min-w-0',
             editing && 'w-full max-w-xl',
             isHighlighted && 'message-glow',
           )}
@@ -297,7 +293,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
                 </div>
               )}
 
-              <PartList parts={message.parts} conversationId={message.conversationId} messageStatus={message.status} />
+              <PartList parts={message.parts} conversationId={message.conversationId} messageStatus={message.status} messageRole={message.role} />
               {dispatch && (
                 <div className="mt-3">
                   <DispatchPlanCard conversationId={message.conversationId} dispatch={dispatch} />

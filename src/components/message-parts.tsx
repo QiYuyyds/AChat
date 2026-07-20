@@ -21,43 +21,56 @@ import { cn } from '@/lib/utils'
 import type { MessagePart } from '@/shared/types'
 import { useAppStore } from '@/stores/app-store'
 
+// ─── Part type classification ──────────────────────────
+const PROCESS_PART_TYPES = new Set<string>(['thinking', 'tool_use', 'file_write_preview'])
+
+type MessageStatus = 'streaming' | 'complete' | 'error' | 'aborted' | 'interrupted'
+
+type ResultEntry = { result: unknown; isError: boolean; endedAt?: number }
+
 // ─── PartList: 调度入口 ─────────────────────────────────
 export function PartList({
   parts,
   conversationId,
   messageStatus = 'complete',
+  messageRole = 'agent',
 }: {
   parts: MessagePart[]
   conversationId: string
-  messageStatus?: 'streaming' | 'complete' | 'error' | 'aborted' | 'interrupted'
+  messageStatus?: MessageStatus
+  messageRole?: 'user' | 'agent' | 'system'
 }) {
   // 把 tool_result 按 callId 提前到对应 tool_use 的状态里
-  const resultByCallId = new Map<string, { result: unknown; isError: boolean; endedAt?: number }>()
+  const resultByCallId = new Map<string, ResultEntry>()
   for (const p of parts) {
     if (p.type === 'tool_result') {
       resultByCallId.set(p.callId, { result: p.result, isError: p.isError, endedAt: p.endedAt })
     }
   }
 
-  // 把 parts 重新折叠：连续的 tool_use 合并为一个 cluster；tool_result 跳过（已合到 tool_use）
-  type ClusterItem =
-    | { kind: 'part'; part: MessagePart; index: number }
-    | { kind: 'cluster'; tools: Array<{ part: Extract<MessagePart, { type: 'tool_use' }>; index: number }> }
-  const clusters: ClusterItem[] = []
-  let currentCluster: Extract<ClusterItem, { kind: 'cluster' }> | null = null
+  // 双段聚类：连续过程型 part 归入 ProcessSegment，结论型各自独立
+  type RenderItem =
+    | { kind: 'process'; parts: Array<{ part: MessagePart; index: number }> }
+    | { kind: 'conclusion'; part: MessagePart; index: number }
+
+  const items: RenderItem[] = []
+  let currentProcess: Array<{ part: MessagePart; index: number }> = []
+
   parts.forEach((p, i) => {
-    if (p.type === 'tool_result') return // 已合并到 tool_use 内
-    if (p.type === 'tool_use') {
-      if (!currentCluster) {
-        currentCluster = { kind: 'cluster', tools: [] }
-        clusters.push(currentCluster)
-      }
-      currentCluster.tools.push({ part: p, index: i })
+    if (p.type === 'tool_result') return
+    if (PROCESS_PART_TYPES.has(p.type)) {
+      currentProcess.push({ part: p, index: i })
     } else {
-      currentCluster = null
-      clusters.push({ kind: 'part', part: p, index: i })
+      if (currentProcess.length > 0) {
+        items.push({ kind: 'process', parts: currentProcess })
+        currentProcess = []
+      }
+      items.push({ kind: 'conclusion', part: p, index: i })
     }
   })
+  if (currentProcess.length > 0) {
+    items.push({ kind: 'process', parts: currentProcess })
+  }
 
   // 计算最后一个有 content 的 part index（用于判断 thinking/file_write_preview 是否正在流式）
   let lastContentPartIndex = -1
@@ -67,34 +80,32 @@ export function PartList({
     }
   })
 
+  const isUser = messageRole === 'user'
+
   return (
-    <div className="space-y-2">
-      {clusters.map((c, i) => {
-        if (c.kind === 'part') {
-          const isLastContentPart = c.index === lastContentPartIndex
-          const isStreaming = messageStatus === 'streaming' && isLastContentPart
-          return <PartRenderer key={`p-${c.index}`} part={c.part} conversationId={conversationId} isStreaming={isStreaming} />
-        }
-        // tool cluster
-        if (c.tools.length === 1) {
-          // 单个工具：保持原样不折叠
-          const t = c.tools[0]
+    <div className="space-y-3">
+      {items.map((item, i) => {
+        if (item.kind === 'process') {
           return (
-            <ToolUsePart
-              key={`tool-${t.index}`}
-              toolName={t.part.toolName}
-              args={t.part.args}
-              callId={t.part.callId}
-              startedAt={t.part.startedAt}
-              completion={resultByCallId.get(t.part.callId)}
+            <ProcessSegment
+              key={`seg-${i}`}
+              segmentParts={item.parts}
+              resultByCallId={resultByCallId}
+              messageStatus={messageStatus}
+              lastContentPartIndex={lastContentPartIndex}
             />
           )
         }
+        const isLastContentPart = item.index === lastContentPartIndex
+        const isStreaming = messageStatus === 'streaming' && isLastContentPart
         return (
-          <ToolCluster
-            key={`cluster-${i}`}
-            tools={c.tools}
-            resultByCallId={resultByCallId}
+          <PartRenderer
+            key={`p-${item.index}`}
+            part={item.part}
+            conversationId={conversationId}
+            isStreaming={isStreaming}
+            isUser={isUser}
+            messageStatus={messageStatus}
           />
         )
       })}
@@ -102,20 +113,173 @@ export function PartList({
   )
 }
 
+// ─── ProcessSegment: 过程段折叠/展开 ──────────────────────
+function ProcessSegment({
+  segmentParts,
+  resultByCallId,
+  messageStatus,
+  lastContentPartIndex,
+}: {
+  segmentParts: Array<{ part: MessagePart; index: number }>
+  resultByCallId: Map<string, ResultEntry>
+  messageStatus: MessageStatus
+  lastContentPartIndex: number
+}) {
+  const isStreaming = messageStatus === 'streaming'
+  const [userOverride, setUserOverride] = useState<boolean | null>(null)
+
+  // status 变化时重置用户手动覆盖
+  useEffect(() => {
+    setUserOverride(null)
+  }, [isStreaming])
+
+  const expanded = userOverride !== null ? userOverride : isStreaming
+  const summary = computeProcessSummary(segmentParts, resultByCallId)
+
+  const toggle = () => setUserOverride(!expanded)
+
+  if (!expanded) {
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex items-center gap-1.5 text-xs text-muted-foreground/60 transition hover:text-muted-foreground"
+      >
+        <ChevronRight className="size-3 shrink-0" />
+        <span>{summary}</span>
+      </button>
+    )
+  }
+
+  return (
+    <div className="space-y-0.5">
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex items-center gap-1.5 text-xs text-muted-foreground/60 transition hover:text-muted-foreground"
+      >
+        <ChevronDown className="size-3 shrink-0" />
+        <span>{summary}</span>
+      </button>
+      <div className="space-y-0.5">
+        {segmentParts.map(({ part, index }) => {
+          const isLastContentPart = index === lastContentPartIndex
+          const partStreaming = isStreaming && isLastContentPart
+          return (
+            <ProcessPartRenderer
+              key={`pp-${index}`}
+              part={part}
+              isStreaming={partStreaming}
+              resultByCallId={resultByCallId}
+            />
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function computeProcessSummary(
+  segmentParts: Array<{ part: MessagePart; index: number }>,
+  resultByCallId: Map<string, ResultEntry>,
+): string {
+  let hasThinking = false
+  let thinkingDuration = 0
+  let toolCount = 0
+  let minStarted: number | undefined
+  let maxEnded: number | undefined
+
+  for (const { part } of segmentParts) {
+    if (part.type === 'thinking') {
+      hasThinking = true
+      if (part.startedAt !== undefined && part.endedAt !== undefined) {
+        thinkingDuration += part.endedAt - part.startedAt
+        if (minStarted === undefined || part.startedAt < minStarted) minStarted = part.startedAt
+        if (maxEnded === undefined || part.endedAt > maxEnded) maxEnded = part.endedAt
+      }
+    } else if (part.type === 'tool_use') {
+      toolCount++
+      if (part.startedAt !== undefined) {
+        if (minStarted === undefined || part.startedAt < minStarted) minStarted = part.startedAt
+      }
+      const result = resultByCallId.get(part.callId)
+      if (result?.endedAt !== undefined) {
+        if (maxEnded === undefined || result.endedAt > maxEnded) maxEnded = result.endedAt
+      }
+    } else if (part.type === 'file_write_preview') {
+      toolCount++
+    }
+  }
+
+  const totalDuration = minStarted !== undefined && maxEnded !== undefined ? maxEnded - minStarted : null
+  const totalLabel = totalDuration !== null ? ` · ${formatDuration(totalDuration)}` : ''
+
+  if (hasThinking && toolCount > 0) {
+    return `▸ 思考 ${formatDuration(thinkingDuration)} · ${toolCount} 个工具${totalLabel}`
+  }
+  if (hasThinking && toolCount === 0) {
+    return `▸ 已深度思考 ${formatDuration(thinkingDuration)}`
+  }
+  return `▸ ${toolCount} 个工具${totalLabel}`
+}
+
+// ─── ProcessPartRenderer: 过程段内部紧凑渲染 ──────────────
+function ProcessPartRenderer({
+  part,
+  isStreaming,
+  resultByCallId,
+}: {
+  part: MessagePart
+  isStreaming: boolean
+  resultByCallId: Map<string, ResultEntry>
+}) {
+  switch (part.type) {
+    case 'thinking':
+      return <ThinkingPart content={part.content} isStreaming={isStreaming} />
+    case 'tool_use':
+      return (
+        <ToolUsePart
+          toolName={part.toolName}
+          args={part.args}
+          callId={part.callId}
+          startedAt={part.startedAt}
+          completion={resultByCallId.get(part.callId)}
+        />
+      )
+    case 'file_write_preview':
+      return (
+        <FileWritePreviewPart
+          path={part.path}
+          content={part.content}
+          callId={part.callId}
+          status={part.status}
+          language={part.language}
+          oldContent={part.oldContent}
+          newContent={part.newContent}
+          isStreaming={isStreaming}
+        />
+      )
+    default:
+      return null
+  }
+}
+
 function PartRenderer({
   part,
   conversationId,
   isStreaming = false,
+  isUser = false,
+  messageStatus = 'complete',
 }: {
   part: MessagePart
   conversationId: string
   isStreaming?: boolean
+  isUser?: boolean
+  messageStatus?: MessageStatus
 }) {
   switch (part.type) {
     case 'text':
-      return <TextPart content={part.content} isStreaming={isStreaming} />
-    case 'thinking':
-      return <ThinkingPart content={part.content} startedAt={part.startedAt} endedAt={part.endedAt} isStreaming={isStreaming} />
+      return <TextPart content={part.content} isStreaming={isStreaming} isUser={isUser} messageStatus={messageStatus} />
     case 'code':
       return <CodePart language={part.language} content={part.content} />
     case 'artifact_ref':
@@ -126,8 +290,6 @@ function PartRenderer({
       return <ExecutionPlanPart steps={part.steps} planId={part.planId} complexity={part.complexity} />
     case 'deploy_candidates':
       return <DeployCandidatesPart conversationId={conversationId} candidates={part.candidates} />
-    case 'file_write_preview':
-      return <FileWritePreviewPart path={part.path} content={part.content} callId={part.callId} status={part.status} language={part.language} oldContent={part.oldContent} newContent={part.newContent} isStreaming={isStreaming} />
     case 'image_attachment':
     case 'file_attachment':
       return (
@@ -150,9 +312,9 @@ function PartRenderer({
 // ─── Execution Plan ──────────────────────────────────────
 const STATUS_ICON: Record<PlanStepStatus, ReactNode> = {
   pending: <span className="text-muted-foreground">⬚</span>,
-  in_progress: <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />,
-  done: <Check className="h-3.5 w-3.5 text-green-600" />,
-  failed: <XCircle className="h-3.5 w-3.5 text-red-500" />,
+  in_progress: <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />,
+  done: <Check className="h-3.5 w-3.5 text-success" />,
+  failed: <XCircle className="h-3.5 w-3.5 text-destructive" />,
   skipped: <span className="text-muted-foreground">⏭</span>,
 }
 
@@ -170,11 +332,11 @@ function ExecutionPlanPart({
   const progress = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0
 
   return (
-    <Card className="border-l-4 border-l-blue-500 py-0 gap-0">
+    <Card className="border-l-4 border-l-primary py-0 gap-0">
       <CardContent className="p-3 space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm font-medium">
-            <Layers className="h-4 w-4 text-blue-500" />
+            <Layers className="h-4 w-4 text-primary" />
             执行计划
           </div>
           <span className="text-xs text-muted-foreground">
@@ -184,7 +346,7 @@ function ExecutionPlanPart({
         {/* Progress bar */}
         <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
           <div
-            className="h-full rounded-full bg-blue-500 transition-all duration-300"
+            className="h-full rounded-full bg-primary transition-all duration-300"
             style={{ width: `${progress}%` }}
           />
         </div>
@@ -205,17 +367,38 @@ function ExecutionPlanPart({
 }
 
 // ─── Text ──────────────────────────────────────────────
-function TextPart({ content, isStreaming = false }: { content: string; isStreaming?: boolean }) {
+function TextPart({
+  content,
+  isStreaming = false,
+  isUser = false,
+  messageStatus = 'complete',
+}: {
+  content: string
+  isStreaming?: boolean
+  isUser?: boolean
+  messageStatus?: MessageStatus
+}) {
   if (!content) return null
+
+  const bubbleClass = cn(
+    'rounded-lg px-4 py-3 shadow-[var(--inset-hi)]',
+    isUser
+      ? 'bg-primary/5 border-l-2 border-primary'
+      : 'bg-card border border-border/50',
+    !isUser && messageStatus === 'error' && 'border-destructive/40 bg-destructive/10',
+    !isUser && (messageStatus === 'aborted' || messageStatus === 'interrupted') && 'border-muted-foreground/40 bg-muted/60',
+  )
 
   // Streaming fallback: plain <pre> to avoid O(N×S) markdown re-parsing per delta.
   // Font-sans matches the markdown body text; container styling matches complete render.
   if (isStreaming) {
     return (
-      <div className="text-sm leading-6 text-foreground">
-        <pre className="whitespace-pre-wrap break-words font-sans">
-          {content}
-        </pre>
+      <div className={bubbleClass}>
+        <div className="text-sm leading-6 text-foreground">
+          <pre className="whitespace-pre-wrap break-words font-sans">
+            {content}
+          </pre>
+        </div>
       </div>
     )
   }
@@ -224,7 +407,7 @@ function TextPart({ content, isStreaming = false }: { content: string; isStreami
   // 剩余文本走 Markdown。规避了纯文本里裸 XML 显丑的问题。
   const segments = splitQuotedSelections(content)
   return (
-    <div className="space-y-2">
+    <div className={cn(bubbleClass, 'space-y-2')}>
       {segments.map((seg, i) =>
         seg.kind === 'quote' ? (
           <QuotedSelectionCard key={i} {...seg} />
@@ -325,19 +508,14 @@ function QuotedSelectionCard({ source, artifactId, filePath, text }: QuotedSegme
   )
 }
 
-// ─── Thinking（三态：streaming-open / completed-collapsed / user-expanded）──
+// ─── Thinking（borderless italic text, collapse/expand handled by ProcessSegment）──
 function ThinkingPart({
   content,
-  startedAt,
-  endedAt,
   isStreaming,
 }: {
   content: string
-  startedAt?: number
-  endedAt?: number
   isStreaming: boolean
 }) {
-  const [userOpened, setUserOpened] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll to bottom during streaming
@@ -349,55 +527,13 @@ function ThinkingPart({
 
   if (!content) return null
 
-  const duration = startedAt && endedAt ? endedAt - startedAt : null
-
-  // STREAMING_OPEN: 流式中展开
-  if (isStreaming) {
-    return (
-      <div className="rounded-md border border-dashed border-muted-foreground/30 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-        <div className="flex items-center gap-1.5 font-medium">
-          <Loader2 className="size-3.5 animate-spin" />
-          <span>深度思考中...</span>
-        </div>
-        <div
-          ref={scrollRef}
-          className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap italic leading-relaxed text-muted-foreground/80"
-        >
-          {content}
-        </div>
-      </div>
-    )
-  }
-
-  // USER_EXPANDED: 用户手动展开
-  if (userOpened) {
-    return (
-      <div className="rounded-md border border-dashed border-muted-foreground/30 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-        <button
-          type="button"
-          onClick={() => setUserOpened(false)}
-          className="flex w-full items-center gap-1.5 text-left font-medium transition hover:text-foreground"
-        >
-          <ChevronDown className="size-3.5 shrink-0" />
-          <span>已深度思考{duration !== null ? ` · ${formatDuration(duration)}` : ''}</span>
-        </button>
-        <div className="mt-1 max-h-60 overflow-y-auto whitespace-pre-wrap italic leading-relaxed text-muted-foreground/80">
-          {content}
-        </div>
-      </div>
-    )
-  }
-
-  // COMPLETED_COLLAPSED: 完成后折叠
   return (
-    <button
-      type="button"
-      onClick={() => setUserOpened(true)}
-      className="flex w-full items-center gap-1.5 rounded-md border border-dashed border-muted-foreground/30 bg-muted/40 px-3 py-1.5 text-left text-xs text-muted-foreground transition hover:border-muted-foreground/50"
+    <div
+      ref={scrollRef}
+      className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs italic leading-relaxed text-muted-foreground/70"
     >
-      <ChevronRight className="size-3.5 shrink-0" />
-      <span className="font-medium">已深度思考{duration !== null ? ` · ${formatDuration(duration)}` : ''}</span>
-    </button>
+      {content}
+    </div>
   )
 }
 
@@ -461,12 +597,6 @@ function ToolUsePart({
       ? completion.endedAt - startedAt
       : null
 
-  const styles = {
-    running: 'border-warning/30 bg-warning/10',
-    success: 'border-success/30 bg-success/10',
-    error: 'border-destructive/30 bg-destructive/10',
-  }[state]
-
   const iconColor = {
     running: 'text-warning',
     success: 'text-success',
@@ -497,75 +627,70 @@ function ToolUsePart({
   }
 
   return (
-    <Card
+    <div
       role="button"
       tabIndex={0}
       aria-expanded={showDetails}
       title={showDetails ? '隐藏工具调用详情' : '展开工具调用详情'}
       onClick={toggleDetails}
       onKeyDown={handleKeyDown}
-      className={cn(
-        'w-full cursor-pointer overflow-hidden py-0 transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
-        styles,
-      )}
+      className="w-full cursor-pointer rounded transition hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
     >
-      <CardContent className="min-w-0 space-y-1.5 px-3 py-1.5">
-        <div className="flex min-w-0 items-center gap-2 text-xs">
-          {state === 'running' && <Loader2 className={cn('size-3.5 animate-spin', iconColor)} />}
-          {state === 'success' && <Check className={cn('size-3.5', iconColor)} />}
-          {state === 'error' && <XCircle className={cn('size-3.5', iconColor)} />}
-          <span className="min-w-0 max-w-[12rem] truncate rounded bg-black/5 px-1.5 py-0.5 text-[11px] font-medium dark:bg-white/10">
-            {displayName}
-          </span>
-          <span className="text-muted-foreground">·</span>
-          <span className="shrink-0 font-medium">{label}</span>
-          {durationLabel && (
-            <span className="shrink-0 text-muted-foreground">{durationLabel}</span>
+      <div className="flex min-w-0 items-center gap-2 px-1 py-0.5 text-xs text-muted-foreground">
+        {state === 'running' && <Loader2 className={cn('size-3 shrink-0 animate-spin', iconColor)} />}
+        {state === 'success' && <Check className={cn('size-3 shrink-0', iconColor)} />}
+        {state === 'error' && <XCircle className={cn('size-3 shrink-0', iconColor)} />}
+        <span className="min-w-0 max-w-[12rem] truncate font-medium">
+          {displayName}
+        </span>
+        <span>·</span>
+        <span className="shrink-0">{label}</span>
+        {durationLabel && (
+          <span className="shrink-0">{durationLabel}</span>
+        )}
+        <ChevronDown
+          className={cn(
+            'ml-auto size-3 shrink-0 transition-transform',
+            !showDetails && '-rotate-90',
           )}
-          <ChevronDown
-            className={cn(
-              'ml-auto size-3.5 shrink-0 text-muted-foreground transition-transform',
-              !showDetails && '-rotate-90',
-            )}
-          />
-        </div>
+        />
+      </div>
 
-        {command && <CommandPreview command={command} expanded={showDetails} />}
-        {bashResult && (
-          <BashOutputPreview
-            result={bashResult}
-            expanded={showDetails}
-            tone={completion?.isError ? 'error' : 'neutral'}
-          />
-        )}
-        {/* Direction B: inline diff preview for fs_write/fs_edit */}
-        {isFileDiffTool && diffData && !showDetails && (
-          <CompactDiffPreview oldCode={diffData.oldContent} newCode={diffData.newContent} />
-        )}
-        {isFileDiffTool && diffData && showDetails && (
-          <DiffBlock oldCode={diffData.oldContent} newCode={diffData.newContent} language={diffData.language} />
-        )}
+      {command && <CommandPreview command={command} expanded={showDetails} />}
+      {bashResult && (
+        <BashOutputPreview
+          result={bashResult}
+          expanded={showDetails}
+          tone={completion?.isError ? 'error' : 'neutral'}
+        />
+      )}
+      {/* Direction B: inline diff preview for fs_write/fs_edit */}
+      {isFileDiffTool && diffData && !showDetails && (
+        <CompactDiffPreview oldCode={diffData.oldContent} newCode={diffData.newContent} />
+      )}
+      {isFileDiffTool && diffData && showDetails && (
+        <DiffBlock oldCode={diffData.oldContent} newCode={diffData.newContent} language={diffData.language} />
+      )}
 
-        {showDetails && (
-          <div className="min-w-0 space-y-2 pt-1">
-            {remainingArgs !== null && (
-              <ToolDetailBlock label={command ? '其他参数' : '参数'} value={remainingArgs} />
-            )}
-            {completion && (
-              <ToolDetailBlock
-                label={completion.isError ? '错误' : '返回'}
-                value={completion.result}
-                tone={completion.isError ? 'error' : 'neutral'}
-              />
-            )}
-            <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-1 font-mono text-[10px] text-muted-foreground">
-              <span>{toolName}</span>
-              <span>{callId}</span>
-            </div>
+      {showDetails && (
+        <div className="min-w-0 space-y-2 px-1 pb-1 pt-0.5">
+          {remainingArgs !== null && (
+            <ToolDetailBlock label={command ? '其他参数' : '参数'} value={remainingArgs} />
+          )}
+          {completion && (
+            <ToolDetailBlock
+              label={completion.isError ? '错误' : '返回'}
+              value={completion.result}
+              tone={completion.isError ? 'error' : 'neutral'}
+            />
+          )}
+          <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-[10px] text-muted-foreground/50">
+            <span className="font-mono">{toolName}</span>
+            <span className="font-mono">{callId}</span>
           </div>
-        )}
-      </CardContent>
-    </Card>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -608,8 +733,8 @@ function CompactDiffPreview({ oldCode, newCode }: { oldCode: string; newCode: st
           key={i}
           className={cn(
             'px-2 py-px font-mono',
-            line.kind === 'removed' && 'bg-red-500/10 text-red-700 dark:text-red-400',
-            line.kind === 'added' && 'bg-green-500/10 text-green-700 dark:text-green-400',
+            line.kind === 'removed' && 'bg-destructive/10 text-destructive',
+            line.kind === 'added' && 'bg-success/10 text-success',
           )}
         >
           <span className="mr-1 inline-block w-3 text-center text-muted-foreground/50">
@@ -666,27 +791,27 @@ function FileWritePreviewPart({
   const derivedLanguage = language || (path ? path.split('.').pop() : undefined)
 
   return (
-    <Card className="overflow-hidden border-primary/20 py-0">
-      <div className="flex items-center gap-2 bg-primary/5 px-3 py-1.5 text-xs">
-        <FileIcon className="size-3.5 text-primary" />
+    <div className="space-y-0.5">
+      <div className="flex items-center gap-2 px-1 py-0.5 text-xs text-muted-foreground">
+        <FileIcon className="size-3 shrink-0" />
         <span className="min-w-0 max-w-[16rem] truncate font-medium">{displayName}</span>
-        <span className="text-muted-foreground">·</span>
+        <span>·</span>
         {status === 'streaming' && (
           <>
-            <Loader2 className="size-3 animate-spin text-primary" />
-            <span className="text-primary">生成中</span>
+            <Loader2 className="size-3 animate-spin" />
+            <span>生成中</span>
           </>
         )}
         {status === 'complete' && oldContent && (
           <>
-            <Check className="size-3 text-green-600" />
-            <span className="text-green-600">已完成</span>
+            <Check className="size-3 text-success" />
+            <span className="text-success">已完成</span>
           </>
         )}
         {status === 'complete' && !oldContent && (
           <>
-            <Check className="size-3 text-green-600" />
-            <span className="text-green-600">已创建</span>
+            <Check className="size-3 text-success" />
+            <span className="text-success">已创建</span>
           </>
         )}
         {status === 'failed' && (
@@ -698,14 +823,14 @@ function FileWritePreviewPart({
       </div>
 
       {status === 'streaming' && (
-        <div ref={scrollRef} className="max-h-[24rem] overflow-auto">
+        <div ref={scrollRef} className="max-h-[24rem] overflow-auto rounded bg-muted/30">
           <div className="relative">
             {/* Streaming fallback: plain <pre> to avoid O(N×S) Shiki re-highlight per delta */}
-            <pre className="px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
+            <pre className="px-2 py-1 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
               {content}
             </pre>
             {isStreaming && (
-              <span className="absolute bottom-1 right-2 inline-block size-2 animate-pulse rounded-full bg-green-500" />
+              <span className="absolute bottom-1 right-2 inline-block size-2 animate-pulse rounded-full bg-success" />
             )}
           </div>
         </div>
@@ -731,7 +856,7 @@ function FileWritePreviewPart({
       )}
 
       {status === 'failed' && (
-        <div className="px-3 py-2 text-xs text-muted-foreground">
+        <div className="px-2 py-1 text-xs text-muted-foreground">
           {content ? (
             <details>
               <summary className="cursor-pointer text-destructive">写入失败 — 查看部分内容</summary>
@@ -744,7 +869,7 @@ function FileWritePreviewPart({
           )}
         </div>
       )}
-    </Card>
+    </div>
   )
 }
 
@@ -873,14 +998,14 @@ function ToolDetailBlock({
   return (
     <div
       className={cn(
-        'min-w-0 overflow-hidden rounded-md border bg-background/70',
-        tone === 'error' && 'border-destructive/30 bg-destructive/10',
+        'min-w-0 overflow-hidden rounded bg-muted/40',
+        tone === 'error' && 'bg-destructive/10',
       )}
     >
-      <div className="border-b border-border/60 px-2.5 py-1 text-[10px] font-medium text-muted-foreground">
+      <div className="px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
         {label}
       </div>
-      <pre className="max-h-72 min-w-0 max-w-full overflow-auto px-2.5 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+      <pre className="max-h-72 min-w-0 max-w-full overflow-auto px-2 py-1 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
         <code>{formatToolValue(value)}</code>
       </pre>
     </div>
@@ -921,165 +1046,6 @@ function formatToolValue(value: unknown): string {
   return json ?? String(value)
 }
 
-// ─── 连续 tool_use 折叠 cluster ────────────────────────
-function ToolCluster({
-  tools,
-  resultByCallId,
-}: {
-  tools: Array<{ part: Extract<MessagePart, { type: 'tool_use' }>; index: number }>
-  resultByCallId: Map<string, { result: unknown; isError: boolean; endedAt?: number }>
-}) {
-  const [expanded, setExpanded] = useState(false)
-
-  // 按状态分别统计工具名，避免"创建产物×5"把成功/失败混在一起。
-  const successCounts = new Map<string, number>()
-  const errorCounts = new Map<string, number>()
-  const runningCounts = new Map<string, number>()
-  let runningCount = 0
-  let errorCount = 0
-  let successCount = 0
-
-  // 计算总耗时（所有工具的时间跨度）
-  let minStarted: number | undefined
-  let maxEnded: number | undefined
-  let earliestRunningStarted: number | undefined
-
-  for (const t of tools) {
-    const displayName = getToolDisplayName(t.part.toolName, t.part.args)
-    const c = resultByCallId.get(t.part.callId)
-    if (!c) {
-      runningCount++
-      runningCounts.set(displayName, (runningCounts.get(displayName) ?? 0) + 1)
-      if (t.part.startedAt !== undefined) {
-        if (earliestRunningStarted === undefined || t.part.startedAt < earliestRunningStarted) {
-          earliestRunningStarted = t.part.startedAt
-        }
-      }
-    } else if (c.isError) {
-      errorCount++
-      errorCounts.set(displayName, (errorCounts.get(displayName) ?? 0) + 1)
-    } else {
-      successCount++
-      successCounts.set(displayName, (successCounts.get(displayName) ?? 0) + 1)
-    }
-    if (t.part.startedAt !== undefined) {
-      if (minStarted === undefined || t.part.startedAt < minStarted) minStarted = t.part.startedAt
-    }
-    if (c?.endedAt !== undefined) {
-      if (maxEnded === undefined || c.endedAt > maxEnded) maxEnded = c.endedAt
-    }
-  }
-
-  const hasRunning = runningCount > 0
-  const liveElapsed = useElapsedTimer(earliestRunningStarted, hasRunning)
-  const totalDuration =
-    minStarted !== undefined && maxEnded !== undefined
-      ? maxEnded - minStarted
-      : hasRunning && liveElapsed !== null
-        ? liveElapsed
-        : null
-  const successDistribution = formatToolDistribution(successCounts)
-  const errorDistribution = formatToolDistribution(errorCounts)
-  const runningDistribution = formatToolDistribution(runningCounts)
-
-  const overallState: 'running' | 'success' | 'error' =
-    runningCount > 0 ? 'running' : errorCount > 0 ? 'error' : 'success'
-
-  const styles = {
-    running: 'border-warning/30 bg-warning/10',
-    success: 'border-success/30 bg-success/10',
-    error: 'border-destructive/30 bg-destructive/10',
-  }[overallState]
-
-  return (
-    <Card className={cn('w-full py-0', styles)}>
-      <CardContent className="space-y-1 px-3 py-1.5">
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="flex w-full items-center gap-2 text-left text-xs"
-        >
-          <ChevronDown
-            className={cn('size-3.5 shrink-0 transition-transform', !expanded && '-rotate-90')}
-          />
-          {overallState === 'running' && (
-            <Loader2 className="size-3.5 shrink-0 animate-spin text-warning" />
-          )}
-          {overallState === 'success' && (
-            <Check className="size-3.5 shrink-0 text-success" />
-          )}
-          {overallState === 'error' && (
-            <XCircle className="size-3.5 shrink-0 text-destructive" />
-          )}
-          <span className="font-medium">工具调用 × {tools.length}</span>
-          <span className="text-muted-foreground">·</span>
-          {totalDuration !== null && (
-            <span className="shrink-0 font-medium text-muted-foreground">{formatDuration(totalDuration)}</span>
-          )}
-          <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-            {successDistribution && (
-              <>
-                <span className="font-medium text-success">
-                  成功 {successCount}
-                </span>
-                <span className="font-mono">：{successDistribution}</span>
-              </>
-            )}
-            {errorDistribution && (
-              <>
-                {successDistribution && <span> · </span>}
-                <span className="font-medium text-destructive">
-                  失败 {errorCount}
-                </span>
-                <span className="font-mono">：{errorDistribution}</span>
-              </>
-            )}
-            {runningDistribution && (
-              <>
-                {(successDistribution || errorDistribution) && <span> · </span>}
-                <span className="font-medium text-warning">
-                  进行中 {runningCount}
-                </span>
-                <span className="font-mono">：{runningDistribution}</span>
-              </>
-            )}
-          </span>
-          {runningCount > 0 && (
-            <span className="ml-auto shrink-0 text-[10px] text-warning">
-              {runningCount} 进行中
-            </span>
-          )}
-          {errorCount > 0 && runningCount === 0 && (
-            <span className="ml-auto shrink-0 text-[10px] text-destructive">
-              {errorCount} 失败
-            </span>
-          )}
-        </button>
-
-        {expanded && (
-          <div className="space-y-1.5 pl-5 pt-1">
-            {tools.map((t) => (
-              <ToolUsePart
-                key={t.index}
-                toolName={t.part.toolName}
-                args={t.part.args}
-                callId={t.part.callId}
-                startedAt={t.part.startedAt}
-                completion={resultByCallId.get(t.part.callId)}
-              />
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  )
-}
-
-function formatToolDistribution(counts: Map<string, number>): string {
-  return Array.from(counts.entries())
-    .map(([name, n]) => (n > 1 ? `${name}×${n}` : name))
-    .join(' · ')
-}
 
 // ─── ArtifactRef ───────────────────────────────────────
 function ArtifactRefPart({ artifactId }: { artifactId: string }) {
