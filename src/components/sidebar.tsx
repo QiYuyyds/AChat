@@ -1,6 +1,6 @@
 'use client'
 
-import { Archive, ArchiveRestore, BarChart3, BookOpen, Bot, Brain, ChevronDown, ChevronRight, Ellipsis, Layers, LogOut, MessageSquare, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plug, Plus, Search, Sparkles, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Cable, ChevronDown, ChevronRight, Database, Ellipsis, Gauge, Library, LogOut, MessagesSquare, Package, PanelLeftClose, PanelLeftOpen, Pencil, Pin, PinOff, Plus, Search, Trash2, Users, Wrench, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { AgentLibrary } from '@/components/agent-library'
@@ -43,6 +43,7 @@ import {
   updateConversationSummary,
 } from '@/lib/api'
 import { subscribeUiCommand } from '@/lib/ui-command-events'
+import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 import { cn } from '@/lib/utils'
 import type { AgentRow, ConversationRow } from '@/db/schema'
 import { useAppStore, useConversationList, useUnreadCount } from '@/stores/app-store'
@@ -139,6 +140,10 @@ export function Sidebar() {
     fetchAgents().then(setAgents).catch(console.error)
   }, [setConversations, setAgents])
 
+  // Guide agent side-effect: refresh agents/conversations when guide does management ops
+  useGuideSideEffectRefresh('agents', () => { fetchAgents().then(setAgents).catch(console.error) })
+  useGuideSideEffectRefresh('conversations', () => { fetchConversations().then(setConversations).catch(console.error) })
+
   useEffect(() => {
     return subscribeUiCommand((command) => {
       if (command !== 'open-agents') return
@@ -189,14 +194,15 @@ export function Sidebar() {
       <div className="flex shrink-0 overflow-hidden border-r bg-card max-md:contents">
         {/* 图标轨：桌面端 flex 内联；移动端固定左侧常驻（不再随抽屉整体隐藏） */}
         <nav className="flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-card px-1 py-2 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40">
-          <RailButton mode={mode} self="conversations" onClick={() => pickMode('conversations')} icon={<MessageSquare className="size-4" />} label="对话" />
-          <RailButton mode={mode} self="artifacts" onClick={() => pickMode('artifacts')} icon={<Layers className="size-4" />} label="产物库" />
-          <RailButton mode={mode} self="agents" onClick={() => pickMode('agents')} icon={<Bot className="size-4" />} label="Agents" />
-          <RailButton mode={mode} self="analytics" onClick={() => pickMode('analytics')} icon={<BarChart3 className="size-4" />} label="分析" />
-          <RailButton mode={mode} self="knowledge" onClick={() => pickMode('knowledge')} icon={<BookOpen className="size-4" />} label="知识库" />
-          <RailButton mode={mode} self="skills" onClick={() => pickMode('skills')} icon={<Sparkles className="size-4" />} label="技能" />
-          <RailButton mode={mode} self="mcp" onClick={() => pickMode('mcp')} icon={<Plug className="size-4" />} label="MCP" />
-          <RailButton mode={mode} self="memory" onClick={() => pickMode('memory')} icon={<Brain className="size-4" />} label="记忆管理" />
+          <RailButton mode={mode} self="conversations" onClick={() => pickMode('conversations')} icon={<MessagesSquare className="size-5" />} label="对话" />
+          <RailButton mode={mode} self="artifacts" onClick={() => pickMode('artifacts')} icon={<Package className="size-5" />} label="产物库" />
+          <RailButton mode={mode} self="agents" onClick={() => pickMode('agents')} icon={<Users className="size-5" />} label="Agents" />
+          <span className="my-1 h-px w-6 shrink-0 bg-border" aria-hidden="true" />
+          <RailButton mode={mode} self="analytics" onClick={() => pickMode('analytics')} icon={<Gauge className="size-5" />} label="分析" />
+          <RailButton mode={mode} self="knowledge" onClick={() => pickMode('knowledge')} icon={<Library className="size-5" />} label="知识库" />
+          <RailButton mode={mode} self="skills" onClick={() => pickMode('skills')} icon={<Wrench className="size-5" />} label="技能" />
+          <RailButton mode={mode} self="mcp" onClick={() => pickMode('mcp')} icon={<Cable className="size-5" />} label="MCP" />
+          <RailButton mode={mode} self="memory" onClick={() => pickMode('memory')} icon={<Database className="size-5" />} label="记忆管理" />
           <div className="mt-auto flex flex-col items-center gap-1">
             <ProfileButton />
             <SettingsButton />
@@ -209,7 +215,7 @@ export function Sidebar() {
               title={user ? `退出登录 (${user.email})` : '退出登录'}
               aria-label="退出登录"
             >
-              <LogOut className="size-4 motion-safe:transition-transform motion-safe:duration-200 motion-safe:group-hover:-translate-x-0.5 motion-safe:group-active:scale-90" />
+              <LogOut className="size-5 motion-safe:transition-transform motion-safe:duration-200 motion-safe:group-hover:-translate-x-0.5 motion-safe:group-active:scale-90" />
             </Button>
             <Button
               size="icon"
@@ -228,7 +234,7 @@ export function Sidebar() {
                     : 'motion-safe:group-hover:-translate-x-0.5',
                 )}
               >
-                {collapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+                {collapsed ? <PanelLeftOpen className="size-5" /> : <PanelLeftClose className="size-5" />}
               </span>
             </Button>
           </div>
@@ -659,15 +665,17 @@ function RailButton({
       title={label}
       aria-label={label}
       className={cn(
-        'relative flex size-10 items-center justify-center rounded-md transition',
-        active ? 'text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+        'group relative flex size-10 items-center justify-center rounded-md transition',
+        active ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:bg-accent hover:text-foreground',
       )}
     >
       {/* active 锚定：2px 主色左色条 */}
       {active && (
         <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-primary" />
       )}
-      {icon}
+      <span className="inline-flex motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out motion-safe:group-hover:scale-110 motion-safe:group-active:scale-90">
+        {icon}
+      </span>
     </button>
   )
 }

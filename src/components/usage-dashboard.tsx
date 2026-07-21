@@ -1,15 +1,15 @@
 'use client'
 
-import { BarChart3, Coins, Loader2 } from 'lucide-react'
+import { BarChart3, Coins, Loader2, MessageSquare, RefreshCw, TrendingUp } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { fetchUsageSummary, type UsageBucket, type UsageSummary } from '@/lib/api'
+import { fetchUsageSummary, type UsageSummary } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/app-store'
 
 /**
- * UsageDashboard —— 侧栏「分析」tab 内容。
+ * UsageDashboard -- 侧栏「分析」tab 内容。
  *
  * 展示跨会话的 token 用量聚合：今日 / 本周 / 全部 + per-agent / per-model / per-conv top。
  * 数据来自 /api/usage/summary（每次 mount 拉一次；用户切回 tab 也重拉，保证 fresh）。
@@ -39,22 +39,25 @@ export function UsageDashboard() {
 
   if (loading && !data) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-xs text-muted-foreground">
-        <Loader2 className="size-3.5 animate-spin" />
-        加载用量数据...
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        <span className="text-xs text-muted-foreground">加载用量数据...</span>
       </div>
     )
   }
 
   if (error) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-4 text-center text-xs">
-        <div className="text-destructive">{error}</div>
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-4 text-center">
+        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {error}
+        </div>
         <button
           type="button"
           onClick={() => void reload()}
-          className="rounded-md border px-2 py-1 hover:bg-accent"
+          className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition hover:bg-accent"
         >
+          <RefreshCw className="size-3" />
           重试
         </button>
       </div>
@@ -65,73 +68,47 @@ export function UsageDashboard() {
 
   return (
     <ScrollArea className="min-h-0 flex-1">
-      <div className="space-y-4 p-3 text-xs">
-        <header className="flex items-center justify-between border-b pb-2">
-          <span className="flex items-center gap-1.5 font-medium">
-            <BarChart3 className="size-3.5" />
-            用量分析
-          </span>
+      <div className="space-y-3 p-3">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex size-7 items-center justify-center rounded-lg bg-primary/10">
+              <BarChart3 className="size-3.5 text-primary" />
+            </div>
+            <span className="text-sm font-semibold">用量分析</span>
+          </div>
           <button
             type="button"
             onClick={() => void reload()}
             disabled={loading}
-            className="font-mono text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:opacity-50"
           >
-            {loading ? '…' : '刷新'}
+            <RefreshCw className={cn('size-3', loading && 'animate-spin')} />
+            刷新
           </button>
-        </header>
+        </div>
 
-        {/* 时间桶 */}
-        <Section title="按时间">
-          <BucketRow label="今日" b={data.today} />
-          <BucketRow label="本周" b={data.week} />
-          <BucketRow label="全部" b={data.allTime} bold />
-        </Section>
+        {/* Stat cards */}
+        <div className="grid grid-cols-3 gap-2">
+          <StatCard label="今日" value={data.today.totalTokens} runs={data.today.runs} />
+          <StatCard label="本周" value={data.week.totalTokens} runs={data.week.runs} />
+          <StatCard label="全部" value={data.allTime.totalTokens} runs={data.allTime.runs} highlight />
+        </div>
 
-        {/* 按 Model */}
-        {data.byModel.length > 0 && (
-          <Section title="按 Model">
-            {data.byModel.map((m) => (
-              <BarRow
-                key={m.model}
-                label={<code className="font-mono">{m.model}</code>}
-                value={m.totalTokens}
-                runs={m.runs}
-                max={data.byModel[0].totalTokens}
-              />
-            ))}
-          </Section>
-        )}
-
-        {/* 按 Agent */}
-        {data.byAgent.length > 0 && (
-          <Section title="按 Agent">
-            {data.byAgent.map((a) => (
-              <BarRow
-                key={a.agentId}
-                label={a.name}
-                value={a.totalTokens}
-                runs={a.runs}
-                max={data.byAgent[0].totalTokens}
-              />
-            ))}
-          </Section>
-        )}
-
-        {/* Top 会话 */}
+        {/* Top conversations */}
         {data.topConversations.length > 0 && (
-          <Section title={`Top ${Math.min(data.topConversations.length, 10)} 会话`}>
+          <Section title={`Top ${Math.min(data.topConversations.length, 10)} 会话`} icon={<MessageSquare className="size-3" />}>
             {data.topConversations.map((c) => (
               <button
                 key={c.id}
                 type="button"
                 onClick={() => setActiveConversation(c.id)}
-                className="flex w-full items-baseline justify-between gap-2 rounded px-1 py-0.5 text-left transition hover:bg-accent"
+                className="flex w-full items-center gap-2 rounded-md border border-border/30 px-2 py-1.5 text-left transition-all duration-150 hover:border-primary/20 hover:bg-accent/50"
                 title={`点击跳转 · 更新时间 ${new Date(c.updatedAt).toLocaleString('zh-CN')}`}
               >
-                <span className="min-w-0 flex-1 truncate">{c.title}</span>
-                <span className="shrink-0 font-mono text-muted-foreground">
-                  <Coins className="mr-1 inline size-3" />
+                <span className="min-w-0 flex-1 truncate text-xs">{c.title}</span>
+                <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  <Coins className="size-2.5" />
                   {formatTok(c.totalTokens)}
                 </span>
               </button>
@@ -139,9 +116,16 @@ export function UsageDashboard() {
           </Section>
         )}
 
+        {/* Empty state */}
         {data.allTime.runs === 0 && (
-          <div className="rounded-md border border-dashed bg-muted/30 px-3 py-6 text-center text-xs text-muted-foreground">
-            还没有用量数据 —— 跟 Agent 聊几句就有了
+          <div className="flex flex-col items-center gap-3 py-8 text-center">
+            <div className="flex size-12 items-center justify-center rounded-xl bg-muted/60 shadow-[var(--shadow-sm)]">
+              <TrendingUp className="size-5 text-muted-foreground" />
+            </div>
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium text-foreground">还没有用量数据</p>
+              <p className="text-xs text-muted-foreground">跟 Agent 聊几句就有了</p>
+            </div>
           </div>
         )}
       </div>
@@ -149,40 +133,54 @@ export function UsageDashboard() {
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="mb-1.5 text-[10px] uppercase tracking-wider text-muted-foreground">
-        {title}
-      </div>
-      <div className="space-y-1">{children}</div>
-    </div>
-  )
-}
-
-function BucketRow({
+export function StatCard({
   label,
-  b,
-  bold,
+  value,
+  runs,
+  highlight,
 }: {
   label: string
-  b: UsageBucket
-  bold?: boolean
+  value: number
+  runs: number
+  highlight?: boolean
 }) {
   return (
-    <div className={cn('flex items-baseline justify-between gap-2', bold && 'font-medium')}>
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-right font-mono">
-        {formatTok(b.totalTokens)}
-        <span className="ml-1 text-[10px] text-muted-foreground">
-          {b.runs > 0 ? `· ${b.runs} run` : ''}
-        </span>
-      </span>
+    <div
+      className={cn(
+        'rounded-lg border p-2 text-center shadow-[var(--shadow-sm)]',
+        highlight ? 'border-primary/30 bg-primary/5' : 'border-border/40 bg-card',
+      )}
+    >
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className={cn('mt-0.5 font-mono text-sm font-semibold', highlight && 'text-primary')}>
+        {formatTok(value)}
+      </div>
+      <div className="text-[9px] text-muted-foreground">{runs} runs</div>
     </div>
   )
 }
 
-function BarRow({
+export function Section({
+  title,
+  icon,
+  children,
+}: {
+  title: string
+  icon: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <div className="rounded-lg border border-border/40 bg-card/50 p-2.5 shadow-[var(--shadow-sm)]">
+      <div className="mb-2 flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+        {icon}
+        {title}
+      </div>
+      <div className="space-y-1.5">{children}</div>
+    </div>
+  )
+}
+
+export function BarRow({
   label,
   value,
   runs,
@@ -195,17 +193,16 @@ function BarRow({
 }) {
   const pct = max > 0 ? (value * 100) / max : 0
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-1">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="min-w-0 flex-1 truncate">{label}</span>
-        <span className="shrink-0 font-mono text-muted-foreground">
-          {formatTok(value)}
-          <span className="ml-1 text-[10px]">· {runs}</span>
+        <span className="min-w-0 flex-1 truncate text-xs">{label}</span>
+        <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+          {formatTok(value)} · {runs}
         </span>
       </div>
-      <div className="h-1 overflow-hidden rounded-full bg-muted">
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
         <div
-          className="h-full rounded-full bg-primary/70 transition-all"
+          className="h-full rounded-full bg-gradient-to-r from-primary/80 to-primary/40 transition-all duration-300"
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -213,7 +210,7 @@ function BarRow({
   )
 }
 
-function formatTok(n: number): string {
+export function formatTok(n: number): string {
   if (n < 1000) return `${n}`
   if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 1)}k`
   return `${(n / 1_000_000).toFixed(2)}M`

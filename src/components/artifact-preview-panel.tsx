@@ -213,7 +213,7 @@ export function ArtifactPreviewPanel() {
           >
             <Download className="size-4" />
           </a>
-          <Button size="icon" variant="ghost" onClick={close} title="关闭预览">
+          <Button size="icon" variant="ghost" onClick={close} title="关闭预览" aria-label="关闭预览">
             <X className="size-4" />
           </Button>
         </div>
@@ -653,6 +653,7 @@ function MermaidPreview({ content }: { content: Extract<ArtifactContent, { type:
           onClick={() => setZoom((v) => Math.max(0.5, Number((v - 0.25).toFixed(2))))}
           disabled={zoom <= 0.5}
           title="缩小"
+          aria-label="缩小"
         >
           <ZoomOut className="size-3.5" />
         </Button>
@@ -672,6 +673,7 @@ function MermaidPreview({ content }: { content: Extract<ArtifactContent, { type:
           onClick={() => setZoom((v) => Math.min(3, Number((v + 0.25).toFixed(2))))}
           disabled={zoom >= 3}
           title="放大"
+          aria-label="放大"
         >
           <ZoomIn className="size-3.5" />
         </Button>
@@ -761,6 +763,7 @@ function SlideDeckView({
               onClick={() => setIdx((i) => Math.max(0, i - 1))}
               disabled={safeIdx <= 0}
               title="上一页"
+              aria-label="上一页"
             >
               <ChevronLeft className="size-4" />
             </Button>
@@ -774,6 +777,7 @@ function SlideDeckView({
               onClick={() => setIdx((i) => Math.min(total - 1, i + 1))}
               disabled={safeIdx >= total - 1}
               title="下一页"
+              aria-label="下一页"
             >
               <ChevronRight className="size-4" />
             </Button>
@@ -783,6 +787,7 @@ function SlideDeckView({
               className="size-7"
               onClick={enterFullscreen}
               title="全屏"
+              aria-label="全屏"
             >
               <Maximize className="size-4" />
             </Button>

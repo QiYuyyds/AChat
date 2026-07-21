@@ -16,6 +16,7 @@ import {
   type McpTestResult,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 
 export function McpServerLibrary() {
   const [servers, setServers] = useState<McpServerResponse[]>([])
@@ -42,6 +43,8 @@ export function McpServerLibrary() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  useGuideSideEffectRefresh('mcp', () => { void refresh() })
 
   const openCreate = () => {
     setEditingServer(null)

@@ -39,6 +39,7 @@ agents {
   mcp_server_ids  jsonb default '[]' // string[]；引用 mcp_servers.id；仅 custom adapter（Spec 15）
   is_builtin      int  bool default 0
   is_orchestrator int  bool default 0
+  is_guide        int  bool default 0
   supports_vision int  bool default 0
   created_at      int  NOT NULL
 }
@@ -47,6 +48,7 @@ agents {
 **约束**：
 - `adapter_name='custom'` 时 `model_provider` + `model_id` 必填；`adapter_name='claude-code' | 'codex'` 时 `model_provider=NULL`，`model_id` 可选
 - `is_builtin=1` 的 agent 可修改、不可删除（service 层 enforce）
+- `is_guide=1` 的 agent 不可修改、不可删除；跳过 baseline 工具合并（详见 Spec 05、Spec 07）
 - `api_key` 优先级高于 env var；按 provider / adapter 路由：`deepseek→DEEPSEEK_API_KEY` / `openai→OPENAI_API_KEY` / `volcano-ark→ARK_API_KEY` / `anthropic→ANTHROPIC_API_KEY` / `codex→CODEX_API_KEY 或 OPENAI_API_KEY` / `openai-compatible→per-agent only`
 - `api_base_url` 非空时（Claude Code adapter），`api_key` 作为 `ANTHROPIC_AUTH_TOKEN` 传 SDK；`ANTHROPIC_BASE_URL` 设为 `api_base_url`；同时清空 `ANTHROPIC_API_KEY` 防覆盖（详见 Spec 05 ClaudeCodeAdapter）
 - `api_base_url` 非空时（Codex adapter），作为 `@openai/codex-sdk` 的 `baseUrl` 传入；`api_key` 作为 SDK `apiKey`（内部 `CODEX_API_KEY`）传入；endpoint 必须支持 Codex/Responses，DeepSeek 等 Chat Completions-only endpoint 走 Custom adapter

@@ -82,18 +82,23 @@ export function AgentCreateWizard({
     return (
       <div className="flex min-h-0 flex-col gap-3">
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-          <div className="rounded-md border bg-muted/20 px-3 py-3">
-            <div className="flex items-start gap-2">
-              <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" />
+          {/* Draft summary — premium card with gradient wash + ambient glow */}
+          <div className="agent-fade-up relative overflow-hidden rounded-lg border border-primary/20 bg-primary/[0.03] px-4 py-3.5">
+            <div className="agent-ambient pointer-events-none absolute -right-8 -top-8 size-28 rounded-full bg-primary/[0.06] blur-2xl" />
+            <div className="relative flex items-start gap-2.5">
+              <div className="relative mt-0.5 shrink-0">
+                <div className="pointer-events-none absolute inset-0 rounded-lg bg-primary/10 blur-md" />
+                <Sparkles className="relative size-4 text-primary" />
+              </div>
               <div className="min-w-0">
-                <div className="text-sm font-medium">{draft.name}</div>
-                <div className="mt-1 text-xs text-muted-foreground">{draft.description}</div>
+                <div className="text-sm font-semibold tracking-tight">{draft.name}</div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">{draft.description}</div>
                 {draft.capabilities.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1">
+                  <div className="mt-2.5 flex flex-wrap gap-1.5">
                     {draft.capabilities.map((capability) => (
                       <span
                         key={capability}
-                        className="rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground ring-1 ring-foreground/10"
+                        className="rounded-full border border-primary/15 bg-primary/[0.06] px-2 py-0.5 text-[10px] font-medium text-primary/80 transition-colors duration-300 hover:border-primary/30 hover:bg-primary/10"
                       >
                         {capability}
                       </span>
@@ -104,31 +109,35 @@ export function AgentCreateWizard({
             </div>
           </div>
 
-          <div className="grid gap-2 sm:grid-cols-2">
-            <div className="rounded-md border px-3 py-2">
-              <div className="text-[10px] text-muted-foreground">模型</div>
-              <div className="mt-1 text-xs font-medium">
+          {/* Model + Vision — gapless bento */}
+          <div className="agent-fade-up-delay-1 grid grid-flow-row-dense grid-cols-2 gap-2">
+            <div className="group relative overflow-hidden rounded-lg border border-border/40 bg-card px-3 py-2 transition-all duration-500 hover:border-primary/20">
+              <div className="pointer-events-none absolute -right-4 -top-4 size-12 rounded-full bg-chart-1/[0.06] blur-xl transition-opacity duration-500 group-hover:opacity-100 opacity-60" />
+              <div className="relative text-[10px] font-medium tracking-wide text-muted-foreground uppercase">模型</div>
+              <div className="relative mt-1 text-xs font-semibold">
                 {providerLabel} / {draft.modelId ?? 'SDK 默认'}
               </div>
             </div>
-            <div className="rounded-md border px-3 py-2">
-              <div className="text-[10px] text-muted-foreground">视觉</div>
-              <div className="mt-1 text-xs font-medium">
+            <div className="group relative overflow-hidden rounded-lg border border-border/40 bg-card px-3 py-2 transition-all duration-500 hover:border-primary/20">
+              <div className="pointer-events-none absolute -right-4 -top-4 size-12 rounded-full bg-chart-4/[0.06] blur-xl transition-opacity duration-500 group-hover:opacity-100 opacity-60" />
+              <div className="relative text-[10px] font-medium tracking-wide text-muted-foreground uppercase">视觉</div>
+              <div className="relative mt-1 text-xs font-semibold">
                 {draft.supportsVision ? '默认开启' : '默认关闭'}
               </div>
             </div>
           </div>
 
-          <section className="rounded-md border px-3 py-2">
-            <div className="flex items-center gap-1.5 text-xs font-medium">
-              <Wrench className="size-3.5" />
+          {/* Tool permissions */}
+          <section className="agent-fade-up-delay-2 overflow-hidden rounded-lg border border-border/40 bg-card px-3 py-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-semibold tracking-tight">
+              <Wrench className="size-3.5 text-primary/60" />
               工具权限
             </div>
             {draft.toolPermissionSummaries.length > 0 ? (
               <div className="mt-2 space-y-1.5">
                 {draft.toolPermissionSummaries.map((tool) => (
                   <div key={tool.toolName} className="flex items-start gap-2 text-[11px]">
-                    <code className="mt-0.5 shrink-0 rounded bg-muted px-1 font-mono text-[9px] text-muted-foreground">
+                    <code className="mt-0.5 shrink-0 rounded border border-border/40 bg-muted/30 px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground">
                       {tool.toolName}
                     </code>
                     <div className="min-w-0">
@@ -145,9 +154,10 @@ export function AgentCreateWizard({
             )}
           </section>
 
-          <section className="rounded-md border px-3 py-2">
-            <div className="flex items-center gap-1.5 text-xs font-medium">
-              <ShieldCheck className="size-3.5" />
+          {/* Assumptions */}
+          <section className="agent-fade-up-delay-3 overflow-hidden rounded-lg border border-border/40 bg-card px-3 py-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-semibold tracking-tight">
+              <ShieldCheck className="size-3.5 text-primary/60" />
               默认假设
             </div>
             <div className="mt-2 space-y-1.5">
@@ -160,16 +170,17 @@ export function AgentCreateWizard({
             </div>
           </section>
 
-          <section className="rounded-md border px-3 py-2">
-            <div className="text-xs font-medium">System Prompt</div>
-            <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-muted/40 p-2 font-mono text-[10px] leading-4 text-muted-foreground">
+          {/* System Prompt */}
+          <section className="agent-fade-up-delay-4 overflow-hidden rounded-lg border border-border/40 bg-card px-3 py-2.5">
+            <div className="text-xs font-semibold tracking-tight">System Prompt</div>
+            <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-border/30 bg-muted/20 p-2.5 font-mono text-[10px] leading-4 text-muted-foreground">
               {draft.systemPrompt}
             </pre>
           </section>
         </div>
 
         {error && (
-          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <div className="shrink-0 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {error}
           </div>
         )}
@@ -201,36 +212,41 @@ export function AgentCreateWizard({
   return (
     <div className="flex min-h-0 flex-col gap-3">
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-        <div className="rounded-md border bg-muted/20 px-3 py-3">
-          <div className="flex items-start gap-2">
-            <MessageSquareText className="mt-0.5 size-4 shrink-0 text-primary" />
+        {/* Premium header card with gradient + ambient glow */}
+        <div className="agent-fade-up relative overflow-hidden rounded-lg border border-border/40 bg-muted/20 px-4 py-3.5">
+          <div className="agent-ambient pointer-events-none absolute -right-6 -top-6 size-24 rounded-full bg-primary/[0.05] blur-2xl" />
+          <div className="relative flex items-start gap-2.5">
+            <div className="relative mt-0.5 shrink-0">
+              <div className="pointer-events-none absolute inset-0 rounded-lg bg-primary/10 blur-md" />
+              <MessageSquareText className="relative size-4 text-primary" />
+            </div>
             <div className="min-w-0">
-              <div className="text-sm font-medium">描述你想要的 Agent</div>
-              <div className="mt-1 text-xs text-muted-foreground">
+              <div className="text-sm font-semibold tracking-tight">描述你想要的 Agent</div>
+              <div className="mt-1 text-xs leading-5 text-muted-foreground">
                 说明它负责什么、常见输入是什么、希望它交付什么结果。系统会生成一份可确认的配置草稿。
               </div>
             </div>
           </div>
         </div>
 
-        <div className="space-y-2">
+        <div className="agent-fade-up-delay-1 space-y-2">
           <Textarea
             value={intent}
             onChange={(e) => setIntent(e.target.value)}
             placeholder="例：我想要一个能帮我审查本地代码、运行测试并指出风险的 Agent"
-            className="min-h-[140px] text-sm"
+            className="min-h-[140px] text-sm transition-shadow duration-300 focus-visible:ring-primary/40"
           />
           <Textarea
             value={followUp}
             onChange={(e) => setFollowUp(e.target.value)}
             placeholder="可选：补充模型偏好、权限边界、输出风格或不希望它做的事"
-            className="min-h-[80px] text-sm"
+            className="min-h-[80px] text-sm transition-shadow duration-300 focus-visible:ring-primary/40"
           />
         </div>
       </div>
 
       {error && (
-        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        <div className="shrink-0 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
           {error}
         </div>
       )}

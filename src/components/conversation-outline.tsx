@@ -84,6 +84,7 @@ export function ConversationOutline({ conversationId }: { conversationId: string
             size="icon"
             variant="ghost"
             title={`对话目录 · ${userMessages.length} 条提问${starredCount > 0 ? ` (${starredCount} 收藏)` : ''}`}
+            aria-label={`对话目录 · ${userMessages.length} 条提问${starredCount > 0 ? ` (${starredCount} 收藏)` : ''}`}
           />
         }
       >
@@ -220,6 +221,7 @@ function OutlineItem({
             : 'text-muted-foreground/30 opacity-0 hover:text-warning group-hover:opacity-100 max-md:opacity-100',
         )}
         title={starred ? '取消收藏' : '收藏（仅用于导航定位）'}
+        aria-label={starred ? '取消收藏' : '收藏'}
       >
         <Star className={cn('size-3.5', starred && 'fill-warning')} />
       </button>

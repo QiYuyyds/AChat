@@ -52,6 +52,13 @@ interface AppState {
 
   // ─── UI 状态 ──────────────────────────────────────
   activeConversationId: string | null
+  guideConversationId: string | null                           // 双活跃会话模型：guide 会话 ID
+  guidePanelState: {                                           // 悬浮面板状态（持久化到 localStorage）
+    open: boolean
+    position: { x: number; y: number }
+    size: { width: number; height: number }
+  }
+  guideRefreshTargets: Record<string, number>                  // target → timestamp（guide_side_effect 触发面板刷新）
   previewArtifactId: string | null
   fileExplorerOpen: boolean                                   // 与 previewArtifactId 互斥
   openFilesByConv: Record<string, string[]>                  // 中间区 tab 列表（含 'diff:<pwId>' 形式）

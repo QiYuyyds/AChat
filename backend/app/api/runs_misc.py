@@ -26,12 +26,13 @@ from app.schemas import (
     SearchHit,
     SearchResponse,
     UsageSummaryResponse,
+    UsageTimeseriesResponse,
 )
 from app.services import conversation_service, deployment_service
 from app.services.network_hints import get_connection_hints
 from app.services.search_service import search_messages
 from app.services.settings_service import DEFAULT_COMPANION_PORT, get_user_settings
-from app.services.usage_summary_service import get_usage_summary
+from app.services.usage_summary_service import get_usage_summary, get_usage_timeseries
 from app.utils.platform import IS_WINDOWS
 
 router = APIRouter()
@@ -182,6 +183,22 @@ async def usage_summary(user: User = Depends(get_current_user)) -> JSONResponse:
     # Round-trip through the schema to validate shape, then emit camelCase.
     return JSONResponse(
         UsageSummaryResponse.model_validate(summary).model_dump(by_alias=True)
+    )
+
+
+# ─── GET /api/usage/timeseries ───────────────────────────────────────────────
+@router.get("/usage/timeseries")
+async def usage_timeseries(
+    days: int = Query(default=14),
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """Daily token usage timeseries for the last ``days`` days."""
+    clamped = max(1, min(90, days))
+    points = await get_usage_timeseries(clamped)
+    return JSONResponse(
+        UsageTimeseriesResponse(
+            points=points
+        ).model_dump(by_alias=True)["points"]
     )
 
 

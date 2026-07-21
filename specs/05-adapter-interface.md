@@ -117,6 +117,7 @@ interface AdapterInput {
 - 新增 `customConfig.apiKey`：per-agent API key（优先级高于 env，见 Spec 08）
 - 新增 `customConfig.supportsVision`：决定是否把图片以 multimodal 投递
 - 新增 `parentRunId`：Orchestrator 子 run 的父引用
+- Guide agent (`is_guide=True`) 跳过 baseline 工具合并：effective tools = configured `toolNames`（7 个管理工具）+ `ask_user`
 
 ---
 

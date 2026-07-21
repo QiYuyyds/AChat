@@ -53,6 +53,7 @@ _LIKE_SQL = text(
     JOIN conversations c ON c.id = m.conversation_id
     LEFT JOIN agents a   ON a.id = m.agent_id
     WHERE m.parts LIKE '%' || :q || '%'
+      AND c.mode != 'guide'
       AND (:conversationId IS NULL OR m.conversation_id = :conversationId)
       AND (:role IS NULL OR m.role = :role)
     ORDER BY m.created_at DESC

@@ -10,7 +10,7 @@ class CreateConversationRequest(BaseModel):
     """Request to create a new conversation."""
 
     title: str | None = None
-    mode: Literal["single", "group"]
+    mode: Literal["single", "group", "guide"]
     agent_ids: list[str] = Field(alias="agentIds", min_length=1)
     bound_path: str | None = Field(default=None, alias="boundPath")
     # Deprecated: code intelligence now auto-enables for all local workspaces.
@@ -47,7 +47,7 @@ class ConversationResponse(BaseModel):
 
     id: str
     title: str
-    mode: Literal["single", "group"]
+    mode: Literal["single", "group", "guide"]
     agent_ids: list[str] = Field(alias="agentIds")
     pinned_message_ids: list[str] = Field(alias="pinnedMessageIds")
     bookmarked_message_ids: list[str] = Field(alias="bookmarkedMessageIds")
@@ -452,6 +452,28 @@ class UsageSummaryResponse(BaseModel):
     top_conversations: list[UsageTopConversation] = Field(alias="topConversations")
     by_agent: list[UsageByAgent] = Field(alias="byAgent")
     by_model: list[UsageByModel] = Field(alias="byModel")
+
+    model_config = {"populate_by_name": True}
+
+
+class UsageTimeseriesPoint(BaseModel):
+    """A single daily bucket in the usage timeseries."""
+
+    date: str
+    input_tokens: int = Field(alias="inputTokens")
+    output_tokens: int = Field(alias="outputTokens")
+    cache_read_tokens: int = Field(alias="cacheReadTokens")
+    cache_creation_tokens: int = Field(alias="cacheCreationTokens")
+    total_tokens: int = Field(alias="totalTokens")
+    runs: int
+
+    model_config = {"populate_by_name": True}
+
+
+class UsageTimeseriesResponse(BaseModel):
+    """Daily usage timeseries (GET /api/usage/timeseries)."""
+
+    points: list[UsageTimeseriesPoint]
 
     model_config = {"populate_by_name": True}
 

@@ -155,6 +155,18 @@ interface AppState {
   selectedKnowledgeDocId: string | null
   setSelectedKnowledgeDocId(id: string | null): void
 
+  // ─── Guide 悬浮助手（双活跃会话模型）──────────────
+  guideConversationId: string | null
+  guidePanelState: {
+    open: boolean
+    position: { x: number; y: number }
+    size: { width: number; height: number }
+  }
+  guideRefreshTargets: Record<string, number> // target → timestamp (用于面板刷新)
+  setGuideConversationId(id: string | null): void
+  setGuidePanelState(state: Partial<AppState['guidePanelState']>): void
+  triggerGuideRefresh(target: string): void
+
   // ─── 流连接状态 ────────────────────────────────────
   streamConnected: boolean
 
@@ -272,8 +284,30 @@ export const useAppStore = create<AppState>()(
     selectedKnowledgeDocId: null,
     pendingQuoteForInput: null,
     highlightedMessageId: null,
+    guideConversationId: null,
+    guidePanelState: {
+      open: false,
+      position: { x: 16, y: 16 },
+      size: { width: 400, height: 600 },
+    },
+    guideRefreshTargets: {},
     streamConnected: false,
     userId: null,
+
+    setGuideConversationId: (id) =>
+      set((s) => {
+        s.guideConversationId = id
+      }),
+
+    setGuidePanelState: (partial) =>
+      set((s) => {
+        Object.assign(s.guidePanelState, partial)
+      }),
+
+    triggerGuideRefresh: (target) =>
+      set((s) => {
+        s.guideRefreshTargets[target] = Date.now()
+      }),
 
     setStreamConnected: (connected) =>
       set((s) => {
@@ -634,6 +668,7 @@ export const useAppStore = create<AppState>()(
           mentionedAgentIds,
           runId: null,
           usage: null,
+          hidden: false,
           createdAt: Date.now(),
         }
         s.messageIdsByConv[conversationId] ??= []
@@ -748,6 +783,7 @@ export const useAppStore = create<AppState>()(
               mentionedAgentIds: [],
               runId: event.runId,
               usage: null,
+              hidden: false,
               createdAt: event.timestamp,
             }
             s.messageIdsByConv[event.conversationId] ??= []
@@ -775,7 +811,7 @@ export const useAppStore = create<AppState>()(
           case 'message.added': {
             // 其它客户端创建的用户消息（如手机端发、桌面端在看）。按 id 幂等 upsert：
             // 发送方自己已对账过同 id，这里无副作用；第二个客户端靠这条插入。
-            s.messages[event.message.id] = event.message
+            s.messages[event.message.id] = { ...event.message, hidden: event.message.hidden ?? false }
             s.messageIdsByConv[event.message.conversationId] ??= []
             if (!s.messageIdsByConv[event.message.conversationId].includes(event.message.id)) {
               s.messageIdsByConv[event.message.conversationId].push(event.message.id)
@@ -1150,6 +1186,11 @@ export const useAppStore = create<AppState>()(
             return
           }
 
+          case 'guide_side_effect': {
+            s.guideRefreshTargets[event.target] = Date.now()
+            return
+          }
+
           default:
             return
         }
@@ -1326,6 +1367,8 @@ function areMessagePartsEquivalent(a: MessagePart, b: MessagePart): boolean {
         a.size === b.size &&
         a.mimeType === b.mimeType
       )
+    default:
+      return false
   }
 }
 

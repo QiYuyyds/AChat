@@ -130,6 +130,7 @@ export function PendingAttachmentChip({
           onClick={onCancel}
           className="rounded p-0.5 hover:text-foreground"
           title="取消"
+          aria-label="取消"
         >
           <X className="size-3" />
         </button>

@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertTriangle, Ellipsis, FilePenLine, FolderOpen, FolderTree, Layers, MessagesSquare, UserPlus, X } from 'lucide-react'
+import { AlertTriangle, FilePenLine, FileStack, Files, MessagesSquare, MoreHorizontal, PanelRight, UserRoundPlus, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { AddAgentDialog } from '@/components/add-agent-dialog'
@@ -98,12 +98,14 @@ export function ChatPanel() {
 
   if (!conv) {
     return (
-      <main className="flex min-w-0 flex-1 items-center justify-center bg-background max-md:pl-14">
-        <div className="flex max-w-sm flex-col items-center gap-4 px-6 text-center">
-          <div className="flex size-16 items-center justify-center rounded-2xl bg-muted">
+      <main
+        className="flex min-w-0 flex-1 items-center justify-center bg-background/80 backdrop-blur-2xl max-md:pl-14"
+      >
+        <div className="flex max-w-sm flex-col items-center gap-5 px-6 text-center">
+          <div className="flex size-16 items-center justify-center rounded-2xl bg-muted/60 shadow-[var(--shadow-sm)]">
             <MessagesSquare className="size-7 text-muted-foreground" />
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <h2 className="text-lg font-semibold">开始你的多 Agent 协作</h2>
             <p className="text-sm leading-6 text-muted-foreground">
               从左侧选择一个会话继续聊天，或点击「+ 新建对话」选择一个或多个 Agent 开始
@@ -117,7 +119,7 @@ export function ChatPanel() {
   const participantAgents = conv.agentIds.map((id) => agents[id]).filter(Boolean)
 
   return (
-    <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background max-md:pl-14">
+    <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background/85 backdrop-blur-2xl max-md:pl-14">
       <header className="flex shrink-0 items-center gap-3 overflow-hidden border-b px-3 py-2">
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
           <ParticipantStack agents={participantAgents} />
@@ -148,8 +150,9 @@ export function ChatPanel() {
             variant={fileExplorerOpen ? 'default' : 'ghost'}
             onClick={() => setFileExplorerOpen(!fileExplorerOpen)}
             title={fileExplorerOpen ? '关闭文件树' : '打开文件树'}
+            aria-label={fileExplorerOpen ? '关闭文件树' : '打开文件树'}
           >
-            <FolderTree className="size-4" />
+            <PanelRight className="size-4 motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out motion-safe:group-hover/button:scale-110 motion-safe:group-active/button:scale-90" />
           </Button>
           {conv.workspaceMode === 'local' && (
             <CodeIntelligenceControl conversationId={conv.id} />
@@ -159,16 +162,18 @@ export function ChatPanel() {
             variant={artifactsOpen || previewArtifactId ? 'default' : 'ghost'}
             onClick={() => setArtifactsOpen(true)}
             title="本会话产物库"
+            aria-label="本会话产物库"
           >
-            <Layers className="size-4" />
+            <FileStack className="size-4 motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out motion-safe:group-hover/button:scale-110 motion-safe:group-active/button:scale-90" />
           </Button>
           <Button
             size="icon-sm"
             variant="ghost"
             onClick={() => setFilesOpen(true)}
             title="会话文件库"
+            aria-label="会话文件库"
           >
-            <FolderOpen className="size-4" />
+            <Files className="size-4 motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out motion-safe:group-hover/button:scale-110 motion-safe:group-active/button:scale-90" />
           </Button>
           <ConversationOutline conversationId={conv.id} />
           <Button
@@ -176,8 +181,9 @@ export function ChatPanel() {
             variant="ghost"
             onClick={() => setAddOpen(true)}
             title="添加 Agent"
+            aria-label="添加 Agent"
           >
-            <UserPlus className="size-4" />
+            <UserRoundPlus className="size-4 motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out motion-safe:group-hover/button:scale-110 motion-safe:group-active/button:scale-90" />
           </Button>
           <UsageBadge conversationId={conv.id} />
           <Badge variant={streamConnected ? 'default' : 'outline'} className="gap-1 px-1.5 text-[11px]">
@@ -196,25 +202,26 @@ export function ChatPanel() {
           <DropdownMenu>
             <DropdownMenuTrigger
               title="更多"
-              className="inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
+              aria-label="更多操作"
+              className="group inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition hover:bg-muted hover:text-foreground"
             >
-              <Ellipsis className="size-4" />
+              <MoreHorizontal className="size-4 motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out motion-safe:group-hover:scale-110 motion-safe:group-active:scale-90" />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-44">
               <DropdownMenuItem onClick={() => setFileExplorerOpen(!fileExplorerOpen)}>
-                <FolderTree className="size-4" />
+                <PanelRight className="size-4" />
                 文件树
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setArtifactsOpen(true)}>
-                <Layers className="size-4" />
+                <FileStack className="size-4" />
                 本会话产物库
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setFilesOpen(true)}>
-                <FolderOpen className="size-4" />
+                <Files className="size-4" />
                 会话文件库
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setAddOpen(true)}>
-                <UserPlus className="size-4" />
+                <UserRoundPlus className="size-4" />
                 添加 Agent
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -295,7 +302,7 @@ export function ChatPanel() {
         <DialogContent className="grid max-h-[min(680px,calc(100dvh-2rem))] max-w-md grid-rows-[auto_minmax(0,1fr)] overflow-hidden p-0">
           <DialogHeader className="border-b px-4 py-3">
             <DialogTitle className="flex items-center gap-2 text-sm">
-              <Layers className="size-4 text-muted-foreground" />
+              <FileStack className="size-4 text-muted-foreground" />
               会话产物
             </DialogTitle>
             <DialogDescription className="truncate text-xs" title={conv.title}>
@@ -380,6 +387,7 @@ function TabButton({
           }}
           className="rounded p-0.5 opacity-50 transition hover:bg-accent hover:opacity-100"
           title="关闭"
+          aria-label="关闭"
         >
           <X className="size-3" />
         </button>

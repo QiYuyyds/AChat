@@ -1,6 +1,6 @@
 'use client'
 
-import { Archive, Coins } from 'lucide-react'
+import { Archive, Clock, Coins, Cpu, TrendingUp, Users } from 'lucide-react'
 import { useState } from 'react'
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
@@ -96,27 +96,31 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
     <Popover>
       <PopoverTrigger
         className={cn(
-          'inline-flex shrink-0 items-center gap-1 rounded-md border bg-muted/30 px-2 py-1 font-mono text-[10px] text-muted-foreground transition hover:border-foreground/30 hover:bg-muted hover:text-foreground',
+          'inline-flex shrink-0 items-center gap-1.5 rounded-lg border bg-muted/40 px-2 py-1 font-mono text-[10px] text-muted-foreground shadow-[var(--shadow-sm)] transition hover:border-primary/30 hover:bg-muted hover:text-foreground hover:shadow-md',
         )}
         title="点击查看 token 用量明细"
       >
-        <Coins className="size-3" />
+        <Coins className="size-3 text-primary/70" />
         <span>{formatTok(total.totalTokens)}</span>
       </PopoverTrigger>
       <PopoverContent className="w-96 max-h-[70vh] overflow-y-auto p-3 text-xs" align="end">
-        <div className="mb-2 flex items-baseline justify-between border-b pb-2">
-          <span className="font-medium">本会话 token 累计</span>
+        <div className="mb-2.5 flex items-center justify-between border-b pb-2">
+          <div className="flex items-center gap-1.5">
+            <Coins className="size-3.5 text-primary" />
+            <span className="font-medium">本会话 token 累计</span>
+          </div>
           <span className="text-[10px] text-muted-foreground">
             {total.runCount} 次响应{total.turnCount > 0 ? ` · ${total.turnCount} 轮` : ''}
             {hasCacheData && cacheHitRate > 0 && (
-              <span className="ml-1 text-emerald-600">· 缓存 {Math.round(cacheHitRate)}%</span>
+              <span className="ml-1 text-emerald-600 dark:text-emerald-400">· 缓存 {Math.round(cacheHitRate)}%</span>
             )}
           </span>
         </div>
 
         {/* ── 累计（跨 N 轮）── */}
         <div className="space-y-1">
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+            <TrendingUp className="size-2.5" />
             累计{total.turnCount > 0 ? `（跨 ${total.turnCount} 轮）` : ''}
           </div>
           <RowWithHint
@@ -170,8 +174,9 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
         </div>
 
         {/* ── 最近一次调用（第 N 轮）── */}
-        <div className="mt-3 space-y-1 border-t pt-2">
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+        <div className="mt-3 space-y-1.5 rounded-lg border border-border/40 bg-card/50 p-2.5 shadow-[var(--shadow-sm)]">
+          <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+            <Clock className="size-2.5" />
             最近一次调用{total.turnCount > 0 ? `（第 ${total.turnCount} 轮）` : ''}
           </div>
           {contextWindow > 0 ? (
@@ -194,7 +199,7 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
             type="button"
             onClick={() => void handleCompact()}
             disabled={compacting}
-            className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 text-[11px] transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border bg-card px-2 py-1.5 text-[11px] shadow-[var(--shadow-sm)] transition hover:border-primary/30 hover:bg-accent hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
             title="Compact older conversation history into a summary"
           >
             <Archive className="size-3" />
@@ -202,14 +207,15 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
           </button>
         </div>
 
-        <div className="mt-2 border-t pt-2 text-[10px] text-muted-foreground">
+        <div className="mt-2 rounded-md bg-muted/20 px-2.5 py-1.5 text-[10px] leading-relaxed text-muted-foreground">
           累计栏为跨 N 轮的计费维度；单次栏为最近一次调用的 ctx 快照。Pin 消息可避免被预算自动截断。
         </div>
 
         {/* ── 按 Agent 独立卡片 ── */}
         {showAgentDetails && (
-          <div className="mt-3 space-y-2 border-t pt-2">
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          <div className="mt-3 space-y-2 rounded-lg border border-border/40 bg-card/50 p-2.5 shadow-[var(--shadow-sm)]">
+            <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+              <Users className="size-2.5" />
               按 Agent 明细
             </div>
             {agentEntries.map(([agentId, d]) => (
@@ -225,8 +231,9 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
 
         {/* ── 按 Model ── */}
         {Object.keys(total.byModel).length > 0 && (
-          <div className="mt-3 border-t pt-2">
-            <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+          <div className="mt-3 rounded-lg border border-border/40 bg-card/50 p-2.5 shadow-[var(--shadow-sm)]">
+            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+              <Cpu className="size-2.5" />
               按 Model
             </div>
             {Object.entries(total.byModel)
@@ -258,7 +265,7 @@ function AgentUsageCard({
     tone === 'good' ? 'bg-emerald-500' : tone === 'warn' ? 'bg-amber-500' : 'bg-red-500'
 
   return (
-    <div className="rounded-md border bg-muted/20 p-2">
+    <div className="rounded-lg border border-border/40 bg-card p-2 shadow-[var(--shadow-sm)]">
       {/* 标题行：agent 名 + 总 token + 响应数 */}
       <div className="mb-1 flex items-baseline justify-between gap-2">
         <div className="min-w-0">
@@ -300,9 +307,9 @@ function AgentUsageCard({
       {/* Cache 命中率进度条 */}
       {d.cacheReadTokens > 0 && (
         <div className="mt-1.5 flex items-center gap-1.5">
-          <div className="h-1 flex-1 overflow-hidden rounded-full bg-border/60">
+          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
             <div
-              className={cn('h-full transition-all', barColor)}
+              className={cn('h-full rounded-full transition-all duration-300', barColor)}
               style={{ width: `${Math.max(pct, 2)}%` }}
             />
           </div>
@@ -442,7 +449,7 @@ function CostEstimateRow({
   )
 
   return (
-    <div className="space-y-0.5 border-t pt-1" title={`按 ${primaryModel} 官方定价估算（单价 per 1M tokens）`}>
+    <div className="mt-1 space-y-0.5 rounded-md bg-muted/20 px-2 py-1.5" title={`按 ${primaryModel} 官方定价估算（单价 per 1M tokens）`}>
       <div className="flex items-baseline justify-between gap-3 font-medium">
         <span>估算费用</span>
         <span className="font-mono">{formatCost(actualCost, currency)}</span>
@@ -491,9 +498,9 @@ function CacheHitRateRow({ rate, cacheReadTokens }: { rate: number; cacheReadTok
           )}
         </span>
       </div>
-      <div className="h-1 overflow-hidden rounded-full bg-border/60">
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
         <div
-          className={cn('h-full transition-all', barColor)}
+          className={cn('h-full rounded-full transition-all duration-300', barColor)}
           style={{ width: `${Math.max(pct, 2)}%` }}
         />
       </div>
@@ -534,9 +541,9 @@ function ContextRow({
           {hasData && ` (${pct.toFixed(0)}%)`}
         </span>
       </div>
-      <div className="h-1 overflow-hidden rounded-full bg-border/60">
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
         <div
-          className="h-full transition-all"
+          className="h-full rounded-full transition-all duration-300"
           style={{
             width: `${pct}%`,
             backgroundImage: 'linear-gradient(90deg, #3370FF 0%, #F59E0B 68%, #EF4444 100%)',

@@ -581,6 +581,18 @@ _BASELINE_AGENT_TOOLS: tuple[str, ...] = (
     "bash",
 )
 
+# Management tools are only injected into guide agents (is_guide=True).
+# Non-guide agents are filtered even if tool_names mistakenly lists them.
+_MANAGEMENT_TOOL_NAMES: frozenset[str] = frozenset({
+    "manage_agents",
+    "manage_skills",
+    "manage_mcp",
+    "manage_documents",
+    "manage_memory",
+    "manage_profile",
+    "manage_conversations",
+})
+
 # Deprecated product default removed: Custom loop ends on model-done / budget /
 # breakers. Absolute safety bound lives in react_loop_termination.SAFETY_MAX_MODEL_CALLS.
 # Kept as alias for any external imports; do not use as a product max-steps cap.
@@ -1845,7 +1857,8 @@ async def execute_simple_run(
     # tools in toolNames are deduped (order preserved, baseline first).
     # CLI agents (claude-code / codex) skip this merge — they use CLI built-ins.
     configured = args.override_tool_names or agent.tool_names_list
-    if agent.adapter_name in SDK_ADAPTERS:
+    is_guide = getattr(agent, "is_guide", False)
+    if agent.adapter_name in SDK_ADAPTERS and not is_guide:
         base_tool_names = list(dict.fromkeys(
             list(_BASELINE_AGENT_TOOLS) + list(configured)
         ))
@@ -1862,7 +1875,8 @@ async def execute_simple_run(
 
     # Task 1.1: Implicitly inject memory_recall for SDK agents only.
     # CLI agents bring their own tools; memory/RAG/skill injection is skipped.
-    if agent.adapter_name in SDK_ADAPTERS:
+    # Guide agents also skip this (they only own management tools + ask_user).
+    if agent.adapter_name in SDK_ADAPTERS and not is_guide:
         if "memory_recall" not in base_tool_names:
             base_tool_names = ["memory_recall"] + list(base_tool_names)
             logger.info(
@@ -1929,6 +1943,28 @@ async def execute_simple_run(
                 new_tools,
                 args.agent_id,
             )
+
+    # ── Guide agent tool injection guard ──────────────────────────────
+    # Guide agents: inject ask_user (since baseline merge was skipped) and
+    # keep only management tools + ask_user (filter out any non-management
+    # tools that may have leaked in from agent.tool_names).
+    # Non-guide agents: filter out management tools even if mistakenly listed.
+    if is_guide:
+        if "ask_user" not in base_tool_names:
+            base_tool_names = ["ask_user"] + list(base_tool_names)
+        base_tool_names = [
+            t for t in base_tool_names
+            if t in _MANAGEMENT_TOOL_NAMES or t == "ask_user"
+        ]
+    else:
+        filtered = [t for t in base_tool_names if t not in _MANAGEMENT_TOOL_NAMES]
+        if len(filtered) != len(base_tool_names):
+            removed = set(base_tool_names) - set(filtered)
+            logger.warning(
+                "[AgentRunner] Filtered management tools from non-guide agent %s: %s",
+                args.agent_id, removed,
+            )
+        base_tool_names = filtered
 
     tool_names = base_tool_names
 

@@ -7,9 +7,9 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-manrope);
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-manrope);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -112,8 +112,8 @@
   --destructive: oklch(0.62 0.14 30);
   --success: oklch(0.68 0.08 150);
   --warning: oklch(0.78 0.10 75);
-  --border: oklch(1 0.005 75 / 12%);
-  --input: oklch(1 0.005 75 / 15%);
+  --border: oklch(1 0.005 75 / 15%);
+  --input: oklch(1 0.005 75 / 18%);
   --ring: oklch(0.68 0.06 60);
   --chart-1: oklch(0.68 0.06 60);
   --chart-2: oklch(0.62 0.14 30);
@@ -129,7 +129,7 @@
   --sidebar-primary-foreground: oklch(0.20 0.012 60);
   --sidebar-accent: oklch(0.28 0.008 60);
   --sidebar-accent-foreground: oklch(0.96 0.006 75);
-  --sidebar-border: oklch(1 0.005 75 / 12%);
+  --sidebar-border: oklch(1 0.005 75 / 15%);
   --sidebar-ring: oklch(0.68 0.06 60);
 }
 
@@ -178,6 +178,17 @@
   animation: message-glow-pulse 2s linear;
 }
 
+/* Agent 活跃态 ring 呼吸 — 替代 animate-pulse 的均匀闪烁，
+   用 opacity + 微弱 scale 做呼吸感，不与 ring box-shadow 冲突 */
+@keyframes agent-ring-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.82; transform: scale(1.03); }
+}
+
+.agent-ring-active {
+  animation: agent-ring-pulse 2s ease-in-out infinite;
+}
+
 @keyframes search-highlight {
   0%   { background-color: color-mix(in oklch, var(--primary) 28%, transparent); }
   100% { background-color: transparent; }
@@ -210,7 +221,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .theme-toggle-icon {
+  .theme-toggle-icon,
+  .agent-ring-active {
     animation: none;
   }
 }
@@ -250,12 +262,36 @@
   100% { background-position: 0% 50%; }
 }
 
+/* Mesh conic 缓慢旋转 — 模拟色相流动 */
+@keyframes auth-mesh-pan {
+  0%   { transform: rotate(0deg) scale(1.2); }
+  50%  { transform: rotate(180deg) scale(1.35); }
+  100% { transform: rotate(360deg) scale(1.2); }
+}
+
+/* Aurora 光斑漂移 — 大范围缓慢位移 */
+@keyframes auth-aurora-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%      { transform: translate(60px, -40px) scale(1.15); }
+  66%      { transform: translate(-30px, 50px) scale(0.9); }
+}
+
+/* Aurora 反向漂移 — 错落感 */
+@keyframes auth-aurora-drift-rev {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%      { transform: translate(-50px, 30px) scale(0.85); }
+  66%      { transform: translate(40px, -50px) scale(1.2); }
+}
+
 .auth-fade-up { animation: auth-fade-up 600ms ease-out both; }
 .auth-fade-up-delay-1 { animation: auth-fade-up 600ms ease-out 100ms both; }
 .auth-fade-up-delay-2 { animation: auth-fade-up 600ms ease-out 200ms both; }
 .auth-fade-up-delay-3 { animation: auth-fade-up 600ms ease-out 300ms both; }
 .auth-orb { animation: auth-float-orb 8s ease-in-out infinite; }
 .auth-glow-breathe { animation: auth-glow-breathe 6s ease-in-out infinite; }
+.auth-mesh-pan { animation: auth-mesh-pan 30s linear infinite; }
+.auth-aurora-drift { animation: auth-aurora-drift 14s ease-in-out infinite; }
+.auth-aurora-drift-rev { animation: auth-aurora-drift-rev 18s ease-in-out infinite; }
 
 /* 标题渐变 shimmer — 用 primary-foreground 和 warning 混合做光带 */
 .auth-shimmer-text {
@@ -274,6 +310,22 @@
   animation: auth-shimmer 4s ease-in-out infinite;
 }
 
+/* ===== Agent Chat Preview（登录页活体群聊预览） ===== */
+
+/* 消息入场：上移 + 淡入 */
+@keyframes chat-msg-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.chat-msg-in { animation: chat-msg-in 450ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* 打字指示器三点跳动 */
+@keyframes chat-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30%           { transform: translateY(-3px); opacity: 1; }
+}
+.chat-typing-dot { animation: chat-typing-bounce 1.2s ease-in-out infinite; }
+
 @media (prefers-reduced-motion: reduce) {
   .auth-fade-up,
   .auth-fade-up-delay-1,
@@ -281,11 +333,153 @@
   .auth-fade-up-delay-3,
   .auth-orb,
   .auth-glow-breathe,
-  .auth-shimmer-text {
+  .auth-mesh-pan,
+  .auth-aurora-drift,
+  .auth-aurora-drift-rev,
+  .auth-shimmer-text,
+  .chat-msg-in,
+  .chat-typing-dot {
     animation: none;
   }
   .auth-shimmer-text {
     background: none;
     -webkit-text-fill-color: currentColor;
+  }
+  .chat-typing-dot { opacity: 0.6; }
+}
+
+/* ===== Analytics Panel — premium motion & ambient ===== */
+
+/* Entrance: fade-up with staggered delays */
+@keyframes analytics-fade-up {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.analytics-fade-up        { animation: analytics-fade-up 600ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.analytics-fade-up-delay-1 { animation: analytics-fade-up 600ms cubic-bezier(0.22, 1, 0.36, 1) 80ms both; }
+.analytics-fade-up-delay-2 { animation: analytics-fade-up 600ms cubic-bezier(0.22, 1, 0.36, 1) 160ms both; }
+.analytics-fade-up-delay-3 { animation: analytics-fade-up 600ms cubic-bezier(0.22, 1, 0.36, 1) 240ms both; }
+.analytics-fade-up-delay-4 { animation: analytics-fade-up 600ms cubic-bezier(0.22, 1, 0.36, 1) 320ms both; }
+
+/* Ambient glow breathing — subtle radial pulse behind chart card */
+@keyframes analytics-ambient-breathe {
+  0%, 100% { opacity: 0.35; transform: scale(1); }
+  50%      { opacity: 0.55; transform: scale(1.06); }
+}
+.analytics-ambient { animation: analytics-ambient-breathe 8s ease-in-out infinite; }
+
+/* Number count-in: subtle scale from 0.96 for editorial impact */
+@keyframes analytics-number-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.analytics-number-in { animation: analytics-number-in 700ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both; }
+
+/* Title gradient shimmer — slow light sweep across header title */
+@keyframes analytics-title-shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+.analytics-title-gradient {
+  background: linear-gradient(
+    90deg,
+    var(--foreground) 0%,
+    var(--foreground) 40%,
+    color-mix(in oklch, var(--foreground) 60%, var(--primary)) 50%,
+    var(--foreground) 60%,
+    var(--foreground) 100%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: analytics-title-shimmer 5s ease-in-out infinite;
+}
+
+/* Bar fill grow — for dimension progress bars */
+@keyframes analytics-bar-grow {
+  from { width: 0%; }
+}
+.analytics-bar-grow { animation: analytics-bar-grow 800ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .analytics-fade-up,
+  .analytics-fade-up-delay-1,
+  .analytics-fade-up-delay-2,
+  .analytics-fade-up-delay-3,
+  .analytics-fade-up-delay-4,
+  .analytics-ambient,
+  .analytics-number-in,
+  .analytics-title-gradient,
+  .analytics-bar-grow {
+    animation: none;
+  }
+  .analytics-title-gradient {
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* ===== Agent Create Panel — premium motion & ambient ===== */
+
+@keyframes agent-fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.agent-fade-up         { animation: agent-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.agent-fade-up-delay-1 { animation: agent-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 70ms both; }
+.agent-fade-up-delay-2 { animation: agent-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 140ms both; }
+.agent-fade-up-delay-3 { animation: agent-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 210ms both; }
+.agent-fade-up-delay-4 { animation: agent-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 280ms both; }
+
+@keyframes agent-ambient-breathe {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(1.08); }
+}
+.agent-ambient { animation: agent-ambient-breathe 7s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-fade-up,
+  .agent-fade-up-delay-1,
+  .agent-fade-up-delay-2,
+  .agent-fade-up-delay-3,
+  .agent-fade-up-delay-4,
+  .agent-ambient {
+    animation: none;
+  }
+}
+
+/* ===== Workspace Ambient Background — 极慢极淡的氛围动画 ===== */
+/* 与 auth 页面的 aurora 不同：workspace 是专注工作场景，
+   动画周期更长（32-90s vs 14-30s），幅度更小，几乎不可感知。
+   作用是让背景「有生命力」而非「吸引注意力」。 */
+
+@keyframes ws-aurora-drift-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%      { transform: translate(40px, -28px) scale(1.08); }
+  66%      { transform: translate(-22px, 32px) scale(0.94); }
+}
+
+@keyframes ws-aurora-drift-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33%      { transform: translate(-35px, 22px) scale(0.9); }
+  66%      { transform: translate(28px, -38px) scale(1.1); }
+}
+
+@keyframes ws-mesh-rotate {
+  0%   { transform: rotate(0deg) scale(1.1); }
+  50%  { transform: rotate(180deg) scale(1.2); }
+  100% { transform: rotate(360deg) scale(1.1); }
+}
+
+.ws-aurora-a { animation: ws-aurora-drift-a 32s ease-in-out infinite; }
+.ws-aurora-b { animation: ws-aurora-drift-b 40s ease-in-out infinite; }
+.ws-mesh     { animation: ws-mesh-rotate 90s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ws-aurora-a,
+  .ws-aurora-b,
+  .ws-mesh {
+    animation: none;
   }
 }

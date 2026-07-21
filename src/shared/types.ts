@@ -539,6 +539,12 @@ export type StreamEvent = BaseEvent &
         venvPath?: string
         error?: string
       }
+    | {
+        type: 'guide_side_effect'
+        target: 'agents' | 'skills' | 'mcp' | 'documents' | 'memory' | 'profile' | 'conversations'
+        action: 'create' | 'update' | 'delete' | 'refresh'
+        payload?: unknown
+      }
   )
 
 /** RunUsage 事件 payload。与 db/schema.ts 的 RunUsage 同形，重复定义避开 client/server 边界 import。 */

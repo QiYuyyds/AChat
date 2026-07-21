@@ -25,18 +25,24 @@ async def init_db() -> None:
     settings = get_settings()
 
     # PostgreSQL (asyncpg) engine configuration
-    _engine = create_async_engine(
-        settings.database_url,
-        echo=False,
-        future=True,
-        pool_size=10,
-        max_overflow=20,
-        pool_pre_ping=False,
-        pool_recycle=3600,
-    )
+    is_sqlite = settings.database_url.startswith("sqlite")
+
+    engine_kwargs: dict = {
+        "echo": False,
+        "future": True,
+    }
+    if not is_sqlite:
+        engine_kwargs.update(
+            pool_size=10,
+            max_overflow=20,
+            pool_pre_ping=False,
+            pool_recycle=3600,
+        )
+
+    _engine = create_async_engine(settings.database_url, **engine_kwargs)
 
     # SQLite needs per-connection PRAGMAs for FK cascade + WAL concurrency.
-    if settings.database_url.startswith("sqlite"):
+    if is_sqlite:
 
         @event.listens_for(_engine.sync_engine, "connect")
         def _init_sqlite_connection(dbapi_connection, connection_record):  # type: ignore[no-untyped-def]
@@ -114,6 +120,8 @@ async def _migrate_columns(conn) -> None:  # type: ignore[no-untyped-def]
         "ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS obsidian_vault_path VARCHAR(1024)",
         # ─── Workspace env preference (workspace-env-isolation change) ───
         "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS env_preference VARCHAR",
+        # ─── Guide agent marker ───
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_guide BOOLEAN NOT NULL DEFAULT FALSE",
     ]
     for stmt in statements:
         # dialects without IF NOT EXISTS (sqlite) / pre-existing column → no-op

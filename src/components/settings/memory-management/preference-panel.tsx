@@ -1,6 +1,6 @@
 'use client'
 
-import { Loader2, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { Loader2, Pencil, Plus, Settings2, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -111,11 +111,10 @@ export function PreferencePanel() {
   }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
+      {/* Toolbar */}
       <div className="flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">
-          共 {items.length} 条偏好
-        </span>
+        <span className="text-xs text-muted-foreground">共 {items.length} 条偏好</span>
         <div className="flex items-center gap-2">
           {!creating && (
             <Button size="sm" variant="outline" onClick={startCreate}>
@@ -132,7 +131,7 @@ export function PreferencePanel() {
 
       {/* Create form */}
       {creating && (
-        <div className="flex flex-col gap-2 rounded-md border p-3">
+        <div className="flex flex-col gap-2.5 rounded-lg border bg-card p-3 shadow-[var(--shadow-sm)] animate-in fade-in-0 slide-in-from-top-1 duration-200">
           <div className="flex items-center gap-2">
             <Input
               placeholder="Key（如 language、theme）"
@@ -172,108 +171,117 @@ export function PreferencePanel() {
         </div>
       )}
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="border-b text-left text-muted-foreground">
-              <th className="pb-1.5 pr-2 font-medium">Key</th>
-              <th className="pb-1.5 pr-2 font-medium">Value</th>
-              <th className="pb-1.5 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item.key} className="border-b last:border-0">
-                <td className="py-1.5 pr-2 font-medium">{item.key}</td>
-                {editingKey === item.key ? (
-                  <>
-                    <td className="py-1.5 pr-2">
-                      <Input
-                        value={editValue}
-                        onChange={(e) => setEditValue(e.target.value)}
-                        className="h-7 text-xs"
-                      />
-                    </td>
-                    <td className="py-1.5">
-                      <div className="flex items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-2 text-xs"
-                          onClick={() => void handleSave()}
-                          disabled={saving}
-                        >
-                          {saving ? <Loader2 className="size-3 animate-spin" /> : '保存'}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-2 text-xs"
-                          onClick={cancelEdit}
-                        >
-                          <X className="size-3" />
-                        </Button>
-                      </div>
-                    </td>
-                  </>
-                ) : (
-                  <>
-                    <td className="py-1.5 pr-2">{item.value}</td>
-                    <td className="py-1.5">
-                      {deleteConfirmKey === item.key ? (
-                        <div className="flex items-center gap-1">
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            className="h-6 px-2 text-xs"
-                            onClick={() => void handleDelete(item.key)}
-                          >
-                            确认删除
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 px-2 text-xs"
-                            onClick={() => setDeleteConfirmKey(null)}
-                          >
-                            取消
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 w-6 p-0"
-                            onClick={() => startEdit(item)}
-                            title="编辑"
-                          >
-                            <Pencil className="size-3" />
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 w-6 p-0 text-destructive"
-                            onClick={() => setDeleteConfirmKey(item.key)}
-                            title="删除"
-                          >
-                            <Trash2 className="size-3" />
-                          </Button>
-                        </div>
-                      )}
-                    </td>
-                  </>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {items.length === 0 && !loading && (
-          <div className="py-8 text-center text-xs text-muted-foreground">
-            暂无用户偏好
+      {/* Card list */}
+      <div className="flex flex-col gap-2">
+        {items.map((item) => (
+          <div
+            key={item.key}
+            className="group rounded-lg border bg-card p-3 shadow-[var(--shadow-sm)] transition-all duration-150 hover:border-primary/30 hover:shadow-[var(--shadow-md)]"
+          >
+            {editingKey === item.key ? (
+              <div className="flex items-center gap-2">
+                <span className="shrink-0 text-sm font-semibold text-foreground">{item.key}</span>
+                <Input
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  className="h-7 flex-1 text-xs"
+                  autoFocus
+                />
+                <Button
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => void handleSave()}
+                  disabled={saving}
+                >
+                  {saving ? <Loader2 className="size-3 animate-spin" /> : '保存'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  onClick={cancelEdit}
+                >
+                  <X className="size-3" />
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-foreground">{item.key}</div>
+                  <div className="mt-0.5 break-words text-xs leading-5 text-muted-foreground">
+                    {item.value}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                  {deleteConfirmKey === item.key ? (
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => void handleDelete(item.key)}
+                      >
+                        确认删除
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setDeleteConfirmKey(null)}
+                      >
+                        取消
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="size-7 p-0"
+                        onClick={() => startEdit(item)}
+                        title="编辑"
+                        aria-label="编辑"
+                      >
+                        <Pencil className="size-3" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="size-7 p-0 text-destructive hover:text-destructive"
+                        onClick={() => setDeleteConfirmKey(item.key)}
+                        title="删除"
+                        aria-label="删除"
+                      >
+                        <Trash2 className="size-3" />
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        ))}
       </div>
+
+      {/* Empty state */}
+      {items.length === 0 && !loading && (
+        <div className="flex flex-col items-center gap-3 py-12 text-center">
+          <div className="flex size-12 items-center justify-center rounded-xl bg-muted/60 shadow-[var(--shadow-sm)]">
+            <Settings2 className="size-5 text-muted-foreground" />
+          </div>
+          <div className="space-y-0.5">
+            <p className="text-sm font-medium text-foreground">暂无用户偏好</p>
+            <p className="text-xs text-muted-foreground">点击「新建」添加跨会话持久的偏好设置</p>
+          </div>
+        </div>
+      )}
+
+      {/* Loading state */}
+      {loading && items.length === 0 && (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        </div>
+      )}
     </div>
   )
 }

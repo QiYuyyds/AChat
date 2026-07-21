@@ -226,7 +226,7 @@ export async function fetchConversations(): Promise<ConversationWithMeta[]> {
 
 export interface CreateConversationBody {
   title?: string
-  mode: 'single' | 'group'
+  mode: 'single' | 'group' | 'guide'
   agentIds: string[]
   boundPath?: string
 }
@@ -955,6 +955,14 @@ export interface UsageSummary {
 
 export async function fetchUsageSummary(): Promise<UsageSummary> {
   return json<UsageSummary>(authFetch(API_BASE_URL + '/api/usage/summary'))
+}
+
+export interface UsageTimeseriesPoint extends UsageBucket {
+  date: string
+}
+
+export async function fetchUsageTimeseries(days: number): Promise<UsageTimeseriesPoint[]> {
+  return json<UsageTimeseriesPoint[]>(authFetch(`${API_BASE_URL}/api/usage/timeseries?days=${days}`))
 }
 
 // ─── Mobile companion connection hints ─────────────

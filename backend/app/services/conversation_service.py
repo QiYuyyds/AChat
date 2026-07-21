@@ -322,17 +322,22 @@ async def create_conversation(
     user_id: str | None = None,
 ) -> ConversationResponse:
     """Create a conversation + its workspace, validating agents and the bound path."""
-    if len(agent_ids) == 0:
-        raise ValueError("At least one agent is required")
-    if mode == "single" and len(agent_ids) != 1:
-        raise ValueError("Single conversation requires exactly one agent")
-    if mode == "group" and len(agent_ids) < 2:
-        raise ValueError("Group conversation requires at least two agents")
+    if mode == "guide":
+        # Guide mode: fixed to ag_guide_builtin, skip quantity validation.
+        agent_ids = ["ag_guide_builtin"]
+    else:
+        if len(agent_ids) == 0:
+            raise ValueError("At least one agent is required")
+        if mode == "single" and len(agent_ids) != 1:
+            raise ValueError("Single conversation requires exactly one agent")
+        if mode == "group" and len(agent_ids) < 2:
+            raise ValueError("Group conversation requires at least two agents")
 
     # Resolve / validate the optional local bound path (sandbox by default).
+    # Guide mode: always sandbox, ignore bound_path.
     workspace_mode = "sandbox"
     resolved_bound_path: str | None = None
-    if bound_path and bound_path.strip():
+    if mode != "guide" and bound_path and bound_path.strip():
         raw = bound_path.strip()
         if IS_WINDOWS and not _WIN_ABS_RE.match(raw):
             raise ValueError(
@@ -381,7 +386,9 @@ async def create_conversation(
             raise ValueError(f"Agents not found: {', '.join(missing)}")
 
         names_by_id = {a.id: a.name for a in agents}
-        resolved_title = title or _default_title_for([names_by_id[a] for a in agent_ids])
+        resolved_title = title or (
+            "小A" if mode == "guide" else _default_title_for([names_by_id[a] for a in agent_ids])
+        )
 
         conv = Conversation(
             id=conversation_id,
@@ -457,9 +464,9 @@ async def create_conversation(
 
 # ─── List ───────────────────────────────────────────────────────────────────
 async def list_conversations(user_id: str | None = None) -> list[ConversationResponse]:
-    """Pinned first (by pinnedAt desc), then by updatedAt desc."""
+    """Pinned first (by pinnedAt desc), then by updatedAt desc. Excludes guide-mode conversations."""
     async with get_db() as db:
-        query = select(Conversation).order_by(
+        query = select(Conversation).where(Conversation.mode != "guide").order_by(
             Conversation.pinned_at.desc(), Conversation.updated_at.desc()
         )
         if user_id is not None:
@@ -659,6 +666,10 @@ async def list_messages(conversation_id: str) -> list[MessageRecord]:
 # ─── Delete ─────────────────────────────────────────────────────────────────
 async def delete_conversation(conversation_id: str) -> None:
     async with get_db() as db:
+        conv = await _require_conversation(db, conversation_id)
+        if conv.mode == "guide":
+            raise ValueError("Guide conversations cannot be deleted")
+
         ws_result = await db.execute(
             select(Workspace.root_path).where(
                 Workspace.conversation_id == conversation_id
@@ -666,9 +677,6 @@ async def delete_conversation(conversation_id: str) -> None:
         )
         ws_row = ws_result.first()
         root_path = ws_row[0] if ws_row else None
-
-        # Ensure it exists (so we can raise the same NotFound the TS did).
-        await _require_conversation(db, conversation_id)
 
         # FK ON DELETE CASCADE (enabled via PRAGMA foreign_keys=ON) clears
         # messages / artifacts / workspaces / attachments / agent_runs / summaries.

@@ -5,10 +5,10 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
 
+import { AuthBackground } from '@/components/auth-background'
 import { AuthBrandPanel } from '@/components/auth-brand-panel'
-import { ParticleBackground } from '@/components/particle-background'
+import { AuthLogo } from '@/components/AuthLogo'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import {
   Dialog,
   DialogContent,
@@ -77,114 +77,98 @@ export default function LoginPage() {
     <div className="flex h-dvh">
       <AuthBrandPanel />
 
-      <div
-        className="relative flex w-full items-center justify-center overflow-hidden p-4 lg:w-2/5"
-        style={{
-          background:
-            'radial-gradient(ellipse 80% 60% at 50% 0%, var(--primary) 3%, transparent 60%),' +
-            'radial-gradient(ellipse 60% 50% at 80% 80%, var(--warning) 2%, transparent 50%),' +
-            'var(--background)',
-        }}
-      >
-        {/* 方块粒子背景 — 鼠标移动时散开 */}
-        <ParticleBackground />
+      <div className="relative flex w-full items-center justify-center overflow-hidden p-6 lg:w-2/5">
+        {/* 高级多层背景 */}
+        <AuthBackground variant="form" />
 
-        {/* 浮动光球 */}
-        <div
-          className="auth-orb pointer-events-none absolute size-32 rounded-full"
-          style={{
-            top: '10%',
-            left: '15%',
-            background: 'radial-gradient(circle, var(--primary) 0%, transparent 70%)',
-            opacity: 0.08,
-          }}
-        />
-        <div
-          className="auth-orb pointer-events-none absolute size-24 rounded-full"
-          style={{
-            bottom: '15%',
-            right: '10%',
-            background: 'radial-gradient(circle, var(--warning) 0%, transparent 70%)',
-            opacity: 0.06,
-            animationDelay: '3s',
-          }}
-        />
+        <div className="auth-fade-up relative z-10 w-full max-w-[420px]">
+          {/* Logo + 标题 */}
+          <div className="mb-8 flex flex-col items-center text-center">
+            <AuthLogo size={56} className="mb-5" />
+            <h1 className="text-2xl font-semibold tracking-tight">欢迎回来</h1>
+            <p className="mt-1.5 text-sm text-muted-foreground">登录以继续你的协作</p>
+          </div>
 
-        <Card
-          className="auth-fade-up relative z-10 w-full max-w-sm border-border/50 bg-card/80 backdrop-blur-sm"
-          style={{ boxShadow: 'var(--shadow-md), var(--inset-hi)' }}
-        >
-          <CardHeader className="items-center text-center">
-            <img src="/favicon.ico" alt="AChat" className="mx-auto size-14" />
-            <CardTitle className="text-xl">欢迎回来</CardTitle>
-            <CardDescription>登录你的 AChat 账户</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSubmit} className="flex flex-col gap-3">
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor="email" className="text-sm font-medium">
-                  邮箱
-                </label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="you@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                  autoComplete="email"
-                  autoFocus
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor="password" className="text-sm font-medium">
-                  密码
-                </label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  autoComplete="current-password"
-                />
-              </div>
-              {error && (
-                <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                  {error}
-                </p>
-              )}
-              <Button
-                type="submit"
-                size="lg"
-                disabled={submitting}
-                className="mt-1 w-full bg-gradient-to-b from-primary to-primary/90 hover:brightness-110"
+          {/* 表单 */}
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div className="auth-fade-up-delay-1 flex flex-col gap-2">
+              <label
+                htmlFor="email"
+                className="text-xs font-medium tracking-wide text-muted-foreground"
               >
-                {submitting ? <Loader2 className="size-4 animate-spin" /> : '登录'}
-              </Button>
-            </form>
-            <p className="mt-4 text-center text-sm text-muted-foreground">
-              还没有账户？{' '}
-              <Link href="/register" className="font-medium text-primary hover:underline">
-                注册
-              </Link>
-            </p>
-          </CardContent>
-        </Card>
+                邮箱
+              </label>
+              <Input
+                id="email"
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoComplete="email"
+                autoFocus
+                className="h-11 px-3.5 transition-all duration-200"
+              />
+            </div>
+            <div className="auth-fade-up-delay-2 flex flex-col gap-2">
+              <label
+                htmlFor="password"
+                className="text-xs font-medium tracking-wide text-muted-foreground"
+              >
+                密码
+              </label>
+              <Input
+                id="password"
+                type="password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                autoComplete="current-password"
+                className="h-11 px-3.5 transition-all duration-200"
+              />
+            </div>
+            {error && (
+              <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </p>
+            )}
+            <Button
+              type="submit"
+              disabled={submitting}
+              className="auth-fade-up-delay-3 mt-2 h-12 w-full bg-gradient-to-b from-primary to-primary/90 text-sm font-medium tracking-wide transition-all duration-200 hover:shadow-md hover:brightness-110 hover:-translate-y-px active:translate-y-0"
+            >
+              {submitting ? <Loader2 className="size-4 animate-spin" /> : '登录'}
+            </Button>
+          </form>
 
-        {vipLoginEnabled && (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="absolute right-4 bottom-4 z-20 bg-background/80 backdrop-blur-sm"
-            onClick={() => handleVipOpenChange(true)}
+          {/* 分隔线 */}
+          <div className="my-6 flex items-center gap-3">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-xs text-muted-foreground">还没有账户</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+
+          {/* 注册链接 — 边框按钮式 */}
+          <Link
+            href="/register"
+            className="block rounded-lg border border-border py-3 text-center text-sm font-medium transition-all duration-200 hover:bg-muted hover:-translate-y-px"
           >
-            <Crown className="size-4" />
-            VIP 登录
-          </Button>
-        )}
+            注册新账户
+          </Link>
+
+          {/* VIP 登录 — 次级文字入口 */}
+          {vipLoginEnabled && (
+            <button
+              type="button"
+              onClick={() => handleVipOpenChange(true)}
+              className="mt-4 flex w-full items-center justify-center gap-1.5 py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Crown className="size-3.5" />
+              VIP 登录
+            </button>
+          )}
+        </div>
       </div>
 
       <Dialog open={vipOpen} onOpenChange={handleVipOpenChange}>

@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { deleteSkill, listSkills, uploadSkill, type SkillSummary } from '@/lib/api'
+import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 
 export function SkillLibrary() {
   const [skills, setSkills] = useState<SkillSummary[]>([])
@@ -33,6 +34,8 @@ export function SkillLibrary() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  useGuideSideEffectRefresh('skills', () => { void refresh() })
 
   // One upload entry point: backend analyses whatever lands here (single
   // SKILL.md, several files, or a whole folder tree) and rebases to SKILL.md.

@@ -193,6 +193,8 @@ function renderMessagePartForExport(part: MessageRow['parts'][number]): string {
     case 'image_attachment':
     case 'file_attachment':
       return `[Attachment: ${part.fileName} (${part.attachmentId}, ${part.mimeType}, ${part.size} bytes)]`
+    default:
+      return ''
   }
 }
 
@@ -1087,7 +1089,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
           }}
         />
         {/* 辅助按钮组（紧贴）—— 让 Paperclip + 审批模式视觉成一组，与右侧主操作按钮 send 区分 */}
-        <div className="flex items-center">
+        <div className="flex items-center gap-0.5 rounded-lg bg-muted/40 p-1">
           <Button
             type="button"
             size="icon"
@@ -1112,8 +1114,8 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
             }
             className={cn(
               approvalMode === 'review'
-                ? 'text-success hover:text-success'
-                : 'text-destructive hover:text-destructive',
+                ? 'bg-success/10 text-success hover:bg-success/20 hover:text-success'
+                : 'bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive',
             )}
           >
             {approvalMode === 'review' ? (
@@ -1136,7 +1138,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
             }
             className={cn(
               ragEnabled
-                ? 'text-primary hover:text-primary'
+                ? 'bg-primary/10 text-primary hover:bg-primary/20 hover:text-primary'
                 : 'text-muted-foreground hover:text-foreground',
             )}
           >
@@ -1161,6 +1163,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
             size="icon"
             title="发送 (Enter)"
             data-testid="composer-send"
+            className="enabled:shadow-[var(--shadow-sm)] transition-shadow"
           >
             <Send className="size-4" />
           </Button>

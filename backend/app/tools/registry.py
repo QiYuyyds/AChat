@@ -36,6 +36,13 @@ from app.tools.fs_grep import fs_grep_tool
 from app.tools.fs_list import fs_list_tool
 from app.tools.fs_read import fs_read_tool
 from app.tools.fs_write import fs_write_tool
+from app.tools.manage_agents import manage_agents_tool
+from app.tools.manage_conversations import manage_conversations_tool
+from app.tools.manage_documents import manage_documents_tool
+from app.tools.manage_mcp import manage_mcp_tool
+from app.tools.manage_memory import manage_memory_tool
+from app.tools.manage_profile import manage_profile_tool
+from app.tools.manage_skills import manage_skills_tool
 from app.tools.memory_rag import (
     memory_recall_tool,
     rag_delete_document_tool,
@@ -205,6 +212,14 @@ def _build_registry() -> ToolRegistry:
     reg.register(create_plan_tool)
     reg.register(plan_step_tool)
     reg.register(add_plan_steps_tool)
+    # Guide agent management tools (only injected for is_guide=True agents)
+    reg.register(manage_agents_tool)
+    reg.register(manage_skills_tool)
+    reg.register(manage_mcp_tool)
+    reg.register(manage_documents_tool)
+    reg.register(manage_memory_tool)
+    reg.register(manage_profile_tool)
+    reg.register(manage_conversations_tool)
     return reg
 
 

@@ -89,7 +89,8 @@ async def delete_conversation(conversation_id: str, user: User = Depends(get_cur
     try:
         await conversation_service.delete_conversation(conversation_id)
     except ValueError as err:
-        return _err(str(err), 404)
+        status = 403 if "cannot be deleted" in str(err) else 404
+        return _err(str(err), status)
     return JSONResponse(content={"ok": True})
 
 

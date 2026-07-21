@@ -766,6 +766,30 @@ AChat 额外给 Codex 注入一个 stdio MCP bridge，只暴露 allowlist：`wri
 
 ---
 
+## Guide Agent 管理工具（7 个，仅 guide agent 可见）
+
+源文件：`backend/app/tools/manage_agents.py` / `manage_skills.py` / `manage_mcp.py` / `manage_documents.py` / `manage_memory.py` / `manage_profile.py` / `manage_conversations.py`
+
+这 7 个管理工具仅对 `is_guide=True` 的 Agent 注入（非 guide Agent 即使 `toolNames` 误配也会被过滤）。所有管理工具内部复用现有 service 函数，通过 `ToolContext.user_id` 隔离用户数据。
+
+| 工具 | action | 说明 |
+|------|--------|------|
+| `manage_agents` | list / create / update / delete | 管理 Agent；update/delete 对 `is_builtin=True` 或 `is_guide=True` 拒绝 |
+| `manage_skills` | list / create / delete | 管理 Skill |
+| `manage_mcp` | list / create / update / delete | 管理 MCP Server |
+| `manage_documents` | list / upload / delete / refresh | 管理知识库文档 |
+| `manage_memory` | list / delete / consolidate / optimize | 管理记忆；optimize 接收 plan（delete_ids + merge_groups + update_ids），LLM 驱动的智能整理 |
+| `manage_profile` | get / update | 管理用户资料与 API Key |
+| `manage_conversations` | list / get / search / update / delete | 管理会话；delete 对 `mode='guide'` 拒绝 |
+
+**破坏性操作双重确认**：
+- system prompt 软约束：要求 guide agent 先 `ask_user` 再执行 delete
+- 工具硬约束：`delete` action 必须传 `confirm=true`，否则返回错误
+
+**副作用通知**：工具执行成功后，通过 EventBus 发送 `guide_side_effect` SSE 事件（见 Spec 02），前端收到后刷新对应面板。
+
+---
+
 ## 与 Spec 01 / 05 / 06 的关系
 
 - Spec 01：定义了 `Agent.toolNames`（引用本 spec 的工具名；Claude Code / Codex agent 强制 `[]`）

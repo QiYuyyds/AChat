@@ -29,7 +29,7 @@ _AGENT_COLUMNS = [
     "id", "user_id", "name", "avatar", "description",
     "system_prompt", "adapter_name", "model_provider", "model_id",
     "api_key", "api_base_url", "executable_path", "protocol_family",
-    "is_builtin", "is_orchestrator", "supports_vision", "memory_enabled",
+    "is_builtin", "is_orchestrator", "is_guide", "supports_vision", "memory_enabled",
     "created_at",
 ]
 
