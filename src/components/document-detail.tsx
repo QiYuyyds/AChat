@@ -129,7 +129,7 @@ export function DocumentDetail({
 
   if (loading) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center">
+      <div className="flex min-h-0 flex-1 items-center justify-center bg-background/85 backdrop-blur-2xl">
         <Loader2 className="size-5 animate-spin text-muted-foreground" />
       </div>
     )
@@ -137,7 +137,7 @@ export function DocumentDetail({
 
   if (!doc || !latestVer) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2">
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-background/85 backdrop-blur-2xl">
         <span className="text-xs text-muted-foreground">文档未找到</span>
         <Button variant="outline" size="sm" onClick={onBack}>
           返回列表
@@ -147,14 +147,16 @@ export function DocumentDetail({
   }
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background/85 backdrop-blur-2xl">
       {/* Header */}
       <div className="shrink-0 border-b px-4 py-3">
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" className="size-7" onClick={onBack} title="返回">
+          <Button variant="ghost" size="icon" className="size-7" onClick={onBack} title="返回" aria-label="返回">
             <ArrowLeft className="size-4" />
           </Button>
-          <FileText className="size-4 text-muted-foreground" />
+          <div className="flex size-8 items-center justify-center rounded-lg bg-muted/60">
+            <FileText className="size-4 text-muted-foreground" />
+          </div>
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">{doc.title}</h2>
           <Button
             variant="ghost"
@@ -168,17 +170,17 @@ export function DocumentDetail({
         </div>
 
         {/* Metadata badges */}
-        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-9 text-[10px] text-muted-foreground">
+        <div className="mt-2 flex flex-wrap items-center gap-2 pl-[2.75rem] text-[10px] text-muted-foreground">
           <Badge variant="outline" className="text-[10px]">{doc.docType}</Badge>
-          <Badge variant="ghost" className="text-[10px]">
+          <Badge variant="secondary" className="text-[10px]">
             {SOURCE_LABELS[doc.source] ?? doc.source}
           </Badge>
           <span>·</span>
           <span>{doc.createdBy}</span>
           <span>·</span>
-          <span>创建于 {formatTime(doc.createdAt)}</span>
+          <span>创建 {formatTime(doc.createdAt)}</span>
           <span>·</span>
-          <span>更新于 {formatTime(doc.updatedAt)}</span>
+          <span>更新 {formatTime(doc.updatedAt)}</span>
         </div>
       </div>
 
@@ -221,7 +223,7 @@ export function DocumentDetail({
 
         {/* Version history sidebar */}
         <div className="flex w-56 shrink-0 flex-col border-l max-md:hidden">
-          <div className="flex shrink-0 items-center justify-between px-3 py-2">
+          <div className="flex shrink-0 items-center justify-between px-3 py-2.5">
             <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
               版本历史 ({versions.length})
             </span>
@@ -236,7 +238,7 @@ export function DocumentDetail({
             </Button>
           </div>
           <ScrollArea className="min-h-0 flex-1">
-            <div className="space-y-1 p-2">
+            <div className="space-y-1.5 p-2">
               {versions.map((ver) => {
                 const isActive = ver.id === (selectedVersionId ?? latestVer.id)
                 const parser = (ver.metadata?.parser as string | undefined) ?? undefined
@@ -244,8 +246,10 @@ export function DocumentDetail({
                   <div
                     key={ver.id}
                     className={cn(
-                      'cursor-pointer rounded-md border border-transparent px-2 py-1.5 transition hover:border-border/60 hover:bg-accent',
-                      isActive && 'border-primary/40 bg-primary/5',
+                      'cursor-pointer rounded-lg border px-2.5 py-2 transition-all duration-150',
+                      isActive
+                        ? 'border-primary/40 bg-primary/5 shadow-[var(--shadow-sm)]'
+                        : 'border-border/40 hover:border-primary/20 hover:bg-accent/50',
                     )}
                     onClick={() => setSelectedVersionId(ver.id)}
                   >
@@ -256,11 +260,11 @@ export function DocumentDetail({
                         <Badge variant="secondary" className="text-[9px]">最新</Badge>
                       )}
                     </div>
-                    <div className="mt-0.5 pl-5 text-[10px] text-muted-foreground">
+                    <div className="mt-0.5 pl-[1.125rem] text-[10px] text-muted-foreground">
                       {formatTime(ver.createdAt)}
                     </div>
                     {parser && (
-                      <div className="pl-5 text-[10px] text-muted-foreground">
+                      <div className="pl-[1.125rem] text-[10px] text-muted-foreground">
                         {parser}
                       </div>
                     )}
@@ -272,13 +276,13 @@ export function DocumentDetail({
                           e.stopPropagation()
                           void handleIngest(ver.id)
                         }}
-                        className="ml-5 mt-0.5 text-[10px] text-primary hover:underline"
+                        className="ml-[1.125rem] mt-0.5 text-[10px] text-primary hover:underline"
                       >
                         入库 RAG
                       </button>
                     )}
                     {ingestingId === ver.id && (
-                      <span className="ml-5 mt-0.5 inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <span className="ml-[1.125rem] mt-0.5 inline-flex items-center gap-1 text-[10px] text-muted-foreground">
                         <Loader2 className="size-2.5 animate-spin" /> 入库中
                       </span>
                     )}

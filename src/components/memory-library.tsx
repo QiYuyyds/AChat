@@ -23,22 +23,24 @@ export function MemorySidebarNav() {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center gap-2 px-3 pt-3 pb-2">
-        <Brain className="size-4 text-muted-foreground" />
+      <div className="flex shrink-0 items-center gap-2 px-3 pt-4 pb-3">
+        <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10">
+          <Brain className="size-4 text-primary" />
+        </div>
         <h2 className="text-sm font-semibold">记忆管理</h2>
       </div>
 
-      <div className="flex shrink-0 flex-col gap-0.5 px-3 pb-2">
+      <div className="flex shrink-0 flex-col gap-1 px-3 pb-3">
         {TABS.map((t) => (
           <button
             key={t.id}
             type="button"
             onClick={() => setTab(t.id)}
             className={cn(
-              'rounded-md px-2.5 py-1.5 text-left text-xs font-medium transition',
+              'rounded-lg px-3 py-2 text-left text-xs font-medium transition-all duration-150',
               tab === t.id
-                ? 'bg-accent text-foreground'
-                : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+                ? 'bg-primary/10 text-primary border-l-2 border-primary'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground',
             )}
           >
             {t.label}
@@ -46,7 +48,7 @@ export function MemorySidebarNav() {
         ))}
       </div>
 
-      <div className="shrink-0 border-t px-3 py-2">
+      <div className="shrink-0 border-t px-3 py-2.5">
         <p className="text-[11px] leading-4 text-muted-foreground">{activeTab.desc}</p>
       </div>
     </div>
@@ -56,18 +58,22 @@ export function MemorySidebarNav() {
 /** 主区域内容：根据当前 Tab 渲染完整表格 */
 export function MemoryMainPanel() {
   const tab = useAppStore((s) => s.memoryTab)
+  const activeTab = TABS.find((t) => t.id === tab) ?? TABS[0]
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center gap-2 border-b px-6 py-3">
-        <Brain className="size-5 text-muted-foreground" />
-        <h2 className="text-base font-semibold">
-          {TABS.find((t) => t.id === tab)?.label ?? '记忆管理'}
-        </h2>
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background/85 backdrop-blur-2xl">
+      <div className="flex shrink-0 items-center gap-2.5 border-b px-6 py-3.5">
+        <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10">
+          <Brain className="size-4 text-primary" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-base font-semibold">{activeTab.label}</h2>
+          <p className="truncate text-xs text-muted-foreground">{activeTab.desc}</p>
+        </div>
       </div>
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="p-6">
+        <div className="px-6 py-6">
           {tab === 'long-term' && <LongTermMemoryPanel />}
           {tab === 'preferences' && <PreferencePanel />}
           {tab === 'session' && <SessionMemoryPanel />}

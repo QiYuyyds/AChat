@@ -1,6 +1,6 @@
 'use client'
 
-import { Loader2 } from 'lucide-react'
+import { Loader2, MessagesSquare } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 
 import { AgentWorkingIndicator } from '@/components/agent-working-indicator'
@@ -147,15 +147,23 @@ export function MessageList({ conversationId }: { conversationId: string }) {
 
   if (messages.length === 0) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center p-8 text-sm text-muted-foreground">
-        还没有消息，发一条试试。
+      <div className="flex min-h-0 flex-1 items-center justify-center p-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <div className="flex size-14 items-center justify-center rounded-2xl bg-muted/60 shadow-[var(--shadow-sm)]">
+            <MessagesSquare className="size-6 text-muted-foreground" />
+          </div>
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-foreground">还没有消息</p>
+            <p className="text-xs text-muted-foreground">发一条试试，或 / 查看命令</p>
+          </div>
+        </div>
       </div>
     )
   }
 
   return (
     <ScrollArea className="min-h-0 flex-1" viewportRef={viewportRef}>
-      <div className="p-4">
+      <div className="px-4 py-6 md:px-6 md:py-8">
         {segments.map((seg, si) => {
           const segMargin = si === 0 ? '' : 'mt-4'
 
@@ -165,10 +173,10 @@ export function MessageList({ conversationId }: { conversationId: string }) {
                 {seg.messages.map((m, mi) => {
                   const grouped = mi > 0 && isGroupedWithPrev(seg.messages[mi - 1], m)
                   return (
-                    <div
-                      key={m.id}
-                      className={cn(mi === 0 && si === 0 ? '' : grouped ? 'mt-0.5' : 'mt-4')}
-                    >
+                  <div
+                    key={m.id}
+                    className={cn(mi === 0 && si === 0 ? '' : grouped ? 'mt-1' : 'mt-6')}
+                  >
                       <MessageItem message={m} grouped={grouped} />
                     </div>
                   )
@@ -189,7 +197,7 @@ export function MessageList({ conversationId }: { conversationId: string }) {
                     </div>
                   ) : (
                     col.messages.map((m, mi) => (
-                      <div key={m.id} className={cn(mi === 0 ? 'mt-1.5' : 'mt-0.5')}>
+                      <div key={m.id} className={cn(mi === 0 ? 'mt-2' : 'mt-1')}>
                         <MessageItem message={m} grouped={true} />
                       </div>
                     ))
@@ -226,7 +234,9 @@ function isNearBottom(el: HTMLElement): boolean {
 function getMessageContentLength(message: MessageRow | undefined): number {
   if (!message) return 0
   let length = 0
-  for (const part of message.parts) {
+  const parts = message.parts
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]
     switch (part.type) {
       case 'text':
       case 'thinking':

@@ -163,10 +163,10 @@ export function FileExplorerPanel() {
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          <Button size="icon" variant="ghost" onClick={refresh} title="刷新" disabled={loadingRoot}>
+          <Button size="icon" variant="ghost" onClick={refresh} title="刷新" aria-label="刷新" disabled={loadingRoot}>
             <RefreshCw className={cn('size-4', loadingRoot && 'animate-spin')} />
           </Button>
-          <Button size="icon" variant="ghost" onClick={() => setFileExplorerOpen(false)} title="关闭">
+          <Button size="icon" variant="ghost" onClick={() => setFileExplorerOpen(false)} title="关闭" aria-label="关闭">
             <X className="size-4" />
           </Button>
         </div>

@@ -225,6 +225,7 @@ export function GuideFloatingPanel() {
         onClick={toggleOpen}
         className="fixed bottom-6 right-6 z-50 flex size-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition-transform hover:scale-105"
         title="打开小A (Ctrl+G)"
+        aria-label="打开小A"
       >
         <Bot className="size-5" />
         {unreadCount > 0 && (
@@ -308,7 +309,7 @@ function GuidePanelHeader({
         )}
         title={streamConnected ? '已连接' : '未连接'}
       />
-      <Button type="button" variant="ghost" size="icon" className="size-6" onClick={onClose} title="收起 (Ctrl+G)">
+      <Button type="button" variant="ghost" size="icon" className="size-6" onClick={onClose} title="收起 (Ctrl+G)" aria-label="收起">
         <ChevronDown className="size-3.5" />
       </Button>
     </div>

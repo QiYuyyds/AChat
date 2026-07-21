@@ -10,7 +10,7 @@ function TypingDots() {
   return (
     <span className="inline-flex items-center gap-0.5">
       <span
-        className="size-1.5 rounded-full bg-primary/60"
+        className="size-1.5 rounded-full bg-primary/40"
         style={{ animation: 'typing-bounce 1.4s infinite', animationDelay: '0s' }}
       />
       <span
@@ -18,7 +18,7 @@ function TypingDots() {
         style={{ animation: 'typing-bounce 1.4s infinite', animationDelay: '0.15s' }}
       />
       <span
-        className="size-1.5 rounded-full bg-primary/60"
+        className="size-2 rounded-full bg-primary/80"
         style={{ animation: 'typing-bounce 1.4s infinite', animationDelay: '0.3s' }}
       />
       <style>{`
@@ -54,11 +54,11 @@ export function AgentWorkingIndicator({
       className="flex items-center gap-3 rounded-lg animate-in fade-in slide-in-from-bottom-1"
     >
       {agent ? (
-        <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-card ring-2 ring-primary animate-pulse">
+        <div className="flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-card ring-2 ring-primary/80 agent-ring-active">
           <AgentAvatar agent={agent} size="md" />
         </div>
       ) : (
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-card ring-2 ring-primary animate-pulse">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-card ring-2 ring-primary/80 agent-ring-active">
           <span className="text-sm font-medium">A</span>
         </div>
       )}

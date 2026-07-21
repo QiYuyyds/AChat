@@ -117,6 +117,7 @@ function PinnedRow({
         disabled={busy}
         className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition hover:bg-background hover:text-foreground group-hover:opacity-100 max-md:opacity-100 disabled:opacity-30"
         title="取消 pin"
+        aria-label="取消 pin"
       >
         <X className="size-3" />
       </button>

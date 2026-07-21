@@ -57,6 +57,7 @@
     "react-diff-viewer-continued": "^4.2.2",
     "react-dom": "19.2.4",
     "react-markdown": "^10.1.0",
+    "recharts": "^3.9.2",
     "remark-gfm": "^4.0.1",
     "shadcn": "^4.8.0",
     "shiki": "^4.1.0",

@@ -468,7 +468,7 @@ setIsOrchestrator(preset.id === 'orchestrator')
             />
           )
         ) : (
-        <div className="flex min-h-0 flex-col gap-2">
+        <div className="agent-fade-up flex min-h-0 flex-col gap-2">
           <Tabs
             value={activeTab}
             onValueChange={(v) => setActiveTab(v as AgentTab)}
@@ -537,8 +537,8 @@ setIsOrchestrator(preset.id === 'orchestrator')
                   <div className="flex flex-col gap-1.5">
                     <label
                       className={cn(
-                        'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
-                        adapterKind === 'custom' && 'border-primary bg-primary/5',
+                        'flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 transition-all duration-300 hover:border-primary/30 hover:shadow-[var(--shadow-sm)]',
+                        adapterKind === 'custom' && 'border-primary/40 bg-primary/[0.04] shadow-[var(--shadow-sm)]',
                       )}
                     >
                       <input
@@ -557,8 +557,8 @@ setIsOrchestrator(preset.id === 'orchestrator')
                     </label>
                     <label
                       className={cn(
-                        'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
-                        adapterKind === 'claude-code' && 'border-primary bg-primary/5',
+                        'flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 transition-all duration-300 hover:border-primary/30 hover:shadow-[var(--shadow-sm)]',
+                        adapterKind === 'claude-code' && 'border-primary/40 bg-primary/[0.04] shadow-[var(--shadow-sm)]',
                       )}
                     >
                       <input
@@ -577,8 +577,8 @@ setIsOrchestrator(preset.id === 'orchestrator')
                     </label>
                     <label
                       className={cn(
-                        'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
-                        adapterKind === 'codex' && 'border-primary bg-primary/5',
+                        'flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 transition-all duration-300 hover:border-primary/30 hover:shadow-[var(--shadow-sm)]',
+                        adapterKind === 'codex' && 'border-primary/40 bg-primary/[0.04] shadow-[var(--shadow-sm)]',
                       )}
                     >
                       <input
@@ -851,8 +851,8 @@ setIsOrchestrator(preset.id === 'orchestrator')
                   <Label>视觉</Label>
                   <label
                     className={cn(
-                      'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
-                      supportsVision && 'border-primary bg-primary/5',
+                      'flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 transition-all duration-300 hover:border-primary/30 hover:shadow-[var(--shadow-sm)]',
+                      supportsVision && 'border-primary/40 bg-primary/[0.04] shadow-[var(--shadow-sm)]',
                     )}
                   >
                     <input
@@ -884,8 +884,8 @@ setIsOrchestrator(preset.id === 'orchestrator')
                           type="button"
                           onClick={() => applyToolPreset(preset)}
                           className={cn(
-                            'rounded-md border px-2.5 py-1.5 text-left transition hover:border-foreground/30',
-                            activePresetId === preset.id && 'border-primary bg-primary/5',
+                            'rounded-lg border px-2.5 py-1.5 text-left transition-all duration-300 hover:border-primary/30 hover:shadow-[var(--shadow-sm)]',
+                            activePresetId === preset.id && 'border-primary/40 bg-primary/[0.04] shadow-[var(--shadow-sm)]',
                           )}
                         >
                           <span className="text-xs font-medium">{preset.label}</span>
@@ -904,8 +904,8 @@ setIsOrchestrator(preset.id === 'orchestrator')
                               <label
                                 key={t}
                                 className={cn(
-                                  'flex cursor-pointer items-start gap-1.5 rounded-md border px-2 py-1.5 transition hover:border-foreground/30',
-                                  toolNames.has(t) && 'border-primary bg-primary/5',
+                                  'flex cursor-pointer items-start gap-1.5 rounded-lg border px-2 py-1.5 transition-all duration-300 hover:border-primary/30 hover:shadow-[var(--shadow-sm)]',
+                                  toolNames.has(t) && 'border-primary/40 bg-primary/[0.04] shadow-[var(--shadow-sm)]',
                                 )}
                               >
                                 <input
@@ -985,8 +985,8 @@ setIsOrchestrator(preset.id === 'orchestrator')
                           <label
                             key={skill.slug}
                             className={cn(
-                              'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
-                              skillNames.has(skill.slug) && 'border-primary bg-primary/5',
+                              'flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 transition-all duration-300 hover:border-primary/30 hover:shadow-[var(--shadow-sm)]',
+                              skillNames.has(skill.slug) && 'border-primary/40 bg-primary/[0.04] shadow-[var(--shadow-sm)]',
                             )}
                           >
                             <input
@@ -1031,8 +1031,8 @@ setIsOrchestrator(preset.id === 'orchestrator')
                           <label
                             key={server.id}
                             className={cn(
-                              'flex cursor-pointer items-start gap-2 rounded-md border px-3 py-2 transition hover:border-foreground/30',
-                              mcpServerIds.has(server.id) && 'border-primary bg-primary/5',
+                              'flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 transition-all duration-300 hover:border-primary/30 hover:shadow-[var(--shadow-sm)]',
+                              mcpServerIds.has(server.id) && 'border-primary/40 bg-primary/[0.04] shadow-[var(--shadow-sm)]',
                             )}
                           >
                             <input
@@ -1136,17 +1136,20 @@ function CreateModeChoice({
 }) {
   return (
     <div className="flex min-h-0 flex-col gap-3">
-      <div className="grid gap-2">
+      <div className="grid gap-2.5">
+        {/* Conversational creation — premium card with ambient gradient wash */}
         <button
           type="button"
           onClick={onConversational}
-          className="flex cursor-pointer items-start gap-3 rounded-md border px-3 py-3 text-left transition hover:border-primary hover:bg-primary/5"
+          className="agent-fade-up group relative flex cursor-pointer items-start gap-3 overflow-hidden rounded-lg border px-4 py-3.5 text-left transition-all duration-500 hover:border-primary/40 hover:bg-primary/[0.03] hover:shadow-[var(--shadow-md)]"
         >
-          <div className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-            <MessageSquareText className="size-4" />
+          <div className="pointer-events-none absolute -right-6 -top-6 size-20 rounded-full bg-primary/[0.06] opacity-60 blur-2xl transition-opacity duration-500 group-hover:opacity-100" />
+          <div className="relative mt-0.5 inline-flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+            <div className="pointer-events-none absolute inset-0 rounded-lg bg-primary/10 blur-md" />
+            <MessageSquareText className="relative size-4 text-primary" />
           </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-1.5 text-sm font-medium">
+          <div className="relative min-w-0">
+            <div className="flex items-center gap-1.5 text-sm font-semibold tracking-tight">
               对话创建
               <Sparkles className="size-3.5 text-primary" />
             </div>
@@ -1156,16 +1159,18 @@ function CreateModeChoice({
           </div>
         </button>
 
+        {/* Detailed configuration — premium card with ambient gradient wash */}
         <button
           type="button"
           onClick={onDetailed}
-          className="flex cursor-pointer items-start gap-3 rounded-md border px-3 py-3 text-left transition hover:border-foreground/30"
+          className="agent-fade-up-delay-1 group relative flex cursor-pointer items-start gap-3 overflow-hidden rounded-lg border px-4 py-3.5 text-left transition-all duration-500 hover:border-foreground/30 hover:shadow-[var(--shadow-md)]"
         >
-          <div className="mt-0.5 inline-flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-            <SlidersHorizontal className="size-4" />
+          <div className="pointer-events-none absolute -right-6 -top-6 size-20 rounded-full bg-muted-foreground/[0.06] opacity-60 blur-2xl transition-opacity duration-500 group-hover:opacity-100" />
+          <div className="relative mt-0.5 inline-flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+            <SlidersHorizontal className="size-4 text-muted-foreground" />
           </div>
-          <div className="min-w-0">
-            <div className="text-sm font-medium">详细配置</div>
+          <div className="relative min-w-0">
+            <div className="text-sm font-semibold tracking-tight">详细配置</div>
             <div className="mt-1 text-xs leading-5 text-muted-foreground">
               直接编辑名称、模型、API Key、工具权限和 System Prompt。
             </div>
@@ -1173,7 +1178,7 @@ function CreateModeChoice({
         </button>
       </div>
 
-      <div className="flex justify-end">
+      <div className="agent-fade-up-delay-2 flex justify-end">
         <Button variant="outline" onClick={onCancel}>
           取消
         </Button>

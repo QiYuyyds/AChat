@@ -174,7 +174,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
       data-role={message.role}
       data-status={message.status}
       className={cn(
-        'group flex items-start gap-3 rounded-lg animate-in fade-in slide-in-from-bottom-1',
+        'group flex items-start gap-3 rounded-lg animate-in fade-in slide-in-from-bottom-2 duration-300',
         isUser && 'flex-row-reverse',
       )}
     >
@@ -195,7 +195,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
           size="md"
           avatarClassName={cn(
             'transition-all',
-            isRunActive && 'ring-2 ring-primary ring-offset-1 animate-pulse',
+            isRunActive && 'ring-2 ring-primary ring-offset-1 agent-ring-active',
           )}
         />
       ) : (
@@ -206,7 +206,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
         </Avatar>
       )}
 
-      <div className={cn('flex max-w-[80%] min-w-0 flex-1 flex-col gap-1', isUser && 'items-end')}>
+      <div className={cn('flex max-w-[85%] min-w-0 flex-1 flex-col gap-1 md:max-w-[75%] lg:max-w-[70%]', isUser && 'items-end')}>
         <div className="flex items-center gap-2 text-xs text-muted-foreground font-sans tabular-nums">
           {!grouped && (
             <>

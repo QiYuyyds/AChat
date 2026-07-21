@@ -6,6 +6,8 @@ per-model and per-conversation (top 10) aggregates. Usage JSON is stored
 camelCase (see agent_runner), so keys are read with camelCase names.
 """
 
+from datetime import datetime, timedelta
+
 from sqlalchemy import select
 
 from app.db.engine import get_db
@@ -149,3 +151,44 @@ async def get_usage_summary() -> dict:
         "byAgent": by_agent,
         "byModel": by_model,
     }
+
+
+async def get_usage_timeseries(days: int) -> list[dict]:
+    """Aggregate token usage by natural day for the last ``days`` days.
+
+    Returns a list of daily buckets sorted ascending by date. Days with no
+    runs are filled with zero-value buckets to ensure chart continuity.
+    Each bucket has: date (YYYY-MM-DD), inputTokens, outputTokens,
+    cacheReadTokens, cacheCreationTokens, totalTokens, runs.
+    """
+    now = now_ms()
+    today_date = datetime.fromtimestamp(now / 1000).date()
+
+    date_keys: list[str] = []
+    for i in range(days - 1, -1, -1):
+        d = today_date - timedelta(days=i)
+        date_keys.append(d.strftime("%Y-%m-%d"))
+
+    buckets: dict[str, dict] = {dk: _empty_with_date(dk) for dk in date_keys}
+
+    async with get_db() as db:
+        run_rows = (
+            await db.execute(select(AgentRun).where(AgentRun.usage.is_not(None)))
+        ).scalars().all()
+
+        for row in run_rows:
+            u = row.usage_dict
+            if not u:
+                continue
+            row_date = datetime.fromtimestamp(row.started_at / 1000).date()
+            dk = row_date.strftime("%Y-%m-%d")
+            if dk in buckets:
+                _accumulate(buckets[dk], u)
+
+    return [buckets[dk] for dk in date_keys]
+
+
+def _empty_with_date(date: str) -> dict:
+    b = _empty()
+    b["date"] = date
+    return b

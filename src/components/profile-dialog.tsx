@@ -108,7 +108,6 @@ export function ProfileDialog({
     if (busy || !initial) return
     setBusy(true)
     try {
-      // Profile fields go through the profile API
       const patch: Record<string, string | null> = {}
       const profileKeys: Array<keyof ProfileForm> = ['name', 'location', 'hometown', 'preferences', 'bio']
       for (const key of profileKeys) {
@@ -130,7 +129,6 @@ export function ProfileDialog({
         }))
       }
 
-      // Vault path is saved separately via settings API (NOT profile — avoids preference extraction)
       const currentVault = form.obsidianVaultPath.trim()
       const originalVault = initial.obsidianVaultPath.trim()
       if (currentVault !== originalVault) {
@@ -141,7 +139,6 @@ export function ProfileDialog({
         setForm((f) => ({ ...f, obsidianVaultPath: newVaultPath }))
       }
 
-      // Update initial to reflect saved state
       setInitial({
         ...form,
         obsidianVaultPath: form.obsidianVaultPath,
@@ -169,97 +166,114 @@ export function ProfileDialog({
         </DialogHeader>
 
         <div className="min-h-0 overflow-y-auto pr-1">
-          <section className="flex flex-col gap-4 rounded-lg border bg-muted/30 p-4">
-            <div className="flex items-center gap-4">
+          {/* ─── Avatar section — premium card with ambient glow ─── */}
+          <section className="agent-fade-up relative overflow-hidden rounded-lg border border-border/40 bg-muted/20 p-4">
+            <div className="agent-ambient pointer-events-none absolute -right-8 -top-8 size-28 rounded-full bg-primary/[0.05] blur-2xl" />
+            <div className="relative flex items-center gap-4">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={avatarUploading}
-                className="group relative size-16 shrink-0 rounded-full transition hover:ring-2 hover:ring-primary hover:ring-offset-2 disabled:opacity-50"
+                className="group relative size-20 shrink-0 rounded-full transition-all duration-500 hover:ring-2 hover:ring-primary hover:ring-offset-2 hover:ring-offset-background disabled:opacity-50"
                 title="点击上传头像"
               >
-                <Avatar className="size-16" size="lg">
+                <div className="pointer-events-none absolute inset-0 rounded-full bg-primary/10 opacity-0 blur-md transition-opacity duration-500 group-hover:opacity-100" />
+                <Avatar className="size-20" size="lg">
                   {avatarSrc && <AvatarImage src={avatarSrc} alt="头像" />}
-                  <AvatarFallback className="bg-primary text-lg text-primary-foreground">
+                  <AvatarFallback className="bg-primary text-xl text-primary-foreground">
                     {avatarUploading ? (
-                      <Loader2 className="size-5 animate-spin" />
+                      <Loader2 className="size-6 animate-spin" />
                     ) : (
-                      <User className="size-6" />
+                      <User className="size-7" />
                     )}
                   </AvatarFallback>
                 </Avatar>
               </button>
               <div className="flex flex-col gap-0.5">
-                <p className="text-sm font-medium">头像</p>
-                <p className="text-[11px] text-muted-foreground">
+                <p className="text-sm font-semibold tracking-tight">个人头像</p>
+                <p className="text-[11px] leading-4 text-muted-foreground">
                   支持 PNG / JPEG / WebP / GIF，最大 2MB
                 </p>
               </div>
             </div>
+          </section>
 
-            {loading ? (
-              <div className="flex h-20 items-center justify-center">
-                <Loader2 className="size-4 animate-spin text-muted-foreground" />
+          {loading ? (
+            <div className="agent-fade-up-delay-1 flex h-24 items-center justify-center">
+              <Loader2 className="size-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            /* ─── Form fields — gapless bento grid ─── */
+            <div className="agent-fade-up-delay-1 mt-3 grid grid-flow-row-dense grid-cols-2 gap-3">
+              {/* 姓名 + 所在地 */}
+              <div className="grid gap-1.5">
+                <label className="text-xs font-medium tracking-tight">姓名</label>
+                <Input
+                  value={form.name}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, name: e.target.value }))
+                  }
+                  placeholder="你的名字"
+                  className="transition-shadow duration-300 focus-visible:ring-primary/40"
+                />
               </div>
-            ) : (
-              <div className="grid gap-3">
-                <div className="grid gap-1.5">
-                  <label className="text-xs font-medium">姓名</label>
-                  <Input
-                    value={form.name}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, name: e.target.value }))
-                    }
-                    placeholder="你的名字"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <label className="text-xs font-medium">所在地</label>
-                  <Input
-                    value={form.location}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, location: e.target.value }))
-                    }
-                    placeholder="如：北京"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <label className="text-xs font-medium">家乡</label>
-                  <Input
-                    value={form.hometown}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, hometown: e.target.value }))
-                    }
-                    placeholder="如：成都"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <label className="text-xs font-medium">喜好</label>
-                  <Input
-                    value={form.preferences}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, preferences: e.target.value }))
-                    }
-                    placeholder="如：编程、音乐"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <label className="text-xs font-medium">简介</label>
-                  <Textarea
-                    value={form.bio}
-                    onChange={(e) =>
-                      setForm((f) => ({ ...f, bio: e.target.value }))
-                    }
-                    placeholder="介绍一下自己…"
-                    rows={3}
-                  />
-                </div>
+              <div className="grid gap-1.5">
+                <label className="text-xs font-medium tracking-tight">所在地</label>
+                <Input
+                  value={form.location}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, location: e.target.value }))
+                  }
+                  placeholder="如：北京"
+                  className="transition-shadow duration-300 focus-visible:ring-primary/40"
+                />
+              </div>
 
-                {/* ─── Obsidian Vault ─── */}
-                <div className="mt-1 grid gap-1.5 rounded-md border bg-background/50 p-2.5">
+              {/* 家乡 + 喜好 */}
+              <div className="grid gap-1.5">
+                <label className="text-xs font-medium tracking-tight">家乡</label>
+                <Input
+                  value={form.hometown}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, hometown: e.target.value }))
+                  }
+                  placeholder="如：成都"
+                  className="transition-shadow duration-300 focus-visible:ring-primary/40"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-xs font-medium tracking-tight">喜好</label>
+                <Input
+                  value={form.preferences}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, preferences: e.target.value }))
+                  }
+                  placeholder="如：编程、音乐"
+                  className="transition-shadow duration-300 focus-visible:ring-primary/40"
+                />
+              </div>
+
+              {/* 简介 — full width */}
+              <div className="col-span-2 grid gap-1.5">
+                <label className="text-xs font-medium tracking-tight">简介</label>
+                <Textarea
+                  value={form.bio}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, bio: e.target.value }))
+                  }
+                  placeholder="介绍一下自己…"
+                  rows={3}
+                  className="transition-shadow duration-300 focus-visible:ring-primary/40"
+                />
+              </div>
+
+              {/* ─── Obsidian Vault — premium card with ambient gradient ─── */}
+              <div className="agent-fade-up-delay-2 col-span-2 relative overflow-hidden rounded-lg border border-border/40 bg-card p-3">
+                <div className="pointer-events-none absolute -right-6 -top-6 size-20 rounded-full bg-chart-3/[0.05] opacity-60 blur-2xl" />
+                <div className="relative">
                   <div className="flex items-center gap-1.5">
-                    <BookOpen className="size-3.5 text-muted-foreground" />
-                    <label className="text-xs font-medium">Obsidian Vault 路径</label>
+                    <BookOpen className="size-3.5 text-primary/60" />
+                    <label className="text-xs font-semibold tracking-tight">Obsidian Vault 路径</label>
                   </div>
                   <Input
                     value={form.obsidianVaultPath}
@@ -267,14 +281,15 @@ export function ProfileDialog({
                       setForm((f) => ({ ...f, obsidianVaultPath: e.target.value }))
                     }
                     placeholder="C:\Users\用户\Obsidian\MyVault"
+                    className="mt-2 transition-shadow duration-300 focus-visible:ring-primary/40"
                   />
-                  <p className="text-[10px] leading-4 text-muted-foreground">
+                  <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground">
                     填写本地 Vault 目录路径，配置后可在知识库页面点击「同步」导入笔记。留空则禁用同步。
                   </p>
                 </div>
               </div>
-            )}
-          </section>
+            </div>
+          )}
         </div>
 
         <input
@@ -323,13 +338,13 @@ export function ProfileButton() {
         onClick={() => setOpen(true)}
         title={user ? `个人信息 (${user.email})` : '个人信息'}
         aria-label="个人信息"
-        className="relative flex size-10 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-foreground"
+        className="group relative flex size-10 items-center justify-center rounded-lg text-muted-foreground transition-all duration-300 hover:bg-accent hover:text-foreground"
       >
-        <Avatar className="size-7">
+        <Avatar className="size-7 transition-transform duration-500 group-hover:scale-105">
           {avatarSrc && <AvatarImage src={avatarSrc} alt={user?.name ?? 'avatar'} />}
           <AvatarFallback className="bg-primary/10 text-xs text-primary">
             {user?.name?.charAt(0).toUpperCase() ?? (
-              <User className="size-4" />
+              <User className="size-5" />
             )}
           </AvatarFallback>
         </Avatar>

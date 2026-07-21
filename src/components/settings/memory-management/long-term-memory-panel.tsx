@@ -1,6 +1,6 @@
 'use client'
 
-import { Loader2, Pencil, Trash2, X } from 'lucide-react'
+import { Brain, Loader2, Pencil, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -12,10 +12,27 @@ import {
   updateLongTermMemory,
 } from '@/lib/api/memory'
 import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
+import { cn } from '@/lib/utils'
 
 const PAGE_SIZE = 10
 
 const CATEGORIES = ['general', 'fact', 'preference', 'skill', 'project'] as const
+
+const CATEGORY_STYLES: Record<string, string> = {
+  general: 'bg-muted text-muted-foreground',
+  fact: 'bg-primary/10 text-primary',
+  preference: 'bg-warning/10 text-warning',
+  skill: 'bg-success/10 text-success',
+  project: 'bg-destructive/10 text-destructive',
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  general: '通用',
+  fact: '事实',
+  preference: '偏好',
+  skill: '技能',
+  project: '项目',
+}
 
 export function LongTermMemoryPanel() {
   const [items, setItems] = useState<LongTermMemoryItem[]>([])
@@ -109,9 +126,9 @@ export function LongTermMemoryPanel() {
   const totalPages = Math.ceil(total / PAGE_SIZE)
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-4">
       {/* Filter bar */}
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-card/50 p-2.5 shadow-[var(--shadow-sm)]">
         <Input
           placeholder="Agent ID"
           value={filterAgent}
@@ -127,17 +144,17 @@ export function LongTermMemoryPanel() {
             setFilterCategory(e.target.value === 'all' ? '' : e.target.value)
             setPage(1)
           }}
-          className="h-8 w-32 rounded-md border border-input bg-background px-2 text-xs"
+          className="h-8 w-36 rounded-md border border-input bg-background px-2 text-xs"
         >
-          <option value="all">All Categories</option>
+          <option value="all">全部分类</option>
           {CATEGORIES.map((c) => (
             <option key={c} value={c}>
-              {c}
+              {CATEGORY_LABELS[c]}
             </option>
           ))}
         </select>
         <Input
-          placeholder="Tag search"
+          placeholder="标签搜索"
           value={searchTag}
           onChange={(e) => {
             setSearchTag(e.target.value)
@@ -145,171 +162,182 @@ export function LongTermMemoryPanel() {
           }}
           className="h-8 w-32 text-xs"
         />
-        <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading}>
+        <Button size="sm" variant="ghost" onClick={() => void load()} disabled={loading} className="ml-auto">
           {loading ? <Loader2 className="size-3.5 animate-spin" /> : null}
           刷新
         </Button>
       </div>
 
-      {/* Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead>
-            <tr className="border-b text-left text-muted-foreground">
-              <th className="pb-1.5 pr-2 font-medium">Content</th>
-              <th className="pb-1.5 pr-2 font-medium">Category</th>
-              <th className="pb-1.5 pr-2 font-medium">Imp.</th>
-              <th className="pb-1.5 pr-2 font-medium">Tags</th>
-              <th className="pb-1.5 pr-2 font-medium">Agent</th>
-              <th className="pb-1.5 pr-2 font-medium">Created</th>
-              <th className="pb-1.5 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item.id} className="border-b last:border-0">
-                {editingId === item.id ? (
-                  <>
-                    <td className="py-1.5 pr-2">
-                      <textarea
-                        value={editContent}
-                        onChange={(e) => setEditContent(e.target.value)}
-                        className="w-full rounded border bg-background px-1.5 py-1 text-xs"
-                        rows={2}
-                      />
-                    </td>
-                    <td className="py-1.5 pr-2">
-                      <Input
-                        value={editCategory}
-                        onChange={(e) => setEditCategory(e.target.value)}
-                        className="h-7 w-20 text-xs"
-                      />
-                    </td>
-                    <td className="py-1.5 pr-2">
-                      <Input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        max="1"
-                        value={editImportance}
-                        onChange={(e) => setEditImportance(e.target.value)}
-                        className="h-7 w-14 text-xs"
-                      />
-                    </td>
-                    <td className="py-1.5 pr-2">
-                      <Input
-                        value={editTags}
-                        onChange={(e) => setEditTags(e.target.value)}
-                        placeholder="comma, separated"
-                        className="h-7 w-28 text-xs"
-                      />
-                    </td>
-                    <td className="py-1.5 pr-2 text-muted-foreground">{item.agentId || '-'}</td>
-                    <td className="py-1.5 pr-2 text-muted-foreground">
-                      {new Date(item.createdAt * 1000).toLocaleDateString()}
-                    </td>
-                    <td className="py-1.5">
-                      <div className="flex items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-2 text-xs"
-                          onClick={() => void handleSave()}
-                          disabled={saving}
-                        >
-                          {saving ? <Loader2 className="size-3 animate-spin" /> : '保存'}
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-2 text-xs"
-                          onClick={cancelEdit}
-                        >
-                          <X className="size-3" />
-                        </Button>
-                      </div>
-                    </td>
-                  </>
-                ) : (
-                  <>
-                    <td className="max-w-xs truncate py-1.5 pr-2" title={item.content}>
-                      {item.content}
-                    </td>
-                    <td className="py-1.5 pr-2">{item.category}</td>
-                    <td className="py-1.5 pr-2">{item.importance.toFixed(2)}</td>
-                    <td className="py-1.5 pr-2">
-                      <div className="flex flex-wrap gap-0.5">
-                        {item.tags.map((tag) => (
-                          <span
-                            key={tag}
-                            className="rounded bg-muted px-1 py-0.5 text-[10px]"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="py-1.5 pr-2 text-muted-foreground">
-                      {item.agentId || '-'}
-                    </td>
-                    <td className="py-1.5 pr-2 text-muted-foreground">
-                      {new Date(item.createdAt * 1000).toLocaleDateString()}
-                    </td>
-                    <td className="py-1.5">
-                      {deleteConfirmId === item.id ? (
-                        <div className="flex items-center gap-1">
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            className="h-6 px-2 text-xs"
-                            onClick={() => void handleDelete(item.id)}
-                          >
-                            确认删除
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 px-2 text-xs"
-                            onClick={() => setDeleteConfirmId(null)}
-                          >
-                            取消
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 w-6 p-0"
-                            onClick={() => startEdit(item)}
-                            title="编辑"
-                          >
-                            <Pencil className="size-3" />
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 w-6 p-0 text-destructive"
-                            onClick={() => setDeleteConfirmId(item.id)}
-                            title="删除"
-                          >
-                            <Trash2 className="size-3" />
-                          </Button>
-                        </div>
+      {/* Card list */}
+      <div className="flex flex-col gap-2">
+        {items.map((item) => (
+          <div
+            key={item.id}
+            className="group rounded-lg border bg-card p-3 shadow-[var(--shadow-sm)] transition-all duration-150 hover:border-primary/30 hover:shadow-[var(--shadow-md)]"
+          >
+            {editingId === item.id ? (
+              <div className="flex flex-col gap-2.5">
+                <textarea
+                  value={editContent}
+                  onChange={(e) => setEditContent(e.target.value)}
+                  className="w-full rounded border bg-background px-2 py-1.5 text-xs leading-5"
+                  rows={3}
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    value={editCategory}
+                    onChange={(e) => setEditCategory(e.target.value)}
+                    className="h-7 w-24 text-xs"
+                    placeholder="分类"
+                  />
+                  <Input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="1"
+                    value={editImportance}
+                    onChange={(e) => setEditImportance(e.target.value)}
+                    className="h-7 w-16 text-xs"
+                    placeholder="重要性"
+                  />
+                  <Input
+                    value={editTags}
+                    onChange={(e) => setEditTags(e.target.value)}
+                    placeholder="逗号分隔"
+                    className="h-7 w-32 text-xs"
+                  />
+                </div>
+                <div className="flex items-center justify-end gap-1">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-xs"
+                    onClick={cancelEdit}
+                  >
+                    取消
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => void handleSave()}
+                    disabled={saving}
+                  >
+                    {saving ? <Loader2 className="size-3 animate-spin" /> : '保存'}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm leading-5 text-foreground">{item.content}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <span
+                      className={cn(
+                        'rounded px-1.5 py-0.5 text-[10px] font-medium',
+                        CATEGORY_STYLES[item.category] ?? CATEGORY_STYLES.general,
                       )}
-                    </td>
-                  </>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {items.length === 0 && !loading && (
-          <div className="py-8 text-center text-xs text-muted-foreground">
-            暂无长期记忆
+                    >
+                      {CATEGORY_LABELS[item.category] ?? item.category}
+                    </span>
+                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <span>重要性</span>
+                      <span className="inline-block h-1 w-10 overflow-hidden rounded-full bg-muted">
+                        <span
+                          className="block h-full rounded-full bg-primary"
+                          style={{ width: `${Math.round(item.importance * 100)}%` }}
+                        />
+                      </span>
+                      <span className="font-mono">{item.importance.toFixed(2)}</span>
+                    </span>
+                    {item.tags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-foreground/70">
+                    {item.agentId && (
+                      <>
+                        <span className="font-mono">{item.agentId}</span>
+                        <span>·</span>
+                      </>
+                    )}
+                    <span>{new Date(item.createdAt * 1000).toLocaleDateString()}</span>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                  {deleteConfirmId === item.id ? (
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => void handleDelete(item.id)}
+                      >
+                        确认删除
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => setDeleteConfirmId(null)}
+                      >
+                        取消
+                      </Button>
+                    </div>
+                  ) : (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="size-7 p-0"
+                        onClick={() => startEdit(item)}
+                        title="编辑"
+                        aria-label="编辑"
+                      >
+                        <Pencil className="size-3" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="size-7 p-0 text-destructive hover:text-destructive"
+                        onClick={() => setDeleteConfirmId(item.id)}
+                        title="删除"
+                        aria-label="删除"
+                      >
+                        <Trash2 className="size-3" />
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        ))}
       </div>
+
+      {/* Empty state */}
+      {items.length === 0 && !loading && (
+        <div className="flex flex-col items-center gap-3 py-12 text-center">
+          <div className="flex size-12 items-center justify-center rounded-xl bg-muted/60 shadow-[var(--shadow-sm)]">
+            <Brain className="size-5 text-muted-foreground" />
+          </div>
+          <div className="space-y-0.5">
+            <p className="text-sm font-medium text-foreground">暂无长期记忆</p>
+            <p className="text-xs text-muted-foreground">Agent 在对话中积累的知识会出现在这里</p>
+          </div>
+        </div>
+      )}
+
+      {/* Loading state */}
+      {loading && items.length === 0 && (
+        <div className="flex items-center justify-center py-12">
+          <Loader2 className="size-5 animate-spin text-muted-foreground" />
+        </div>
+      )}
 
       {/* Pagination */}
       {totalPages > 1 && (

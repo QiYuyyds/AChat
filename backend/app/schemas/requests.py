@@ -456,6 +456,28 @@ class UsageSummaryResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class UsageTimeseriesPoint(BaseModel):
+    """A single daily bucket in the usage timeseries."""
+
+    date: str
+    input_tokens: int = Field(alias="inputTokens")
+    output_tokens: int = Field(alias="outputTokens")
+    cache_read_tokens: int = Field(alias="cacheReadTokens")
+    cache_creation_tokens: int = Field(alias="cacheCreationTokens")
+    total_tokens: int = Field(alias="totalTokens")
+    runs: int
+
+    model_config = {"populate_by_name": True}
+
+
+class UsageTimeseriesResponse(BaseModel):
+    """Daily usage timeseries (GET /api/usage/timeseries)."""
+
+    points: list[UsageTimeseriesPoint]
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Platform Response ─────────────────────────────────────
 # ─── Workspace Env Requests/Responses ─────────────────────────────────────
 class UpdateEnvPreferenceRequest(BaseModel):

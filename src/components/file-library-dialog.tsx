@@ -370,6 +370,7 @@ function FileRow({
             : 'text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100',
         )}
         title={attached ? '已附加（再次点击移除）' : '附加到当前消息'}
+        aria-label={attached ? '已附加，再次点击移除' : '附加到当前消息'}
       >
         {attached ? <Check className="size-3.5" /> : <Paperclip className="size-3.5" />}
       </button>
@@ -378,6 +379,7 @@ function FileRow({
         onClick={onDelete}
         className="shrink-0 opacity-0 transition group-hover:opacity-100 hover:text-destructive"
         title="删除"
+        aria-label="删除"
       >
         <Trash2 className="size-3.5" />
       </button>

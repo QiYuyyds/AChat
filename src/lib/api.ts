@@ -957,6 +957,14 @@ export async function fetchUsageSummary(): Promise<UsageSummary> {
   return json<UsageSummary>(authFetch(API_BASE_URL + '/api/usage/summary'))
 }
 
+export interface UsageTimeseriesPoint extends UsageBucket {
+  date: string
+}
+
+export async function fetchUsageTimeseries(days: number): Promise<UsageTimeseriesPoint[]> {
+  return json<UsageTimeseriesPoint[]>(authFetch(`${API_BASE_URL}/api/usage/timeseries?days=${days}`))
+}
+
 // ─── Mobile companion connection hints ─────────────
 export interface ConnectionHint {
   kind: 'tailscale' | 'lan' | 'local'

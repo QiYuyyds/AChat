@@ -2,7 +2,7 @@
 
 import { Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, File as FileIcon, FileText, FolderGit2, Image as ImageIcon, Layers, Loader2, Package, Presentation, Rocket, Sparkles, Terminal, XCircle } from 'lucide-react'
 import type { KeyboardEvent, MouseEvent, ReactNode } from 'react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { PlanStep, PlanStepStatus } from '@/shared/types'
 
@@ -40,47 +40,51 @@ export function PartList({
   messageStatus?: MessageStatus
   messageRole?: 'user' | 'agent' | 'system'
 }) {
-  // 把 tool_result 按 callId 提前到对应 tool_use 的状态里
-  const resultByCallId = new Map<string, ResultEntry>()
-  for (const p of parts) {
-    if (p.type === 'tool_result') {
-      resultByCallId.set(p.callId, { result: p.result, isError: p.isError, endedAt: p.endedAt })
-    }
-  }
-
-  // 双段聚类：连续过程型 part 归入 ProcessSegment，结论型各自独立
-  type RenderItem =
-    | { kind: 'process'; parts: Array<{ part: MessagePart; index: number }> }
-    | { kind: 'conclusion'; part: MessagePart; index: number }
-
-  const items: RenderItem[] = []
-  let currentProcess: Array<{ part: MessagePart; index: number }> = []
-
-  parts.forEach((p, i) => {
-    if (p.type === 'tool_result') return
-    if (PROCESS_PART_TYPES.has(p.type)) {
-      currentProcess.push({ part: p, index: i })
-    } else {
-      if (currentProcess.length > 0) {
-        items.push({ kind: 'process', parts: currentProcess })
-        currentProcess = []
-      }
-      items.push({ kind: 'conclusion', part: p, index: i })
-    }
-  })
-  if (currentProcess.length > 0) {
-    items.push({ kind: 'process', parts: currentProcess })
-  }
-
-  // 计算最后一个有 content 的 part index（用于判断 thinking/file_write_preview 是否正在流式）
-  let lastContentPartIndex = -1
-  parts.forEach((p, i) => {
-    if (p.type === 'text' || p.type === 'thinking' || p.type === 'code' || p.type === 'file_write_preview') {
-      lastContentPartIndex = i
-    }
-  })
-
   const isUser = messageRole === 'user'
+
+  const { resultByCallId, items, lastContentPartIndex } = useMemo(() => {
+    // 把 tool_result 按 callId 提前到对应 tool_use 的状态里
+    const byCallId = new Map<string, ResultEntry>()
+    for (const p of parts) {
+      if (p.type === 'tool_result') {
+        byCallId.set(p.callId, { result: p.result, isError: p.isError, endedAt: p.endedAt })
+      }
+    }
+
+    // 双段聚类：连续过程型 part 归入 ProcessSegment，结论型各自独立
+    type RenderItem =
+      | { kind: 'process'; parts: Array<{ part: MessagePart; index: number }> }
+      | { kind: 'conclusion'; part: MessagePart; index: number }
+
+    const renderItems: RenderItem[] = []
+    let currentProcess: Array<{ part: MessagePart; index: number }> = []
+
+    parts.forEach((p, i) => {
+      if (p.type === 'tool_result') return
+      if (PROCESS_PART_TYPES.has(p.type)) {
+        currentProcess.push({ part: p, index: i })
+      } else {
+        if (currentProcess.length > 0) {
+          renderItems.push({ kind: 'process', parts: currentProcess })
+          currentProcess = []
+        }
+        renderItems.push({ kind: 'conclusion', part: p, index: i })
+      }
+    })
+    if (currentProcess.length > 0) {
+      renderItems.push({ kind: 'process', parts: currentProcess })
+    }
+
+    // 计算最后一个有 content 的 part index（用于判断 thinking/file_write_preview 是否正在流式）
+    let lastIdx = -1
+    parts.forEach((p, i) => {
+      if (p.type === 'text' || p.type === 'thinking' || p.type === 'code' || p.type === 'file_write_preview') {
+        lastIdx = i
+      }
+    })
+
+    return { resultByCallId: byCallId, items: renderItems, lastContentPartIndex: lastIdx }
+  }, [parts])
 
   return (
     <div className="space-y-3">
@@ -143,7 +147,7 @@ function ProcessSegment({
       <button
         type="button"
         onClick={toggle}
-        className="flex items-center gap-1.5 text-xs text-muted-foreground/60 transition hover:text-muted-foreground"
+        className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground transition-all duration-200 hover:bg-muted hover:border-border hover:text-foreground"
       >
         <ChevronRight className="size-3 shrink-0" />
         <span>{summary}</span>
@@ -156,12 +160,12 @@ function ProcessSegment({
       <button
         type="button"
         onClick={toggle}
-        className="flex items-center gap-1.5 text-xs text-muted-foreground/60 transition hover:text-muted-foreground"
+        className="inline-flex items-center gap-1.5 rounded-full border border-border/50 bg-muted/40 px-2.5 py-1 text-xs text-muted-foreground transition-all duration-200 hover:bg-muted hover:border-border hover:text-foreground"
       >
         <ChevronDown className="size-3 shrink-0" />
         <span>{summary}</span>
       </button>
-      <div className="space-y-0.5">
+      <div className="overflow-hidden animate-in fade-in-0 slide-in-from-top-1 duration-200 space-y-0.5">
         {segmentParts.map(({ part, index }) => {
           const isLastContentPart = index === lastContentPartIndex
           const partStreaming = isStreaming && isLastContentPart
@@ -336,7 +340,7 @@ function ExecutionPlanPart({
       <CardContent className="p-3 space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm font-medium">
-            <Layers className="h-4 w-4 text-primary" />
+            <Layers className="size-4 text-primary" />
             执行计划
           </div>
           <span className="text-xs text-muted-foreground">
@@ -381,9 +385,9 @@ function TextPart({
   if (!content) return null
 
   const bubbleClass = cn(
-    'rounded-lg px-4 py-3 shadow-[var(--inset-hi)]',
+    'rounded-lg px-4 py-3 shadow-[var(--shadow-sm)]',
     isUser
-      ? 'bg-primary/5 border-l-2 border-primary'
+      ? 'bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/25'
       : 'bg-card border border-border/50',
     !isUser && messageStatus === 'error' && 'border-destructive/40 bg-destructive/10',
     !isUser && (messageStatus === 'aborted' || messageStatus === 'interrupted') && 'border-muted-foreground/40 bg-muted/60',
@@ -394,7 +398,7 @@ function TextPart({
   if (isStreaming) {
     return (
       <div className={bubbleClass}>
-        <div className="text-sm leading-6 text-foreground">
+        <div className={cn('text-foreground', isUser ? 'text-sm leading-6' : 'text-[15px] leading-7')}>
           <pre className="whitespace-pre-wrap break-words font-sans">
             {content}
           </pre>
@@ -403,9 +407,7 @@ function TextPart({
     )
   }
 
-  // 把消息体里 <quoted_selection ...>...</quoted_selection> 块抠出来，渲染成卡片；
-  // 剩余文本走 Markdown。规避了纯文本里裸 XML 显丑的问题。
-  const segments = splitQuotedSelections(content)
+  const segments = useMemo(() => splitQuotedSelections(content), [content])
   return (
     <div className={cn(bubbleClass, 'space-y-2')}>
       {segments.map((seg, i) =>
@@ -530,7 +532,7 @@ function ThinkingPart({
   return (
     <div
       ref={scrollRef}
-      className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs italic leading-relaxed text-muted-foreground/70"
+      className="max-h-40 overflow-y-auto border-l-2 border-primary/20 pl-2 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground/60"
     >
       {content}
     </div>
@@ -626,6 +628,12 @@ function ToolUsePart({
     }
   }
 
+  const stateBorder = {
+    running: 'border-l-2 border-l-warning/50',
+    success: 'border-l-2 border-l-success/50',
+    error: 'border-l-2 border-l-destructive/50',
+  }[state]
+
   return (
     <div
       role="button"
@@ -634,12 +642,15 @@ function ToolUsePart({
       title={showDetails ? '隐藏工具调用详情' : '展开工具调用详情'}
       onClick={toggleDetails}
       onKeyDown={handleKeyDown}
-      className="w-full cursor-pointer rounded transition hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      className={cn(
+        'w-full cursor-pointer rounded transition hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50',
+        stateBorder,
+      )}
     >
-      <div className="flex min-w-0 items-center gap-2 px-1 py-0.5 text-xs text-muted-foreground">
-        {state === 'running' && <Loader2 className={cn('size-3 shrink-0 animate-spin', iconColor)} />}
-        {state === 'success' && <Check className={cn('size-3 shrink-0', iconColor)} />}
-        {state === 'error' && <XCircle className={cn('size-3 shrink-0', iconColor)} />}
+      <div className="flex min-w-0 items-center gap-2 px-1.5 py-0.5 text-xs text-muted-foreground">
+        {state === 'running' && <Loader2 className={cn('size-3.5 shrink-0 animate-spin', iconColor)} />}
+        {state === 'success' && <Check className={cn('size-3.5 shrink-0', iconColor)} />}
+        {state === 'error' && <XCircle className={cn('size-3.5 shrink-0', iconColor)} />}
         <span className="min-w-0 max-w-[12rem] truncate font-medium">
           {displayName}
         </span>
@@ -673,7 +684,7 @@ function ToolUsePart({
       )}
 
       {showDetails && (
-        <div className="min-w-0 space-y-2 px-1 pb-1 pt-0.5">
+        <div className="min-w-0 space-y-2 px-1 pb-1 pt-0.5 animate-in fade-in-0 slide-in-from-top-1 duration-200">
           {remainingArgs !== null && (
             <ToolDetailBlock label={command ? '其他参数' : '参数'} value={remainingArgs} />
           )}
@@ -960,7 +971,7 @@ function TerminalPreviewBlock({
           : 'border-border',
       )}
     >
-      <div className="flex min-w-0 items-center gap-2 border-b border-border/60 bg-muted/40 px-2.5 py-1.5 text-[10px] text-muted-foreground">
+      <div className="flex min-w-0 items-center gap-2 border-b border-border/60 bg-muted/60 px-2.5 py-1.5 text-[10px] text-muted-foreground">
         <Terminal className="size-3 shrink-0" />
         <span className="shrink-0 font-medium">{label}</span>
         {meta && <span className="min-w-0 truncate font-mono">{meta}</span>}
