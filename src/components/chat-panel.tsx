@@ -105,10 +105,13 @@ export function ChatPanel() {
           <div className="flex size-16 items-center justify-center rounded-2xl bg-muted/60 shadow-[var(--shadow-sm)]">
             <MessagesSquare className="size-7 text-muted-foreground" />
           </div>
-          <div className="space-y-2">
-            <h2 className="text-lg font-semibold">开始你的多 Agent 协作</h2>
+          <div className="space-y-2.5">
+            <h2 className="text-lg font-semibold">开启你的 AI 协作之旅</h2>
             <p className="text-sm leading-6 text-muted-foreground">
-              从左侧选择一个会话继续聊天，或点击「+ 新建对话」选择一个或多个 Agent 开始
+              从左侧选择会话继续聊天，或点击「+ 新建对话」召集 Agent 团队。
+            </p>
+            <p className="text-xs leading-5 text-muted-foreground/70">
+              随时找右下角的「小A」帮你管理 Agent、知识库与记忆
             </p>
           </div>
         </div>

@@ -60,11 +60,18 @@ async def _create_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
     from app.api.agents import _create_custom_agent
     from app.schemas import CreateAgentRequest
 
+    adapter_name = args.get("adapter_name", "custom")
+    if adapter_name != "custom":
+        return err(
+            "小A 只支持创建 Custom Agent（SDK 路线），不支持 Claude Code / Codex 等 CLI 类型。"
+            "请使用 adapter_name=\"custom\"，并通过 model_provider / model_id / api_key 配置模型。"
+        )
+
     body_data: dict[str, Any] = {
         "name": args.get("name", ""),
         "description": args.get("description", ""),
         "systemPrompt": args.get("system_prompt", ""),
-        "adapterName": args.get("adapter_name", "custom"),
+        "adapterName": "custom",
         "modelProvider": args.get("model_provider"),
         "modelId": args.get("model_id"),
         "apiKey": args.get("api_key"),

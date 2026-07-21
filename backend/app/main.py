@@ -337,12 +337,15 @@ async def _seed_guide_agent() -> None:
                 await db.execute(select(Agent).where(Agent.is_guide.is_(True)))
             ).scalar_one_or_none()
             if existing is not None:
+                if existing.avatar != "icon-22":
+                    existing.avatar = "icon-22"
+                    await db.commit()
                 return
 
             guide = Agent(
                 id="ag_guide_builtin",
                 name="小A",
-                avatar="🅰️",
+                avatar="icon-22",
                 description="系统管理引导 Agent，帮你管理 Agent / Skill / MCP / 知识库 / 记忆",
                 system_prompt=GUIDE_SYSTEM_PROMPT,
                 adapter_name="custom",
