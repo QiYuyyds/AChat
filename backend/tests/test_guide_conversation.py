@@ -28,7 +28,7 @@ async def guide_agent(db):
         guide = Agent(
             id="ag_guide_builtin",
             name="小A",
-            avatar="🅰️",
+            avatar="icon-22",
             description="Guide agent",
             system_prompt="You are the guide agent 小A.",
             adapter_name="custom",

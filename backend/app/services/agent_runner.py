@@ -3186,9 +3186,12 @@ async def build_adapter_input(
             )
             history = []
 
-    # ── PromptAssembler enrichment (SDK only; CLI agents self-manage context) ─
+    # ── PromptAssembler enrichment (SDK only; CLI agents self-manage context;
+    #     guide agents skip — they use management tools for explicit queries,
+    #     so ProfileSource/ToolStateSource DB lookups are pure overhead) ─
     dynamic_prefix = ""
-    if is_sdk:
+    is_guide = getattr(agent, "is_guide", False)
+    if is_sdk and not is_guide:
         assembler = _get_prompt_assembler()
         if assembler and not args.override_prompt:
             try:

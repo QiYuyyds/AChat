@@ -3,7 +3,7 @@
  * token 长度 ≤8，兼容后端 avatar 字段的 max_length=8 约束。
  */
 
-export const AGENT_ICON_COUNT = 21
+export const AGENT_ICON_COUNT = 22
 
 // ['icon-01', ..., 'icon-21']，token 即文件名（去掉 .png）
 export const AGENT_ICON_TOKENS: string[] = Array.from(
