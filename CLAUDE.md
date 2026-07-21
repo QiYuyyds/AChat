@@ -166,6 +166,19 @@ RAG 混合检索和分层记忆系统通过 `PromptAssembler` 注入 Agent 上�
 
 OpenTelemetry 全链路追踪和评测系统通过 `@traced` 装饰器包裹关键函数，但 `trace_enabled=False` 时全部变为 no-op，**不影响 Agent 运行**。Phoenix 不可达时 OTel SDK `BatchSpanProcessor` 缓冲后静默丢弃，不报错。可观测性模块代码在 `backend/app/observability/`，独立于业务逻辑（仅包裹 span + eval hook，不改被包裹函数的返回值与异常传播）。
 
+### 3.10 Guide Agent（小A）是门面引导，不是业务 Agent
+
+小A 是 builtin + `is_guide=True` 的 Agent（`ag_guide_builtin`），作为系统管理门面常驻，走 custom adapter SDK 路线 + `run_agent_loop(mode='solo')`。**不要**为小A 写独立服务路径。
+
+- **工具隔离**：`is_guide=True` 的 Agent **跳过 baseline 合并**，只注入 7 个管理工具（`manage_agents` / `manage_skills` / `manage_mcp` / `manage_documents` / `manage_memory` / `manage_profile` / `manage_conversations`）+ `ask_user`；非 guide agent 即使 `tool_names` 误配管理工具也会被过滤
+- **会话隔离**：`mode='guide'` 会话**不出现在 `list_conversations`、不可删除、不出现在全局搜索**；guide 会话跳过 agent 数量校验，创建空 sandbox workspace
+- **双活跃会话模型**：工作会话（`activeConversationId`）+ guide 会话（`guideConversationId`）并行，前端 `GuideFloatingPanel` 悬浮组件独立渲染，不干扰主聊天面板
+- **种子机制**：后端启动时幂等种子创建小A（`_seed_guide_agent`），不重复创建；种子失败不阻断启动
+- **开箱即用**：小A 的 provider/model/key/baseUrl 从 `GUIDE_AGENT_*` 环境变量读取（默认 deepseek，走 `DEEPSEEK_API_KEY` 三层 key 链兜底）
+- **管理工具内部复用现有 service 函数**，全部经 `ToolContext.user_id` 隔离；执行成功后发 `guide_side_effect` SSE 事件刷新对应面板
+- **小A 边界**：不写代码、不编辑文件、不跑命令、不产产物、不派发子任务；不能修改/删除 builtin Agent，不能改自己；创建 Agent 只支持 Custom Agent（SDK 路线）
+- 详见 `openspec/specs/guide-agent/spec.md`（已 archive，原 change 在 `openspec/changes/archive/2026-07-21-add-guide-agent/`）
+
 ---
 
 ## 4. 代码风格
@@ -386,10 +399,10 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `specs/conversation-context/spec.md` — 跨 run 上下文
 - `specs/mobile-companion/spec.md` — 移动伴随 App
 - `specs/user-auth/spec.md` — 用户认证与多用户隔离
-- `specs/user-profile/spec.md` — 用户资料管理
-- `specs/agent-trace-observability/spec.md` — Agent 全链路可观测能力（OTel SDK + Phoenix + Level 4 埋点）
-- `specs/agent-evaluation/spec.md` — Agent 评测能力（在线规则评测 + 离线 LLM-as-Judge + 5+4 维指标体系）
 - `specs/run-internal-compaction/spec.md` — ReAct loop 内压缩（五阶段 pipeline）
+- `specs/guide-agent/spec.md` — ★ 小A Guide Agent（全局悬浮助手 + 7 个管理工具 + 双活跃会话模型）
+
+> ⚠️ 可观测性与评测代码已在 `backend/app/observability/` 落地，但 OpenSpec 主 spec 尚未建立（见 `openspec/changes/add-agent-observability/` 与 `add-rag-evaluation/`）。用户资料管理（profile）代码在 `backend/app/api/profile.py`，但未单独建立 OpenSpec capability。
 
 ### `specs/`（编号版详细规格）
 
