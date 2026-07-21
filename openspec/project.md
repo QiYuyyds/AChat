@@ -24,6 +24,9 @@ OpenSpec capability specs under `openspec/specs/` are the concise, testable cont
 | `desktop-electron` | `specs/12-desktop-electron.md` |
 | `conversation-context` | `specs/13-conversation-context.md` |
 | `mobile-companion` | `specs/14-mobile-remote.md` |
+| `run-internal-compaction` | `specs/19-unified-agent-loop.md`（Run 内压缩章节） |
+| `user-auth` | `specs/11-platform.md`（用户认证与多用户隔离章节） |
+| `guide-agent` | `openspec/changes/archive/2026-07-21-add-guide-agent/`（小A Guide Agent） |
 
 ## Technology
 

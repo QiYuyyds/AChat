@@ -61,6 +61,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 - **所有 Agent 走统一 Agent Loop**（`specs/19`）：solo / coordinated / subagent 三种模式共用 `run_agent_loop`，任何 Agent 都能通过 `task_dispatch` 克隆自己处理子任务，Orchestrator 额外拥有 `dispatch_plan`（DAG 派发）。旧三阶段流程（plan_tasks / report_task_result / verify gate）已删除。
 - **工具执行经 HookRegistry 拦截**：`execute_with_hooks` 在 pre/post 阶段分发 Hook，支持 deny/modify/inject/allow 控制流。Agent 通过 `hook_names` 字段启用特定 Hook 组。
 - **Custom Agent 工具架构**：9 个 baseline 工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment）对所有 custom agent 必备且不可选；5 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search）由 `agent.tool_names` 增量配置。运行时合并：`baseline + tool_names + 自动注入`。
+- **Guide Agent（小A）隔离**：`is_guide=True` 的 Agent 跳过 baseline 合并，只注入 7 个管理工具 + `ask_user`；非 guide agent 即使 `tool_names` 误配管理工具也会被过滤。`mode='guide'` 会话不出现在 `list_conversations`、不可删除、不出现在全局搜索。
 
 ### 3. 功能现状矩阵
 
@@ -73,8 +74,9 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | CustomAgentAdapter | ✅ | OpenAI 兼容（DeepSeek/OpenAI/火山方舟）+ 自驱 tool loop（SDK 路线） |
 | MockAdapter | ✅ | 开发期不烧 token |
 | 自建 Agent | ✅ | 4 角色预设（coder/researcher/orchestrator/writer）· 9 baseline + 5 可选工具 · 表单/对话式创建 |
+| **小A Guide Agent** | ✅ | ★ 全局悬浮助手· builtin + `is_guide=True` · 7 个管理工具 · mode='guide' 隐藏会话 · 双活跃会话模型 · 开箱即用（DEEPSEEK 兜底） |
 | Orchestrator 编排 | ✅ | 统一 Agent Loop（solo/coordinated/subagent）· `task_dispatch` 克隆派发 · `dispatch_plan` DAG 调度 · 递归深度限制 · 可选计划审批 |
-| 工具系统（29 个） | ✅ | write/read/update_artifact · deploy_artifact/deploy_workspace · read_attachment · fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash · code_explore · task_dispatch/dispatch_plan · create_plan/plan_step/add_plan_steps · ask_user · web_search · memory_recall/memory_store · rag_search/ingest/list/delete · load_skill/write_skill |
+| 工具系统（36 个） | ✅ | write/read/update_artifact · deploy_artifact/deploy_workspace · read_attachment · fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash · code_explore · task_dispatch/dispatch_plan · create_plan/plan_step/add_plan_steps · ask_user · web_search · memory_recall/memory_store · rag_search/ingest/list/delete · load_skill/write_skill · ★ manage_agents/manage_skills/manage_mcp/manage_documents/manage_memory/manage_profile/manage_conversations（仅 guide agent） |
 | Agent Skills | ✅ | custom agent 装备 skill · 渐进式披露 · `load_skill` 按需读正文 |
 | Artifact 预览/编辑 | ✅ | web_app / document / image / ppt(真 .pptx 导出) / code_file / diff · 版本链 · 选区改写 · 面板内编辑 · update_artifact 增量更新 |
 | Workspace 沙箱 | ✅ | sandbox/local 双模式 · fs_write 审批 · 双平台 Bash 黑名单 |
@@ -96,6 +98,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **Web 搜索** | ✅ | Tavily API（`web_search` 工具，需 `TAVILY_API_KEY`） |
 | **Run 内压缩** | ✅ | compact_pipeline 五阶段递进压缩（ratio 阈值 0.70/0.80/0.88/0.93/0.95）· compact_markers 标记构建 · 纯结构化裁剪无 LLM |
 | **生命周期 Hooks 系统** | ✅ | 7 个内置 Hook（审计/压缩/检查点/记忆/技能/摘要/审批）· 10 个生命周期事件 · Agent 按 `hook_names` 启用 |
+| **双活跃会话模型** | ✅ | ★ 工作会话（activeConversationId）+ guide 会话（guideConversationId）并行 · GuideFloatingPanel 悬浮组件 · 拖拽/缩放/收起/快捷键 · localStorage 持久化 · 移动端全屏 |
 | **Checkpoint 检查点** | ✅ | SDK Agent turn 级检查点保存与恢复（`agent_run_checkpoints` 表）|
 | **统一转录渲染** | ✅ | transcript_renderer 统一消息流渲染逻辑 |
 | Electron 桌面版 | ⚠️ | 打包脚本就绪；内嵌 Next 已无后端，需改启 Python |
@@ -147,6 +150,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 导航辅助 | `pinned-messages-bar.tsx` · `conversation-outline.tsx` |
 | Agent 库 / 创建 | `agent-library.tsx` · `create-agent-dialog.tsx` · `add-agent-dialog.tsx` · `agent-create-wizard.tsx` · `agent-avatar.tsx` · `agent-info-popover.tsx` · `agent-working-indicator.tsx` |
 | 会话创建 / 目录选择 | `new-conversation-dialog.tsx` · `dir-picker-dialog.tsx` |
+| ★ 小A 全局悬浮助手 | `guide-floating-panel.tsx`（拖拽/缩放/收起/快捷键 · 精简 MessageList + MessageInput · ask_user 内联渲染 · 移动端全屏） |
 | 设置面板 | `settings-dialog.tsx` |
 | 个人资料 | `profile-dialog.tsx` |
 | 认证品牌面板 | `auth-brand-panel.tsx` · `particle-background.tsx` |
@@ -219,6 +223,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **HookRegistry** | `hook_registry.py` | ★ 生命周期 Hook 注册与分发（10 个事件） |
 | 内置 Hooks | `hooks/`（7 个） | audit_log · auto_compact · checkpoint · memory_persist · skill_auto_activator · summary_generate · tool_approval |
 | Checkpoint | `checkpoint_service.py` | SDK Agent turn 级检查点保存/恢复 |
+| ★ Guide Agent prompt | `guide_prompt.py` | ★ 小A system prompt（管理边界、确认规则、记忆整理规则、交互风格） |
 | 执行计划 | `plan_registry.py` · `plan_dispatch_mapping.py` · `plan_usage_service.py` | ★ 计划注册/查询 · 计划→派发映射 · 计划用量统计 |
 | 项目产物 | `project_artifact.py` | 项目级产物管理 |
 | Agent 负载 | `agent_load_tracker.py` | Agent 负载追踪 |
@@ -266,7 +271,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `client_manager.py` | ★ 外部 MCP Server 连接管理（stdio/SSE 传输 · 工具发现 · 调用代理） |
 
 ### 工具系统（`backend/app/tools/`）
-`base.py`（ToolContext + ToolDef） · `registry.py`（注册 29 个工具） · `write_artifact.py` · `read_artifact.py` · `update_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_edit.py` · `fs_list.py` · `fs_glob.py` · `fs_grep.py` · `bash.py` · `code_explore.py`（代码图谱探索） · `task_dispatch.py`（子 Agent 派发） · `dispatch_plan.py`（DAG 派发） · `execution_plan.py`（create_plan/plan_step/add_plan_steps 执行计划） · `ask_user.py` · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `memory_store.py`（主动记忆存储） · `skills.py`（load_skill/write_skill） · `rate_limiter.py`。详见 `specs/07`。
+`base.py`（ToolContext + ToolDef） · `registry.py`（注册 36 个工具） · `write_artifact.py` · `read_artifact.py` · `update_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_edit.py` · `fs_list.py` · `fs_glob.py` · `fs_grep.py` · `bash.py` · `code_explore.py`（代码图谱探索） · `task_dispatch.py`（子 Agent 派发） · `dispatch_plan.py`（DAG 派发） · `execution_plan.py`（create_plan/plan_step/add_plan_steps 执行计划） · `ask_user.py` · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `memory_store.py`（主动记忆存储） · `skills.py`（load_skill/write_skill） · ★ `manage_base.py`（管理工具公共基类） · ★ `manage_agents.py` / `manage_skills.py` / `manage_mcp.py` / `manage_documents.py` / `manage_memory.py` / `manage_profile.py` / `manage_conversations.py`（7 个 guide agent 专用管理工具） · `rate_limiter.py`。详见 `specs/07`。
 
 ### RAG 引擎（`backend/app/rag/`）
 | 文件 | 职责 |
@@ -342,6 +347,7 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 ## 附 · 当前现状（易过时，以 git 为准）
 
 ### ✅ 近期完成
+- **★ 小A Guide Agent（全局悬浮助手）**：builtin + `is_guide=True` Agent（`ag_guide_builtin`）· 启动种子机制（幂等）· `guide_prompt.py` 约束管理边界 · 7 个管理工具（manage_agents/skills/mcp/documents/memory/profile/conversations）· `manage_memory(action=optimize)` LLM 驱动智能记忆整理 · `mode='guide'` 隐藏会话（不出现在 list/搜索/不可删）· `GuideSideEffectEvent` 副作用事件 · `GuideFloatingPanel` 悬浮组件（拖拽/缩放/收起/`Ctrl/Cmd+G` 快捷键/移动端全屏）· 双活跃会话模型（工作 + guide 并行）· 开箱即用（`GUIDE_AGENT_*` 环境变量配置，默认 deepseek 兜底）
 - **Agent 角色预设重设**：9 个预设推翻重设为 4 个（coder/researcher/orchestrator/writer）· 引入 `BASELINE_AGENT_TOOLS`（9 个工具对所有 custom agent 必备，UI 不可选）· UI 可选工具从 14 个缩减为 5 个 · systemPromptTemplate 职责收窄 · 修复 `_build_agent_hub_tool_guidance` 的 has_file_tools 块 bug
 - **代码图谱智能系统**：CodeGraph 本地运行时管理 · `code_explore` 工具 · 索引管理（启用/同步/重建）· 后台异步编排 + 防抖同步 · 状态机 · 前端控制开关
 - **执行计划工具**：`create_plan` / `plan_step` / `add_plan_steps` 三个工具 · 结构化计划卡片 UI · 步骤状态实时更新 · plan_registry/plan_dispatch_mapping/plan_usage_service 服务支撑
@@ -405,4 +411,4 @@ DB 文件：PostgreSQL（`docker-compose.infra.yml` 启动）；workspace：`.ag
 
 ---
 
-*最后更新：2026-07-19 · 同步 Agent 角色预设重设（4 角色 + baseline 工具）、代码图谱智能、执行计划工具、Run 内压缩五阶段 pipeline、Worktree 隔离、Obsidian 同步、外部 MCP 接入、统一转录渲染等近期功能。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*
+*最后更新：2026-07-21 · 同步小A Guide Agent（全局悬浮助手 + 7 个管理工具 + 双活跃会话模型）、Agent 角色预设重设、代码图谱智能、执行计划工具、Run 内压缩五阶段 pipeline、Worktree 隔离、Obsidian 同步、外部 MCP 接入、统一转录渲染等近期功能。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*

@@ -102,7 +102,7 @@ DEEPSEEK_API_KEY=你的密钥
 DATABASE_URL=postgresql+asyncpg://agenthub:agenthub@localhost:5432/agenthub
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
-DEEPSEEK_API_KEY=
+DEEPSEEK_API_KEY=                # ★ 小A Guide Agent 默认 provider 的 key（开箱即用必需）
 ARK_API_KEY=
 
 # ── Web 搜索（web_search 工具）──
@@ -145,6 +145,14 @@ EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge（默认关闭）
 
 # ── 外部 MCP Server（可选）──
 # 在 UI 的设置面板中配置 MCP Server（command / args / env / transport_type）
+
+# ── 小A Guide Agent（可选自定义）──
+# 小A 默认走 deepseek provider + DEEPSEEK_API_KEY 兜底，开箱即用
+# 如需切换 provider/model/key，配置以下环境变量：
+# GUIDE_AGENT_MODEL_PROVIDER=deepseek    # openai-compatible provider 名
+# GUIDE_AGENT_MODEL_ID=deepseek-v4-flash # 模型 ID
+# GUIDE_AGENT_API_KEY=                   # per-agent key（留空走 DEEPSEEK_API_KEY）
+# GUIDE_AGENT_API_BASE_URL=              # 自定义 base URL（留空用 provider 默认）
 ```
 
 > **降级说明**：Milvus / ES / Neo4j / Embedding / Redis / Phoenix 任一不配，后端仍能正常启动和对话，只是对应功能降级（向量检索退化为 TF cosine、无全文检索、无图谱、无语义召回、退化为同步 DB 读写、无 Trace/Eval 数据）。启动时后端会打印状态面板，一目了然。
@@ -174,7 +182,9 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"; pnpm dev
 
 访问：`http://localhost:3000`
 
-首次启动时，后端会自动建表并 seed 内置 Agent（Orchestrator / PM 小灰 / UI 设计师 / 前端工程师 / Reviewer）。首次访问需要注册一个账号（注册页面 `http://localhost:3000/register`），登录后即可开始使用。
+首次启动时，后端会自动建表并 seed 内置 Agent（Orchestrator / PM 小灰 / UI 设计师 / 前端工程师 / Reviewer，以及★ 小A Guide Agent）。首次访问需要注册一个账号（注册页面 `http://localhost:3000/register`），登录后即可开始使用。
+
+**★ 小A 全局悬浮助手**：登录后会在主界面右下角自动展开一个悬浮面板——这是小A，AChat 的管理门面 Agent。你可以用自然语言跟它说「帮我创建一个程序员 Agent」「整理一下我的记忆」「看看最近的会话」等，它会调用 7 个管理工具完成操作，无需手动点 UI。快捷键 `Ctrl+G`（macOS `Cmd+G`）收起/展开面板。小A 开箱即用：默认走 DeepSeek provider，只要配了 `DEEPSEEK_API_KEY` 就能用；也可通过 `GUIDE_AGENT_*` 环境变量切换 provider/model/key。
 
 **创建自定义 Agent**：在 Agent 库中点击「创建 Agent」，选择 4 种角色预设之一（程序员 / 调研员 / 协调者 / 写作），预设自带匹配的 system prompt 和工具推荐。所有 custom agent 自带 9 个基础工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment），另可勾选 5 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search）。
 

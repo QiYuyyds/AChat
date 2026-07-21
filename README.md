@@ -19,7 +19,7 @@ AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的
 它不把每次 agent 运行当成一段孤立的终端记录，而是围绕「会话」来组织工作：Agent 是联系人，会话是工作空间，文件与产物是共享上下文，Orchestrator 还能把一项工作拆给多个 Agent 并行完成。同时集成了用户认证与多用户隔离、RAG 混合检索、分层记忆系统和 Document 知识库，让 Agent 拥有跨会话的知识与记忆能力。
 
 <p align="center">
-    <img src="docs/images/agenthub-preview.png" alt="AChat 多 Agent 协作与产物预览" width="100%" />
+    <img src="docs/AChat封面.gif" alt="AChat 封面" width="100%" />
 </p>
 
 > 当前状态：本地开发中。Web 版可用；桌面版与移动伴随端开发中。
@@ -27,10 +27,12 @@ AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的
 ## 目录
 
 - [为什么选 AChat](#为什么选-agenthub)
+  - [功能演示](#功能演示)
 - [功能特性](#功能特性)
   - [IM 式 Agent 工作空间](#im-式-agent-工作空间)
   - [用户认证与多用户隔离](#用户认证与多用户隔离)
   - [多 Agent 支持](#多-agent-支持)
+  - [小A 全局悬浮助手](#小a-全局悬浮助手)
   - [Orchestrator 与任务调度](#orchestrator-与任务调度)
   - [RAG 混合检索与知识库](#rag-混合检索与知识库)
   - [分层记忆系统](#分层记忆系统)
@@ -71,6 +73,12 @@ AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的
 
 AChat 正是为这套工作流而生。它默认本地运行，使用 PostgreSQL，并把 Agent 的执行保留在你自己的机器上。
 
+### 功能演示
+
+<p align="center">
+    <img src="docs/功能演示.gif" alt="AChat 功能演示" width="100%" />
+</p>
+
 ---
 
 ## 功能特性
@@ -99,11 +107,25 @@ AChat 正是为这套工作流而生。它默认本地运行，使用 PostgreSQL
 | Claude Code | CLI 子进程 | 拉起本机 `claude` CLI（stream-json 协议），CLI 自带工具、沙箱与审批；AChat 通过 MCP bridge 补充平台工具。 |
 | Codex | CLI 子进程 | 拉起本机 `codex app-server`（JSON-RPC 2.0），代码就绪，端到端联调中。 |
 | Custom Agent | SDK | 兼容 OpenAI Chat Completions 的 provider，如 OpenAI、DeepSeek、火山方舟、OpenRouter、SiliconFlow 等。 |
+| 小A Guide Agent | SDK (builtin) | ★ 全局悬浮助手，builtin + `is_guide=True`，走 custom adapter SDK 路线，仅注入 7 个管理工具 + `ask_user`，开箱即用（默认 DeepSeek 兜底）。 |
 | Mock | 脚本 | 本地开发用，不消耗 token。 |
 
 > Claude Code 与 Codex 走 **CLI 子进程路线**：工具执行、沙箱、审批由 CLI 自管，AChat 只翻译事件流。后续还规划接入 Hermes、OpenClaw、OpenCode 等 CLI agent。迁移方案见 `openspec/changes/migrate-claude-codex-to-cli/`。
 
 你可以在 UI 里创建自定义 Agent，自带模型、provider、system prompt、base URL、API key、工具集和 Skills。Custom Agent 提供 4 种角色预设（程序员 / 调研员 / 协调者 / 写作），每种预设自带匹配的 system prompt 和工具推荐。所有 custom agent 自带 9 个基础工具（文件读写、bash、ask_user 等），另可从 5 个可选工具中勾选（产物创建、部署、web 搜索等）。
+
+### 小A 全局悬浮助手
+
+AChat 内置一个名为「小A」的 Guide Agent，作为系统的「门面引导」，以全局悬浮助手形态常驻：
+
+- **开箱即用**：小A 是 builtin agent（`ag_guide_builtin`），后端启动时幂等种子创建。默认走 DeepSeek provider，配 `DEEPSEEK_API_KEY` 即可用；也支持通过 `GUIDE_AGENT_*` 环境变量切换 provider/model/key。
+- **自然语言驱动管理**：用户用自然语言就能完成建/改 Agent、管 Skill/MCP/知识库、整理记忆/偏好、改画像、查看会话与活动等操作，无需手动点 UI。
+- **7 个管理工具**：`manage_agents` / `manage_skills` / `manage_mcp` / `manage_documents` / `manage_memory` / `manage_profile` / `manage_conversations`，仅对 guide agent 注入；非 guide agent 即使误配也会被过滤。
+- **智能记忆整理**：`manage_memory(action=optimize)` 走 LLM 驱动的智能整理（删除垃圾 + 合并重复 + 提炼升华 + 重新生成 embedding），与现有算法驱动 `consolidate()` 互补。
+- **双活跃会话模型**：工作会话（主聊天面板）和 guide 会话（悬浮面板）并行运行，互不干扰。guide 会话 (`mode='guide'`) 不出现在会话列表、不可删除、不出现在全局搜索。
+- **悬浮面板 UX**：`GuideFloatingPanel` 组件支持拖拽、缩放、收起/展开、`Ctrl/Cmd+G` 快捷键唤起，位置和尺寸存 localStorage；移动端全屏覆盖。精简 MessageList 只渲染 text / tool_use / ask_user 三种 part。
+- **副作用事件刷新**：管理工具执行成功后发送 `guide_side_effect` SSE 事件，前端按 target 刷新对应面板（Agents / Skills / MCP / 知识库 / 记忆 / Profile / 会话列表）。
+- **边界铁律**：小A 只做管理，不写代码、不编辑文件、不跑命令、不产产物、不派发子任务。不能修改/删除 builtin Agent，不能改自己。创建 Agent 只支持 Custom Agent（SDK 路线）。
 
 ### Orchestrator 与任务调度
 

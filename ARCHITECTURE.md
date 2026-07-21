@@ -195,6 +195,7 @@ backend/
 │   │   ├── compact_markers.py     压缩标记构建 (CompactMarkerBuilder / CompactSuccessJudge)
 │   │   ├── react_loop_termination.py ★ ReAct loop 终止逻辑 (stage 4 软收尾 + stage 5 强制终止)
 │   │   ├── transcript_renderer.py ★ 统一消息流渲染逻辑
+│   │   ├── guide_prompt.py        ★ 小A Guide Agent system prompt (管理边界/确认规则/记忆整理规则)
 │   │   ├── orchestrator.py        stub (旧三阶段已移除, 仅保留壳)
 │   │   ├── orchestrator_prompts.py工具函数 (extract_text_from_parts 等)
 │   │   ├── conversation_service.py会话 / 消息全生命周期
@@ -265,7 +266,7 @@ backend/
 │   │
 │   ├── mcp_bridge.py      ★ AChat MCP Bridge: stdio MCP Server, 把 write_artifact/ask_user/task_dispatch 等平台工具暴露给 CLI agent
 │   │
-│   ├── tools/ (26)         【工具系统】29 个内置工具
+│   ├── tools/ (26)         【工具系统】36 个内置工具
 │   │   ├── base.py / registry.py  ToolContext (asyncio.Event 取消) + 注册表
 │   │   ├── write_artifact / read_artifact / update_artifact (★ 增量更新)
 │   │   ├── deploy_artifact / deploy_workspace
@@ -279,6 +280,10 @@ backend/
 │   │   ├── memory_rag (memory_recall + rag_search/ingest/list/delete)
 │   │   ├── memory_store (★ 主动记忆存储)
 │   │   ├── skills (load_skill / write_skill)
+│   │   ├── ★ manage_base (管理工具公共基类)
+│   │   ├── ★ manage_agents / manage_skills / manage_mcp / manage_documents
+│   │   │  / manage_memory / manage_profile / manage_conversations
+│   │   │  (7 个 guide agent 专用管理工具, 仅对 is_guide=True 的 Agent 注入)
 │   │   └── rate_limiter.py
 │   │
 │   ├── rag/ (6)            【RAG 引擎】
@@ -363,8 +368,8 @@ backend/
 
 | 表 | 说明 |
 |---|---|
-| `agents` | AI 代理（name / adapter_name / system_prompt / tool_names / skill_names / hook_names / api_key / executable_path / protocol_family / custom_args / **user_id**） |
-| `conversations` | 会话（mode single/group / agent_ids / pinned / bookmarked / archived / rag_enabled / summary / dispatch_mode / **user_id**） |
+| `agents` | AI 代理（name / adapter_name / system_prompt / tool_names / skill_names / hook_names / api_key / executable_path / protocol_family / custom_args / **user_id** / **is_guide**）★ `is_guide=True` 标记 guide agent，跳过 baseline 工具合并，仅注入管理工具 |
+| `conversations` | 会话（mode single/group/**guide** / agent_ids / pinned / bookmarked / archived / rag_enabled / summary / dispatch_mode / **user_id**）★ `mode='guide'` 会话不出现在列表/搜索/不可删 |
 | `messages` | 消息（role / parts JSON / status / run_id / usage / hidden） |
 | `artifacts` | 产物（type / content JSON / version / parent_artifact_id） |
 | `workspaces` | 工作区（mode sandbox/local / root_path / bound_path） |
@@ -443,6 +448,37 @@ backend/
 - **subagent**（`task_dispatch` / `dispatch_plan` 触发）：agent 工具 + `task_dispatch`（depth < MAX），base prompt + 子 Agent 指导；clone-self 消息 `hidden=true`
 
 `MAX_DISPATCH_DEPTH = 3`，达到上限时 `task_dispatch` 不注入——该 Agent 为终端执行者。无验证 gate、无重试 harness、无自动重规划——LLM 可根据返回结果自行决定是否重新派发。
+
+**★ Guide Agent（小A）双活跃会话模型**：
+
+```
+用户登录
+  └─ 前端 useEffect 检查 guideConversationId 为空
+     └─ POST /api/conversations {mode:'guide', agentIds:['ag_guide_builtin']}
+        └─ 后端 create_conversation: 跳过 agent 数量校验, 创建空 sandbox workspace
+        └─ 返回 guideConversationId, 前端展开 GuideFloatingPanel
+
+工作会话 (activeConversationId)         Guide 会话 (guideConversationId)
+  ├─ 主聊天面板                              ├─ GuideFloatingPanel 悬浮组件
+  ├─ 完整 MessageList + MessageInput         ├─ 精简 MessageList (text + tool_use + ask_user)
+  ├─ 附件 / 斜杠命令 / @mention              ├─ 无附件 / 无斜杠命令 / 固定 mentionedAgentIds
+  └─ 完整工具集 (baseline + optional)        └─ 7 个管理工具 + ask_user (无 baseline)
+
+小A 管理操作副作用:
+  └─ manage_* 工具执行成功
+     └─ EventBus 发送 guide_side_effect 事件 (target + action + user_id)
+        └─ SSE 推到前端
+           └─ app-store reducer 按 target 触发对应面板刷新标志
+              ├─ target=agents      → fetchAgents()
+              ├─ target=skills      → fetchSkills()
+              ├─ target=mcp         → fetchMcpServers()
+              ├─ target=documents   → fetchDocuments()
+              ├─ target=memory      → fetchMemories()
+              ├─ target=profile     → fetchProfile() / fetchSettings()
+              └─ target=conversations → fetchConversations()
+```
+
+小A 走 custom adapter SDK 路线 + `run_agent_loop(mode='solo')`，无新 adapter、无独立服务路径。`is_guide=True` 跳过 baseline 合并；非 guide agent 即使 `tool_names` 误配管理工具也会被过滤。`mode='guide'` 会话不出现在 `list_conversations`、不可删除、不出现在全局搜索。开箱即用：`GUIDE_AGENT_*` 环境变量配置（默认 deepseek provider，走 `DEEPSEEK_API_KEY` 三层 key 链兜底）。
 
 ---
 
@@ -660,4 +696,4 @@ EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge (默认关闭)
 
 ---
 
-*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-19 · 同步 Agent 角色预设重设、代码图谱智能、执行计划工具、Run 内压缩五阶段 pipeline、Worktree 隔离、Obsidian 同步、外部 MCP 接入、统一转录渲染等近期功能。*
+*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-21 · 同步小A Guide Agent（全局悬浮助手 + 7 个管理工具 + 双活跃会话模型 + is_guide/mode='guide' 字段）、Agent 角色预设重设、代码图谱智能、执行计划工具、Run 内压缩五阶段 pipeline、Worktree 隔离、Obsidian 同步、外部 MCP 接入、统一转录渲染等近期功能。*
