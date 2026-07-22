@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, AgentRun, Conversation
 from app.utils.clock import now_ms
 
@@ -43,7 +43,7 @@ def _accumulate(b: dict, u: dict) -> None:
 
 async def get_usage_summary() -> dict:
     """Aggregate token usage across all runs. Returns a camelCase wire dict."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         run_rows = (
             await db.execute(select(AgentRun).where(AgentRun.usage.is_not(None)))
         ).scalars().all()
@@ -171,7 +171,7 @@ async def get_usage_timeseries(days: int) -> list[dict]:
 
     buckets: dict[str, dict] = {dk: _empty_with_date(dk) for dk in date_keys}
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         run_rows = (
             await db.execute(select(AgentRun).where(AgentRun.usage.is_not(None)))
         ).scalars().all()

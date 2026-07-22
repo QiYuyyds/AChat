@@ -71,7 +71,7 @@ async def _list_conversations(args: dict[str, Any], user_id: str) -> ToolResult:
 async def _get_conversation(args: dict[str, Any], user_id: str) -> ToolResult:
     from sqlalchemy import select
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import Conversation, Message
 
     conversation_id = args.get("conversation_id")
@@ -80,7 +80,7 @@ async def _get_conversation(args: dict[str, Any], user_id: str) -> ToolResult:
 
     message_limit = min(args.get("message_limit", 10), 50)
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await db.get(Conversation, conversation_id)
         if conv is None or conv.user_id != user_id:
             return err(f"Conversation not found: {conversation_id}")
@@ -208,10 +208,10 @@ async def _delete_conversation(args: dict[str, Any], user_id: str, ctx: ToolCont
     if not conversation_id:
         return err("conversation_id is required for delete action")
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import Conversation
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await db.get(Conversation, conversation_id)
         if conv is None or conv.user_id != user_id:
             return err(f"Conversation not found: {conversation_id}")

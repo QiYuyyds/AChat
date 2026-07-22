@@ -15,7 +15,7 @@ import re
 
 from sqlalchemy import desc, select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Attachment
 from app.infra.cache_helpers import get_workspace_cached
 from app.utils.clock import now_ms
@@ -81,7 +81,7 @@ async def upload_attachment(
     mime_type = content_type or _guess_mime(ext)
     kind = "image" if mime_type.startswith("image/") else "file"
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         row = Attachment(
             id=attachment_id,
             conversation_id=conversation_id,
@@ -101,7 +101,7 @@ async def upload_attachment(
 
 
 async def list_attachments(conversation_id: str) -> list[Attachment]:
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Attachment)
             .where(Attachment.conversation_id == conversation_id)
@@ -121,7 +121,7 @@ async def delete_attachment(attachment_id: str) -> None:
     """
     abs_path = await get_attachment_absolute_path(attachment_id)
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Attachment).where(Attachment.id == attachment_id)
         )
@@ -148,7 +148,7 @@ def _guess_mime(ext: str) -> str:
 
 
 async def get_attachment(attachment_id: str) -> Attachment | None:
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Attachment).where(Attachment.id == attachment_id)
         )
@@ -156,7 +156,7 @@ async def get_attachment(attachment_id: str) -> Attachment | None:
 
 
 async def get_attachment_absolute_path(attachment_id: str) -> str | None:
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Attachment).where(Attachment.id == attachment_id)
         )

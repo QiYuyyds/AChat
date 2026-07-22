@@ -6,7 +6,7 @@ for the plan-usage/stats API endpoint.
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import AgentRun, Conversation
 
 
@@ -19,7 +19,7 @@ async def get_plan_usage_stats(user_id: str | None = None) -> dict:
 
     Returns a camelCase wire dict matching the PlanUsageStatsResponse schema.
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         # Build base query: runs with non-null usage
         stmt = select(AgentRun).where(AgentRun.usage.is_not(None))
         if user_id is not None:

@@ -22,7 +22,7 @@ from typing import Any, Literal
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Artifact, Conversation
 from app.utils.clock import now_ms
 from app.utils.ids import new_artifact_id
@@ -637,7 +637,7 @@ def artifact_to_dict(row: Artifact) -> dict[str, Any]:
 
 async def list_artifacts() -> list[ArtifactWithMeta]:
     """All artifacts, newest first, each joined with its conversation title."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         rows = (
             (await db.execute(select(Artifact).order_by(Artifact.created_at.desc())))
             .scalars()
@@ -672,14 +672,14 @@ async def list_artifacts() -> list[ArtifactWithMeta]:
 
 async def get_artifact(artifact_id: str) -> dict[str, Any] | None:
     """Single artifact as a camelCase dict, or None if missing."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         row = await db.get(Artifact, artifact_id)
         return artifact_to_dict(row) if row else None
 
 
 async def delete_artifact(artifact_id: str) -> None:
     """Delete an artifact. Raises ValueError if it does not exist."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         row = await db.get(Artifact, artifact_id)
         if row is None:
             raise ValueError(f"Artifact not found: {artifact_id}")
@@ -708,7 +708,7 @@ async def create_artifact_version(
     Content goes through ``build_artifact_content`` — same validation as
     ``write_artifact`` — so the two write paths stay consistent.
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         parent = await db.get(Artifact, parent_artifact_id)
         if parent is None:
             return CreateArtifactVersionResult(
@@ -750,7 +750,7 @@ async def list_artifact_versions(artifact_id: str) -> list[dict[str, Any]] | Non
     visited set from the climb to avoid the historical "climbed vs visited" bug).
     Returns None if the artifact does not exist.
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         root = await db.get(Artifact, artifact_id)
         if root is None:
             return None
@@ -828,7 +828,7 @@ async def serialize_artifact_export(
             kind="error", error=f"Unsupported export mode: {export_mode}", status=400
         )
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         row = await db.get(Artifact, artifact_id)
         if row is None:
             return ArtifactExport(kind="error", error="Artifact not found", status=404)

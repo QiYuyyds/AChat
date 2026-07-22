@@ -24,7 +24,7 @@ from typing import Literal
 from sqlalchemy import select
 
 from app.adapters.base import AdapterAttachment
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, Conversation
 from app.infra.cache_helpers import get_agent_cached
 from app.services.agent_runner import (
@@ -451,7 +451,7 @@ async def _run_coordinated_loop(
     if agent is None:
         raise RuntimeError(f"Agent not found: {args.agent_id}")
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         # Load conversation to get agent_ids
         conv = (
             await db.execute(
@@ -606,7 +606,7 @@ async def _extract_run_final_text(
 
     from app.db.models import Message
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         msgs = (
             await db.execute(
                 select(Message)

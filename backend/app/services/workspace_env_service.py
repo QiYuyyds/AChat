@@ -28,7 +28,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Workspace
 from app.infra.cache_helpers import invalidate_workspace_cache
 from app.schemas.events import WorkspaceEnvHintEvent, WorkspaceEnvStatusEvent
@@ -105,7 +105,7 @@ def detect_python_venv(bound_path: str | os.PathLike[str]) -> bool:
 async def _get_workspace_by_conversation(
     conversation_id: str,
 ) -> Workspace | None:
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Workspace).where(Workspace.conversation_id == conversation_id)
         )
@@ -116,7 +116,7 @@ async def _set_env_preference(
     conversation_id: str, preference: str
 ) -> None:
     """Persist ``env_preference`` and invalidate the workspace cache."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Workspace).where(Workspace.conversation_id == conversation_id)
         )

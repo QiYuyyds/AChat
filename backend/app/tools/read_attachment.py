@@ -20,7 +20,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Attachment
 from app.services.attachment_service import get_attachment_absolute_path
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
@@ -116,7 +116,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
             "read_artifact instead."
         )
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Attachment).where(
                 Attachment.id == attachment_id,

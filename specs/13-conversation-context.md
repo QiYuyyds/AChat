@@ -124,6 +124,14 @@ export async function buildHistoryFor(
 - 缓存友好（DB 读结果可以 memo per conversation/turn）
 - 失败不影响主流程（捕获异常返回空数组，agent 退化到「无历史」模式）
 
+### ORM 对象分离要求
+
+`buildHistoryFor` 及其调用的所有函数（包括 `prune_old_tool_results`、`fold_old_messages`）**MUST NOT** 修改数据库中 `Message` 行的 `parts`、`status` 或任何其他列。compaction 期间产生的标记是**瞬态**的——仅存在于返回的 `ChatMessage[]` 列表中，不得写回到仍绑定在活跃 SQLAlchemy session 上的 ORM 对象。
+
+当使用 `get_local_db()`（或任何在上下文退出时自动提交的 session 管理器）时，在该 session 中加载的所有 `Message` 对象**MUST** 在任何 compaction 逻辑运行前通过 `db.expunge_all()` 分离，使得 compaction 期间的属性赋值（`msg.parts_list = ...`）不会产生 dirty 对象、不会在 commit 时被 flush。
+
+> **历史教训**：`prune_old_tool_results` 曾在 session 仍打开时将 compaction 标记写回 `msg.parts_list`，session 退出时自动提交导致数据库中的原始 `tool_result` 内容被永久覆盖为 `[compacted stage=1 tool=...]` 标记。用户刷新页面后看到的是压缩标记而非真实工具输出。修复方案是在加载消息后、调用 compaction 前调用 `db.expunge_all()`。
+
 ---
 
 ## AgentRunner 集成

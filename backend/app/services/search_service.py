@@ -12,7 +12,7 @@ from typing import Literal
 
 from sqlalchemy import text
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.utils.clock import now_ms
 
 
@@ -80,7 +80,7 @@ async def search_messages(
     capped_offset = max(offset, 0)
     start = now_ms()
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             _LIKE_SQL,
             {

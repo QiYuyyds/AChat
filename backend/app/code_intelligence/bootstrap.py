@@ -14,7 +14,7 @@ from app.code_intelligence.runtime import RuntimeManager
 from app.code_intelligence.service import CodeIntelligenceService
 from app.code_intelligence.state_machine import recover_interrupted
 from app.config import Settings
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Workspace
 
 
@@ -44,7 +44,7 @@ def build_code_intelligence_service(settings: Settings) -> CodeIntelligenceServi
 
 
 async def recover_code_intelligence_metadata() -> None:
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(select(Workspace).where(Workspace.mode == "local"))
         workspaces = result.scalars().all()
     for workspace in workspaces:

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import and_, asc, desc, select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import ContextSummary, Message
 from app.services.transcript_renderer import (
     estimate_full_message_tokens,
@@ -161,7 +161,7 @@ class SessionMemory:
 
     async def get(self, conversation_id: str) -> SessionMemoryRecord | None:
         """Read the current session memory for a conversation."""
-        async with get_db() as db:
+        async with get_local_db() as db:
             result = await db.execute(
                 select(ContextSummary)
                 .where(
@@ -190,7 +190,7 @@ class SessionMemory:
         """Insert or update the session memory record for a conversation."""
         from app.utils.clock import now_ms
 
-        async with get_db() as db:
+        async with get_local_db() as db:
             result = await db.execute(
                 select(ContextSummary)
                 .where(
@@ -233,7 +233,7 @@ async def _load_messages_since(
     since_created_at: float | None,
 ) -> list[Message]:
     """Load completed messages after the given timestamp, oldest first."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         where = [
             Message.conversation_id == conversation_id,
             Message.status == "complete",

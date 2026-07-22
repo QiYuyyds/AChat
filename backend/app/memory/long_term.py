@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from sqlalchemy import delete, select, update
 
 from app.config import Settings
-from app.db.engine import get_db
+from app.db.engine import get_remote_db
 from app.db.models import LongTermMemory
 from app.db.models import MemoryEdge as _MemoryEdge
 from app.db.models import MemoryNode as _MemoryNode
@@ -65,7 +65,7 @@ class LongTerm:
 
     async def load_from_storage(self) -> None:
         """Restore all items from PostgreSQL."""
-        async with get_db() as session:
+        async with get_remote_db() as session:
             stmt = select(LongTermMemory).order_by(LongTermMemory.id)
             result = await session.execute(stmt)
             rows = result.scalars().all()
@@ -140,7 +140,7 @@ class LongTerm:
             # Persist to PG (fast local write kept inside the lock so the id
             # backfill stays atomic with the _next_id bump above).
             try:
-                async with get_db() as session:
+                async with get_remote_db() as session:
                     row = LongTermMemory(
                         content=content,
                         importance=importance,
@@ -243,7 +243,7 @@ class LongTerm:
                     # PG UPDATE
                     if target.id is not None:
                         try:
-                            async with get_db() as session:
+                            async with get_remote_db() as session:
                                 stmt = (
                                     update(LongTermMemory)
                                     .where(LongTermMemory.id == target.id)
@@ -285,7 +285,7 @@ class LongTerm:
 
                 # PG INSERT
                 try:
-                    async with get_db() as session:
+                    async with get_remote_db() as session:
                         row = LongTermMemory(
                             content=content,
                             importance=importance,
@@ -691,7 +691,7 @@ class LongTerm:
             # Sync deletions/updates to PG
             if result.delete_from_db:
                 try:
-                    async with get_db() as session:
+                    async with get_remote_db() as session:
                         stmt = delete(LongTermMemory).where(
                             LongTermMemory.id.in_(result.delete_from_db)
                         )
@@ -799,6 +799,65 @@ class LongTerm:
             matched = matched[:limit]
         return matched
 
+    # ─── Listing (admin panel pagination) ───────────────────────────────────
+
+    async def list_items(
+        self,
+        *,
+        agent_id: str | None = None,
+        category: str | None = None,
+        tag: str | None = None,
+        page: int = 1,
+        size: int = 20,
+        user_id: str | None = None,
+    ) -> tuple[list[Item], int]:
+        """Filter + paginate items from the in-memory list.
+
+        Returns ``(page_items, total_count)``.
+        Used by the admin panel ``list_ltm_memories`` endpoint to avoid
+        a separate PG round-trip when the LongTerm cache is warm.
+        """
+        page = max(1, page)
+        size = max(1, min(100, size))
+
+        async with self._lock:
+            filtered = list(self.items)
+
+            # Filter by user_id (multi-user isolation)
+            if user_id is not None:
+                filtered = [
+                    it for it in filtered
+                    if it.user_id == user_id or it.user_id is None
+                ]
+
+            # Filter by agent_id (scope=agent + matching agent_id)
+            if agent_id:
+                filtered = [
+                    it for it in filtered
+                    if it.scope == "agent" and it.agent_id == agent_id
+                ]
+
+            # Filter by category
+            if category:
+                filtered = [
+                    it for it in filtered
+                    if it.category == category
+                ]
+
+            # Filter by tag
+            if tag:
+                filtered = [
+                    it for it in filtered
+                    if tag in (it.tags or [])
+                ]
+
+            total = len(filtered)
+            start = (page - 1) * size
+            end = start + size
+            page_items = filtered[start:end]
+
+            return page_items, total
+
     # ─── Management API (user-facing CRUD) ───────────────────────────────────
 
     async def update_item(
@@ -835,7 +894,7 @@ class LongTerm:
             target.last_accessed = time.time()
 
             try:
-                async with get_db() as session:
+                async with get_remote_db() as session:
                     stmt = (
                         update(LongTermMemory)
                         .where(LongTermMemory.id == memory_id)
@@ -861,7 +920,7 @@ class LongTerm:
                     it.embedding = list(embedding) if embedding else None
                     break
         try:
-            async with get_db() as session:
+            async with get_remote_db() as session:
                 stmt = (
                     update(LongTermMemory)
                     .where(LongTermMemory.id == memory_id)
@@ -888,7 +947,7 @@ class LongTerm:
 
         # Delete PG mirror tables (MemoryNode + MemoryEdge)
         try:
-            async with get_db() as session:
+            async with get_remote_db() as session:
                 await session.execute(
                     delete(_MemoryNode).where(_MemoryNode.mem_id == memory_id)
                 )

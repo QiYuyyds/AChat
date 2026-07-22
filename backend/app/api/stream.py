@@ -41,8 +41,8 @@ async def _resolve_sse_user(request: Request, token: str | None) -> str | None:
         return None
 
     # Verify the user still exists and token_version matches
-    from app.db.engine import get_db
-    async with get_db() as db:
+    from app.db.engine import get_remote_db
+    async with get_remote_db() as db:
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if user is None or user.token_version != token_ver:

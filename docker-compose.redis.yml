@@ -1,0 +1,23 @@
+# AChat 本地 Redis — 已废弃（双 DB 迁移移除了 Redis 依赖）
+# 用法: 不再需要启动 Redis
+#
+# PostgreSQL / Milvus / Elasticsearch / Neo4j 已部署在远程 64.83.35.253
+# Redis 已被本地 SQLite + 进程内缓存替代
+
+# services:
+#   redis:
+#     image: redis:7-alpine
+#     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+#     ports:
+#       - "6379:6379"
+#     volumes:
+#       - "redisdata:/data"
+#     healthcheck:
+#       test: ["CMD", "redis-cli", "ping"]
+#       interval: 5s
+#       timeout: 3s
+#       retries: 5
+#     restart: unless-stopped
+#
+# volumes:
+#   redisdata:

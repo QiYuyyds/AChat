@@ -264,16 +264,6 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     # ─── Startup Status Dashboard ───
     _log_startup_dashboard(settings)
 
-    # ─── Redis cache init + DB writer consumer ───
-    if _infrastructure and _infrastructure.redis_client:
-        from app.infra.cache import init_cache
-        init_cache(_infrastructure.redis_client)
-        try:
-            from app.services.async_db_writer import start_db_writer
-            await start_db_writer(_infrastructure.redis_client)
-        except Exception as e:
-            logger.warning("DBWriterConsumer start failed: %s", e)
-
     # ─── Crash recovery scan ───
     try:
         from app.services.recovery_scan import scan_interrupted_messages
@@ -290,11 +280,6 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
     shutdown_observability()
-    try:
-        from app.services.async_db_writer import stop_db_writer
-        await stop_db_writer()
-    except Exception:
-        pass
     if _memory_service:
         try:
             await _memory_service.close()
@@ -322,7 +307,7 @@ async def _seed_guide_agent() -> None:
     try:
         from sqlalchemy import select
 
-        from app.db.engine import get_db
+        from app.db.engine import get_local_db
         from app.db.models import Agent
         from app.services.guide_prompt import GUIDE_SYSTEM_PROMPT
         from app.utils.clock import now_ms
@@ -332,7 +317,7 @@ async def _seed_guide_agent() -> None:
         api_key = os.environ.get("GUIDE_AGENT_API_KEY") or None
         api_base_url = os.environ.get("GUIDE_AGENT_API_BASE_URL") or None
 
-        async with get_db() as db:
+        async with get_local_db() as db:
             existing = (
                 await db.execute(select(Agent).where(Agent.is_guide.is_(True)))
             ).scalar_one_or_none()
@@ -446,7 +431,7 @@ def _log_startup_dashboard(settings) -> None:
         if _infrastructure.redis_client:
             infra_status.append("✓ Redis")
         else:
-            infra_status.append("✗ Redis (degraded)")
+            infra_status.append("✗ Redis (removed)")
     else:
         infra_status.append("✗ Infrastructure not initialized")
     

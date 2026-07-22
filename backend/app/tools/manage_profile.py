@@ -51,10 +51,10 @@ async def _get_profile(user_id: str, target: str) -> ToolResult:
 
 async def _get_profile_data(user_id: str) -> ToolResult:
     from app.api.profile import _read_profile_prefs
-    from app.db.engine import get_db
+    from app.db.engine import get_remote_db
     from app.db.models import User
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         user = await db.get(User, user_id)
         if user is None:
             return err("User not found")
@@ -118,14 +118,16 @@ async def _update_profile_data(
 
     # Update user name in users table if display_name is provided
     if "display_name" in args and args["display_name"]:
-        from app.db.engine import get_db
+        from app.db.engine import get_remote_db
         from app.db.models import User
 
-        async with get_db() as db:
+        async with get_remote_db() as db:
             user = await db.get(User, user_id)
             if user is not None:
                 user.name = str(args["display_name"])
 
+    from app.infra.cache_helpers import invalidate_user_preferences_cache
+    await invalidate_user_preferences_cache(user_id)
     emit_guide_side_effect(ctx=ctx, target="profile", action="update")
     return ok({"message": "已更新用户画像"})
 

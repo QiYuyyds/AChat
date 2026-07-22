@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, Artifact, Conversation, Message
 from app.infra.cache_helpers import get_agent_cached
 from app.services.compact_markers import CompactMarkerBuilder
@@ -175,13 +175,23 @@ def prune_old_tool_results(
     replaces the part with a ``CompactMarkerBuilder.build_tool_result_marker``.
     ``code_explore`` and ``fs_read(mode=outline/head)`` results are preserved
     verbatim.
+
+    IMPORTANT: callers MUST ensure all ORM Message objects are detached from
+    the session (e.g. via ``db.expunge_all()``) before calling this function.
+    This function writes compact markers back to ``msg.parts_list``; if the
+    objects are still attached, the session auto-commits on exit and
+    permanently corrupts the DB. The ``copy.deepcopy`` below prevents
+    in-place mutation of the *returned* list, but the re-assignment
+    ``msg.parts_list = parts`` still marks the ORM object dirty.
     """
+    import copy
+
     recent, old = _keep_recent_turns_messages(messages, k=keep_recent_turns)
     if not old:
         return messages
 
     for msg in old:
-        parts = msg.parts_list
+        parts = copy.deepcopy(msg.parts_list)
         tool_use_map = _build_tool_use_map(parts)
         modified = False
         for j, p in enumerate(parts):
@@ -352,7 +362,7 @@ async def _build_history_with_assembler(
 
     latest_summary = await get_latest_context_summary(conversation_id)
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         # Load recent messages for query context
         recent_stmt = (
             select(Message)
@@ -441,7 +451,7 @@ async def _build_history_legacy(
 
     latest_summary = await get_latest_context_summary(conversation_id)
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         # Recent N complete messages (desc by time, flipped to asc below).
         recent_stmt = (
             select(Message)
@@ -512,6 +522,12 @@ async def _build_history_legacy(
         for m in pinned:
             by_id[m.id] = m
         merged = sorted(by_id.values(), key=lambda m: m.created_at)
+
+        # Detach all ORM objects from the session before any compaction logic
+        # runs. prune_old_tool_results writes compact markers back to
+        # msg.parts_list; if the objects are still attached, the session
+        # auto-commits on exit and permanently corrupts the DB.
+        db.expunge_all()
 
         # O1: prune large old tool_results, then fold old messages.
         merged = prune_old_tool_results(merged)

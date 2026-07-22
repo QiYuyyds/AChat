@@ -40,7 +40,7 @@ from app.adapters.custom_provider_client import (
     validate_openai_compatible_base_url,
 )
 from app.auth.dependencies import get_current_user
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, User
 from app.schemas import CreateAgentRequest, UpdateAgentRequest
 from app.utils.clock import now_ms
@@ -95,7 +95,7 @@ def _invalid_body(exc: ValidationError) -> JSONResponse:
 @router.get("/agents")
 async def list_agents(user: User = Depends(get_current_user)) -> JSONResponse:
     """List agents: builtin first, then newest first (matches listAgentsOrdered)."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Agent)
             .where(or_(Agent.user_id.is_(None), Agent.user_id == user.id))
@@ -208,7 +208,7 @@ async def _create_custom_agent(body: CreateAgentRequest, user_id: str) -> dict[s
         body.custom_args if adapter_name in ("claude-code", "codex") and body.custom_args else []
     )
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         db.add(agent)
         await db.flush()
         result = _serialize(agent)
@@ -320,7 +320,7 @@ async def _update_custom_agent(
     has_protocol_family = "protocol_family" in provided
     has_custom_args = "custom_args" in provided
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
@@ -448,7 +448,7 @@ async def delete_agent(agent_id: str, user: User = Depends(get_current_user)) ->
 
 
 async def _delete_custom_agent(agent_id: str, user_id: str) -> None:
-    async with get_db() as db:
+    async with get_local_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")

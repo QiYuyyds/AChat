@@ -13,7 +13,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Artifact
 from app.schemas.messages import DeployStatusRecord
 from app.services.deployment_service import (
@@ -70,7 +70,7 @@ def _failed_deployment(
 async def deploy_artifact_for_conversation(
     conversation_id: str, artifact_id: str
 ) -> DeployStatusRecord:
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Artifact).where(
                 Artifact.id == artifact_id,

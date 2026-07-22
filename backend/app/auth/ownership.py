@@ -5,13 +5,13 @@ from __future__ import annotations
 from fastapi import HTTPException, status
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db, get_remote_db
 from app.db.models import Agent, Artifact, Attachment, Conversation, Document
 
 
 async def verify_conversation_ownership(conversation_id: str, user_id: str) -> None:
     """Raise 404 if conversation doesn't exist, 403 if it belongs to another user."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Conversation.user_id).where(Conversation.id == conversation_id)
         )
@@ -33,7 +33,7 @@ async def verify_artifact_ownership(artifact_id: str, user_id: str) -> str:
 
     Returns the conversation_id on success.
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Artifact.conversation_id, Conversation.user_id)
             .join(Conversation, Artifact.conversation_id == Conversation.id)
@@ -59,7 +59,7 @@ async def verify_attachment_ownership(attachment_id: str, user_id: str) -> str:
 
     Returns the conversation_id on success.
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Attachment.conversation_id, Conversation.user_id)
             .join(Conversation, Attachment.conversation_id == Conversation.id)
@@ -86,7 +86,7 @@ async def verify_agent_ownership(agent_id: str, user_id: str, allow_builtin: boo
     Builtin agents (user_id IS NULL) are accessible to all users when
     ``allow_builtin`` is True.
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Agent.user_id, Agent.is_builtin).where(Agent.id == agent_id)
         )
@@ -108,7 +108,7 @@ async def verify_agent_ownership(agent_id: str, user_id: str, allow_builtin: boo
 
 async def verify_document_ownership(document_id: str, user_id: str) -> None:
     """Raise 404 if document doesn't exist, 403 if it belongs to another user."""
-    async with get_db() as db:
+    async with get_remote_db() as db:
         result = await db.execute(
             select(Document.user_id).where(Document.id == document_id)
         )

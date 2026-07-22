@@ -37,11 +37,11 @@ async def _manage_agents_handler(args: dict[str, Any], ctx: ToolContext) -> Tool
 async def _list_agents(args: dict[str, Any], user_id: str) -> ToolResult:
     from sqlalchemy import or_, select
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import Agent
 
     include_builtin = args.get("include_builtin", True)
-    async with get_db() as db:
+    async with get_local_db() as db:
         query = select(Agent).where(
             or_(Agent.user_id.is_(None), Agent.user_id == user_id)
         )
@@ -98,7 +98,7 @@ async def _create_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
 
 async def _update_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) -> ToolResult:
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import Agent
 
     agent_id = args.get("agent_id")
@@ -106,7 +106,7 @@ async def _update_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
         return err("agent_id is required for update action")
 
     # Check the agent exists and is not builtin/guide
-    async with get_db() as db:
+    async with get_local_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
             return err(f"Agent not found: {agent_id}")
@@ -167,10 +167,10 @@ async def _delete_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
     if not agent_id:
         return err("agent_id is required for delete action")
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import Agent
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
             return err(f"Agent not found: {agent_id}")

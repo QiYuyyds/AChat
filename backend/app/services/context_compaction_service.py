@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import and_, asc, desc, select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, AgentRun, Attachment, ContextSummary, Conversation, Message
 from app.schemas.events import MessageAddedEvent, MessageRecord
 from app.schemas.messages import ContextSummaryRecord
@@ -111,7 +111,7 @@ async def get_latest_context_summary(conversation_id: str) -> ContextSummary | N
     records (``summary_type='session'``) are excluded because they have
     a separate lifecycle and coverage tracking.
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(ContextSummary)
             .where(
@@ -135,7 +135,7 @@ async def count_uncompacted_messages(conversation_id: str) -> int:
     """
     latest = await get_latest_context_summary(conversation_id)
     since_created_at = latest.covered_until_created_at if latest else None
-    async with get_db() as db:
+    async with get_local_db() as db:
         where = [
             Message.conversation_id == conversation_id,
             Message.status == "complete",
@@ -158,7 +158,7 @@ async def estimate_uncompacted_tokens(conversation_id: str) -> int:
     """
     latest = await get_latest_context_summary(conversation_id)
     since_created_at = latest.covered_until_created_at if latest else None
-    async with get_db() as db:
+    async with get_local_db() as db:
         where = [
             Message.conversation_id == conversation_id,
             Message.status == "complete",
@@ -239,7 +239,7 @@ async def compact_conversation(
     conversation missing, or the summariser returning empty.
     """
     # a) conversation exists?
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await db.get(Conversation, conversation_id)
         if conv is None:
             raise ValueError("会话不存在")
@@ -251,7 +251,7 @@ async def compact_conversation(
     since_created_at = latest.covered_until_created_at if latest else None
 
     # c) load completed messages after the cut-off, oldest first
-    async with get_db() as db:
+    async with get_local_db() as db:
         where = [
             Message.conversation_id == conversation_id,
             Message.status == "complete",
@@ -388,7 +388,7 @@ async def compact_conversation(
     summary_id = new_context_summary_id()
     created_at = now_ms()
     token_estimate = estimate_tokens(full_transcript)
-    async with get_db() as db:
+    async with get_local_db() as db:
         row = ContextSummary(
             id=summary_id,
             conversation_id=conversation_id,
@@ -439,7 +439,7 @@ async def compact_conversation(
             content = f"{content}\n\n{cap_block}"
 
         sys_parts = [{"type": "text", "content": content}]
-        async with get_db() as db:
+        async with get_local_db() as db:
             sys_msg = Message(
                 id=sys_msg_id,
                 conversation_id=conversation_id,
@@ -505,7 +505,7 @@ async def _pick_summary_model(
     """
     if not agent_ids:
         raise ValueError("当前会话没有配置模型的 agent，无法生成摘要")
-    async with get_db() as db:
+    async with get_local_db() as db:
         agents = (
             (await db.execute(select(Agent).where(Agent.id.in_(agent_ids))))
             .scalars()
@@ -528,7 +528,7 @@ async def _pick_summary_model(
 async def _load_agent_names(agent_ids: list[str]) -> dict[str, str]:
     if not agent_ids:
         return {}
-    async with get_db() as db:
+    async with get_local_db() as db:
         agents = (
             (await db.execute(select(Agent).where(Agent.id.in_(agent_ids))))
             .scalars()
@@ -706,7 +706,7 @@ async def _build_capability_context(
 
     # Active attachments
     try:
-        async with get_db() as db:
+        async with get_local_db() as db:
             atts = (
                 (
                     await db.execute(
@@ -726,7 +726,7 @@ async def _build_capability_context(
 
     # Active dispatch plan
     try:
-        async with get_db() as db:
+        async with get_local_db() as db:
             run = (
                 (
                     await db.execute(

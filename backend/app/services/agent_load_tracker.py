@@ -83,10 +83,10 @@ class AgentLoadTracker:
         try:
             from sqlalchemy import func, select
 
-            from app.db.engine import get_db
+            from app.db.engine import get_local_db
             from app.db.models import AgentRun
 
-            async with get_db() as db:
+            async with get_local_db() as db:
                 rows = (
                     await db.execute(
                         select(

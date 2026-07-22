@@ -12,7 +12,7 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import AgentRunCheckpoint
 from app.utils.clock import now_ms
 from app.utils.ids import new_checkpoint_id
@@ -36,7 +36,7 @@ async def save_checkpoint(
         messages_json=messages,
         created_at=now_ms(),
     )
-    async with get_db() as db:
+    async with get_local_db() as db:
         db.add(checkpoint)
 
     await clean_old_checkpoints(run_id, keep=MAX_CHECKPOINTS_PER_RUN)
@@ -49,7 +49,7 @@ async def save_checkpoint(
 
 async def load_latest_checkpoint(run_id: str) -> AgentRunCheckpoint | None:
     """Return the checkpoint with the highest turn_number for this run."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(AgentRunCheckpoint)
             .where(AgentRunCheckpoint.run_id == run_id)
@@ -61,7 +61,7 @@ async def load_latest_checkpoint(run_id: str) -> AgentRunCheckpoint | None:
 
 async def list_checkpoints(run_id: str) -> list[AgentRunCheckpoint]:
     """Return all checkpoints for a run, ordered by turn_number descending."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(AgentRunCheckpoint)
             .where(AgentRunCheckpoint.run_id == run_id)
@@ -77,7 +77,7 @@ async def clean_old_checkpoints(run_id: str, keep: int = MAX_CHECKPOINTS_PER_RUN
         return 0
     to_delete = checkpoints[keep:]
     ids_to_delete = [c.id for c in to_delete]
-    async with get_db() as db:
+    async with get_local_db() as db:
         await db.execute(
             delete(AgentRunCheckpoint).where(AgentRunCheckpoint.id.in_(ids_to_delete))
         )
@@ -91,7 +91,7 @@ async def clean_old_checkpoints(run_id: str, keep: int = MAX_CHECKPOINTS_PER_RUN
 async def clean_run_checkpoints(run_id: str, keep_latest: bool = True) -> int:
     """After run completion, retain only the latest checkpoint (or delete all)."""
     if not keep_latest:
-        async with get_db() as db:
+        async with get_local_db() as db:
             await db.execute(
                 delete(AgentRunCheckpoint).where(AgentRunCheckpoint.run_id == run_id)
             )
@@ -102,7 +102,7 @@ async def clean_run_checkpoints(run_id: str, keep_latest: bool = True) -> int:
         return 0
     to_delete = checkpoints[1:]
     ids_to_delete = [c.id for c in to_delete]
-    async with get_db() as db:
+    async with get_local_db() as db:
         await db.execute(
             delete(AgentRunCheckpoint).where(AgentRunCheckpoint.id.in_(ids_to_delete))
         )

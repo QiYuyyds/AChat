@@ -10,7 +10,7 @@ from typing import TypedDict
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_remote_db
 from app.db.models import GlobalSettings
 from app.utils.clock import now_ms
 
@@ -61,7 +61,7 @@ async def get_global_settings() -> GlobalSettings:
         return cached
     if _global_cache is not None:
         return _global_cache
-    async with get_db() as db:
+    async with get_remote_db() as db:
         result = await db.execute(
             select(GlobalSettings).where(GlobalSettings.id == SINGLETON_ID)
         )
@@ -75,7 +75,7 @@ async def get_global_settings() -> GlobalSettings:
 async def update_global_settings(patch: GlobalSettingsPatch) -> GlobalSettings:
     """UPSERT global settings: keys in patch are written (None clears), absent leaves untouched."""
     global _global_cache
-    async with get_db() as db:
+    async with get_remote_db() as db:
         result = await db.execute(
             select(GlobalSettings).where(GlobalSettings.id == SINGLETON_ID)
         )

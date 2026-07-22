@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 
 from app.auth.dependencies import get_current_user
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import AgentRun, User
 from app.schemas import (
     ConnectionHintsResponse,
@@ -57,7 +57,7 @@ async def resume_run(run_id: str, user: User = Depends(get_current_user)) -> JSO
     from app.services.agent_runner import RunArgs, execute_run
     from app.services.checkpoint_service import load_latest_checkpoint
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         run = (
             await db.execute(select(AgentRun).where(AgentRun.id == run_id))
         ).scalar_one_or_none()

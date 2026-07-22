@@ -52,10 +52,10 @@ async def _manage_mcp_handler(args: dict[str, Any], ctx: ToolContext) -> ToolRes
 async def _list_mcp(user_id: str) -> ToolResult:
     from sqlalchemy import select
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import McpServer
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(McpServer)
             .where(McpServer.user_id == user_id)
@@ -69,7 +69,7 @@ async def _list_mcp(user_id: str) -> ToolResult:
 async def _create_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> ToolResult:
     from sqlalchemy import select
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import McpServer
     from app.utils.clock import now_ms
     from app.utils.ids import new_mcp_server_id
@@ -86,7 +86,7 @@ async def _create_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> T
     if transport == "stdio" and not command:
         return err("stdio transport requires a command")
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         existing = await db.execute(select(McpServer).where(McpServer.name == name))
         if existing.scalar_one_or_none() is not None:
             return err(f"MCP server with name '{name}' already exists")
@@ -114,14 +114,14 @@ async def _create_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> T
 
 
 async def _update_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> ToolResult:
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import McpServer
 
     server_id = args.get("server_id")
     if not server_id:
         return err("server_id is required for update action")
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         server = await db.get(McpServer, server_id)
         if server is None or server.user_id != user_id:
             return err(f"MCP server not found: {server_id}")
@@ -158,10 +158,10 @@ async def _delete_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> T
     if not server_id:
         return err("server_id is required for delete action")
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import McpServer
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         server = await db.get(McpServer, server_id)
         if server is None or server.user_id != user_id:
             return err(f"MCP server not found: {server_id}")

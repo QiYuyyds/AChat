@@ -12,7 +12,7 @@ services:
       NEO4J_PASSWORD: agenthub-neo4j
       ENABLE_GRAPH: "true"
       EMBEDDING_API_KEY: ${OPENAI_API_KEY}
-      REDIS_URL: redis://redis:6379/0
+      # REDIS_URL removed — replaced by local SQLite + process-internal cache
       TRACE_ENABLED: "true"
       PHOENIX_ENDPOINT: http://phoenix:4317
       PHOENIX_UI_URL: http://localhost:6006
@@ -102,16 +102,7 @@ services:
     ports: ["7474:7474", "7687:7687"]
     volumes: ["neo4jdata:/data"]
 
-  redis:
-    image: redis:7-alpine
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-    ports: ["6379:6379"]
-    volumes: ["redisdata:/data"]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+  # Redis service removed — replaced by local SQLite + process-internal cache
 
   phoenix:
     image: arizephoenix/phoenix:latest
@@ -132,4 +123,4 @@ volumes:
   milvusdata:
   esdata:
   neo4jdata:
-  redisdata:
+  # redisdata: removed

@@ -17,7 +17,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, AgentRun, AppSettings, Conversation
 from app.schemas.dispatch import DispatchPlanItem
 from app.schemas.events import DispatchPlanEvent
@@ -99,7 +99,7 @@ async def _is_plan_approval_enabled() -> bool:
 
     Reads from ``AppSettings.settings`` JSONB column.
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         row = (
             await db.execute(
                 select(AppSettings).where(AppSettings.id == "singleton")
@@ -148,7 +148,7 @@ async def _verify_agents_in_conversation(
     if not agent_ids:
         return None
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = (
             await db.execute(
                 select(Conversation).where(Conversation.id == conversation_id)
@@ -292,7 +292,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
             items = outcome.plan
 
     # Get trigger_message_id from the parent run
-    async with get_db() as db:
+    async with get_local_db() as db:
         parent_run = (
             await db.execute(
                 select(AgentRun).where(AgentRun.id == ctx.run_id)

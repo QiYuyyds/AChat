@@ -29,7 +29,7 @@ from sqlalchemy import and_, select, update
 from app.adapters.base import AdapterAttachment, AdapterInput, CustomConfig
 from app.adapters.registry import agent_registry
 from app.config import get_settings
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, AgentRun, Artifact, Conversation, Message, Workspace
 from app.schemas.artifacts import ArtifactRecord
 from app.schemas.events import (
@@ -201,7 +201,7 @@ async def _post_run_memory_hook(
         await ms.on_message_end("user", prompt, conversation_id=conversation_id, user_id=user_id)
         # Collect agent output text from output_message_ids
         if result.output_message_ids:
-            async with get_db() as db:
+            async with get_local_db() as db:
                 from app.db.models import Message
                 for msg_id in result.output_message_ids:
                     msg = (
@@ -270,7 +270,7 @@ async def _maybe_generate_summary_hook(
     try:
         from app.services.conversation_service import maybe_generate_summary
 
-        async with get_db() as db:
+        async with get_local_db() as db:
             first_msg = (
                 await db.execute(
                     select(Message).where(Message.id == result.output_message_ids[0])
@@ -1649,7 +1649,7 @@ async def execute_run(
             run_id, args, f"Workspace not found for conversation: {args.conversation_id}"
     )
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         trigger_message = (
             await db.execute(
                 select(Message).where(
@@ -1800,7 +1800,7 @@ async def _resolve_mcp_configs(agent: Agent) -> list[Any]:
     from app.db.models import McpServer
     from app.mcp.client_manager import build_mcp_server_configs_from_db
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(McpServer).where(
                 McpServer.id.in_(server_ids),
@@ -1906,7 +1906,7 @@ async def execute_simple_run(
 
     # Task 4.1: Dynamically inject RAG tools if conversation has rag_enabled=true
     RAG_TOOLS = ["rag_search", "rag_ingest", "rag_list_documents", "rag_delete_document"]
-    async with get_db() as db:
+    async with get_local_db() as db:
         from app.db.models import Conversation
         conv = (
             await db.execute(select(Conversation).where(Conversation.id == args.conversation_id))
@@ -1984,7 +1984,7 @@ async def execute_simple_run(
     # prefix/suffix and breaking the cache prefix at messages[1].
     if adapter_input.prompt and adapter_input.prompt != prompt:
         try:
-            async with get_db() as db:
+            async with get_local_db() as db:
                 result = await db.execute(
                     select(Message).where(Message.id == args.trigger_message_id)
                 )
@@ -2122,7 +2122,7 @@ async def maybe_create_project_artifact(
 
     artifact_id = new_artifact_id()
     created_at = now_ms()
-    async with get_db() as db:
+    async with get_local_db() as db:
         artifact = Artifact(
             id=artifact_id,
             conversation_id=conversation_id,
@@ -2191,15 +2191,13 @@ async def consume_stream(
     output_key_by_artifact_id: dict[str, str] = {}
     tool_name_by_call_id: dict[str, str] = {}
     current_message_id: str | None = None
+    completed_message_ids: set[str] = set()
     _plan_stats_payload: dict | None = None
     stop_reason: str | None = None
     stop_reason_label: str | None = None
 
-    from app.services.async_db_writer import register_parts_buffer, unregister_parts_buffer
-    register_parts_buffer(run_id, parts_buffer)
-
-    redis_client = _get_redis_client()
-    use_stream = redis_client is not None
+    # Direct-write mode: persist all events to local SQLite (dual-DB) or remote PG (server mode).
+    # Redis Stream write-behind has been removed in the dual-DB migration.
 
     # Wrap the stream iteration in a try/finally so that the underlying async
     # generator is always properly closed — even when we break early on a
@@ -2216,14 +2214,13 @@ async def consume_stream(
                     stop_reason = event.stop_reason
                     stop_reason_label = getattr(event, "stop_reason_label", None)
 
+            # Publish to SSE before persisting — SSE delivery is never blocked
+            # by remote database write latency.
+            if not (hidden and event.type in _VISIBLE_EVENT_TYPES):
+                publish(event, user_id=user_id)
             await persist_event(
                 event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
             )
-            # Hidden runs (clone-subagent): persist to DB but don't push visible
-            # content events to SSE. run.usage / turn.metric still go through
-            # so the frontend can track token usage.
-            if not (hidden and event.type in _VISIBLE_EVENT_TYPES):
-                publish(event, user_id=user_id)
 
             if event.type == "artifact.create":
                 output_key = output_key_by_artifact_id.get(event.artifact.id)
@@ -2237,7 +2234,6 @@ async def consume_stream(
                 ref_part = {"type": "artifact_ref", "artifactId": event.artifact.id}
                 parts.append(ref_part)
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(
                         PartStartEvent(
@@ -2249,8 +2245,7 @@ async def consume_stream(
                         ),
                         user_id=user_id,
                     )
-
-            if event.type == "deploy.status":
+                await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
                 parts = parts_buffer.get(event.message_id, [])
                 part_index = len(parts)
                 deploy_part = {
@@ -2259,7 +2254,6 @@ async def consume_stream(
                 }
                 parts.append(deploy_part)
                 parts_buffer[event.message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
                 if not hidden:
                     publish(
                         PartStartEvent(
@@ -2271,8 +2265,7 @@ async def consume_stream(
                         ),
                         user_id=user_id,
                     )
-
-            # plan.created: inject execution_plan part (symmetric to artifact.create → artifact_ref)
+                await _persist_or_stream(None, run_id, event, parts, False)  # symmetric to artifact.create → artifact_ref
             if event.type == "plan.created" and current_message_id:
                 parts = parts_buffer.get(current_message_id, [])
                 part_index = len(parts)
@@ -2284,7 +2277,6 @@ async def consume_stream(
                 }
                 parts.append(plan_part)
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(
                         PartStartEvent(
@@ -2296,6 +2288,7 @@ async def consume_stream(
                         ),
                         user_id=user_id,
                     )
+                await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
 
             # plan.step_update: update execution_plan part steps in parts_buffer
             if event.type == "plan.step_update" and current_message_id:
@@ -2306,9 +2299,9 @@ async def consume_stream(
                         p["steps"] = updated_steps
                         break
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(event, user_id=user_id)
+                await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
 
             # dispatch.start → plan step auto-update (mark step as in_progress)
             if event.type == "dispatch.start":
@@ -2374,9 +2367,9 @@ async def consume_stream(
                         p["newContent"] = event.new_content
                         break
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(event, user_id=user_id)
+                await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
 
             # Run-end cleanup: finalize all execution_plan parts + write stats + clear registries
             if event.type == "run.end":
@@ -2397,7 +2390,6 @@ async def consume_stream(
                                 plan_changed = True
                     if plan_changed:
                         parts_buffer[current_message_id] = parts
-                        await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                         from app.schemas.plan import PlanStep as PlanStepModel
                         for p in parts:
                             if p.get("type") == "execution_plan":
@@ -2411,8 +2403,9 @@ async def consume_stream(
                                         ),
                                         user_id=user_id,
                                     )
+                        await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
 
-                # Compute plan usage stats (DB write deferred to finalize to avoid connection pool errors)
+            # Run-end cleanup (DB write deferred to finalize to avoid connection pool errors)
                 from app.services.plan_registry import plan_registry as _plan_registry_stats
                 _all_plans = list(_plan_registry_stats._plans.values())
                 if _all_plans:
@@ -2446,6 +2439,7 @@ async def consume_stream(
                 _plan_registry.cleanup_run()
 
             if event.type == "message.end":
+                completed_message_ids.add(event.message_id)
                 current_message_id = None
             if event.type == "tool.result":
                 tool_name = tool_name_by_call_id.get(event.call_id)
@@ -2469,37 +2463,41 @@ async def consume_stream(
                             result=control["result"],
                             is_error=bool(control.get("isError", False)),
                         )
+                        if not hidden:
+                            publish(result_event, user_id=user_id)
                         await persist_event(
                             result_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
                         )
-                        if not hidden:
-                            publish(result_event, user_id=user_id)
 
                     end_event = MessageEndEvent(
                         conversation_id=event.conversation_id,
                         timestamp=now_ms(),
                         message_id=event.message_id,
                     )
+                    if not hidden:
+                        publish(end_event, user_id=user_id)
                     await persist_event(
                         end_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
                     )
-                    if not hidden:
-                        publish(end_event, user_id=user_id)
                     current_message_id = None
                     break
     finally:
+        # Final synchronous flush: ensure all parts are in the DB before cleanup.
+        if parts_buffer:
+            try:
+                async with get_local_db() as db:
+                    for msg_id, parts in parts_buffer.items():
+                        values: dict[str, Any] = {"parts": parts}
+                        if msg_id in completed_message_ids:
+                            values["status"] = "complete"
+                        await db.execute(
+                            update(Message).where(Message.id == msg_id).values(**values)
+                        )
+            except Exception:
+                logger.debug("[consume_stream] final sync flush failed", exc_info=True)
         # Ensure the underlying stream's async generator is closed so that
         # adapter cleanup (subprocess shutdown, connection close) runs.
         # aclose() is a no-op on an already-exhausted generator.
-        unregister_parts_buffer(run_id)
-        # Delete the Redis Stream for this run (all events flushed)
-        _redis = _get_redis_client()
-        if _redis is not None:
-            try:
-                from app.services.async_db_writer import stream_key
-                await _redis.delete(stream_key(run_id))
-            except Exception:
-                logger.debug("[consume_stream] failed to delete stream for run %s", run_id, exc_info=True)
         _aclose = getattr(stream, "aclose", None)
         if _aclose is not None:
             try:
@@ -2540,36 +2538,23 @@ async def persist_event(
 ) -> None:
     """Persist a stream event into the messages / runs tables (camelCase parts).
 
-    When Redis is available, deferrable events (part.start/delta/end, tool.call/result,
-    deploy.status) are XADD'd to a per-run Redis Stream instead of writing to PG
-    synchronously. A background consumer flushes them in batches. Non-deferrable
-    events (message.start, message.end, run.usage, message.usage) remain synchronous.
+    All events are written directly to local SQLite (dual-DB mode) or remote
+    PostgreSQL (server mode) via get_db(). Usage events (run.usage,
+    message.usage) are persisted via fire-and-forget asyncio.create_task.
+    Redis Stream write-behind has been removed in the dual-DB migration.
     """
     etype = event.type
-    redis_client = _get_redis_client()
-    use_stream = redis_client is not None
 
     if etype == "run.usage":
-        # adapter-reported run token usage -> agent_runs.usage (latest wins)
-        async with get_db() as db:
-            await db.execute(
-                update(AgentRun)
-                .where(AgentRun.id == event.run_id)
-                .values(usage=event.usage.model_dump(by_alias=True))
-            )
+        asyncio.create_task(_update_run_usage(event.run_id, event.usage.model_dump(by_alias=True)))
         return
     if etype == "message.usage":
-        async with get_db() as db:
-            await db.execute(
-                update(Message)
-                .where(Message.id == event.message_id)
-                .values(usage=event.usage.model_dump(by_alias=True))
-            )
+        asyncio.create_task(_update_message_usage(event.message_id, event.usage.model_dump(by_alias=True)))
         return
     if etype == "message.start":
         parts_buffer[event.message_id] = []
         output_message_ids.append(event.message_id)
-        async with get_db() as db:
+        async with get_local_db() as db:
             msg = Message(
                 id=event.message_id,
                 conversation_id=event.conversation_id,
@@ -2595,7 +2580,7 @@ async def persist_event(
             part_dict["startedAt"] = event.timestamp
         parts[event.part_index] = part_dict
         parts_buffer[event.message_id] = parts
-        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
+        await _persist_or_stream(None, run_id, event, parts, False)
         return
     if etype == "part.end":
         parts = parts_buffer.get(event.message_id)
@@ -2603,7 +2588,7 @@ async def persist_event(
             part = parts[event.part_index]
             if isinstance(part, dict) and part.get("type") == "thinking":
                 part["endedAt"] = event.timestamp
-        await _persist_or_stream(redis_client, run_id, event, parts or [], use_stream)
+        await _persist_or_stream(None, run_id, event, parts or [], False)
         return
     if etype == "part.delta":
         parts = parts_buffer.get(event.message_id)
@@ -2620,7 +2605,7 @@ async def persist_event(
         appendable = {"text.append": "text", "thinking.append": "thinking", "code.append": "code"}
         if appendable.get(dtype) == part.get("type"):
             part["content"] = part.get("content", "") + text
-        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
+        await _persist_or_stream(None, run_id, event, parts, False)
         return
     if etype == "tool.call":
         parts = parts_buffer.get(event.message_id, [])
@@ -2634,7 +2619,7 @@ async def persist_event(
             }
         )
         parts_buffer[event.message_id] = parts
-        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
+        await _persist_or_stream(None, run_id, event, parts, False)
         return
     if etype == "tool.result":
         parts = parts_buffer.get(event.message_id, [])
@@ -2648,79 +2633,74 @@ async def persist_event(
             }
         )
         parts_buffer[event.message_id] = parts
-        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
+        await _persist_or_stream(None, run_id, event, parts, False)
         return
     if etype == "message.end":
-        # Synchronous final flush: write latest parts to PG, update status
         final_parts = parts_buffer.get(event.message_id, [])
-        async with get_db() as db:
+        async with get_local_db() as db:
             await db.execute(
                 update(Message)
                 .where(Message.id == event.message_id)
                 .values(status="complete", parts=final_parts)
             )
-        parts_buffer.pop(event.message_id, None)
-        # Delete the Redis Stream for this run (all events have been flushed)
-        if redis_client is not None:
-            try:
-                from app.services.async_db_writer import stream_key
-
-                await redis_client.delete(stream_key(run_id))
-            except Exception:
-                logger.debug(
-                    "[persist_event] failed to delete stream for run %s",
-                    run_id,
-                    exc_info=True,
-                )
         return
     if etype == "artifact.create":
         artifact_ids.append(event.artifact.id)
         return
 
 
-def _get_redis_client() -> Any | None:
-    """Return the Redis client from infrastructure, or None if unavailable."""
-    from app.infra.factory import get_infrastructure
-
-    infra = get_infrastructure()
-    if infra is None:
-        return None
-    return infra.redis_client
-
-
 async def _persist_or_stream(
-    redis_client: Any | None,
-    run_id: str,
-    event: StreamEvent,
+    _redis_client: Any | None,
+    _run_id: str,
+    _event: StreamEvent,
     parts: list[dict],
-    use_stream: bool,
+    _use_stream: bool,
     *,
     message_id: str | None = None,
 ) -> None:
-    """Route a deferrable event to Redis Stream or fall back to synchronous DB write."""
-    if use_stream and redis_client is not None:
-        try:
-            from app.services.async_db_writer import xadd_event
+    """Directly write message parts to the database.
 
-            event_json = event.model_dump_json(by_alias=True)
-            await xadd_event(redis_client, run_id, event_json)
-            return
-        except Exception as e:
-            logger.warning("[persist_event] XADD failed, falling back to sync: %s", e)
-    fallback_id = message_id if message_id is not None else event.message_id
+    Redis Stream write-behind has been removed. This function now always
+    writes directly to the database (SQLite in dual-DB mode, PG in server mode).
+    The signature is kept for backward compatibility with callers that haven't
+    been updated yet.
+    """
+    fallback_id = message_id if message_id is not None else _event.message_id
     await _update_message_parts(fallback_id, parts)
 
 
 async def _update_message_parts(message_id: str, parts: list[dict]) -> None:
-    async with get_db() as db:
+    async with get_local_db() as db:
         await db.execute(
             update(Message).where(Message.id == message_id).values(parts=parts)
         )
 
 
+async def _update_run_usage(run_id: str, usage: dict) -> None:
+    """Fire-and-forget: update agent_runs.usage (latest wins, failures logged)."""
+    try:
+        async with get_local_db() as db:
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == run_id).values(usage=usage)
+            )
+    except Exception as e:
+        logger.warning("[persist_event] fire-and-forget run.usage update failed for run %s: %s", run_id, e)
+
+
+async def _update_message_usage(message_id: str, usage: dict) -> None:
+    """Fire-and-forget: update messages.usage (latest wins, failures logged)."""
+    try:
+        async with get_local_db() as db:
+            await db.execute(
+                update(Message).where(Message.id == message_id).values(usage=usage)
+            )
+    except Exception as e:
+        logger.warning("[persist_event] fire-and-forget message.usage update failed for msg %s: %s", message_id, e)
+
+
 # ─── DB / event helpers ──────────────────────────────────────────────────────
 async def insert_run(run_id: str, args: RunArgs, agent_id: str) -> None:
-    async with get_db() as db:
+    async with get_local_db() as db:
         db.add(
             AgentRun(
                 id=run_id,
@@ -2740,7 +2720,7 @@ async def _insert_run_or_resume(run_id: str, args: RunArgs, agent_id: str) -> No
         await insert_run(run_id, args, agent_id)
         return
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         run = (
             await db.execute(select(AgentRun).where(AgentRun.id == run_id))
         ).scalar_one_or_none()
@@ -2776,7 +2756,7 @@ async def finalize(
             logger.warning("[finalize] skip _persist_unresolved_tool_failures: %s", e)
 
     try:
-        async with get_db() as db:
+        async with get_local_db() as db:
             run = (
                 await db.execute(select(AgentRun).where(AgentRun.id == run_id))
             ).scalar_one_or_none()
@@ -2811,7 +2791,7 @@ async def finalize(
             logger.warning("[finalize] skip _emit_error_visualisation: %s", e)
 
     try:
-        async with get_db() as db:
+        async with get_local_db() as db:
             conv = (
                 await db.execute(select(Conversation).where(Conversation.id == args.conversation_id))
             ).scalar_one_or_none()
@@ -2862,7 +2842,7 @@ async def _emit_error_visualisation(
     # prefer: append the error to this run's latest agent message, if any
     last_message_id = output_message_ids[-1] if output_message_ids else None
     if last_message_id:
-        async with get_db() as db:
+        async with get_local_db() as db:
             msg = (
                 await db.execute(select(Message).where(Message.id == last_message_id))
             ).scalar_one_or_none()
@@ -2883,7 +2863,7 @@ async def _emit_error_visualisation(
 
     # else: create a fresh error message
     error_message_id = f"msg_err_{run_id}"
-    async with get_db() as db:
+    async with get_local_db() as db:
         msg = Message(
             id=error_message_id,
             conversation_id=args.conversation_id,
@@ -2936,7 +2916,7 @@ async def _persist_unresolved_tool_failures(
 ) -> None:
     """Close any tool_use parts with no matching tool_result (synthesize an error)."""
     result = _build_unresolved_tool_failure_result(status, error)
-    async with get_db() as db:
+    async with get_local_db() as db:
         messages = (
             await db.execute(select(Message).where(Message.run_id == run_id))
         ).scalars().all()
@@ -3154,7 +3134,7 @@ async def build_adapter_input(
     # ── cross-run history: SDK only (CLI agents use session resume) ──
     history: list[dict] = []
     if is_sdk and not args.override_prompt:
-        async with get_db() as db:
+        async with get_local_db() as db:
             conv = (
                 await db.execute(
                     select(Conversation).where(Conversation.id == args.conversation_id)

@@ -101,7 +101,7 @@ class Agent(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("users.id"), name="user_id", nullable=True
+        String, name="user_id", nullable=True
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     avatar: Mapped[str] = mapped_column(String, nullable=False)
@@ -247,7 +247,7 @@ class Conversation(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id"), name="user_id", nullable=False
+        String, name="user_id", nullable=False
     )
     title: Mapped[str] = mapped_column(String, nullable=False)
     mode: Mapped[str] = mapped_column(String, nullable=False)  # 'single' | 'group'
@@ -751,7 +751,7 @@ class McpServer(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id"), name="user_id", nullable=False
+        String, name="user_id", nullable=False
     )
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     transport: Mapped[str] = mapped_column(String, nullable=False)  # 'stdio' | 'sse' | 'streamable_http'

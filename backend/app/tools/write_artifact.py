@@ -15,7 +15,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Artifact
 from app.services.artifact_service import (
     build_artifact_content,
@@ -151,7 +151,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     version = 1
     resolved_parent: str | None = None
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         if parsed.parent_artifact_id:
             result = await db.execute(
                 select(Artifact).where(Artifact.id == parsed.parent_artifact_id)

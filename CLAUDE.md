@@ -75,7 +75,7 @@
 | Elasticsearch 8.14 | 全文检索（RAG BM25） | 无全文检索 |
 | Neo4j 5 | 知识图谱（KGStore / GraphMemory） | GraphMemory no-op |
 | Kafka | 事件总线增强（可选） | 用 in-process EventBus |
-| Redis 7 | 元数据缓存 + 异步 DB 写入（KV cache / Stream write-behind） | 退化为同步 DB 读写 |
+| ~~Redis 7~~ | ~~元数据缓存 + 异步 DB 写入~~ | **已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict 缓存替代 |
 | Phoenix | Agent 可观测性后端（OTel Trace + Eval 评分 · :6006 Web UI · :4317 OTLP gRPC） | OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路 |
 
 > 代码风格上，前端用 TypeScript，后端用 Python。改前端代码遵守 TS 规范，改后端代码遵守 Python 规范。两端的共享契约是 `src/shared/` 里的纯类型定义（前端）和 `backend/app/schemas/` 里的 Pydantic 模型（后端），两者保持 camelCase 字段兼容。
@@ -92,16 +92,16 @@ L4 State + Transport           src/stores/ + src/lib/ (Zustand store + SSE 客�
 ─── HTTP (REST + SSE) ─── 跨进程边界 ───
 L3 Application Services        backend/app/services/ (AgentRunner · AgentLoop · Orchestrator · ConversationService · EventBus · ToolExecutor · RAGService · CompactPipeline · WorktreeService · ...)
 L2 Agent Platform Adapters     backend/app/adapters/ (ClaudeCLI / CodexCLI / Custom / Mock) + mcp_bridge.py
-L1 Persistence                 backend/app/db/ (SQLAlchemy + PostgreSQL + workspace 文件系统)
+L1 Persistence                 backend/app/db/ (SQLAlchemy 双引擎：本地 SQLite[WAL] + 远端 PostgreSQL + workspace 文件系统)
 ─── 基础设施层 (可选, 独立降级) ───
-   Milvus · Elasticsearch · Neo4j · Kafka · Redis · Phoenix   backend/app/infra/ + rag/ + memory/ + graph/ + code_intelligence/ + observability/
+   Milvus · Elasticsearch · Neo4j · Kafka · Phoenix   backend/app/infra/ + rag/ + memory/ + graph/ + code_intelligence/ + observability/
 ```
 
 **铁律**：
 - UI **永远不**直接调 LLM SDK，必须经过 L3
 - Adapter **永远不**写 DB，它只负责事件流翻译
 - 工具执行（ToolExecutor）属 L3，不是 Adapter 的事
-- 基础设施服务（Milvus/ES/Neo4j/Redis）**永远不**在 L3 服务里直接 new 客户端，必须经过 `infra/factory.py` 统一构建并注入
+- 基础设施服务（Milvus/ES/Neo4j）**永远不**在 L3 服务里直接 new 客户端，必须经过 `infra/factory.py` 统一构建并注入
 
 ### 3.2 八个核心实体（详见 `specs/01-core-entities.md`）
 

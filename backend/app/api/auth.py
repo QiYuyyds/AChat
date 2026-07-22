@@ -24,7 +24,7 @@ from app.auth.service import (
     register_user,
 )
 from app.config import get_settings
-from app.db.engine import get_db
+from app.db.engine import get_remote_db
 from app.db.models import User
 from app.schemas import (
     ChangePasswordRequest,
@@ -74,7 +74,7 @@ async def register(request: Request) -> JSONResponse:
             detail=f"Invalid request body: {e}",
         ) from e
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         try:
             result = await register_user(db, req.email, req.name, req.password)
         except ValueError as e:
@@ -103,7 +103,7 @@ async def login(request: Request) -> JSONResponse:
             detail=f"Invalid request body: {e}",
         ) from e
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         try:
             result = await authenticate_user(db, req.email, req.password)
         except ValueError as e:
@@ -132,7 +132,7 @@ async def vip_login(request: Request) -> JSONResponse:
             detail=f"Invalid request body: {e}",
         ) from e
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         try:
             result = await authenticate_default_user(db, req.password)
         except ValueError as e:
@@ -175,7 +175,7 @@ async def refresh(request: Request) -> JSONResponse:
             detail=f"Invalid request body: {e}",
         ) from e
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         try:
             tokens = await refresh_access_token(db, req.refresh_token)
         except ValueError as e:
@@ -228,7 +228,7 @@ async def change_password_endpoint(
             detail=f"Invalid request body: {e}",
         ) from e
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         # Re-attach the user to this session
         from sqlalchemy import select
 
@@ -253,7 +253,7 @@ async def logout_all(
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
     """Increment token_version to invalidate all existing tokens."""
-    async with get_db() as db:
+    async with get_remote_db() as db:
         from sqlalchemy import select
 
         result = await db.execute(select(User).where(User.id == user.id))

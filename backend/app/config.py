@@ -17,8 +17,11 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Database
+    # Database (remote PostgreSQL — always required)
     database_url: str = "postgresql+asyncpg://agenthub:agenthub@localhost:5432/agenthub"
+
+    # Database (local SQLite — dual-DB mode; None = single-PG server mode)
+    database_local_url: str | None = None
 
     # API Keys
     anthropic_api_key: str | None = None
@@ -60,7 +63,7 @@ class Settings(BaseSettings):
     # ─── Kafka (optional) ───
     kafka_brokers: str = ""
 
-    # ─── Redis (optional, for metadata cache + async DB writes) ───
+    # ─── Redis (removed in dual-DB migration; kept for backward-compat no-op) ───
     redis_url: str = ""
 
     # ─── Embedding ───

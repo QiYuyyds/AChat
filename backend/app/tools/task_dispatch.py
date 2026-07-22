@@ -20,7 +20,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, AgentRun, Conversation
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
 
@@ -101,7 +101,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         visibility = "visible"
 
         # Verify the target agent exists and is in the conversation
-        async with get_db() as db:
+        async with get_local_db() as db:
             agent = (
                 await db.execute(select(Agent).where(Agent.id == target_agent_id))
             ).scalar_one_or_none()
@@ -122,7 +122,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
                 )
 
     # Get trigger_message_id from the parent run
-    async with get_db() as db:
+    async with get_local_db() as db:
         parent_run = (
             await db.execute(
                 select(AgentRun).where(AgentRun.id == ctx.run_id)
