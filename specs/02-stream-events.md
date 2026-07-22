@@ -278,8 +278,8 @@ dispatch.end      (parentRunId=r1, taskId=t3, status='skipped', error='Upstream 
 | 事件 | 是否落库 | 备注 |
 |---|---|---|
 | `run.*` | ✅ 落到 `agent_runs` 表 | start/end 更新 status |
-| `message.start` | ✅ 创建 message 记录（parts=[]） | |
-| `message.end` | ✅ 更新 status='complete' | |
+| `message.start` | ✅ 创建 message 记录（parts=[]） | Redis 可用时走 Stream write-behind 异步 INSERT；不可用时同步 INSERT |
+| `message.end` | ✅ 更新 status='complete' | Redis 可用时走 Stream write-behind 异步 UPDATE；不可用时同步 UPDATE |
 | `message.added` | ❌ 透传 | user 消息已由 `sendMessage` 落库；此事件仅广播给其它客户端，前端按 id 幂等 upsert（详见下方「用户消息广播」） |
 | `message.removed` | ❌ 透传 | 撤回/编辑/重新生成已在服务端删库；此事件仅广播 messageIds/artifactIds 让其它客户端幂等移除 |
 | `part.start` | ✅ 写入 `messages.parts[i]` | parts 整体作为 JSON 更新 |
@@ -293,22 +293,28 @@ dispatch.end      (parentRunId=r1, taskId=t3, status='skipped', error='Upstream 
 | `fs_write.resolved` | ❌ 透传 | applied=true/false 由前端 store 用来移除对应 pending |
 | `bash_command.pending` | ❌ 透传 | pending 队列存于内存单例（`src/server/pending-bash-commands.ts`）；前端 mount 时拉一次兜底 |
 | `bash_command.resolved` | ❌ 透传 | approved=true/false 由前端 store 用来移除对应 pending |
-| `run.usage` | ✅ 落到 `agent_runs.usage` JSON 列 | adapter 在 run 结束前 emit；前端 store 同步更新该 run 行 |
+| `run.usage` | ✅ 落到 `agent_runs.usage` JSON 列 | fire-and-forget `asyncio.create_task` 异步写入，不阻塞 SSE 推送 |
 | `heartbeat` | ❌ 透传 | |
 | `plan.created` | ❌ 透传 | 触发 consume_stream 注入 execution_plan part |
 | `plan.step_update` | ✅ 更新 parts_buffer 中 execution_plan part 的 steps | 全量替换 steps 数组 |
 | `file_write_preview.complete` | ✅ 更新 parts_buffer 中 file_write_preview part 的 status/path/oldContent/newContent | 对称于 plan.step_update 更新 execution_plan |
 
-**写入策略**：流式 `part.delta` 高频，使用「内存缓冲 + 定时 flush」避免每个 delta 都打 DB：
+**写入策略**：所有可延迟事件（`message.start`/`message.end`/`part.*`/`tool.*`）在 Redis 可用时走 Stream write-behind：事件 XADD 到 per-run Redis Stream，后台 `DBWriterConsumer` 批量 flush 到 PG（`message.start` 走 `INSERT ... ON CONFLICT DO NOTHING`，其他走 `UPDATE parts`）。`run.usage`/`message.usage` 走 fire-and-forget `asyncio.create_task`。Redis 不可用时全部回退到同步写入。
 
-```typescript
-// 服务端伪代码
-const buffer = new Map<string, Message>()  // messageId → in-memory state
-const flushInterval = setInterval(() => {
-  for (const msg of buffer.values()) {
-    db.update(messages).set({ parts: msg.parts }).where(eq(messages.id, msg.id))
-  }
-}, 100)
+**推送与持久化顺序**：`consume_stream` 中 `publish()` 在 `persist_event()` 之前执行，确保 SSE 推送不被远程 DB 写入阻塞。对需要从 `parts_buffer` 读取数据生成 `PartStartEvent` 的特殊事件（`artifact.create`/`deploy.status`/`plan.created` 等），parts_buffer 更新（纯内存操作）在 publish 之前完成，IO 部分（XADD / DB write）在 publish 之后执行。
+
+```python
+# 服务端伪代码（Python 移植后）
+parts_buffer: dict[str, list[dict]] = {}  # messageId → in-memory parts
+
+# consume_stream 主循环
+async for event in stream:
+    publish(event, user_id=user_id)   # SSE 推送先执行
+    await persist_event(event, ...)   # DB 持久化后执行（XADD / fire-and-forget）
+
+# DBWriterConsumer 后台批量 flush
+# message.start → INSERT ... ON CONFLICT DO NOTHING
+# 其他事件  → UPDATE messages SET parts = ...
 ```
 
 ---

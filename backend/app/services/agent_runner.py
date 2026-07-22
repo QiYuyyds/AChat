@@ -2191,6 +2191,7 @@ async def consume_stream(
     output_key_by_artifact_id: dict[str, str] = {}
     tool_name_by_call_id: dict[str, str] = {}
     current_message_id: str | None = None
+    completed_message_ids: set[str] = set()
     _plan_stats_payload: dict | None = None
     stop_reason: str | None = None
     stop_reason_label: str | None = None
@@ -2216,14 +2217,13 @@ async def consume_stream(
                     stop_reason = event.stop_reason
                     stop_reason_label = getattr(event, "stop_reason_label", None)
 
+            # Publish to SSE before persisting — SSE delivery is never blocked
+            # by remote database write latency.
+            if not (hidden and event.type in _VISIBLE_EVENT_TYPES):
+                publish(event, user_id=user_id)
             await persist_event(
                 event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
             )
-            # Hidden runs (clone-subagent): persist to DB but don't push visible
-            # content events to SSE. run.usage / turn.metric still go through
-            # so the frontend can track token usage.
-            if not (hidden and event.type in _VISIBLE_EVENT_TYPES):
-                publish(event, user_id=user_id)
 
             if event.type == "artifact.create":
                 output_key = output_key_by_artifact_id.get(event.artifact.id)
@@ -2237,7 +2237,6 @@ async def consume_stream(
                 ref_part = {"type": "artifact_ref", "artifactId": event.artifact.id}
                 parts.append(ref_part)
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(
                         PartStartEvent(
@@ -2249,6 +2248,7 @@ async def consume_stream(
                         ),
                         user_id=user_id,
                     )
+                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
 
             if event.type == "deploy.status":
                 parts = parts_buffer.get(event.message_id, [])
@@ -2259,7 +2259,6 @@ async def consume_stream(
                 }
                 parts.append(deploy_part)
                 parts_buffer[event.message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
                 if not hidden:
                     publish(
                         PartStartEvent(
@@ -2271,6 +2270,7 @@ async def consume_stream(
                         ),
                         user_id=user_id,
                     )
+                await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
 
             # plan.created: inject execution_plan part (symmetric to artifact.create → artifact_ref)
             if event.type == "plan.created" and current_message_id:
@@ -2284,7 +2284,6 @@ async def consume_stream(
                 }
                 parts.append(plan_part)
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(
                         PartStartEvent(
@@ -2296,6 +2295,7 @@ async def consume_stream(
                         ),
                         user_id=user_id,
                     )
+                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
 
             # plan.step_update: update execution_plan part steps in parts_buffer
             if event.type == "plan.step_update" and current_message_id:
@@ -2306,9 +2306,9 @@ async def consume_stream(
                         p["steps"] = updated_steps
                         break
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(event, user_id=user_id)
+                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
 
             # dispatch.start → plan step auto-update (mark step as in_progress)
             if event.type == "dispatch.start":
@@ -2374,9 +2374,9 @@ async def consume_stream(
                         p["newContent"] = event.new_content
                         break
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(event, user_id=user_id)
+                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
 
             # Run-end cleanup: finalize all execution_plan parts + write stats + clear registries
             if event.type == "run.end":
@@ -2397,7 +2397,6 @@ async def consume_stream(
                                 plan_changed = True
                     if plan_changed:
                         parts_buffer[current_message_id] = parts
-                        await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                         from app.schemas.plan import PlanStep as PlanStepModel
                         for p in parts:
                             if p.get("type") == "execution_plan":
@@ -2411,6 +2410,7 @@ async def consume_stream(
                                         ),
                                         user_id=user_id,
                                     )
+                        await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
 
                 # Compute plan usage stats (DB write deferred to finalize to avoid connection pool errors)
                 from app.services.plan_registry import plan_registry as _plan_registry_stats
@@ -2446,6 +2446,7 @@ async def consume_stream(
                 _plan_registry.cleanup_run()
 
             if event.type == "message.end":
+                completed_message_ids.add(event.message_id)
                 current_message_id = None
             if event.type == "tool.result":
                 tool_name = tool_name_by_call_id.get(event.call_id)
@@ -2469,25 +2470,39 @@ async def consume_stream(
                             result=control["result"],
                             is_error=bool(control.get("isError", False)),
                         )
+                        if not hidden:
+                            publish(result_event, user_id=user_id)
                         await persist_event(
                             result_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
                         )
-                        if not hidden:
-                            publish(result_event, user_id=user_id)
 
                     end_event = MessageEndEvent(
                         conversation_id=event.conversation_id,
                         timestamp=now_ms(),
                         message_id=event.message_id,
                     )
+                    if not hidden:
+                        publish(end_event, user_id=user_id)
                     await persist_event(
                         end_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
                     )
-                    if not hidden:
-                        publish(end_event, user_id=user_id)
                     current_message_id = None
                     break
     finally:
+        # Final synchronous flush: ensure all parts are in PG before cleanup.
+        # This covers the gap between the last XADD and the Consumer's async flush.
+        if parts_buffer:
+            try:
+                async with get_db() as db:
+                    for msg_id, parts in parts_buffer.items():
+                        values: dict[str, Any] = {"parts": parts}
+                        if msg_id in completed_message_ids:
+                            values["status"] = "complete"
+                        await db.execute(
+                            update(Message).where(Message.id == msg_id).values(**values)
+                        )
+            except Exception:
+                logger.debug("[consume_stream] final sync flush failed", exc_info=True)
         # Ensure the underlying stream's async generator is closed so that
         # adapter cleanup (subprocess shutdown, connection close) runs.
         # aclose() is a no-op on an already-exhausted generator.
@@ -2540,35 +2555,36 @@ async def persist_event(
 ) -> None:
     """Persist a stream event into the messages / runs tables (camelCase parts).
 
-    When Redis is available, deferrable events (part.start/delta/end, tool.call/result,
-    deploy.status) are XADD'd to a per-run Redis Stream instead of writing to PG
-    synchronously. A background consumer flushes them in batches. Non-deferrable
-    events (message.start, message.end, run.usage, message.usage) remain synchronous.
+    When Redis is available, deferrable events (message.start/end, part.start/delta/end,
+    tool.call/result, deploy.status) are XADD'd to a per-run Redis Stream instead of
+    writing to PG synchronously. A background consumer flushes them in batches.
+    Usage events (run.usage, message.usage) are persisted via fire-and-forget
+    asyncio.create_task. When Redis is unavailable, all events fall back to
+    synchronous PostgreSQL writes.
     """
     etype = event.type
     redis_client = _get_redis_client()
     use_stream = redis_client is not None
 
     if etype == "run.usage":
-        # adapter-reported run token usage -> agent_runs.usage (latest wins)
-        async with get_db() as db:
-            await db.execute(
-                update(AgentRun)
-                .where(AgentRun.id == event.run_id)
-                .values(usage=event.usage.model_dump(by_alias=True))
-            )
+        asyncio.create_task(_update_run_usage(event.run_id, event.usage.model_dump(by_alias=True)))
         return
     if etype == "message.usage":
-        async with get_db() as db:
-            await db.execute(
-                update(Message)
-                .where(Message.id == event.message_id)
-                .values(usage=event.usage.model_dump(by_alias=True))
-            )
+        asyncio.create_task(_update_message_usage(event.message_id, event.usage.model_dump(by_alias=True)))
         return
     if etype == "message.start":
         parts_buffer[event.message_id] = []
         output_message_ids.append(event.message_id)
+        if use_stream and redis_client is not None:
+            try:
+                from app.services.async_db_writer import xadd_event
+
+                event_data = json.loads(event.model_dump_json(by_alias=True))
+                event_data["hidden"] = hidden
+                await xadd_event(redis_client, run_id, json.dumps(event_data))
+                return
+            except Exception as e:
+                logger.warning("[persist_event] XADD failed for message.start, falling back to sync: %s", e)
         async with get_db() as db:
             msg = Message(
                 id=event.message_id,
@@ -2651,27 +2667,21 @@ async def persist_event(
         await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
         return
     if etype == "message.end":
-        # Synchronous final flush: write latest parts to PG, update status
         final_parts = parts_buffer.get(event.message_id, [])
+        if use_stream and redis_client is not None:
+            try:
+                from app.services.async_db_writer import xadd_event
+
+                await xadd_event(redis_client, run_id, event.model_dump_json(by_alias=True))
+                return
+            except Exception as e:
+                logger.warning("[persist_event] XADD failed for message.end, falling back to sync: %s", e)
         async with get_db() as db:
             await db.execute(
                 update(Message)
                 .where(Message.id == event.message_id)
                 .values(status="complete", parts=final_parts)
             )
-        parts_buffer.pop(event.message_id, None)
-        # Delete the Redis Stream for this run (all events have been flushed)
-        if redis_client is not None:
-            try:
-                from app.services.async_db_writer import stream_key
-
-                await redis_client.delete(stream_key(run_id))
-            except Exception:
-                logger.debug(
-                    "[persist_event] failed to delete stream for run %s",
-                    run_id,
-                    exc_info=True,
-                )
         return
     if etype == "artifact.create":
         artifact_ids.append(event.artifact.id)
@@ -2716,6 +2726,28 @@ async def _update_message_parts(message_id: str, parts: list[dict]) -> None:
         await db.execute(
             update(Message).where(Message.id == message_id).values(parts=parts)
         )
+
+
+async def _update_run_usage(run_id: str, usage: dict) -> None:
+    """Fire-and-forget: update agent_runs.usage (latest wins, failures logged)."""
+    try:
+        async with get_db() as db:
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == run_id).values(usage=usage)
+            )
+    except Exception as e:
+        logger.warning("[persist_event] fire-and-forget run.usage update failed for run %s: %s", run_id, e)
+
+
+async def _update_message_usage(message_id: str, usage: dict) -> None:
+    """Fire-and-forget: update messages.usage (latest wins, failures logged)."""
+    try:
+        async with get_db() as db:
+            await db.execute(
+                update(Message).where(Message.id == message_id).values(usage=usage)
+            )
+    except Exception as e:
+        logger.warning("[persist_event] fire-and-forget message.usage update failed for msg %s: %s", message_id, e)
 
 
 # ─── DB / event helpers ──────────────────────────────────────────────────────

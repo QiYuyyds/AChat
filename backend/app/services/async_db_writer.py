@@ -17,6 +17,7 @@ import logging
 from typing import Any
 
 from sqlalchemy import update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.db.engine import get_db
 from app.db.models import Message
@@ -169,12 +170,16 @@ class DBWriterConsumer:
     ) -> None:
         """Flush a batch of events to PG, grouping by message_id.
 
-        For each unique message_id in the batch, read the latest parts from
-        parts_buffer and do a single UPDATE.
+        For message.start events: INSERT the message row (ON CONFLICT DO NOTHING).
+        For message.end events: UPDATE with status='complete' and latest parts.
+        For other events: UPDATE with latest parts from parts_buffer.
+        INSERTs are executed before UPDATEs within each batch.
         """
         # events is [(key, [(id, {data: json_str}), ...]), ...]
         message_ids: set[str] = set()
         entry_ids: list[str] = []
+        message_start_data: dict[str, dict] = {}
+        message_end_ids: set[str] = set()
 
         for _stream_key, entries in events:
             for entry_id, fields in entries:
@@ -184,6 +189,11 @@ class DBWriterConsumer:
                     msg_id = data.get("messageId")
                     if msg_id:
                         message_ids.add(msg_id)
+                    etype = data.get("type")
+                    if etype == "message.start" and msg_id:
+                        message_start_data[msg_id] = data
+                    elif etype == "message.end" and msg_id:
+                        message_end_ids.add(msg_id)
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("[db_writer] failed to parse event data for entry %s", entry_id)
 
@@ -192,17 +202,47 @@ class DBWriterConsumer:
                 await self._redis.xack(key, CONSUMER_GROUP, *entry_ids)
             return
 
-        # Flush each message's latest parts to PG via direct UPDATE (no SELECT)
+        insert_count = 0
+        update_count = 0
+
         async with get_db() as db:
+            # Phase 1: INSERTs for message.start events (ON CONFLICT DO NOTHING)
+            for msg_id, data in message_start_data.items():
+                await db.execute(
+                    pg_insert(Message).values(
+                        id=msg_id,
+                        conversation_id=data.get("conversationId", ""),
+                        role="agent",
+                        agent_id=data.get("agentId"),
+                        status="streaming",
+                        run_id=data.get("runId"),
+                        created_at=data.get("timestamp", 0),
+                        hidden=data.get("hidden", False),
+                        parts=[],
+                        mentioned_agent_ids=[],
+                    ).on_conflict_do_nothing(index_elements=["id"])
+                )
+                insert_count += 1
+
+            # Phase 2: UPDATEs for all messages with latest parts from buffer
             for msg_id in message_ids:
                 parts = parts_buffer.get(msg_id)
                 if parts is None:
                     continue
+                values: dict[str, Any] = {"parts": parts}
+                if msg_id in message_end_ids:
+                    values["status"] = "complete"
                 await db.execute(
                     update(Message)
                     .where(Message.id == msg_id)
-                    .values(parts=parts)
+                    .values(**values)
                 )
+                update_count += 1
+
+        logger.info(
+            "[db_writer] flushed batch for stream %s: %d INSERTs, %d UPDATEs",
+            key, insert_count, update_count,
+        )
 
         # XACK all processed entries
         if entry_ids:

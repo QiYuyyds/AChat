@@ -1,0 +1,23 @@
+# AChat 本地 Redis — 仅 Redis，其余基础设施在远程服务器
+# 用法: docker compose -f docker-compose.redis.yml up -d
+#
+# PostgreSQL / Milvus / Elasticsearch / Neo4j 已部署在远程 64.83.35.253
+# Redis 部署在本机以获得最低延迟（~1ms RTT）
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - "redisdata:/data"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redisdata:
