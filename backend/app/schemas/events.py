@@ -35,6 +35,17 @@ class BaseEvent(BaseModel):
 
 
 # ─── Run Events ─────────────────────────────────────
+class RunQueuedEvent(BaseEvent):
+    """Event when a run is queued waiting for active runs to finish."""
+
+    type: Literal["run.queued"] = "run.queued"
+    run_id: str = Field(alias="runId")
+    agent_id: str = Field(alias="agentId")
+    trigger_message_id: str = Field(alias="triggerMessageId")
+
+    model_config = {"populate_by_name": True}
+
+
 class RunStartEvent(BaseEvent):
     """Event when a run starts."""
 
@@ -540,6 +551,7 @@ class GuideSideEffectEvent(BaseEvent):
 StreamEvent = Annotated[
     Union[  # noqa: UP007 - keep Union[] for the Pydantic discriminated union
         # Run events
+        RunQueuedEvent,
         RunStartEvent,
         RunEndEvent,
         RunUsageEvent,

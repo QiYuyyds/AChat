@@ -10,7 +10,7 @@ layers of protection against abuse:
    Consolidation decay/dedup/expire.
 
 Writes go through ``LongTerm.store_classified()`` so they share the same
-dedup logic as the background ``extract_memory_from_reply`` path.
+dedup logic as the background ``extract_ltm_memories`` path.
 """
 
 from __future__ import annotations

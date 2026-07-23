@@ -697,6 +697,27 @@ export const useAppStore = create<AppState>()(
           case 'heartbeat':
             return
 
+          case 'run.queued': {
+            s.runsByConv[event.conversationId] ??= {}
+            s.runsByConv[event.conversationId][event.runId] = {
+              id: event.runId,
+              conversationId: event.conversationId,
+              agentId: event.agentId,
+              triggerMessageId: event.triggerMessageId,
+              status: 'queued',
+              error: null,
+              parentRunId: null,
+              usage: null,
+              startedAt: event.timestamp,
+              finishedAt: null,
+              turnMetrics: {},
+              turnMetricsComplete: false,
+              stopReason: null,
+              stopReasonLabel: null,
+            }
+            return
+          }
+
           case 'run.start': {
             s.runsByConv[event.conversationId] ??= {}
             s.runsByConv[event.conversationId][event.runId] = {
@@ -1494,13 +1515,15 @@ export const useAgentList = () => useAppStore(useShallow((s) => Object.values(s.
 export const usePendingAttachments = (conversationId: string) =>
   useAppStore(useShallow((s) => s.pendingAttachmentsByConv[conversationId] ?? []))
 
-/** 当前会话中正在跑的顶层 run（parentRunId 为空的，用于「中止」按钮）。 */
+/** 当前会话中正在跑或排队的顶层 run（parentRunId 为空的，用于「中止」按钮和排队指示器）。 */
 export const useTopLevelRunningRuns = (conversationId: string) =>
   useAppStore(
     useShallow((s) => {
       const runs = s.runsByConv[conversationId]
       if (!runs) return []
-      return Object.values(runs).filter((r) => r.status === 'running' && !r.parentRunId)
+      return Object.values(runs).filter(
+        (r) => (r.status === 'running' || r.status === 'queued') && !r.parentRunId,
+      )
     }),
   )
 

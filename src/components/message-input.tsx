@@ -272,7 +272,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
   const isRunning = runningRuns.length > 0
   // 计划待审批时，输入框改作「对计划提修改意见」用——即使 orchestrator run 仍在 running 也放开
   const planReview = usePendingPlanReviewForConversation(conversationId)
-  const composerLocked = isRunning && !planReview
+  const composerLocked = planReview !== null
   const pending = usePendingAttachments(conversationId)
   const addPendingAttachment = useAppStore((s) => s.addPendingAttachment)
   const removePendingAttachment = useAppStore((s) => s.removePendingAttachment)
@@ -320,7 +320,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
               pending.length > 0 || uploading.length > 0
                 ? '请先移除附件'
                 : isRunning
-                  ? '请先中止正在运行的 Agent'
+                  ? '请先中止或等待排队中的 Agent'
                   : command.description,
             disabled: sending || isRunning || pending.length > 0 || uploading.length > 0,
           }
@@ -766,7 +766,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
       return
     }
 
-    if ((!text && !hasAttachments && selectedSkills.length === 0) || sending || isRunning) return
+    if ((!text && !hasAttachments && selectedSkills.length === 0) || sending) return
 
     const exactSlashCommand = allSlashCommands.find((command) => command.command === text)
     if (exactSlashCommand) {
@@ -1067,11 +1067,9 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
           placeholder={
             planReview
               ? '对计划提修改意见，或点上方执行/拒绝…'
-              : isRunning
-                ? '当前有 Agent 正在响应…'
-                : isGroup
-                  ? '输入消息，@ 指定 Agent，Enter 发送，Shift+Enter 换行'
-                  : '输入消息，Enter 发送，Shift+Enter 换行'
+              : isGroup
+                ? '输入消息，@ 指定 Agent，Enter 发送，Shift+Enter 换行'
+                : '输入消息，Enter 发送，Shift+Enter 换行'
           }
           className="min-h-[44px] max-h-40 resize-none"
           disabled={composerLocked}
@@ -1095,7 +1093,6 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
             size="icon"
             variant="ghost"
             onClick={() => fileInputRef.current?.click()}
-            disabled={isRunning}
             title="附件 / 图片"
           >
             <Paperclip className="size-4" />
@@ -1145,7 +1142,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
             <BookOpen className="size-4" />
           </Button>
         </div>
-        {composerLocked ? (
+        {isRunning && !composerLocked && (
           <Button
             onClick={() => void abortAll()}
             disabled={aborting}
@@ -1153,21 +1150,21 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
             variant="destructive"
             title="中止全部"
             data-testid="composer-abort"
+            className="shrink-0"
           >
             <Square className="size-4 fill-current" />
           </Button>
-        ) : (
-          <Button
-            onClick={() => void submit()}
-            disabled={(!content.trim() && pending.length === 0) || sending}
-            size="icon"
-            title="发送 (Enter)"
-            data-testid="composer-send"
-            className="enabled:shadow-[var(--shadow-sm)] transition-shadow"
-          >
-            <Send className="size-4" />
-          </Button>
         )}
+        <Button
+          onClick={() => void submit()}
+          disabled={composerLocked || (!content.trim() && pending.length === 0) || sending}
+          size="icon"
+          title="发送 (Enter)"
+          data-testid="composer-send"
+          className="enabled:shadow-[var(--shadow-sm)] transition-shadow"
+        >
+          <Send className="size-4" />
+        </Button>
       </div>
     </div>
   )

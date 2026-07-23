@@ -431,6 +431,7 @@ interface BaseEvent {
 
 export type StreamEvent = BaseEvent &
   (
+    | { type: 'run.queued'; runId: string; agentId: string; triggerMessageId: string }
     | { type: 'run.start'; runId: string; agentId: string; triggerMessageId: string; parentRunId?: string }
     | {
         type: 'run.end'

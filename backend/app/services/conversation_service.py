@@ -26,6 +26,8 @@ import logging
 import os
 import re
 import shutil
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,6 +68,34 @@ logger = logging.getLogger(__name__)
 # Per-conversation pin cap (port of shared/constants.ts PIN_LIMIT_PER_CONVERSATION):
 # bounds how many messages get re-injected into the system prompt.
 PIN_LIMIT_PER_CONVERSATION = 5
+
+
+# ─── Per-conversation write lock ────────────────────────────────────────────
+# Serializes all message-writing operations (send / withdraw / regenerate /
+# clear / delete / revise_plan / edit_and_resend) within a single conversation.
+# Different conversations run in parallel; the same conversation is strictly
+# serial. This prevents timestamp collisions, inconsistent history snapshots
+# between concurrent runs, and withdraw-vs-send race conditions.
+#
+# edit_and_resend acquires the lock once and calls the *_unlocked internal
+# functions to avoid a self-deadlock (asyncio.Lock is non-reentrant).
+class _ConvLockManager:
+    """Per-conversation asyncio.Lock: different conversations parallel, same serial."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def lock_for(self, conversation_id: str) -> AsyncIterator[None]:
+        lock = self._locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[conversation_id] = lock
+        async with lock:
+            yield
+
+
+_conv_locks = _ConvLockManager()
 
 # Windows requires an explicit drive letter / UNC for a bound path, otherwise
 # "/tmp" would be resolved against the current drive — not what the user meant.
@@ -664,7 +694,7 @@ async def list_messages(conversation_id: str) -> list[MessageRecord]:
 
 
 # ─── Delete ─────────────────────────────────────────────────────────────────
-async def delete_conversation(conversation_id: str) -> None:
+async def _delete_conversation_unlocked(conversation_id: str) -> None:
     async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         if conv.mode == "guide":
@@ -699,6 +729,11 @@ async def delete_conversation(conversation_id: str) -> None:
     await invalidate_workspace_cache(conversation_id)
 
 
+async def delete_conversation(conversation_id: str) -> None:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _delete_conversation_unlocked(conversation_id)
+
+
 async def _rmdir_with_retry(target: str) -> None:
     """Remove a directory, retrying on transient Windows lock errors.
 
@@ -718,7 +753,7 @@ async def _rmdir_with_retry(target: str) -> None:
 
 
 # ─── Clear history ──────────────────────────────────────────────────────────
-async def clear_conversation_history(
+async def _clear_conversation_history_unlocked(
     conversation_id: str,
 ) -> ClearConversationHistoryResult:
     async with get_local_db() as db:
@@ -772,8 +807,15 @@ async def clear_conversation_history(
     )
 
 
+async def clear_conversation_history(
+    conversation_id: str,
+) -> ClearConversationHistoryResult:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _clear_conversation_history_unlocked(conversation_id)
+
+
 # ─── Send message ───────────────────────────────────────────────────────────
-async def send_message(
+async def _send_message_unlocked(
     *,
     conversation_id: str,
     content: str,
@@ -934,18 +976,60 @@ async def send_message(
             message_id=message_id, run_ids=[], messages=[sys_record]
         )
 
-    runner = get_agent_runner()
-    run_ids: list[str] = []
-    for agent_id in responders:
-        handle = runner.run(
-            agent_id=agent_id,
-            conversation_id=conversation_id,
-            trigger_message_id=message_id,
-            user_id=conv_user_id,
+    # Check if there are active (running or queued) runs for this conversation.
+    # If so, new runs are queued instead of started immediately — the queue
+    # is drained automatically when each run finishes (see agent_runner.finalize).
+    async with get_local_db() as db:
+        active_result = await db.execute(
+            select(AgentRun.id).where(
+                AgentRun.conversation_id == conversation_id,
+                AgentRun.status.in_(["running", "queued"]),
+                AgentRun.parent_run_id.is_(None),
+            )
         )
-        run_ids.append(handle.run_id)
+        has_active_runs = active_result.first() is not None
+
+    run_ids: list[str] = []
+    if has_active_runs:
+        from app.services.agent_runner import enqueue_run
+        for agent_id in responders:
+            run_id = enqueue_run(
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                trigger_message_id=message_id,
+                user_id=conv_user_id,
+            )
+            run_ids.append(run_id)
+    else:
+        runner = get_agent_runner()
+        for agent_id in responders:
+            handle = runner.run(
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                trigger_message_id=message_id,
+                user_id=conv_user_id,
+            )
+            run_ids.append(handle.run_id)
 
     return SendMessageResult(message_id=message_id, run_ids=run_ids)
+
+
+async def send_message(
+    *,
+    conversation_id: str,
+    content: str,
+    mentioned_agent_ids: list[str] | None = None,
+    parent_message_id: str | None = None,
+    attachment_ids: list[str] | None = None,
+) -> SendMessageResult:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _send_message_unlocked(
+            conversation_id=conversation_id,
+            content=content,
+            mentioned_agent_ids=mentioned_agent_ids,
+            parent_message_id=parent_message_id,
+            attachment_ids=attachment_ids,
+        )
 
 
 def _decide_responders(
@@ -966,7 +1050,7 @@ def _decide_responders(
 
 
 # ─── Revise pending dispatch plan ───────────────────────────────────────────
-async def revise_dispatch_plan(
+async def _revise_dispatch_plan_unlocked(
     *, conversation_id: str, plan_id: str, feedback: str
 ) -> dict:
     """Land the user's NL feedback as a user message + broadcast, then re-plan.
@@ -1024,13 +1108,22 @@ async def revise_dispatch_plan(
     return {"ok": True} if ok else {"ok": False, "error": "Failed to revise pending dispatch plan"}
 
 
+async def revise_dispatch_plan(
+    *, conversation_id: str, plan_id: str, feedback: str
+) -> dict:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _revise_dispatch_plan_unlocked(
+            conversation_id=conversation_id, plan_id=plan_id, feedback=feedback,
+        )
+
+
 # ─── Abort run ──────────────────────────────────────────────────────────────
 async def abort_run(run_id: str) -> bool:
     return get_agent_runner().abort(run_id)
 
 
 # ─── Withdraw latest user message ───────────────────────────────────────────
-async def withdraw_latest_user_message(
+async def _withdraw_latest_user_message_unlocked(
     conversation_id: str, message_id: str
 ) -> WithdrawResult:
     """Withdraw the latest user message plus everything it triggered downstream.
@@ -1059,7 +1152,7 @@ async def withdraw_latest_user_message(
             select(AgentRun.id).where(
                 AgentRun.conversation_id == conversation_id,
                 AgentRun.started_at >= msg_created_at,
-                AgentRun.status == "running",
+                AgentRun.status.in_(["running", "queued"]),
             )
         )
         run_ids_to_abort = [row[0] for row in runs_result.all()]
@@ -1095,8 +1188,15 @@ async def withdraw_latest_user_message(
     )
 
 
+async def withdraw_latest_user_message(
+    conversation_id: str, message_id: str
+) -> WithdrawResult:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _withdraw_latest_user_message_unlocked(conversation_id, message_id)
+
+
 # ─── Regenerate latest response ─────────────────────────────────────────────
-async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
+async def _regenerate_latest_response_unlocked(conversation_id: str) -> RegenerateResult:
     """Delete everything after the latest user message and re-run responders for it."""
     async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
@@ -1115,7 +1215,7 @@ async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
             select(AgentRun.id).where(
                 AgentRun.conversation_id == conversation_id,
                 AgentRun.started_at > trigger_created_at,
-                AgentRun.status == "running",
+                AgentRun.status.in_(["running", "queued"]),
             )
         )
         run_ids_to_abort = [row[0] for row in runs_result.all()]
@@ -1173,6 +1273,11 @@ async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
     )
 
 
+async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _regenerate_latest_response_unlocked(conversation_id)
+
+
 # ─── Edit & resend latest user message ──────────────────────────────────────
 async def edit_and_resend_latest_user_message(
     conversation_id: str, message_id: str, new_content: str
@@ -1199,15 +1304,18 @@ async def edit_and_resend_latest_user_message(
             if p.get("type") in ("image_attachment", "file_attachment")
         ]
 
-    withdrawn = await withdraw_latest_user_message(conversation_id, message_id)
+    # Acquire the conversation lock once for both withdraw + send to avoid
+    # a self-deadlock (asyncio.Lock is non-reentrant) and to ensure atomicity.
+    async with _conv_locks.lock_for(conversation_id):
+        withdrawn = await _withdraw_latest_user_message_unlocked(conversation_id, message_id)
 
-    sent = await send_message(
-        conversation_id=conversation_id,
-        content=trimmed,
-        mentioned_agent_ids=original_mentions,
-        parent_message_id=original_parent,
-        attachment_ids=original_attachment_ids or None,
-    )
+        sent = await _send_message_unlocked(
+            conversation_id=conversation_id,
+            content=trimmed,
+            mentioned_agent_ids=original_mentions,
+            parent_message_id=original_parent,
+            attachment_ids=original_attachment_ids or None,
+        )
 
     async with get_local_db() as db:
         result = await db.execute(select(Message).where(Message.id == sent.message_id))

@@ -42,6 +42,7 @@ from app.schemas.events import (
     PlanStepUpdateEvent,
     PartStartEvent,
     RunEndEvent,
+    RunQueuedEvent,
     RunStartEvent,
     RunUsageEvent,
     StreamEvent,
@@ -217,10 +218,10 @@ async def _post_run_memory_hook(
                         agent_text = "\n".join(text_parts)
 
                         # Collect tool call failures so memory_writer can
-                        # extract them as tool_failure category. Tool errors
-                        # live in tool_result parts (isError=True), not in
-                        # the assistant's text output — without this they
-                        # are invisible to extract_memory_from_reply.
+                        # extract them as memories. Tool errors live in
+                        # tool_result parts (isError=True), not in the
+                        # assistant's text output — without this they
+                        # are invisible to extract_ltm_memories.
                         import json as _json
                         tool_names: dict[str, str] = {}
                         for p in parts:
@@ -1542,6 +1543,149 @@ _active_runs: dict[str, tuple[asyncio.Task[RunResult], asyncio.Event]] = {}
 sub_agent_run_semaphore = _Semaphore(MAX_CONCURRENT_SUB_AGENT_RUNS)
 
 
+# ─── Queued runs (per-conversation FIFO queue) ──────────────────────────────
+@dataclass
+class _QueuedRunSpec:
+    """Parameters for a run waiting in the per-conversation queue."""
+
+    run_id: str
+    agent_id: str
+    conversation_id: str
+    trigger_message_id: str
+    user_id: str | None
+
+
+_queued_runs: dict[str, list[_QueuedRunSpec]] = {}
+
+
+def enqueue_run(
+    *,
+    agent_id: str,
+    conversation_id: str,
+    trigger_message_id: str,
+    user_id: str | None = None,
+) -> str:
+    """Create a queued run: AgentRun row with status='queued' + RunQueuedEvent.
+
+    The run will be started automatically when all active runs for the same
+    conversation finish (see :func:`_drain_queued_runs`).
+    """
+    run_id = new_run_id()
+    now = now_ms()
+
+    async def _create_and_publish() -> None:
+        async with get_local_db() as db:
+            db.add(
+                AgentRun(
+                    id=run_id,
+                    conversation_id=conversation_id,
+                    agent_id=agent_id,
+                    trigger_message_id=trigger_message_id,
+                    status="queued",
+                    parent_run_id=None,
+                    started_at=now,
+                )
+            )
+        publish(
+            RunQueuedEvent(
+                conversation_id=conversation_id,
+                timestamp=now,
+                run_id=run_id,
+                agent_id=agent_id,
+                trigger_message_id=trigger_message_id,
+            ),
+            user_id=user_id,
+        )
+
+    # Fire-and-forget: the DB insert and event publish happen asynchronously.
+    # The caller returns run_id immediately so the API response includes it.
+    asyncio.ensure_future(_create_and_publish())
+    _queued_runs.setdefault(conversation_id, []).append(
+        _QueuedRunSpec(
+            run_id=run_id,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            trigger_message_id=trigger_message_id,
+            user_id=user_id,
+        )
+    )
+    return run_id
+
+
+def cancel_queued_run(run_id: str) -> bool:
+    """Remove a queued run from the queue and mark it as aborted in DB.
+
+    Returns True if the run was found and cancelled, False otherwise.
+    """
+    for conv_id, queue in _queued_runs.items():
+        for i, spec in enumerate(queue):
+            if spec.run_id == run_id:
+                queue.pop(i)
+                if not queue:
+                    _queued_runs.pop(conv_id, None)
+                # Mark as aborted in DB + emit RunEndEvent
+                async def _cancel() -> None:
+                    now = now_ms()
+                    try:
+                        async with get_local_db() as db:
+                            run = (
+                                await db.execute(
+                                    select(AgentRun).where(AgentRun.id == run_id)
+                                )
+                            ).scalar_one_or_none()
+                            if run is not None and run.status == "queued":
+                                run.status = "aborted"
+                                run.finished_at = now
+                    except RuntimeError:
+                        pass
+                    publish(
+                        RunEndEvent(
+                            conversation_id=spec.conversation_id,
+                            timestamp=now,
+                            run_id=run_id,
+                            status="aborted",
+                            error=None,
+                        ),
+                        user_id=spec.user_id,
+                    )
+
+                asyncio.ensure_future(_cancel())
+                return True
+    return False
+
+
+def has_queued_runs(conversation_id: str) -> bool:
+    """Check if a conversation has any queued runs."""
+    return bool(_queued_runs.get(conversation_id))
+
+
+def _start_queued_run(spec: _QueuedRunSpec) -> None:
+    """Start a queued run: update DB row to 'running' and spawn execute_run."""
+    run_id = spec.run_id
+    cancel_event = asyncio.Event()
+    args = RunArgs(
+        agent_id=spec.agent_id,
+        conversation_id=spec.conversation_id,
+        trigger_message_id=spec.trigger_message_id,
+        user_id=spec.user_id,
+    )
+    task = asyncio.create_task(execute_run(run_id, cancel_event, args))
+    _active_runs[run_id] = (task, cancel_event)
+    task.add_done_callback(lambda _t: _active_runs.pop(run_id, None))
+    task.add_done_callback(_log_uncaught)
+
+
+def _drain_queued_runs(conversation_id: str) -> None:
+    """Start the next queued run for a conversation (FIFO order)."""
+    queue = _queued_runs.get(conversation_id)
+    if not queue:
+        return
+    spec = queue.pop(0)
+    if not queue:
+        _queued_runs.pop(conversation_id, None)
+    _start_queued_run(spec)
+
+
 # ─── Facade (port of AgentRunner.run/abort) ──────────────────────────────────
 class AgentRunnerImpl:
     """Synchronous facade: spawn an asyncio task, return the handle immediately."""
@@ -1582,6 +1726,8 @@ class AgentRunnerImpl:
         return RunHandle(run_id=run_id)
 
     def abort(self, run_id: str) -> bool:
+        if cancel_queued_run(run_id):
+            return True
         entry = _active_runs.get(run_id)
         if not entry:
             return False
@@ -2700,18 +2846,28 @@ async def _update_message_usage(message_id: str, usage: dict) -> None:
 
 # ─── DB / event helpers ──────────────────────────────────────────────────────
 async def insert_run(run_id: str, args: RunArgs, agent_id: str) -> None:
+    now = now_ms()
     async with get_local_db() as db:
-        db.add(
-            AgentRun(
-                id=run_id,
-                conversation_id=args.conversation_id,
-                agent_id=agent_id,
-                trigger_message_id=args.trigger_message_id,
-                status="running",
-                parent_run_id=args.parent_run_id,
-                started_at=now_ms(),
+        existing = (
+            await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.status = "running"
+            existing.started_at = now
+            existing.finished_at = None
+            existing.error = None
+        else:
+            db.add(
+                AgentRun(
+                    id=run_id,
+                    conversation_id=args.conversation_id,
+                    agent_id=agent_id,
+                    trigger_message_id=args.trigger_message_id,
+                    status="running",
+                    parent_run_id=args.parent_run_id,
+                    started_at=now,
+                )
             )
-        )
 
 
 async def _insert_run_or_resume(run_id: str, args: RunArgs, agent_id: str) -> None:
@@ -2816,6 +2972,8 @@ async def finalize(
         ),
         user_id=args.user_id,
     )
+
+    _drain_queued_runs(args.conversation_id)
 
     return RunResult(
         run_id=run_id,

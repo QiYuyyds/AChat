@@ -59,6 +59,9 @@ class MemoryService:
         # LLM generate function (injected for memory extraction)
         self._generate_fn: Callable | None = None
 
+        # Cache last user message per conversation for full-conversation LTM extraction
+        self._last_user_msg: dict[str, str] = {}
+
         self._initialized = False
 
     def set_embed_fn(self, fn: Callable) -> None:
@@ -143,9 +146,13 @@ class MemoryService:
             logger.warning("ChatHistory PG write failed: %s", e)
 
         if role == "assistant":
-            # Assistant message: trigger LLM-based memory extraction (background)
+            # Assistant message: trigger LLM-based LTM extraction (background).
+            # Retrieve cached user message for full-conversation extraction.
             if self._generate_fn and len(content) >= 10 and not self._is_trivial_reply(content):
-                asyncio.create_task(self._safe_extract_memory(content, agent_id, user_id=user_id))
+                user_msg = self._last_user_msg.pop(conversation_id, "")
+                asyncio.create_task(self._safe_extract_ltm(
+                    user_msg, content, agent_id, user_id=user_id,
+                ))
             # Session Memory incremental extraction (background, after turn ends)
             if conversation_id:
                 asyncio.create_task(self._safe_extract_session_memory(conversation_id))
@@ -154,9 +161,12 @@ class MemoryService:
         if role != "user":
             return
 
-        # User messages drive preference extraction only. Raw user text is no
-        # longer dumped into LTM — LTM is fed exclusively by category-routed
-        # extraction from assistant replies (see memory_writer).
+        # Cache user message for LTM extraction (retrieved when assistant reply arrives)
+        if conversation_id:
+            self._last_user_msg[conversation_id] = content
+
+        # User messages drive preference extraction only. LTM is fed by
+        # full-conversation extraction (see _safe_extract_ltm).
         #
         # Single extraction pass: the LLM path is primary. Running the coarse
         # rule pass alongside it only produces duplicate keys (喜好 vs
@@ -375,22 +385,28 @@ class MemoryService:
         except Exception as e:
             logger.warning("Preference consolidation failed: %s", e)
 
-    async def _safe_extract_memory(self, content: str, agent_id: str = "", *, user_id: str | None = None) -> None:
-        """Extract memory facts from assistant reply using LLM (background task)."""
+    async def _safe_extract_ltm(
+        self, user_msg: str, assistant_msg: str, agent_id: str = "", *, user_id: str | None = None,
+    ) -> None:
+        """Extract LTM memories from full conversation using LLM (background task).
+
+        Uses the V3-adapted extraction prompt to process both user and assistant
+        messages in a single LLM call, producing natural language memory strings.
+        """
         try:
-            from app.memory.memory_writer import extract_memory_from_reply
-            await extract_memory_from_reply(
+            from app.memory.memory_writer import extract_ltm_memories
+            await extract_ltm_memories(
                 generate_fn=self._generate_fn,
                 embed_fn=self._embed_fn,
                 ltm=self.ltm,
-                content=content,
-                preference=self.preference,
+                user_msg=user_msg,
+                assistant_msg=assistant_msg,
                 existing_keys=list(self.preference.data.keys()),
                 agent_id=agent_id,
                 user_id=user_id,
             )
         except Exception as e:
-            logger.warning("Memory extraction failed: %s", e)
+            logger.warning("LTM memory extraction failed: %s", e)
 
     async def _safe_extract_session_memory(self, conversation_id: str) -> None:
         """Check and run Session Memory extraction (background task)."""

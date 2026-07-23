@@ -1,14 +1,17 @@
-"""Memory writer — LLM-based memory extraction and classification from assistant replies.
+"""Memory writer — LLM-based memory extraction from conversations.
 
-Ported from AGI-memory ``internal/agent/memory_writer.py``.
-Adapted for AgentHub's async architecture (no threading, uses asyncio.create_task).
+Adapted from mem0 V3 (ADDITIVE_EXTRACTION_PROMPT) for LTM extraction
+and mem0 V2 (USER_MEMORY_EXTRACTION_PROMPT) for Preference extraction.
 
 Key functions:
   - ``classify_memory_content(key, value)``: Rule-based classification
-    (identity/preference/tool_failure/policy).
-  - ``extract_memory_from_reply(generate_fn, embed_fn, ltm, content)``:
-    Async extraction of k-v facts from assistant replies via LLM,
-    followed by classification and ``ltm.store_classified()``.
+    (identity/preference/tool_failure/policy). Used by ProfileSource for
+    preference scoring/sorting.
+  - ``extract_ltm_memories(generate_fn, embed_fn, ltm, user_msg, assistant_msg)``:
+    Async extraction of natural language memories from full conversation,
+    stored directly to LTM without classification routing.
+  - ``extract_preferences(generate_fn, msg, existing_keys)``:
+    Async extraction of user preferences (KV) from user messages.
 """
 
 import asyncio
@@ -21,8 +24,8 @@ from typing import Protocol
 logger = logging.getLogger(__name__)
 
 
-# Importance floor per memory category. Replaces the old hardcoded 0.7 so the
-# ranking actually means something — identity/policy outrank plain facts.
+# Importance floor per memory category. Used by ProfileSource for
+# preference scoring/sorting.
 _IMPORTANCE_BY_CATEGORY: dict[str, float] = {
     "identity": 0.9,
     "policy": 0.8,
@@ -64,9 +67,9 @@ def classify_memory_content(key: str, value: str) -> tuple[str, list[str], str]:
     """Classify memory content using rules.
 
     Returns (category, tags, slot_hint).
-    Returns empty strings if no rule matches (caller should use LLM fallback).
+    Returns empty strings if no rule matches.
 
-    Ported from AGI-memory classify_memory_content().
+    Used by ProfileSource in prompt_assembler.py for preference scoring/sorting.
     """
     combined = f"{key}{value}"
     if _contains_any(combined, "叫", "名字", "姓名", "是我", "我是"):
@@ -84,232 +87,314 @@ def classify_memory_content(key: str, value: str) -> tuple[str, list[str], str]:
     return "", [], ""
 
 
-# ── LLM classification prompt ─────────────────────────────────────────────────
+# ── LTM extraction prompt (adapted from mem0 V3 ADDITIVE_EXTRACTION_PROMPT) ──
 
-_CLASSIFY_SYSTEM_PROMPT = (
-    "你是一个记忆分类助手。请将给定的内容分类到以下 7 个类别之一，并给出标签和槽位提示。\n"
-    "类别（category）：identity（身份信息）、preference（偏好）、fact（事实）、"
-    "episodic（事件）、tool_failure（工具失败）、policy（策略约束）、general（通用）。\n"
-    "槽位提示（slot_hint）：profile、planner、task_memory、tool_state、constraints、recall_memory。\n"
-    '输出 JSON：{"category":"...","tags":["tag1"],"slot_hint":"..."}\n'
-    "只输出 JSON，不要有其他内容。"
-)
+_LTM_EXTRACTION_SYSTEM_PROMPT = """\
+# ROLE
+
+You are a Memory Extractor — a precise, evidence-bound processor responsible for extracting rich, contextual memories from conversations. Your sole operation is ADD: identify every piece of memorable information and produce self-contained, contextually rich factual statements.
+
+You extract from BOTH user and assistant messages. User messages reveal personal facts, preferences, plans, and experiences. Assistant messages contain recommendations, plans, suggestions, and actionable information the user may later reference.
+
+# GUIDELINES
+
+## What to Extract
+
+Extract ALL memorable information from both user and assistant messages. Think broadly:
+
+**From user messages:**
+- Personal details, preferences, plans, relationships, professional information
+- Opinions, subjective experiences, emotional states, motivations
+- Activity preferences, health and wellness information
+- Plans, intentions, goals, decisions
+- Miscellaneous information worth remembering
+
+**From assistant messages:**
+- Recommendations, suggestions, plans, actionable information
+- Technical details, project context, decisions made collaboratively
+- Information the user may want to reference later
+
+## What NOT to Extract
+- Greetings, filler, conversation mechanics ("hello", "ok", "sure", "sounds good")
+- Transient context (e.g., "let me think about that") unless it reveals a preference or plan
+- Information already captured by another memory in the same response (avoid duplication)
+
+## Memory Quality Standards
+
+### Contextually Rich, Not Atomic
+Capture the full picture — fact AND surrounding context — in a single unified memory, not scattered fragments.
+Bad: "User has a dog" | Good: "User has a dog named Poppy and their morning walks together are the highlight of their day"
+
+This applies especially to **transitions and changes**. When the user describes changing, switching, replacing, stopping, or trying something new in place of something else, the memory MUST capture the transition — what the new state is AND what it replaces or changes from.
+
+### Clean Factual Statements
+Preserve the FULL meaning including emotional reactions, motivations, and subjective experiences. Remove filler words and conversation mechanics, but KEEP:
+- Emotional states: "scared but reassured", "happy and thankful"
+- Motivations and reasons: "motivated by her own journey"
+- Subjective descriptions: "resilient", "therapeutic"
+
+### Self-Contained
+Every memory must be understandable on its own. Replace all pronouns with specific names or "User."
+
+### Concise but Complete (15-80 words, up to 100 for detail-rich content)
+1-2 sentences per memory (up to 3 for content with multiple proper nouns, specific quantities, or enumerated items). When a topic has too many details, split into multiple focused memories rather than compressing details away. NEVER sacrifice a proper noun, title, date, or specific detail to meet a word count.
+
+### Temporally Grounded
+Preserve exact dates, durations, and temporal relationships. Convert relative to absolute using context when available. "18 days" stays "18 days", not "some time."
+
+### Numerically Precise
+Preserve exact quantities as stated. "416 pages" stays "416 pages", not "about 400 pages."
+
+## Deduplication Within Response
+Each piece of information MUST appear exactly once in the output. If the user and assistant both mention the same fact, extract it once from the original source (typically the user).
+
+## Attribution
+For each memory, set "attributed_to" to "user" or "assistant" based on who originally provided the information.
+
+## Language Requirement
+CRITICAL: Respond in the SAME LANGUAGE and SCRIPT as the input messages.
+1. Match the language of the user's messages exactly — if they write in Chinese, extract in Chinese; Japanese in Japanese; etc.
+2. Preserve the exact script/alphabet of the input.
+3. Do NOT translate or transliterate into English unless the input is already in English.
+4. Technical terms, proper nouns, and brand names should be preserved in their original form as used in the input.
+5. If the input mixes languages, preserve both the mixed language style AND the script.
+
+# OUTPUT FORMAT
+
+Return a JSON object with a "memory" array. Each entry has "id", "text", and "attributed_to":
+
+{"memory": [
+  {"id": "0", "text": "...", "attributed_to": "user"},
+  {"id": "1", "text": "...", "attributed_to": "assistant"}
+]}
+
+If nothing memorable was said, return: {"memory": []}
+
+# EXAMPLES
+
+## Example 1: Multi-Topic Conversation
+
+New Messages:
+[{"role": "user", "content": "I'm John, a software engineer at Google. I love hiking on weekends and I'm planning to learn Rust next month."}]
+
+Output:
+{"memory": [
+  {"id": "0", "text": "User's name is John", "attributed_to": "user"},
+  {"id": "1", "text": "User is a software engineer at Google", "attributed_to": "user"},
+  {"id": "2", "text": "User loves hiking on weekends", "attributed_to": "user"},
+  {"id": "3", "text": "User is planning to learn Rust next month", "attributed_to": "user"}
+]}
+
+Four dimensions: (1) name, (2) professional, (3) hobby, (4) plan. Each extracted separately.
+
+## Example 2: Nothing to Extract
+
+New Messages:
+[{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello! How can I help?"}]
+
+Output:
+{"memory": []}
+
+No memorable information — greetings only.
+
+## Example 3: Document / Reference Material — Extract Content, Not Actions
+
+New Messages:
+[{"role": "user", "content": "Remember this: The project uses PostgreSQL 16 with Redis for caching. The API is built with FastAPI and the frontend uses Next.js 16."}, {"role": "assistant", "content": "Got it, noted."}]
+
+Output:
+{"memory": [
+  {"id": "0", "text": "The project uses PostgreSQL 16 with Redis for caching", "attributed_to": "user"},
+  {"id": "1", "text": "The API is built with FastAPI and the frontend uses Next.js 16", "attributed_to": "user"}
+]}
+
+Extract the factual content, not the acknowledgment.
+
+## Example 4: Exhaustive Checklist — Verify Before Outputting
+
+Before finalizing, verify:
+1. Did you capture ALL memorable information from both user and assistant?
+2. Is each memory self-contained (no pronouns without antecedents)?
+3. Are transitions/changes captured with both old and new state?
+4. Are exact numbers, dates, and proper nouns preserved?
+5. Is each piece of information extracted exactly once (no duplicates)?
+6. Is each memory attributed to the correct source?
+7. Is the language matched to the input language?
+"""
 
 
-async def llm_classify_memory(
-    generate_fn: Callable,
-    content: str,
-) -> tuple[str, list[str], str]:
-    """Classify memory content using LLM fallback.
-
-    Requests JSON output with category, tags, slot_hint.
-    Strips code fences; falls back to ("general", [], "") on parse failure.
-    """
-    if not generate_fn or not content:
-        return "general", [], ""
-    try:
-        raw = await asyncio.to_thread(generate_fn, _CLASSIFY_SYSTEM_PROMPT, content)
-    except Exception as e:
-        logger.warning("llm_classify_memory LLM call failed: %s", e)
-        return "general", [], ""
-
-    raw = _strip_code_fence(raw)
-    try:
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        logger.debug("llm_classify_memory: LLM output is not valid JSON: %s", raw[:100])
-        return "general", [], ""
-
-    if not isinstance(parsed, dict):
-        return "general", [], ""
-
-    valid_categories = {
-        "identity", "preference", "fact", "episodic",
-        "tool_failure", "policy", "general",
-    }
-    valid_slots = {
-        "profile", "planner", "task_memory",
-        "tool_state", "constraints", "recall_memory",
-    }
-
-    category = str(parsed.get("category", "general")).strip()
-    category_invalid = category not in valid_categories
-    if category_invalid:
-        category = "general"
-
-    tags_raw = parsed.get("tags", [])
-    tags = [str(t) for t in tags_raw if t] if isinstance(tags_raw, list) else []
-
-    slot_hint = str(parsed.get("slot_hint", "")).strip()
-    # If category was invalid, don't trust the slot_hint either
-    if slot_hint not in valid_slots or category_invalid:
-        slot_hint = ""
-
-    return category, tags, slot_hint
+# ── Async extraction from full conversation ─────────────────────────────────
 
 
-# ── LLM extraction prompt ──────────────────────────────────────────────────
-
-_EXTRACTION_SYSTEM_PROMPT = (
-    "你是一个信息提取助手。从下面的AI回复中提取值得长期记住的客观事实。\n"
-    "每条事实必须【自包含】：把它所描述的主体/对象/地点/时间写进 key，使其脱离对话也能读懂。\n"
-    "例如天气要写明城市与日期：{\"北京湿度(2026-07-05)\": \"约71%\"}，"
-    "而不是 {\"湿度\": \"约71%\"}。\n"
-    "不要提取脱离主体的孤立数值，也不要提取临时对话细节。\n"
-    "输出 JSON 对象（key=自包含的信息名，value=具体值），没有值得记忆的则输出 {}。\n"
-    "只输出 JSON，不要有其他内容。"
-)
-
-
-# ── Async extraction from assistant reply ───────────────────────────────────
-
-
-async def extract_memory_from_reply(
+async def extract_ltm_memories(
     generate_fn: Callable,
     embed_fn: Callable | None,
     ltm,
-    content: str,
-    preference: _PreferenceLike | None = None,
-    existing_keys: list[str] | None = None,
-    agent_id: str = "",
+    user_msg: str,
+    assistant_msg: str,
     *,
+    agent_id: str = "",
     user_id: str | None = None,
+    existing_keys: list[str] | None = None,
 ) -> None:
-    """Extract k-v facts from assistant reply using LLM, classify, and store.
+    """Extract natural language memories from a full conversation turn.
 
-    Workflow:
-      1. LLM extracts key-value facts from the reply.
-      2. Each fact is classified via ``classify_memory_content()``.
-      3. Embedding is computed for each fact.
-      4. Facts are stored via ``ltm.store_classified()`` with dedup, and the
-         same k-v is mirrored into the preference store (double-write, matching
-         the original AGI-memory behavior).
+    Uses the V3-adapted extraction prompt to process both user and assistant
+    messages in a single LLM call, producing self-contained memory strings
+    that are stored directly to LTM via ``store_classified()`` without
+    classification routing.
 
     Args:
         generate_fn: LLM generate function (system_prompt, user_msg) -> str
         embed_fn: Optional embedding function (text) -> list[float]
         ltm: LongTerm memory instance with ``store_classified()`` method
-        content: The assistant reply text
-        preference: Optional preference store; when supplied, each extracted
-            k-v is also written via ``preference.set()`` so rule-based
-            extraction can be refined by the LLM's more precise values.
+        user_msg: The user message text
+        assistant_msg: The assistant reply text
+        agent_id: When non-empty, extracted memories are written with
+            ``scope='agent'`` and ``agent_id`` so they are isolated per-agent.
+        user_id: User ID for multi-user isolation.
         existing_keys: Optional list of current preference keys. When provided,
             the LLM prompt includes the key list and instructs the model to
             reuse semantically equivalent existing keys.
-        agent_id: When non-empty, extracted LTM facts are written with
-            ``scope='agent'`` and ``agent_id`` so they are isolated per-agent.
     """
-    if not content or not generate_fn:
+    if not generate_fn or (not user_msg and not assistant_msg):
         return
 
-    # Step 1: LLM extraction — build dynamic prompt with existing keys
-    system_prompt = _EXTRACTION_SYSTEM_PROMPT
+    # Build dynamic prompt with existing keys (fixes the dead-code bug where
+    # the original constant was passed instead of the modified variable)
+    system_prompt = _LTM_EXTRACTION_SYSTEM_PROMPT
     if existing_keys:
         keys_str = ", ".join(existing_keys)
         system_prompt = (
             system_prompt
-            + f"\n4. 已有的偏好 key：{keys_str}。"
-            "如果新提取的偏好与已有 key 语义相同，必须复用已有 key。"
+            + f"\n\n## Existing Preference Keys\n"
+            f"The following preference keys already exist: {keys_str}. "
+            "If extracted memories overlap with these preferences, use the same key naming convention."
         )
-    prompt = f"回复：{content}"
+
+    # Build V3-style "## New Messages" section
+    messages = []
+    if user_msg:
+        messages.append({"role": "user", "content": user_msg})
+    if assistant_msg:
+        messages.append({"role": "assistant", "content": assistant_msg})
+
+    prompt = "## New Messages\n"
+    prompt += json.dumps(messages, ensure_ascii=False)
+
     try:
-        raw = await asyncio.to_thread(generate_fn, _EXTRACTION_SYSTEM_PROMPT, prompt)
+        raw = await asyncio.to_thread(generate_fn, system_prompt, prompt)
     except Exception as e:
-        logger.warning("Memory extraction LLM call failed: %s", e)
+        logger.warning("LTM memory extraction LLM call failed: %s", e)
         return
 
     raw = _strip_code_fence(raw)
     try:
-        kvs = json.loads(raw)
+        parsed = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
-        logger.debug("Memory extraction: LLM output is not valid JSON")
+        logger.debug("LTM memory extraction: LLM output is not valid JSON: %s", raw[:200])
         return
 
-    if not isinstance(kvs, dict) or not kvs:
+    if not isinstance(parsed, dict):
         return
 
-    # Step 2-4: classify, then route each fact to a SINGLE store by category.
-    # identity/preference → preference store; fact/episodic/policy/tool_failure
-    # → LTM; general → dropped. No double-write.
-    for k, v in kvs.items():
-        if not k or v in (None, ""):
+    memories = parsed.get("memory", [])
+    if not isinstance(memories, list) or not memories:
+        return
+
+    write_scope = "agent" if agent_id else "global"
+    for mem in memories:
+        if not isinstance(mem, dict):
+            continue
+        text = str(mem.get("text", "")).strip()
+        if not text:
             continue
 
-        # No hardcoded "用户" prefix: LTM facts are objective world facts
-        # (weather, tool failures, policies), not user-profile attributes. The
-        # user-related categories route to the preference store below with the
-        # raw key, so the prefix would only ever mislabel LTM content.
-        clean_key = str(k).removeprefix("用户")
-        fact_content = f"{clean_key}: {v}"
-        category, tags, slot_hint = classify_memory_content(str(k), str(v))
-        if not category:
-            # Rule classification missed — try LLM fallback
-            category, tags, slot_hint = await llm_classify_memory(
-                generate_fn, fact_content,
-            )
-
-        # Profile-class facts belong to the preference store only
-        if category in ("identity", "preference"):
-            if preference is not None:
-                try:
-                    await preference.set(str(k), str(v), source="extracted")
-                except Exception as e:
-                    logger.warning(
-                        "Memory extraction preference.set failed for %s: %s", k, e,
-                    )
-            continue
-
-        # Only recall-worthy facts go to LTM; drop general/unknown noise
-        if category not in ("fact", "episodic", "policy", "tool_failure"):
-            continue
+        attributed_to = str(mem.get("attributed_to", "user")).strip() or "user"
 
         # Compute embedding off the event loop (embed_fn is a blocking client)
         emb = None
         if embed_fn:
             try:
-                emb = await asyncio.to_thread(embed_fn, fact_content)
+                emb = await asyncio.to_thread(embed_fn, text)
             except Exception as e:
-                logger.warning("Memory extraction embed failed: %s", e)
+                logger.warning("LTM memory extraction embed failed: %s", e)
 
-        importance = _IMPORTANCE_BY_CATEGORY.get(category, 0.3)
-
-        # Store via store_classified (with cosine dedup)
-        write_scope = "agent" if agent_id else "global"
         try:
             inserted = await ltm.store_classified(
-                fact_content,
-                importance,
+                text,
+                0.5,  # default importance; can be refined later
                 emb,
-                category,
-                tags,
-                slot_hint,
+                "",  # category: empty (no classification routing)
+                [attributed_to],  # tags: source attribution
+                "",  # slot_hint: empty
                 scope=write_scope,
                 agent_id=agent_id,
                 user_id=user_id,
             )
             logger.info(
-                "Memory extracted: %s = %s (category=%s, importance=%.2f, inserted=%s)",
-                k, v, category, importance, inserted,
+                "LTM memory extracted: %s (attributed_to=%s, inserted=%s)",
+                text[:80], attributed_to, inserted,
             )
         except Exception as e:
-            logger.warning("Memory extraction store failed: %s", e)
+            logger.warning("LTM memory extraction store failed: %s", e)
 
 
 # ── User-side preference extraction (LLM with rule fallback) ────────────────
 
 
-_PREFERENCE_EXTRACTION_PROMPT = (
-    "你是一个用户画像提取助手。只提取【用户本人】明确表达的、稳定的个人偏好或身份。\n"
-    "严格规则：\n"
-    "1. 只有用户明确说出自己的名字（如「我叫X」「我的名字是X」）才提取 姓名；"
-    "用户喜欢/提到的明星、作品、人物（如「我喜欢周润发」）绝不能当作用户的姓名。\n"
-    "2. 只提取关于用户自身的长期偏好（喜好、口味、习惯、风格、职业等）；"
-    "用户临时询问或提到的对象不是偏好（如问「北京天气」不代表用户偏好地点是北京）。\n"
-    "3. 用户明确陈述自己所在城市/地区（如「我在重庆」「我目前在重庆」「我住在上海」）"
-    "应提取为 所在地；但用户仅查询某地信息（如「北京天气」「东京有什么好玩」）不算。\n"
-    "4. key 用稳定简洁的类别名（姓名/喜好/口味/风格/职业/所在地 等），同一类信息始终用同一个 key，不要造近义新键。\n"
-    "输出 JSON 对象（key=类别名，value=具体值），没有则输出 {}。只输出 JSON，不要有其他内容。"
-)
+_PREFERENCE_EXTRACTION_PROMPT = """\
+You are a Personal Information Organizer, specialized in accurately storing user facts, memories, and preferences.
+
+Your primary role is to extract relevant pieces of information from the USER'S messages and organize them as key-value pairs.
+
+# [IMPORTANT]: GENERATE FACTS SOLELY BASED ON THE USER'S MESSAGES. DO NOT INCLUDE INFORMATION FROM ASSISTANT OR SYSTEM MESSAGES.
+# [IMPORTANT]: YOU WILL BE PENALIZED IF YOU INCLUDE INFORMATION FROM ASSISTANT OR SYSTEM MESSAGES.
+
+## Types of Information to Extract
+
+Focus on the following types of information when present in user messages:
+
+1. Personal Preferences: Likes, dislikes, tastes in food, music, movies, activities, etc.
+2. Personal Details: Name, age, location, hometown, relationships, education, etc.
+3. Plans and Intentions: Future plans, goals, projects, things the user intends to do.
+4. Activity Preferences: Hobbies, sports, travel preferences, weekend activities.
+5. Health and Wellness: Dietary restrictions, fitness routines, health conditions.
+6. Professional Details: Job title, company, skills, technologies used, career goals.
+7. Miscellaneous Information: Any other interesting or unique details about the user.
+
+## Rules
+
+1. Only extract information the USER explicitly states about themselves.
+2. Do not extract information from questions the user asks (e.g., "What's the weather in Beijing?" does not mean the user is in Beijing).
+3. User explicitly stating their name (e.g., "My name is X", "I am X") should extract as name; mentioning celebrities or characters does NOT count as the user's name.
+4. Use stable, concise category names as keys (e.g., 姓名/职业/所在地/喜好/技术栈). Always use the same key for the same type of information. Do not create synonym keys.
+5. Values should be concise but complete (e.g., "前端工程师" not "我是一个前端工程师，主要负责...").
+
+## Output Format
+
+Output a JSON object where keys are category names and values are the extracted information.
+If nothing relevant is found, output an empty object: {}
+
+## Examples
+
+User: Hi, I am looking for a restaurant in San Francisco.
+Output: {}
+
+User: Hi, my name is John. I am a software engineer.
+Output: {"姓名": "John", "职业": "软件工程师"}
+
+User: 我叫张三，我是前端工程师，用 TypeScript。
+Output: {"姓名": "张三", "职业": "前端工程师", "技术栈": "TypeScript"}
+
+User: I love hiking and I'm planning to learn Rust next month.
+Output: {"爱好": "hiking", "计划": "下个月学习Rust"}
+
+User: 我打算下周重构认证模块。
+Output: {"计划": "下周重构认证模块"}
+
+Return only the JSON object, no other text.
+"""
 
 
 _PREFERENCE_MERGE_PROMPT = (
@@ -410,8 +495,9 @@ async def extract_preferences(
         keys_str = ", ".join(existing_keys)
         system_prompt = (
             system_prompt
-            + f"4. 已有的偏好 key：{keys_str}。"
-            "如果新提取的偏好与已有 key 语义相同，必须复用已有 key。\n"
+            + f"\n\n## Existing Keys\n"
+            f"The following keys already exist: {keys_str}. "
+            "If new preferences overlap with existing keys semantically, reuse the existing key name."
         )
 
     try:
