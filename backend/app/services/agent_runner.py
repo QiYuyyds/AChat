@@ -2392,26 +2392,28 @@ async def consume_stream(
                         user_id=user_id,
                     )
                 await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
-                parts = parts_buffer.get(event.message_id, [])
+            # deploy.status: append a deploy_status part to the live message
+            if event.type == "deploy.status" and current_message_id:
+                parts = parts_buffer.get(current_message_id, [])
                 part_index = len(parts)
                 deploy_part = {
                     "type": "deploy_status",
                     "deployment": event.deployment.model_dump(by_alias=True),
                 }
                 parts.append(deploy_part)
-                parts_buffer[event.message_id] = parts
+                parts_buffer[current_message_id] = parts
                 if not hidden:
                     publish(
                         PartStartEvent(
                             conversation_id=event.conversation_id,
                             timestamp=now_ms(),
-                            message_id=event.message_id,
+                            message_id=current_message_id,
                             part_index=part_index,
                             part=deploy_part,
                         ),
                         user_id=user_id,
                     )
-                await _persist_or_stream(None, run_id, event, parts, False)  # symmetric to artifact.create → artifact_ref
+                await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
             if event.type == "plan.created" and current_message_id:
                 parts = parts_buffer.get(current_message_id, [])
                 part_index = len(parts)
