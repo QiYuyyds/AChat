@@ -162,6 +162,35 @@ def traced_async(
     return decorator
 
 
+class _NoOpSpan:
+    """Drop-in span stub used when tracing is disabled.
+
+    Mirrors the OTel ``Span`` interface so callers can use
+    ``span.is_recording()`` / ``span.set_attribute(...)`` without NoneType
+    crashes.
+    """
+
+    __slots__ = ()
+
+    def is_recording(self) -> bool:
+        return False
+
+    def set_attribute(self, key: str, value: Any) -> None:  # noqa: ARG002
+        pass
+
+    def record_exception(self, exception: BaseException) -> None:  # noqa: ARG002
+        pass
+
+    def set_status(self, status: Any) -> None:  # noqa: ARG002
+        pass
+
+    def add_event(self, name: str, attributes: Any = None) -> None:  # noqa: ARG002
+        pass
+
+
+_NOOP_SPAN = _NoOpSpan()
+
+
 def start_span(span_key: str, *, suffix: str | None = None, **attrs: Any):
     """Context manager that starts a span with dynamic attributes.
 
@@ -170,10 +199,11 @@ def start_span(span_key: str, *, suffix: str | None = None, **attrs: Any):
         with start_span("agent.run", agent_id="x", run_id="y") as span:
             ...
 
-    When tracing is disabled, returns a no-op context manager.
+    When tracing is disabled, returns a no-op context manager that yields a
+    ``_NoOpSpan`` so callers can safely call ``span.is_recording()`` etc.
     """
     if not is_trace_enabled():
-        return contextlib.nullcontext()
+        return contextlib.nullcontext(_NOOP_SPAN)
 
     span_name = resolve_span_name(span_key, suffix)
     tracer = get_tracer("achat")
