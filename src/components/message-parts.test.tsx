@@ -102,7 +102,7 @@ describe('TextPart streaming fallback', () => {
 })
 
 describe('TextPart bubble rendering', () => {
-  it('renders agent text in a bg-card bubble with border', () => {
+  it('renders agent text without a bubble (plain text, no bg-card)', () => {
     const parts: MessagePart[] = [
       { type: 'text', content: 'Agent reply' },
     ]
@@ -116,14 +116,12 @@ describe('TextPart bubble rendering', () => {
       />,
     )
 
-    // The text should be inside a bubble with bg-card and border
-    const bubble = screen.getByText('Agent reply').closest('div[class*="bg-card"]')
-    expect(bubble).toBeInTheDocument()
-    expect(bubble?.className).toContain('px-4')
-    expect(bubble?.className).toContain('py-3')
+    const wrapper = screen.getByText('Agent reply').closest('div')
+    expect(wrapper?.className).not.toContain('bg-card')
+    expect(wrapper?.className).not.toContain('border')
   })
 
-  it('renders user text in a bg-primary/5 bubble with left border', () => {
+  it('renders user text in a filled primary bubble', () => {
     const parts: MessagePart[] = [
       { type: 'text', content: 'User message' },
     ]
@@ -139,8 +137,8 @@ describe('TextPart bubble rendering', () => {
 
     const bubble = screen.getByText('User message').closest('div[class*="bg-primary"]')
     expect(bubble).toBeInTheDocument()
-    expect(bubble?.className).toContain('border-l-2')
-    expect(bubble?.className).toContain('border-primary')
+    expect(bubble?.className).toContain('rounded-2xl')
+    expect(bubble?.className).toContain('text-primary-foreground')
   })
 })
 

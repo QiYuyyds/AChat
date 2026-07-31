@@ -48,7 +48,7 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
       const a = agents[aid]
       if (!a) continue
       const limits = getModelLimits(a.modelProvider, a.modelId)
-      if (limits.contextWindow > maxCtx) maxCtx = limits.contextWindow
+      if (limits.effectiveContextWindow > maxCtx) maxCtx = limits.effectiveContextWindow
     }
     return maxCtx
   })()

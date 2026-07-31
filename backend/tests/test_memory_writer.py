@@ -34,6 +34,7 @@ class _MockLTM:
     async def store_classified(
         self, content, importance, emb, category, tags, slot_hint,
         scope="global", agent_id="", user_id=None,
+        summary="", keywords=None, content_scope="",
     ):
         self.stored.append({
             "content": content,
@@ -43,6 +44,9 @@ class _MockLTM:
             "slot_hint": slot_hint,
             "scope": scope,
             "agent_id": agent_id,
+            "summary": summary,
+            "keywords": keywords or [],
+            "content_scope": content_scope,
         })
         return True
 

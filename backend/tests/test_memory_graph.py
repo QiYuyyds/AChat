@@ -12,7 +12,7 @@ from app.memory.graph_memory import GraphMemory, _cosine
 def _make_settings() -> Settings:
     s = MagicMock(spec=Settings)
     s.kg_max_hops = 2
-    s.kg_weight = 0.3
+    s.kg_weight = 0.0
     return s
 
 

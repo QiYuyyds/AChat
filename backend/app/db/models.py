@@ -270,6 +270,9 @@ class Conversation(Base):
         String, name="fs_write_approval_mode", nullable=False, default="review"
     )
 
+    # Deprecated: rag_enabled is no longer read or written by application code.
+    # RAG tool availability is now determined solely by agent.toolNames containing "rag_search".
+    # Column retained for backward compat to avoid DB migration risk.
     rag_enabled: Mapped[bool] = mapped_column(
         Boolean, name="rag_enabled", nullable=False, default=False
     )
@@ -790,12 +793,17 @@ class LongTermMemory(Base):
     user_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("users.id"), name="user_id", nullable=True
     )
+    # Structured fields for dual-path retrieval (summary embedding + keyword Jaccard)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    keywords: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    content_scope: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     __table_args__ = (
         Index("idx_ltm_category", "category"),
         Index("idx_ltm_created", "created_at"),
         Index("idx_ltm_scope_agent", "scope", "agent_id"),
         Index("idx_ltm_user", "user_id"),
+        Index("idx_ltm_content_scope", "content_scope"),
     )
 
 

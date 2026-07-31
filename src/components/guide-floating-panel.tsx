@@ -41,11 +41,11 @@ function loadPanelState(): {
       // 旧数据没有 collapsedPosition，用 null 兜底（表示默认右下角）
       const parsed = JSON.parse(raw)
       return {
-        open: false,
         position: { x: 16, y: 16 },
         size: { width: 400, height: 600 },
         collapsedPosition: null,
         ...parsed,
+        open: false,
       }
     }
   } catch { /* ignore */ }

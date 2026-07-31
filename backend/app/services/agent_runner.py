@@ -54,10 +54,8 @@ from app.schemas.messages import DeployStatusRecord, MessageUsage
 from app.services import runner_registry
 from app.services.attachment_service import get_attachment_absolute_path
 from app.services.context_compaction_service import (
-    AUTO_COMPACT_WATERMARK,
     CompactionSkipped,
     compact_conversation,
-    count_uncompacted_messages,
     estimate_uncompacted_tokens,
     prefix_prompt_with_context_summary,
 )
@@ -250,6 +248,14 @@ async def _post_run_memory_hook(
 
                         if agent_text:
                             await ms.on_message_end("assistant", agent_text, agent_id, conversation_id=conversation_id, user_id=user_id)
+
+        # Case memory extraction at task completion
+        try:
+            asyncio.create_task(ms._safe_extract_case_memories(
+                conversation_id, agent_id, user_id=user_id,
+            ))
+        except Exception:
+            pass
     except Exception as e:
         logger.warning("_post_run_memory_hook error: %s", e)
 
@@ -313,12 +319,10 @@ async def _maybe_auto_compact_hook(
     override_prompt: str | None = None,
     agent_id: str | None = None,
 ) -> None:
-    """Background hook: auto-compact conversation context when watermark reached.
+    """Background hook: auto-compact conversation context on token threshold.
 
-    Triggers ``compact_conversation(silent=True)`` when either:
-    - the uncompacted message count >= AUTO_COMPACT_WATERMARK (10), OR
-    - the estimated token usage of uncompacted messages exceeds 87% of the
-      model's context window (when agent model info is available).
+    Triggers ``compact_conversation(silent=True)`` when the estimated token
+    usage of uncompacted messages exceeds 87% of the model's context window.
 
     Skipped for sub-agent runs (``override_prompt`` non-empty) to avoid
     side-effects on the parent conversation's context.
@@ -334,53 +338,41 @@ async def _maybe_auto_compact_hook(
         )
         return
 
-    try:
-        watermark = await count_uncompacted_messages(conversation_id)
-        logger.info(
-            "[auto-compact] conv=%s watermark=%d threshold=%d",
+    # Guard: agent_id is required for token-based trigger
+    if not agent_id:
+        logger.warning(
+            "[auto-compact] conv=%s skipped: agent_id is required for "
+            "token-based trigger",
             conversation_id,
-            watermark,
-            AUTO_COMPACT_WATERMARK,
         )
-        if watermark >= AUTO_COMPACT_WATERMARK:
+        return
+
+    try:
+        model_limit = await _get_agent_model_limit(agent_id)
+        if not model_limit or model_limit <= 0:
+            return
+
+        token_threshold = int(model_limit * 0.87)
+        estimated_tokens = await estimate_uncompacted_tokens(conversation_id)
+        logger.info(
+            "[auto-compact] conv=%s estimated_tokens=%d token_threshold=%d "
+            "(87%% of %d)",
+            conversation_id,
+            estimated_tokens,
+            token_threshold,
+            model_limit,
+        )
+        if estimated_tokens > token_threshold:
             result = await compact_conversation(conversation_id, silent=True)
             logger.info(
-                "[auto-compact] conv=%s compacted=%d silent=True summary_id=%s "
-                "ctx_before=%d ctx_after=%d",
+                "[auto-compact] conv=%s compacted (token trigger) "
+                "summary_id=%s ctx_before=%d ctx_after=%d",
                 conversation_id,
-                result.summary.source_message_count,
                 result.summary.id,
                 result.ctx_before,
                 result.ctx_after,
             )
             return
-
-        # O1: token-based trigger — compacts when estimated tokens > 87% of
-        # the model's context window, even if the message count is low.
-        if agent_id:
-            model_limit = await _get_agent_model_limit(agent_id)
-            if model_limit and model_limit > 0:
-                token_threshold = int(model_limit * 0.87)
-                estimated_tokens = await estimate_uncompacted_tokens(conversation_id)
-                logger.info(
-                    "[auto-compact] conv=%s estimated_tokens=%d token_threshold=%d "
-                    "(87%% of %d)",
-                    conversation_id,
-                    estimated_tokens,
-                    token_threshold,
-                    model_limit,
-                )
-                if estimated_tokens > token_threshold:
-                    result = await compact_conversation(conversation_id, silent=True)
-                    logger.info(
-                        "[auto-compact] conv=%s compacted (token trigger) "
-                        "summary_id=%s ctx_before=%d ctx_after=%d",
-                        conversation_id,
-                        result.summary.id,
-                        result.ctx_before,
-                        result.ctx_after,
-                    )
-                    return
     except CompactionSkipped as skip:
         logger.info(
             "[auto-compact] conv=%s skipped: %s (silent)",
@@ -400,7 +392,7 @@ async def _get_agent_model_limit(agent_id: str) -> int | None:
         if agent is None:
             return None
         limits = get_model_limits(agent.model_provider, agent.model_id)
-        return limits.context_window
+        return limits.effective_context_window
     except Exception as e:
         logger.warning("[auto-compact] failed to get model limit for agent %s: %s", agent_id, e)
         return None
@@ -981,7 +973,7 @@ async def _run_react_loop(  # noqa: C901
     model_limit = 0
     if model_id:
         try:
-            model_limit = get_model_limits(model_provider, model_id).context_window
+            model_limit = get_model_limits(model_provider, model_id).effective_context_window
         except Exception:
             model_limit = 0
 
@@ -1906,7 +1898,7 @@ async def execute_run(
                     args.conversation_id, args.agent_id, prompt, result
                 )
             )
-            # ─── Auto-compact hook (watermark + token based silent compaction) ───
+            # ─── Auto-compact hook (token-based silent compaction) ───
             asyncio.create_task(
                 _maybe_auto_compact_hook(
                     args.conversation_id, args.override_prompt, args.agent_id
@@ -2049,25 +2041,6 @@ async def execute_simple_run(
                 "[AgentRunner] Injected load_skill for SDK agent %s (equipped skills)",
                 args.agent_id,
             )
-
-    # Task 4.1: Dynamically inject RAG tools if conversation has rag_enabled=true
-    RAG_TOOLS = ["rag_search", "rag_ingest", "rag_list_documents", "rag_delete_document"]
-    async with get_local_db() as db:
-        from app.db.models import Conversation
-        conv = (
-            await db.execute(select(Conversation).where(Conversation.id == args.conversation_id))
-        ).scalar_one_or_none()
-        if conv and conv.rag_enabled:
-            if agent.adapter_name in SDK_ADAPTERS:
-                existing = set(base_tool_names)
-                new_tools = [t for t in RAG_TOOLS if t not in existing]
-                if new_tools:
-                    base_tool_names = list(base_tool_names) + new_tools
-                    logger.info(
-                        "[AgentRunner] Injected RAG tools %s for conversation %s (rag_enabled=true)",
-                        new_tools,
-                        args.conversation_id,
-                    )
 
     base_tool_names = _inject_code_intelligence_tool(
         list(base_tool_names), agent, workspace
@@ -2977,6 +2950,19 @@ async def finalize(
 
     _drain_queued_runs(args.conversation_id)
 
+    # Record finalize snapshot for online rule evaluation
+    from app.observability.instrumentation import AGENTHUB_STOP_REASON, AGENTHUB_TOTAL_TURNS
+    from app.observability.run_collector import run_span_collector
+    _existing = run_span_collector.collect(run_id)
+    _llm_turns = sum(1 for s in _existing if "llm.generate" in str(s.get("name", "")))
+    run_span_collector.record(
+        run_id, "agent.finalize",
+        **{
+            AGENTHUB_STOP_REASON: result.stop_reason or status,
+            AGENTHUB_TOTAL_TURNS: _llm_turns,
+        },
+    )
+
     return RunResult(
         run_id=run_id,
         status=status,
@@ -3134,29 +3120,52 @@ def _build_unresolved_tool_failure_result(status: str, error: str | None) -> str
 
 async def finalize_ok(run_id: str, args: RunArgs, result: RunExecutionResult) -> RunResult:
     from app.observability import start_span
+    from app.observability.instrumentation import (
+        AGENTHUB_AGENT_ID,
+        AGENTHUB_CONVERSATION_ID,
+        AGENTHUB_DURATION_MS,
+        AGENTHUB_RUN_ID,
+        AGENTHUB_STOP_REASON,
+        AGENTHUB_TOTAL_TOKENS,
+        AGENTHUB_TOTAL_TURNS,
+    )
     with start_span(
         "agent.finalize",
-        agent_id=args.agent_id,
-        run_id=run_id,
-        conversation_id=args.conversation_id,
-        total_turns=getattr(result, 'turns', 0),
-        total_tokens=getattr(result, 'total_tokens', 0),
-        duration_ms=getattr(result, 'duration_ms', 0),
-    ) as span:
+        **{
+            AGENTHUB_AGENT_ID: args.agent_id,
+            AGENTHUB_RUN_ID: run_id,
+            AGENTHUB_CONVERSATION_ID: args.conversation_id,
+            AGENTHUB_TOTAL_TURNS: getattr(result, 'turns', 0),
+            AGENTHUB_TOTAL_TOKENS: getattr(result, 'total_tokens', 0),
+            AGENTHUB_DURATION_MS: getattr(result, 'duration_ms', 0),
+            AGENTHUB_STOP_REASON: result.stop_reason or "complete",
+        },
+    ):
         return await finalize(run_id, args, "complete", result)
 
 
 async def finalize_failed(run_id: str, args: RunArgs, error: str) -> RunResult:
     from app.observability import start_span
+    from app.observability.instrumentation import (
+        AGENTHUB_AGENT_ID,
+        AGENTHUB_CONVERSATION_ID,
+        AGENTHUB_ERROR,
+        AGENTHUB_RUN_ID,
+        AGENTHUB_STOP_REASON,
+        AGENTHUB_SUCCESS,
+    )
     with start_span(
         "agent.finalize",
-        agent_id=args.agent_id,
-        run_id=run_id,
-        conversation_id=args.conversation_id,
+        **{
+            AGENTHUB_AGENT_ID: args.agent_id,
+            AGENTHUB_RUN_ID: run_id,
+            AGENTHUB_CONVERSATION_ID: args.conversation_id,
+            AGENTHUB_STOP_REASON: "failed",
+        },
     ) as span:
         if span.is_recording():
-            span.set_attribute("agenthub.success", False)
-            span.set_attribute("agenthub.error", str(error)[:500])
+            span.set_attribute(AGENTHUB_SUCCESS, False)
+            span.set_attribute(AGENTHUB_ERROR, str(error)[:500])
         return await finalize(run_id, args, "failed", _empty_run_execution_result(), error)
 
 
@@ -3168,9 +3177,14 @@ async def _run_online_eval_hook(run_id: str) -> None:
     """Background hook: run online rule evaluation after agent run completes."""
     try:
         from app.observability.eval_rules import run_eval_and_log
-        await run_eval_and_log(run_id, [])
+        from app.observability.run_collector import run_span_collector
+        spans = run_span_collector.collect(run_id)
+        await run_eval_and_log(run_id, spans)
     except Exception as e:
         logger.warning("Online eval hook failed: %s", e)
+    finally:
+        from app.observability.run_collector import run_span_collector
+        run_span_collector.clear(run_id)
 
 
 # ─── Adapter input construction (port of buildAdapterInput) ──────────────────
@@ -3308,7 +3322,7 @@ async def build_adapter_input(
         prompt_estimate = (
             estimate_tokens(system_prompt_with_workspace) + estimate_tokens(prompt) + 512
         )
-        history_budget = max(0, limits.context_window - limits.output_reserve - prompt_estimate)
+        history_budget = max(0, limits.effective_context_window - limits.output_reserve - prompt_estimate)
         try:
             history = await build_history_for(
                 agent.id,
@@ -3316,6 +3330,8 @@ async def build_adapter_input(
                 BuildHistoryOptions(
                     exclude_message_id=args.trigger_message_id,
                     token_budget=history_budget,
+                    model_context_limit=limits.effective_context_window,
+                    prompt_estimate=prompt_estimate,
                 ),
                 user_id=args.user_id or "",
             )
@@ -3766,32 +3782,15 @@ def _build_agent_hub_tool_guidance(
             ]
         )
 
-    has_rag = any(t in tools for t in ("rag_search", "rag_ingest", "rag_list_documents", "rag_delete_document"))
-    if has_rag:
-        rag_lines = [
-            "### RAG 知识库工具",
-            "当前会话已启用 RAG 知识库检索，你可以使用以下工具操作知识库：",
-        ]
-        if "rag_search" in tools:
-            rag_lines.append(
-                '- rag_search({ query: "检索关键词" })：在知识库中检索相关文档片段，返回匹配的文本块和来源信息。'
-            )
-        if "rag_ingest" in tools:
-            rag_lines.append(
-                '- rag_ingest({ document: "文本内容", title: "文档标题" })：将新内容入库到知识库，供后续检索使用。'
-            )
-        if "rag_list_documents" in tools:
-            rag_lines.append(
-                '- rag_list_documents({})：列出知识库中已有的文档列表。'
-            )
-        if "rag_delete_document" in tools:
-            rag_lines.append(
-                '- rag_delete_document({ document_id: "doc_xxx" })：从知识库中删除指定文档。'
-            )
-        rag_lines.append(
-            "使用建议：用户提问涉及已有知识库内容时，优先调用 rag_search 检索；用户要求保存信息时，用 rag_ingest 入库。"
+    if "rag_search" in tools:
+        add(
+            [
+                "### rag_search",
+                "用途：在知识库中检索相关文档片段，返回匹配的文本块和来源信息。",
+                '正确案例：用户问"我们的技术栈是什么"，调用 rag_search({ query: "项目技术栈" }) 检索已有知识库文档。',
+                "使用建议：用户提问涉及已有知识库内容时，优先调用 rag_search 检索；文档入库由知识库侧边栏管理，不要尝试入库操作。",
+            ]
         )
-        add(rag_lines)
 
     return "\n\n".join(sections)
 

@@ -3,13 +3,12 @@
 import {
   Archive,
   AlertTriangle,
-  BookOpen,
+  ArrowUp,
   Bot,
   CircleHelp,
   Download,
-  Paperclip,
+  Plus,
   Rocket,
-  Send,
   Settings,
   Shield,
   Sparkles,
@@ -46,9 +45,7 @@ import {
   reviseDispatchPlan,
   sendMessage as sendMessageAPI,
   setFsWriteApprovalMode,
-  setRagMode,
   type SkillSummary,
-  uploadAttachment as uploadAttachmentAPI,
 } from '@/lib/api'
 import { getToolDisplayName } from '@/lib/tool-display'
 import { emitUiCommand } from '@/lib/ui-command-events'
@@ -241,7 +238,15 @@ function safeFileName(value: string): string {
   return (cleaned || 'conversation').slice(0, 80)
 }
 
-export function MessageInput({ conversationId }: { conversationId: string }) {
+export function MessageInput({
+  conversationId,
+  handleFiles,
+  uploading,
+}: {
+  conversationId: string
+  handleFiles: (files: FileList | File[] | null) => Promise<void>
+  uploading: Array<{ tempId: string; name: string }>
+}) {
   const [content, setContent] = useState('')
   const [mentionedIds, setMentionedIds] = useState<string[]>([])
   const [selectedSkills, setSelectedSkills] = useState<string[]>([])
@@ -256,7 +261,6 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
   const [exporting, setExporting] = useState(false)
   const [sending, setSending] = useState(false)
   const [aborting, setAborting] = useState(false)
-  const [uploading, setUploading] = useState<Array<{ tempId: string; name: string }>>([])
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -274,7 +278,6 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
   const planReview = usePendingPlanReviewForConversation(conversationId)
   const composerLocked = planReview !== null
   const pending = usePendingAttachments(conversationId)
-  const addPendingAttachment = useAppStore((s) => s.addPendingAttachment)
   const removePendingAttachment = useAppStore((s) => s.removePendingAttachment)
   const clearPendingAttachments = useAppStore((s) => s.clearPendingAttachments)
   const [modeBusy, setModeBusy] = useState(false)
@@ -421,7 +424,6 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
     setSelectedSkills([])
     setTrigger(null)
     setSlashTrigger(null)
-    setUploading([])
   }, [conversationId])
 
   const mentionedAgents = mentionedIds.map((id) => agents[id]).filter(Boolean)
@@ -533,25 +535,19 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
     removePendingAttachment(conversationId, id)
   }
 
-  const handleFileSelect = async (files: FileList | null) => {
-    if (!files || files.length === 0) return
-    const list = Array.from(files)
-    const placeholders = list.map((f) => ({ tempId: nanoid(), name: f.name }))
-    setUploading((prev) => [...prev, ...placeholders])
-
-    await Promise.all(
-      list.map(async (file, i) => {
-        const tempId = placeholders[i].tempId
-        try {
-          const att = await uploadAttachmentAPI(conversationId, file)
-          addPendingAttachment(conversationId, att)
-        } catch (err) {
-          console.error('[MessageInput] upload failed', err)
-        } finally {
-          setUploading((prev) => prev.filter((p) => p.tempId !== tempId))
-        }
-      }),
-    )
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const imageFiles: File[] = []
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) imageFiles.push(file)
+      }
+    }
+    if (imageFiles.length === 0) return
+    e.preventDefault()
+    void handleFiles(imageFiles)
   }
 
   const clearSlashCommandInput = () => {
@@ -847,24 +843,9 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
     }
   }
 
-  // Task 6.2: RAG toggle logic
-  const ragEnabled = conversation?.ragEnabled ?? false
-  const toggleRagMode = async () => {
-    if (modeBusy || !conversation) return
-    const nextEnabled = !ragEnabled
-    setModeBusy(true)
-    try {
-      const updated = await setRagMode(conversationId, nextEnabled)
-      upsertConversation(updated)
-    } catch (err) {
-      console.error('[MessageInput] toggle RAG mode failed', err)
-    } finally {
-      setModeBusy(false)
-    }
-  }
 
   return (
-    <div className="relative shrink-0 border-t bg-background p-3">
+    <div className="relative shrink-0 -translate-y-2 bg-background px-2 pb-3 pt-0.5">
       {/* 引用预览 */}
       {replyMessage && (
         <div className="mb-2">
@@ -1056,7 +1037,29 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
         </div>
       )}
 
-      <div className="flex items-center gap-2">
+      {/* Gemini 风格胶囊输入条 */}
+      <div className="mx-auto flex max-w-3xl items-center rounded-full border bg-muted/50 px-0.5 shadow-[var(--shadow-sm)] transition-shadow focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10">
+        {/* 左侧附件按钮 */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            void handleFiles(e.target.files)
+            e.target.value = '' // 允许同名文件再次选择
+          }}
+        />
+        <button
+          type="button"
+          className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+          onClick={() => fileInputRef.current?.click()}
+          title="附件 / 图片"
+        >
+          <Plus className="size-3.5" />
+        </button>
+
+        {/* 输入框 */}
         <Textarea
           ref={textareaRef}
           data-testid="composer-input"
@@ -1064,107 +1067,64 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
           onChange={handleChange}
           onSelect={handleSelect}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={
             planReview
-              ? '对计划提修改意见，或点上方执行/拒绝…'
+              ? '对计划提修改意见…'
               : isGroup
-                ? '输入消息，@ 指定 Agent，Enter 发送，Shift+Enter 换行'
-                : '输入消息，Enter 发送，Shift+Enter 换行'
+                ? '@ 指定 Agent，Enter 发送'
+                : '输入消息…'
           }
-          className="min-h-[44px] max-h-40 resize-none"
+          className="min-h-[40px] max-h-28 resize-none border-0 bg-transparent px-2 py-1.5 text-[13px] leading-6 shadow-none focus-visible:ring-0 focus-visible:border-transparent placeholder:text-muted-foreground/60"
           disabled={composerLocked}
         />
 
-        {/* 文件上传 */}
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            void handleFileSelect(e.target.files)
-            e.target.value = '' // 允许同名文件再次选择
-          }}
-        />
-        {/* 辅助按钮组（紧贴）—— 让 Paperclip + 审批模式视觉成一组，与右侧主操作按钮 send 区分 */}
-        <div className="flex items-center gap-0.5 rounded-lg bg-muted/40 p-1">
-          <Button
+        {/* 右侧操作区 */}
+        <div className="flex shrink-0 items-center">
+          {/* 审批模式开关 */}
+          <button
             type="button"
-            size="icon"
-            variant="ghost"
-            onClick={() => fileInputRef.current?.click()}
-            title="附件 / 图片"
-          >
-            <Paperclip className="size-4" />
-          </Button>
-          {/* fs_write 审批模式开关：绿色 = Review（默认安全），红色 = Auto（直写） */}
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
+            className="flex size-6 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
             onClick={() => void toggleApprovalMode()}
             disabled={modeBusy}
             title={
               approvalMode === 'review'
-                ? 'Review 模式 · Agent 写入需审批（点击切到 Auto，直接生效 ⚠）'
-                : '⚠ Auto 模式 · Agent 写入直接生效（点击切回 Review）'
+                ? 'Review 模式 · 点击切到 Auto'
+                : '⚠ Auto 模式 · 点击切回 Review'
             }
-            className={cn(
-              approvalMode === 'review'
-                ? 'bg-success/10 text-success hover:bg-success/20 hover:text-success'
-                : 'bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive',
-            )}
           >
             {approvalMode === 'review' ? (
-              <Shield className="size-4" />
+              <Shield className={cn('size-3', modeBusy && 'opacity-50')} />
             ) : (
-              <Zap className="size-4" />
+              <Zap className={cn('size-3 text-destructive', modeBusy && 'opacity-50')} />
             )}
-          </Button>
-          {/* Task 6.1: RAG 知识库检索开关 */}
-          <Button
+          </button>
+
+          {isRunning && !composerLocked && (
+            <button
+              type="button"
+              onClick={() => void abortAll()}
+              disabled={aborting}
+              className="flex size-6 items-center justify-center rounded-full text-destructive hover:bg-destructive/10 transition-colors"
+              title="中止全部"
+              data-testid="composer-abort"
+            >
+              <Square className="size-3 fill-current" />
+            </button>
+          )}
+
+          {/* 发送按钮 */}
+          <button
             type="button"
-            size="icon"
-            variant="ghost"
-            onClick={() => void toggleRagMode()}
-            disabled={modeBusy}
-            title={
-              ragEnabled
-                ? 'RAG 已启用 · Agent 可检索与管理知识库'
-                : '启用 RAG 知识库检索'
-            }
-            className={cn(
-              ragEnabled
-                ? 'bg-primary/10 text-primary hover:bg-primary/20 hover:text-primary'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
+            onClick={() => void submit()}
+            disabled={composerLocked || (!content.trim() && pending.length === 0) || sending}
+            className="flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm transition-all enabled:hover:bg-primary/90 enabled:active:scale-95 disabled:opacity-30 disabled:pointer-events-none"
+            title="发送 (Enter)"
+            data-testid="composer-send"
           >
-            <BookOpen className="size-4" />
-          </Button>
+            <ArrowUp className="size-4" />
+          </button>
         </div>
-        {isRunning && !composerLocked && (
-          <Button
-            onClick={() => void abortAll()}
-            disabled={aborting}
-            size="icon"
-            variant="destructive"
-            title="中止全部"
-            data-testid="composer-abort"
-            className="shrink-0"
-          >
-            <Square className="size-4 fill-current" />
-          </Button>
-        )}
-        <Button
-          onClick={() => void submit()}
-          disabled={composerLocked || (!content.trim() && pending.length === 0) || sending}
-          size="icon"
-          title="发送 (Enter)"
-          data-testid="composer-send"
-          className="enabled:shadow-[var(--shadow-sm)] transition-shadow"
-        >
-          <Send className="size-4" />
-        </Button>
       </div>
     </div>
   )

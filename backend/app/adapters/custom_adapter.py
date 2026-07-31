@@ -749,6 +749,13 @@ class CustomAdapter(AgentPlatformAdapter):
         self, input: AdapterInput, cancel_event: asyncio.Event
     ) -> AsyncIterator[StreamEvent]:
         from app.observability import start_span
+        from app.observability.instrumentation import (
+            AGENTHUB_FINISH_REASON,
+            AGENTHUB_INPUT_TOKENS,
+            AGENTHUB_OUTPUT_TOKENS,
+            AGENTHUB_TURN,
+        )
+        from app.observability.run_collector import run_span_collector
         if not input.custom_config:
             raise ValueError("CustomAdapter requires custom_config")
         if not input.model_id:
@@ -947,6 +954,16 @@ class CustomAdapter(AgentPlatformAdapter):
 
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
+
+            run_span_collector.record(
+                input.run_id, "llm.generate",
+                **{
+                    AGENTHUB_FINISH_REASON: finish_reason or "",
+                    AGENTHUB_INPUT_TOKENS: msg_usage.input_tokens,
+                    AGENTHUB_OUTPUT_TOKENS: msg_usage.output_tokens,
+                    AGENTHUB_TURN: turn,
+                },
+            )
 
             if thinking_part_index >= 0:
                 yield PartEndEvent(

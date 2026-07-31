@@ -413,6 +413,34 @@ class WorktreeEvent(BaseEvent):
     branch_name: str | None = Field(default=None, alias="branchName")
     path: str | None = None
     merge_status: Literal["success", "conflict"] | None = Field(default=None, alias="mergeStatus")
+    conflict_files: list[str] | None = Field(default=None, alias="conflictFiles")
+    resolution_status: Literal[
+        "success", "llm_resolved", "manual_resolved", "abandoned", "conflict"
+    ] | None = Field(default=None, alias="resolutionStatus")
+
+    model_config = {"populate_by_name": True}
+
+
+# ─── Merge Conflict Approval Events ─────────────────────────────
+class MergeConflictPendingEvent(BaseEvent):
+    """Event when a merge conflict is pending human approval (Layer 3)."""
+
+    type: Literal["merge_conflict.pending"] = "merge_conflict.pending"
+    pending_id: str = Field(alias="pendingId")
+    task_id: str = Field(alias="taskId")
+    conflict_files: list[str] = Field(alias="conflictFiles")
+    workspace_path: str = Field(alias="workspacePath")
+
+    model_config = {"populate_by_name": True}
+
+
+class MergeConflictResolvedEvent(BaseEvent):
+    """Event when a merge conflict has been resolved."""
+
+    type: Literal["merge_conflict.resolved"] = "merge_conflict.resolved"
+    pending_id: str = Field(alias="pendingId")
+    resolution_strategy: str = Field(alias="resolutionStrategy")
+    resolved_files: list[str] = Field(default_factory=list, alias="resolvedFiles")
 
     model_config = {"populate_by_name": True}
 
@@ -592,6 +620,9 @@ StreamEvent = Annotated[
         McpCallResolvedEvent,
         # Worktree events
         WorktreeEvent,
+        # Merge conflict approval events
+        MergeConflictPendingEvent,
+        MergeConflictResolvedEvent,
         # Heartbeat
         HeartbeatEvent,
         # Turn metrics

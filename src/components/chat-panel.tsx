@@ -1,7 +1,7 @@
 'use client'
 
-import { AlertTriangle, FilePenLine, FileStack, Files, MessagesSquare, MoreHorizontal, PanelRight, UserRoundPlus, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle, FilePenLine, FileStack, Files, Menu, MessagesSquare, MoreHorizontal, PanelRight, UploadCloud, UserRoundPlus, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { AddAgentDialog } from '@/components/add-agent-dialog'
 import { AgentInfoPopover } from '@/components/agent-info-popover'
@@ -15,6 +15,7 @@ import { PendingWriteDiffTab } from '@/components/pending-write-diff-tab'
 import { PendingBashCommandsPanel } from '@/components/pending-bash-commands-panel'
 import { PendingMcpCallsPanel } from '@/components/pending-mcp-call-card'
 import { PendingWritesPanel } from '@/components/pending-writes-panel'
+import { MergeConflictPanel } from '@/components/merge-conflict-panel'
 import { diffTabPendingId, isDiffTabId } from '@/components/pending-writes-panel'
 import { PinnedMessagesBar } from '@/components/pinned-messages-bar'
 import { WorkspaceEnvHintCard } from '@/components/workspace-env-hint-card'
@@ -37,7 +38,8 @@ import { MessageInput } from '@/components/message-input'
 import { MessageList } from '@/components/message-list'
 import { UsageBadge } from '@/components/usage-badge'
 import type { AgentRow } from '@/db/schema'
-import { fetchPendingDispatchPlans } from '@/lib/api'
+import { useAttachmentUpload } from '@/hooks/use-attachment-upload'
+import { fetchPendingDispatchPlans, fetchProfile } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import {
   useActiveConversation,
@@ -54,14 +56,26 @@ export function ChatPanel() {
   const fileExplorerOpen = useAppStore((s) => s.fileExplorerOpen)
   const previewArtifactId = useAppStore((s) => s.previewArtifactId)
   const setFileExplorerOpen = useAppStore((s) => s.setFileExplorerOpen)
+  const setMobileSidebarOpen = useAppStore((s) => s.setMobileSidebarOpen)
   const closeFile = useAppStore((s) => s.closeFile)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
+  const [profileName, setProfileName] = useState<string | null>(null)
   const setPendingDispatchPlansForConversation = useAppStore(
     (s) => s.setPendingDispatchPlansForConversation,
   )
   const [addOpen, setAddOpen] = useState(false)
   const [filesOpen, setFilesOpen] = useState(false)
   const [artifactsOpen, setArtifactsOpen] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const dragCounter = useRef(0)
+  const { handleFiles, uploading } = useAttachmentUpload(conv?.id ?? '')
+
+  // 获取个人信息中的姓名用于欢迎页问候
+  useEffect(() => {
+    fetchProfile()
+      .then((p) => setProfileName(p.name))
+      .catch(() => setProfileName(null))
+  }, [])
 
   const openFiles = useOpenFiles(conv?.id ?? '')
   const activeTab = useActiveTab(conv?.id ?? '')
@@ -96,21 +110,51 @@ export function ChatPanel() {
     }
   }, [conv, setPendingDispatchPlansForConversation])
 
+  const handleDragEnter = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+    dragCounter.current++
+    setDragOver(true)
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes('Files')) return
+    e.preventDefault()
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    dragCounter.current--
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0
+      setDragOver(false)
+    }
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    dragCounter.current = 0
+    setDragOver(false)
+    if (!conv) return
+    const files = e.dataTransfer.files
+    if (files && files.length > 0) void handleFiles(files)
+  }
+
   if (!conv) {
     return (
       <main
-        className="flex min-w-0 flex-1 items-center justify-center bg-background/80 backdrop-blur-2xl max-md:pl-14"
+        className="flex min-w-0 flex-1 items-center justify-center bg-background/80 backdrop-blur-2xl"
       >
-        <div className="flex max-w-sm flex-col items-center gap-5 px-6 text-center">
-          <div className="flex size-16 items-center justify-center rounded-2xl bg-muted/60 shadow-[var(--shadow-sm)]">
-            <MessagesSquare className="size-7 text-muted-foreground" />
+        <div className="flex max-w-md flex-col items-center gap-6 px-6 text-center">
+          <div className="flex size-20 items-center justify-center rounded-3xl bg-muted/60 shadow-[var(--shadow-sm)]">
+            <MessagesSquare className="size-9 text-muted-foreground" />
           </div>
-          <div className="space-y-2.5">
-            <h2 className="text-lg font-semibold">开启你的 AI 协作之旅</h2>
-            <p className="text-sm leading-6 text-muted-foreground">
+          <div className="space-y-3">
+            <h2 className="text-2xl font-semibold">你好{profileName ? `，${profileName}` : ''}</h2>
+            <p className="text-base leading-7 text-muted-foreground">
               从左侧选择会话继续聊天，或点击「+ 新建对话」召集 Agent 团队。
             </p>
-            <p className="text-xs leading-5 text-muted-foreground/70">
+            <p className="text-sm leading-6 text-muted-foreground/70">
               随时找右下角的「小A」帮你管理 Agent、知识库与记忆
             </p>
           </div>
@@ -122,8 +166,36 @@ export function ChatPanel() {
   const participantAgents = conv.agentIds.map((id) => agents[id]).filter(Boolean)
 
   return (
-    <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background/85 backdrop-blur-2xl max-md:pl-14">
+    <main
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background/85 backdrop-blur-2xl"
+      onDragEnter={handleDragEnter}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {dragOver && (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-background/60 backdrop-blur-sm">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-primary/40 bg-card/90 px-8 py-6 shadow-lg">
+            <UploadCloud className="size-8 text-primary/60" />
+            <div className="text-center">
+              <div className="text-sm font-medium">拖拽文件到此处上传</div>
+              <div className="text-xs text-muted-foreground">将添加到当前会话的附件</div>
+            </div>
+          </div>
+        </div>
+      )}
       <header className="flex shrink-0 items-center gap-3 overflow-hidden border-b px-3 py-2">
+        {/* 移动端 hamburger 按钮：打开侧边栏抽屉 */}
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          className="shrink-0 md:hidden"
+          onClick={() => setMobileSidebarOpen(true)}
+          title="打开侧边栏"
+          aria-label="打开侧边栏"
+        >
+          <Menu className="size-4" />
+        </Button>
         <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
           <ParticipantStack agents={participantAgents} />
           <div className="min-w-0 flex-1">
@@ -280,7 +352,8 @@ export function ChatPanel() {
           <PendingBashCommandsPanel conversationId={conv.id} />
           <PendingMcpCallsPanel conversationId={conv.id} />
           <PendingWritesPanel conversationId={conv.id} />
-          <MessageInput conversationId={conv.id} />
+          <MergeConflictPanel conversationId={conv.id} />
+          <MessageInput conversationId={conv.id} handleFiles={handleFiles} uploading={uploading} />
         </>
       ) : isDiffTabId(activeTab) ? (
         <PendingWriteDiffTab conversationId={conv.id} pendingId={diffTabPendingId(activeTab)} />

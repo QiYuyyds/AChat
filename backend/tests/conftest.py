@@ -23,6 +23,10 @@ async def db(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path / "workspaces"))
     monkeypatch.setenv("JWT_SECRET", _TEST_JWT_SECRET)
     monkeypatch.setenv("ALLOW_REGISTRATION", "true")
+    # Force DATABASE_LOCAL_URL to empty so all tables go to the single test
+    # SQLite engine (server mode). Without this, .env.local's DATABASE_LOCAL_URL
+    # causes local tables (agents, messages, etc.) on a different SQLite file.
+    monkeypatch.setenv("DATABASE_LOCAL_URL", "")
 
     from app.config import get_settings
 

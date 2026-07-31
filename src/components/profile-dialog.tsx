@@ -322,34 +322,3 @@ export function ProfileDialog({
     </Dialog>
   )
 }
-
-/** 个人信息 button 入口，挂在 Sidebar 底部图标轨。 */
-export function ProfileButton() {
-  const [open, setOpen] = useState(false)
-  const user = useAuthStore((s) => s.user)
-  const avatarSrc = user?.avatarUrl
-    ? `${API_BASE_URL}${user.avatarUrl}`
-    : undefined
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        title={user ? `个人信息 (${user.email})` : '个人信息'}
-        aria-label="个人信息"
-        className="group relative flex size-10 items-center justify-center rounded-lg text-muted-foreground transition-all duration-300 hover:bg-accent hover:text-foreground"
-      >
-        <Avatar className="size-7 transition-transform duration-500 group-hover:scale-105">
-          {avatarSrc && <AvatarImage src={avatarSrc} alt={user?.name ?? 'avatar'} />}
-          <AvatarFallback className="bg-primary/10 text-xs text-primary">
-            {user?.name?.charAt(0).toUpperCase() ?? (
-              <User className="size-5" />
-            )}
-          </AvatarFallback>
-        </Avatar>
-      </button>
-      <ProfileDialog open={open} onOpenChange={setOpen} />
-    </>
-  )
-}

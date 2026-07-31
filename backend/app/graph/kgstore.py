@@ -209,7 +209,6 @@ class KGStore:
                 continue
             seen.add(pg_id)
             score = float(len(r["seeds"])) * 0.6 + float(r["degree"]) * 0.01
-            score *= self.kg_weight
             results.append({
                 "pg_id": pg_id,
                 "content": "",
@@ -246,7 +245,7 @@ class KGStore:
             results.append({
                 "pg_id": pg_id,
                 "content": "",
-                "score": self.kg_weight,
+                "score": 1.0,
                 "entities": [name],
             })
         return results

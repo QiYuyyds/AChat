@@ -13,6 +13,10 @@
 
 import type { ModelProvider } from './types'
 
+/** Engineering cap on effective context window to avoid quality degradation
+ * (Lost in the Middle, Context Rot) at excessive context lengths. */
+export const EFFECTIVE_CONTEXT_CAP = 200_000
+
 /** 单位：tokens。整个会话能装进 LLM 一次调用的总 token 上限（input + output）。 */
 const PROVIDER_FALLBACK_CONTEXT: Record<ModelProvider, number> = {
   anthropic: 200_000,
@@ -41,23 +45,26 @@ const KNOWN_MODELS: Record<string, { context: number; outputReserve?: number; pr
   // Source: https://api-docs.deepseek.com/zh-cn/quick_start/pricing (July 2026)
   'deepseek-chat': {
     context: 1_000_000,
+    outputReserve: 13_000,
     pricing: { currency: 'CNY', inputCacheHit: 0.02, inputCacheMiss: 1, output: 2 },
   },
   'deepseek-v4-flash': {
     context: 1_000_000,
+    outputReserve: 13_000,
     pricing: { currency: 'CNY', inputCacheHit: 0.02, inputCacheMiss: 1, output: 2 },
   },
-  'deepseek-v4': { context: 1_000_000 },
+  'deepseek-v4': { context: 1_000_000, outputReserve: 13_000 },
   'deepseek-v4-pro': {
     context: 1_000_000,
+    outputReserve: 13_000,
     pricing: { currency: 'CNY', inputCacheHit: 0.025, inputCacheMiss: 3, output: 6 },
   },
   'deepseek-reasoner': {
     context: 1_000_000,
-    outputReserve: 16_384, // thinking 模式 eats token
+    outputReserve: 13_000,
     pricing: { currency: 'CNY', inputCacheHit: 0.025, inputCacheMiss: 3, output: 6 },
   },
-  'deepseek-r1': { context: 1_000_000, outputReserve: 16_384 },
+  'deepseek-r1': { context: 1_000_000, outputReserve: 13_000 },
 
   // OpenAI
   'gpt-4o': { context: 128_000 },
@@ -85,10 +92,12 @@ const KNOWN_MODELS: Record<string, { context: number; outputReserve?: number; pr
 }
 
 export interface ModelLimits {
-  /** 总上下文窗口（tokens） */
+  /** 物理上下文窗口（tokens）— 模型能力元信息 */
   contextWindow: number
-  /** 给输出预留的 tokens；input + output 不能超 contextWindow */
+  /** 给输出预留的 tokens；input + output 不能超 effectiveContextWindow */
   outputReserve: number
+  /** 工程有效上下文窗口 = min(contextWindow, EFFECTIVE_CONTEXT_CAP) */
+  effectiveContextWindow: number
 }
 
 export function getModelLimits(
@@ -100,17 +109,24 @@ export function getModelLimits(
     return {
       contextWindow: m.context,
       outputReserve: m.outputReserve ?? DEFAULT_OUTPUT_RESERVE,
+      effectiveContextWindow: Math.min(m.context, EFFECTIVE_CONTEXT_CAP),
     }
   }
   // Provider fallback
   if (provider && PROVIDER_FALLBACK_CONTEXT[provider]) {
+    const ctx = PROVIDER_FALLBACK_CONTEXT[provider]
     return {
-      contextWindow: PROVIDER_FALLBACK_CONTEXT[provider],
+      contextWindow: ctx,
       outputReserve: DEFAULT_OUTPUT_RESERVE,
+      effectiveContextWindow: Math.min(ctx, EFFECTIVE_CONTEXT_CAP),
     }
   }
   // 最终兜底（也是 ClaudeCode adapter 用的，因为它没有 modelProvider 字段）
-  return { contextWindow: 200_000, outputReserve: DEFAULT_OUTPUT_RESERVE }
+  return {
+    contextWindow: 200_000,
+    outputReserve: DEFAULT_OUTPUT_RESERVE,
+    effectiveContextWindow: Math.min(200_000, EFFECTIVE_CONTEXT_CAP),
+  }
 }
 
 /** 查模型定价。缺失时返回 null（调用方不渲染费用行）。 */

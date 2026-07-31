@@ -48,6 +48,9 @@ def _ltm_row_to_dict(row: LongTermMemory) -> dict[str, Any]:
         "agentId": row.agent_id or "",
         "createdAt": row.created_at,
         "lastAccessed": row.last_accessed,
+        "summary": getattr(row, "summary", "") or "",
+        "keywords": list(row.keywords) if getattr(row, "keywords", None) else [],
+        "contentScope": getattr(row, "content_scope", "") or "",
     }
 
 
@@ -63,6 +66,9 @@ def _ltm_item_to_dict(item: Item) -> dict[str, Any]:
         "agentId": item.agent_id or "",
         "createdAt": item.created_at,
         "lastAccessed": item.last_accessed,
+        "summary": item.summary,
+        "keywords": list(item.keywords) if item.keywords else [],
+        "contentScope": item.content_scope,
     }
 
 
@@ -74,6 +80,9 @@ class LTMUpdateRequest(BaseModel):
     importance: float | None = None
     category: str | None = None
     tags: list[str] | None = None
+    summary: str | None = None
+    keywords: list[str] | None = None
+    contentScope: str | None = None
 
 
 class PreferenceUpdateRequest(BaseModel):
@@ -177,6 +186,7 @@ async def update_ltm_memory(
         )
 
     old_content: str | None = None
+    old_summary: str | None = None
     async with get_remote_db() as session:
         row = await session.get(LongTermMemory, memory_id)
         if row is None or row.user_id != user.id:
@@ -185,6 +195,7 @@ async def update_ltm_memory(
                 content={"error": f"Memory {memory_id} not found"},
             )
         old_content = row.content
+        old_summary = getattr(row, "summary", "") or ""
 
     updated = await svc.ltm.update_item(
         memory_id=memory_id,
@@ -192,6 +203,9 @@ async def update_ltm_memory(
         importance=body.importance,
         category=body.category,
         tags=body.tags,
+        summary=body.summary,
+        keywords=body.keywords,
+        content_scope=body.contentScope,
     )
     if updated is None:
         return JSONResponse(
@@ -199,8 +213,12 @@ async def update_ltm_memory(
             content={"error": f"Memory {memory_id} not found in memory"},
         )
 
-    # content changed → async recompute embedding
-    if body.content is not None and body.content != old_content:
+    # summary changed → recompute embedding using new summary (embedding is
+    # summary-based per the dual-path retrieval policy); otherwise content
+    # changed → recompute using content (backward compat).
+    if body.summary is not None and body.summary != old_summary:
+        asyncio.create_task(_recompute_embedding(svc, memory_id, body.summary))
+    elif body.content is not None and body.content != old_content:
         asyncio.create_task(_recompute_embedding(svc, memory_id, body.content))
 
     # sync graph memory node content (if Neo4j available)

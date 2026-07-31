@@ -508,6 +508,21 @@ export type StreamEvent = BaseEvent &
         branchName?: string
         path?: string
         mergeStatus?: 'success' | 'conflict'
+        conflictFiles?: string[]
+        resolutionStatus?: 'success' | 'llm_resolved' | 'manual_resolved' | 'abandoned' | 'conflict'
+      }
+    | {
+        type: 'merge_conflict.pending'
+        pendingId: string
+        taskId: string
+        conflictFiles: string[]
+        workspacePath: string
+      }
+    | {
+        type: 'merge_conflict.resolved'
+        pendingId: string
+        resolutionStrategy: string
+        resolvedFiles: string[]
       }
     | { type: 'summary.updated'; summary: string | null }
     | {

@@ -492,7 +492,7 @@ _BASELINE_AGENT_TOOLS: tuple[str, ...] = (
     "bash",
 )
 
-# UI-selectable tools for Custom adapter agents. Only these 5 appear as
+# UI-selectable tools for Custom adapter agents. Only these 6 appear as
 # checkboxes in the create/edit agent dialog. Baseline tools are merged at
 # runtime by agent_runner.py and are not selectable.
 _AVAILABLE_AGENT_TOOLS: tuple[str, ...] = (
@@ -501,6 +501,7 @@ _AVAILABLE_AGENT_TOOLS: tuple[str, ...] = (
     "deploy_workspace",
     "read_artifact",
     "web_search",
+    "rag_search",
 )
 
 # ─── System prompt templates per role (4-role: coder/researcher/orchestrator/writer) ─
@@ -585,7 +586,7 @@ _AGENT_TOOL_PRESETS: dict[str, dict[str, Any]] = {
     },
     "researcher": {
         "label": "调研员",
-        "tools": ["write_artifact", "read_artifact", "web_search"],
+        "tools": ["write_artifact", "read_artifact", "web_search", "rag_search"],
         "systemPromptTemplate": _PROMPT_RESEARCHER,
     },
     "orchestrator": {
@@ -620,6 +621,10 @@ _AGENT_TOOL_META: dict[str, dict[str, str]] = {
     "web_search": {
         "label": "联网搜索",
         "desc": "用 Tavily 搜索公网获取实时信息；调用会消耗 Tavily 额度",
+    },
+    "rag_search": {
+        "label": "知识库检索",
+        "desc": "在知识库中检索相关文档片段，返回匹配的文本块和来源信息",
     },
 }
 
@@ -672,7 +677,7 @@ def _clean_name(text: str) -> str:
 
 
 def _normalize_agent_tool_names(tool_names: list[str]) -> list[str]:
-    """Filter persisted toolNames to only the 5 UI-selectable tools.
+    """Filter persisted toolNames to only the 6 UI-selectable tools.
 
     Baseline tools are not filtered here — they are merged at runtime by
     agent_runner.py.

@@ -342,6 +342,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         dispatch_depth=ctx.dispatch_depth + 1,
         dispatch_visibility=visibility,
         user_id=ctx.user_id,
+        workspace_path=ctx.workspace_path,
     )
 
     logger.info(

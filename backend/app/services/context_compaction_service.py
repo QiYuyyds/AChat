@@ -41,13 +41,6 @@ MIN_COMPACTABLE = 2
 # Token floor on the compactable slice: gate on size, not count, so a short
 # conversation isn't summarised for no gain while a few huge messages still can.
 MIN_COMPACT_TOKENS = 800
-# Auto-compact trigger: when uncompacted message count reaches this watermark,
-# _maybe_auto_compact_hook fires compact_conversation(silent=True).
-# With 1M-context models (DeepSeek V4), 30 messages (~150k tokens) is a
-# reasonable safety net — the token-based trigger (87% of context window)
-# is the primary mechanism, this is the backup.
-AUTO_COMPACT_WATERMARK = 30
-
 # Friendly notices for benign "nothing to compact" outcomes (not errors).
 _TOO_SHORT_NOTICE = "当前对话还太短，暂时不需要压缩上下文。"
 _TOO_LITTLE_NOTICE = "待压缩的内容太少，压缩收益不明显，暂不压缩。"
@@ -129,9 +122,9 @@ async def get_latest_context_summary(conversation_id: str) -> ContextSummary | N
 async def count_uncompacted_messages(conversation_id: str) -> int:
     """Count completed messages after the last summary's coverage window.
 
-    Returns the watermark used by ``_maybe_auto_compact_hook`` to decide
-    whether to trigger auto-compaction. When no prior summary exists, counts
-    all complete messages in the conversation.
+    Informational only — no longer used as an auto-compact trigger.
+    When no prior summary exists, counts all complete messages in the
+    conversation.
     """
     latest = await get_latest_context_summary(conversation_id)
     since_created_at = latest.covered_until_created_at if latest else None

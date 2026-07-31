@@ -171,7 +171,6 @@ def _conversation_response(
         archived=conv.archived,
         pinned_at=conv.pinned_at,
         fs_write_approval_mode=conv.fs_write_approval_mode,
-        rag_enabled=conv.rag_enabled,
         summary=conv.summary,
         dispatch_mode=getattr(conv, "dispatch_mode", None) or "solo",
         created_at=conv.created_at,
@@ -594,17 +593,6 @@ async def set_conversation_approval_mode(
         ws_mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
         return _conversation_response(conv, ws_mode, bound_path, env_pref)
 
-
-async def set_rag_mode(
-    conversation_id: str, enabled: bool
-) -> ConversationResponse:
-    """Task 3.3: Update conversation rag_enabled flag."""
-    async with get_local_db() as db:
-        conv = await _require_conversation(db, conversation_id)
-        conv.rag_enabled = enabled
-        conv.updated_at = now_ms()
-        ws_mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, ws_mode, bound_path, env_pref)
 
 
 async def set_dispatch_mode(

@@ -6,7 +6,7 @@ Deep adaptation: PG → async session; threading → asyncio.gather; RRF unchang
 RRF formula:
     score(d) = Σ_i  weight_i / (k + rank_i(d))
 
-Weight distribution: semantic_weight, (1 - semantic_weight - kg_weight), kg_weight.
+Weight distribution: semantic_weight, keyword_weight, kg_weight.
 Any unavailable path is skipped and remaining weights renormalised.
 """
 
@@ -284,7 +284,7 @@ class HybridStore:
 
         # ── Weight normalisation: renormalise to 1.0 across AVAILABLE paths ──
         raw_sem = max(0.0, float(self.settings.rag_semantic_weight))
-        raw_kw = max(0.0, 1.0 - raw_sem - self.settings.kg_weight)
+        raw_kw = max(0.0, float(self.settings.rag_keyword_weight))
         raw_kg = max(0.0, self.settings.kg_weight)
 
         available = 0.0

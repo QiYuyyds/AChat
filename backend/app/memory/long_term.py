@@ -22,6 +22,7 @@ from app.memory.consolidation import (
     ConsolidationResult,
     Item,
     cosine_similarity,
+    keyword_score,
     tf_cosine,
     tokenize_zh,
 )
@@ -90,6 +91,9 @@ class LongTerm:
                 # Reset decay checkpoint to load time — persisted importance is
                 # already decayed; don't retroactively re-decay the idle period.
                 last_decay_ts=now_ts,
+                summary=getattr(r, "summary", "") or "",
+                keywords=list(r.keywords) if getattr(r, "keywords", None) else [],
+                content_scope=getattr(r, "content_scope", "") or "",
             ))
         self._next_id = max((r.id for r in rows), default=-1) + 1
         logger.info("Loaded %d long-term memories from PG", len(self.items))
@@ -107,13 +111,24 @@ class LongTerm:
         scope: str = "global",
         agent_id: str = "",
         user_id: str | None = None,
+        summary: str = "",
+        keywords: list[str] | None = None,
+        content_scope: str = "",
     ) -> None:
-        """Add a new memory item, persist to PG, and sync to graph."""
+        """Add a new memory item, persist to PG, and sync to graph.
+
+        When ``summary`` is provided, the embedding is computed from ``summary``
+        instead of ``content`` to concentrate the semantic signal.
+        """
+        keywords = list(keywords or [])
         # Embedding is blocking I/O — run it off the event loop, outside the lock.
+        # Use summary for embedding when available (concentrated semantic signal);
+        # fall back to content for backward compatibility.
+        embed_text = summary if summary else content
         embedding = None
         if self._embed_fn:
             try:
-                embedding = await asyncio.to_thread(self._embed_fn, content)
+                embedding = await asyncio.to_thread(self._embed_fn, embed_text)
             except Exception as e:
                 logger.warning("Embedding failed: %s", e)
 
@@ -131,6 +146,9 @@ class LongTerm:
                 agent_id=agent_id,
                 user_id=user_id,
                 last_decay_ts=now_ts,
+                summary=summary,
+                keywords=keywords,
+                content_scope=content_scope,
             )
             self._next_id += 1
             prior = list(self.items)
@@ -154,6 +172,9 @@ class LongTerm:
                         scope=scope,
                         agent_id=agent_id or None,
                         user_id=user_id,
+                        summary=summary,
+                        keywords=keywords,
+                        content_scope=content_scope,
                     )
                     session.add(row)
                     await session.flush()
@@ -182,6 +203,9 @@ class LongTerm:
         scope: str = "global",
         agent_id: str = "",
         user_id: str | None = None,
+        summary: str = "",
+        keywords: list[str] | None = None,
+        content_scope: str = "",
     ) -> bool:
         """Schema-driven write with cosine dedup against existing items.
 
@@ -238,6 +262,19 @@ class LongTerm:
                         target.category = category
                     if slot_hint and target.slot_hint == "":
                         target.slot_hint = slot_hint
+                    if summary and not target.summary:
+                        target.summary = summary
+                    if keywords:
+                        merged_kws: list[str] = []
+                        seen_kw = set()
+                        for k in list(target.keywords) + list(keywords):
+                            if not k or k in seen_kw:
+                                continue
+                            seen_kw.add(k)
+                            merged_kws.append(k)
+                        target.keywords = merged_kws[:8]
+                    if content_scope and not target.content_scope:
+                        target.content_scope = content_scope
                     target.last_accessed = time.time()
 
                     # PG UPDATE
@@ -252,6 +289,9 @@ class LongTerm:
                                         tags=target.tags,
                                         category=target.category,
                                         slot_hint=target.slot_hint,
+                                        summary=target.summary,
+                                        keywords=target.keywords,
+                                        content_scope=target.content_scope,
                                         last_accessed=target.last_accessed,
                                     )
                                 )
@@ -277,6 +317,9 @@ class LongTerm:
                     agent_id=agent_id,
                     user_id=user_id,
                     last_decay_ts=now_ts,
+                    summary=summary,
+                    keywords=list(keywords) if keywords else [],
+                    content_scope=content_scope,
                 )
                 self._next_id += 1
                 prior = list(self.items)
@@ -299,6 +342,9 @@ class LongTerm:
                             scope=scope,
                             agent_id=agent_id or None,
                             user_id=user_id,
+                            summary=new_item.summary,
+                            keywords=new_item.keywords,
+                            content_scope=new_item.content_scope,
                         )
                         session.add(row)
                         await session.flush()
@@ -354,6 +400,9 @@ class LongTerm:
                 except Exception as e:
                     logger.warning("Query embedding failed: %s", e)
 
+            # Tokenize query for keyword matching (Jaccard)
+            query_tokens = tokenize_zh(query)
+
             if not query_emb:
                 # No embedding: return agent-scoped first, then global fill
                 if agent_id:
@@ -368,6 +417,14 @@ class LongTerm:
                     return agent_items[:top_k] + global_items[:remaining]
                 return user_items[:top_k]
 
+            def _dual_path_score(item: Item) -> float:
+                """Dual-path scoring: semantic_sim*0.5 + keyword*0.2 + importance*0.3."""
+                semantic_sim = 0.0
+                if item.embedding and len(item.embedding) == len(query_emb):
+                    semantic_sim = cosine_similarity(query_emb, item.embedding)
+                kw_match = keyword_score(query_tokens, item.keywords)
+                return semantic_sim * 0.5 + kw_match * 0.2 + item.importance * 0.3
+
             # Phase 1: agent-scoped recall
             if agent_id:
                 agent_pool = [
@@ -380,13 +437,12 @@ class LongTerm:
             agent_scored = []
             for item in agent_pool:
                 if item.embedding:
-                    sim = cosine_similarity(query_emb, item.embedding)
-                    score = sim * 0.7 + item.importance * 0.3
+                    score = _dual_path_score(item)
                     agent_scored.append((item, score))
 
             agent_scored.sort(key=lambda x: x[1], reverse=True)
             agent_results = [
-                item for item, score in agent_scored[:top_k] if score >= 0.4
+                item for item, score in agent_scored[:top_k] if score >= 0.3
             ]
 
             # Phase 2: global recall (fill remaining slots)
@@ -399,14 +455,13 @@ class LongTerm:
                 global_scored = []
                 for item in global_pool:
                     if item.embedding:
-                        sim = cosine_similarity(query_emb, item.embedding)
-                        score = sim * 0.7 + item.importance * 0.3
+                        score = _dual_path_score(item)
                         global_scored.append((item, score))
 
                 global_scored.sort(key=lambda x: x[1], reverse=True)
                 global_results = [
                     item for item, score in global_scored[:remaining]
-                    if score >= 0.4
+                    if score >= 0.3
                 ]
 
             seed_items = agent_results + global_results
@@ -429,7 +484,7 @@ class LongTerm:
                 return []
 
             min_score = float(getattr(filt, "min_score", 0.0) or 0.0)
-            threshold = min_score if min_score > 0 else 0.4
+            threshold = min_score if min_score > 0 else 0.3
             categories = list(getattr(filt, "categories", []) or [])
             require_tags = list(getattr(filt, "require_tags", []) or [])
             max_age_hours = int(getattr(filt, "max_age_hours", 0) or 0)
@@ -439,6 +494,8 @@ class LongTerm:
             now = time.time()
             use_tf = not query_embedding
             query_tokens = tokenize_zh(query) if use_tf else None
+            # Always tokenize for keyword matching (dual-path scoring)
+            kw_tokens = tokenize_zh(query) if not query_tokens else query_tokens
 
             def _score_item(item: Item) -> float | None:
                 """Score a single item; return None if it fails filters."""
@@ -464,7 +521,9 @@ class LongTerm:
                 else:
                     sim = cosine_similarity(query_embedding, item.embedding)
 
-                score = sim * 0.7 + item.importance * 0.3
+                # Dual-path scoring: semantic_sim*0.5 + keyword*0.2 + importance*0.3
+                kw_match = keyword_score(kw_tokens, item.keywords)
+                score = sim * 0.5 + kw_match * 0.2 + item.importance * 0.3
                 if score < threshold:
                     return None
                 return score
@@ -484,6 +543,9 @@ class LongTerm:
                     score=score,
                     scope=item.scope,
                     agent_id=item.agent_id,
+                    summary=item.summary,
+                    keywords=list(item.keywords),
+                    content_scope=item.content_scope,
                 )
 
             # Phase 1: agent-scoped recall
@@ -579,6 +641,9 @@ class LongTerm:
                 score=0.45,
                 scope=it.scope,
                 agent_id=it.agent_id,
+                summary=it.summary,
+                keywords=list(it.keywords),
+                content_scope=it.content_scope,
             )
             extras.append(extra)
 
@@ -603,22 +668,20 @@ class LongTerm:
             self._last_consolidate_ts = time.time()
             self._items_since_last = 0
 
-            decay_rate = self.cfg.decay_rate
             sim_threshold = self.cfg.similarity_threshold
-            dedup_threshold = self.cfg.dedup_threshold
-            ttl_days = self.cfg.ttl_days
-            min_importance = self.cfg.min_importance
 
             now = time.time()
 
             # Phase 1: incremental exponential decay since each item's last
             # decay checkpoint (not since creation) so repeated runs don't
             # compound-decay the same item. Checkpoint advances to now.
+            # Uses category-specific decay_rate (case memories decay slower).
             for item in self.items:
+                params = self.cfg.get_params_for_category(item.category)
                 checkpoint = item.last_decay_ts or item.created_at
                 days = max(0.0, (now - checkpoint) / 86400.0)
                 if days > 0:
-                    item.importance *= decay_rate ** days
+                    item.importance *= params["decay_rate"] ** days
                 item.last_decay_ts = now
 
             # Phase 2: pairwise dedup + merge (within same scope+agent_id group only)
@@ -638,9 +701,21 @@ class LongTerm:
                         item_i.content, item_j.content,
                         item_i.embedding, item_j.embedding,
                     )
+                    # Use category-specific dedup_threshold
+                    item_params = self.cfg.get_params_for_category(item_i.category)
+                    dedup_threshold = item_params["dedup_threshold"]
                     if sim >= dedup_threshold:
                         item_i.importance = max(item_i.importance, item_j.importance)
                         item_i.tags = list(dict.fromkeys(list(item_i.tags) + list(item_j.tags)))
+                        # Sync structured fields on dedup
+                        if item_j.summary and not item_i.summary:
+                            item_i.summary = item_j.summary
+                        if item_j.keywords:
+                            item_i.keywords = list(dict.fromkeys(
+                                list(item_i.keywords) + list(item_j.keywords)
+                            ))[:8]
+                        if item_j.content_scope and not item_i.content_scope:
+                            item_i.content_scope = item_j.content_scope
                         item_i.last_accessed = now
                         removed[j] = True
                         result.deduped += 1
@@ -655,11 +730,14 @@ class LongTerm:
                         if item_j.id is not None:
                             result.delete_from_db.append(item_j.id)
 
-            # Phase 3: dual-condition expiry
+            # Phase 3: dual-condition expiry (category-specific TTL & min_importance)
             for idx in range(len(self.items)):
                 if removed[idx]:
                     continue
                 item = self.items[idx]
+                params = self.cfg.get_params_for_category(item.category)
+                ttl_days = params["ttl_days"]
+                min_importance = params["min_importance"]
                 days = max(0.0, (now - item.created_at) / 86400.0)
                 if ttl_days > 0 and days > float(ttl_days) and item.importance < min_importance:
                     removed[idx] = True
@@ -734,6 +812,16 @@ class LongTerm:
         category = item_i.category if item_i.category else item_j.category
         slot_hint = item_i.slot_hint if item_i.slot_hint else item_j.slot_hint
 
+        # Sync structured fields: prefer non-empty summary/content_scope,
+        # deduplicated union for keywords (capped at 8)
+        summary = item_i.summary if item_i.summary else item_j.summary
+        keywords = list(dict.fromkeys(
+            list(item_i.keywords) + list(item_j.keywords)
+        ))[:8]
+        content_scope = (
+            item_i.content_scope if item_i.content_scope else item_j.content_scope
+        )
+
         return Item(
             content=content,
             importance=max(item_i.importance, item_j.importance),
@@ -747,6 +835,9 @@ class LongTerm:
             score=item_i.score,
             scope=item_i.scope,
             agent_id=item_i.agent_id,
+            summary=summary,
+            keywords=keywords,
+            content_scope=content_scope,
         )
 
     def _compute_similarity(
@@ -775,6 +866,8 @@ class LongTerm:
                 category=it.category, tags=it.tags,
                 slot_hint=it.slot_hint, score=it.score,
                 scope=it.scope, agent_id=it.agent_id,
+                summary=it.summary, keywords=list(it.keywords),
+                content_scope=it.content_scope,
             )
             for it in self.items
         ]
@@ -867,12 +960,15 @@ class LongTerm:
         importance: float | None = None,
         category: str | None = None,
         tags: list[str] | None = None,
+        summary: str | None = None,
+        keywords: list[str] | None = None,
+        content_scope: str | None = None,
     ) -> Item | None:
         """Update a single LTM item in memory + PG.
 
         Returns the updated Item, or None if not found.
         Only non-None fields are updated. Does NOT recompute embedding —
-        the API layer handles that asynchronously when content changes.
+        the API layer handles that asynchronously when content/summary changes.
         """
         async with self._lock:
             target: Item | None = None
@@ -891,6 +987,12 @@ class LongTerm:
                 target.category = category
             if tags is not None:
                 target.tags = list(tags)
+            if summary is not None:
+                target.summary = summary
+            if keywords is not None:
+                target.keywords = list(keywords)
+            if content_scope is not None:
+                target.content_scope = content_scope
             target.last_accessed = time.time()
 
             try:
@@ -903,6 +1005,9 @@ class LongTerm:
                             importance=target.importance,
                             category=target.category,
                             tags=target.tags,
+                            summary=target.summary,
+                            keywords=target.keywords,
+                            content_scope=target.content_scope,
                             last_accessed=target.last_accessed,
                         )
                     )

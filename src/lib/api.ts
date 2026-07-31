@@ -386,21 +386,6 @@ export async function setFsWriteApprovalMode(
   return conversation
 }
 
-// Task 5.3: Set conversation RAG mode
-export async function setRagMode(
-  conversationId: string,
-  enabled: boolean,
-): Promise<ConversationWithMeta> {
-  const { conversation } = await json<{ conversation: ConversationWithMeta }>(
-    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/rag-mode`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ragEnabled: enabled }),
-    }),
-  )
-  return conversation
-}
-
 // ─── Pending writes (fs_write review mode) ─────
 export async function fetchPendingWrites(conversationId: string): Promise<PendingWrite[]> {
   const { pendingWrites } = await json<{ pendingWrites: PendingWrite[] }>(
@@ -432,6 +417,47 @@ export async function rejectPendingWrite(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'reject' }),
     }),
+  )
+}
+
+// ─── Pending merge conflicts ─────
+export interface PendingMergeConflict {
+  id: string
+  conversationId: string
+  taskId: string
+  conflictFiles: string[]
+  workspacePath: string
+  createdAt: number
+}
+
+export async function fetchPendingMergeConflicts(
+  conversationId: string,
+): Promise<PendingMergeConflict[]> {
+  const { pendingMergeConflicts } = await json<{
+    pendingMergeConflicts: PendingMergeConflict[]
+  }>(
+    authFetch(
+      `${API_BASE_URL}/api/conversations/${conversationId}/pending-merge-conflicts`,
+    ),
+  )
+  return pendingMergeConflicts
+}
+
+export async function resolveMergeConflict(
+  conversationId: string,
+  pendingId: string,
+  action: 'ours' | 'theirs' | 'edit' | 'abandon',
+  fileContents?: Record<string, string>,
+): Promise<void> {
+  await json<{ ok: true }>(
+    authFetch(
+      `${API_BASE_URL}/api/conversations/${conversationId}/pending-merge-conflicts/${pendingId}/resolve`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, fileContents }),
+      },
+    ),
   )
 }
 

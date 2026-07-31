@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     neo4j_password: str = ""
     enable_graph: bool = False
     kg_max_hops: int = 2
-    kg_weight: float = 0.3
+    kg_weight: float = 0.0
 
     # ─── Kafka (optional) ───
     kafka_brokers: str = ""
@@ -80,8 +80,9 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 200
     rag_chunk_overlap: int = 50
     rag_top_k: int = 3
-    rag_rrf_constant_k: int = 60
-    rag_semantic_weight: float = 0.7
+    rag_rrf_constant_k: int = 30
+    rag_semantic_weight: float = 0.5
+    rag_keyword_weight: float = 0.5
     rag_milvus_dim: int = 1024
     rag_rewrite_enabled: bool = True
     rag_rewrite_num_queries: int = 3
@@ -102,6 +103,9 @@ class Settings(BaseSettings):
     memory_consolidation_decay_rate: float = 0.995
     memory_consolidation_min_importance: float = 0.3
     memory_consolidation_trigger: int = 5
+
+    # ─── Case Memory ───
+    case_extraction_enabled: bool = True
 
     # ─── Auth ───
     jwt_secret: str = ""

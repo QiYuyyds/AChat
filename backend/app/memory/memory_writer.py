@@ -161,14 +161,30 @@ CRITICAL: Respond in the SAME LANGUAGE and SCRIPT as the input messages.
 
 # OUTPUT FORMAT
 
-Return a JSON object with a "memory" array. Each entry has "id", "text", and "attributed_to":
+Return a JSON object with a "memory" array. Each entry has "id", "text", "attributed_to", "summary", and "keywords":
 
 {"memory": [
-  {"id": "0", "text": "...", "attributed_to": "user"},
-  {"id": "1", "text": "...", "attributed_to": "assistant"}
+  {"id": "0", "text": "...", "attributed_to": "user", "summary": "...", "keywords": ["..."]},
+  {"id": "1", "text": "...", "attributed_to": "assistant", "summary": "...", "keywords": ["..."]}
 ]}
 
 If nothing memorable was said, return: {"memory": []}
+
+## Summary Rules
+
+- "summary" is a 3-10 character Chinese or 3-10 word English self-contained title.
+- It MUST be understandable without the full content.
+- It captures the memory's core topic as a concise title.
+- Do NOT use generic words like "部署" or "配置" — be specific (e.g., "部署端口冲突" not "部署").
+- Example: content="用户喜欢TypeScript，偏好React框架" → summary="用户前端技术栈"
+
+## Keywords Rules
+
+- "keywords" is a list of 3-5 retrieval keywords per memory.
+- Prefer proper nouns, core concepts, and technical terms (e.g., "TypeScript", "React", "PostgreSQL").
+- Do NOT include generic words like "user", "project", "system", "memory".
+- Keywords are used for keyword-based retrieval matching, so choose terms that uniquely identify this memory.
+- Example: content="项目用 Next.js 16" → keywords=["Next.js", "Next16", "前端框架"]
 
 # EXAMPLES
 
@@ -179,13 +195,13 @@ New Messages:
 
 Output:
 {"memory": [
-  {"id": "0", "text": "User's name is John", "attributed_to": "user"},
-  {"id": "1", "text": "User is a software engineer at Google", "attributed_to": "user"},
-  {"id": "2", "text": "User loves hiking on weekends", "attributed_to": "user"},
-  {"id": "3", "text": "User is planning to learn Rust next month", "attributed_to": "user"}
+  {"id": "0", "text": "User's name is John", "attributed_to": "user", "summary": "用户姓名", "keywords": ["John", "姓名", "identity"]},
+  {"id": "1", "text": "User is a software engineer at Google", "attributed_to": "user", "summary": "用户职业", "keywords": ["Google", "software engineer", "职业"]},
+  {"id": "2", "text": "User loves hiking on weekends", "attributed_to": "user", "summary": "用户爱好", "keywords": ["hiking", "周末", "爱好"]},
+  {"id": "3", "text": "User is planning to learn Rust next month", "attributed_to": "user", "summary": "学习计划", "keywords": ["Rust", "学习计划", "编程"]}
 ]}
 
-Four dimensions: (1) name, (2) professional, (3) hobby, (4) plan. Each extracted separately.
+Four dimensions: (1) name, (2) professional, (3) hobby, (4) plan. Each extracted separately with summary and keywords.
 
 ## Example 2: Nothing to Extract
 
@@ -204,8 +220,8 @@ New Messages:
 
 Output:
 {"memory": [
-  {"id": "0", "text": "The project uses PostgreSQL 16 with Redis for caching", "attributed_to": "user"},
-  {"id": "1", "text": "The API is built with FastAPI and the frontend uses Next.js 16", "attributed_to": "user"}
+  {"id": "0", "text": "The project uses PostgreSQL 16 with Redis for caching", "attributed_to": "user", "summary": "项目数据库", "keywords": ["PostgreSQL", "Redis", "缓存"]},
+  {"id": "1", "text": "The API is built with FastAPI and the frontend uses Next.js 16", "attributed_to": "user", "summary": "项目技术栈", "keywords": ["FastAPI", "Next.js", "前端"]}
 ]}
 
 Extract the factual content, not the acknowledgment.
@@ -312,11 +328,21 @@ async def extract_ltm_memories(
 
         attributed_to = str(mem.get("attributed_to", "user")).strip() or "user"
 
-        # Compute embedding off the event loop (embed_fn is a blocking client)
+        # Parse structured fields (summary + keywords)
+        summary = str(mem.get("summary", "")).strip()
+        keywords_raw = mem.get("keywords", [])
+        if isinstance(keywords_raw, list):
+            keywords = [str(k).strip() for k in keywords_raw if str(k).strip()]
+        else:
+            keywords = []
+
+        # Compute embedding from summary (concentrated semantic signal);
+        # fall back to content for backward compatibility.
+        embed_text = summary if summary else text
         emb = None
         if embed_fn:
             try:
-                emb = await asyncio.to_thread(embed_fn, text)
+                emb = await asyncio.to_thread(embed_fn, embed_text)
             except Exception as e:
                 logger.warning("LTM memory extraction embed failed: %s", e)
 
@@ -331,13 +357,197 @@ async def extract_ltm_memories(
                 scope=write_scope,
                 agent_id=agent_id,
                 user_id=user_id,
+                summary=summary,
+                keywords=keywords,
             )
             logger.info(
-                "LTM memory extracted: %s (attributed_to=%s, inserted=%s)",
-                text[:80], attributed_to, inserted,
+                "LTM memory extracted: %s (summary=%s, attributed_to=%s, inserted=%s)",
+                text[:80], summary[:30], attributed_to, inserted,
             )
         except Exception as e:
             logger.warning("LTM memory extraction store failed: %s", e)
+
+
+# ── Case memory extraction (task completion) ─────────────────────────────
+
+
+_CASE_EXTRACTION_SYSTEM_PROMPT = """\
+# ROLE
+
+You are a Case Memory Extractor — an analyst that identifies reusable task experiences from completed conversations. Your goal is to distill actionable, cross-session knowledge: what approaches worked, what failed, and what patterns can be reused in similar future tasks.
+
+# GUIDELINES
+
+## What to Extract
+
+Only extract memories with LONG-TERM LEARNING VALUE:
+- Effective strategies or approaches that solved a problem (e.g., "先跑全量测试确认基线，再分步修改")
+- Common pitfalls or anti-patterns discovered (e.g., "直接修改生产环境配置导致服务中断")
+- Reusable patterns applicable to similar tasks (e.g., "重构认证模块时，先隔离接口层再改实现")
+- Tool usage insights (e.g., "Milvus collection 需要先 load 再搜索")
+
+## What NOT to Extract
+
+- Trivial or obvious operations (e.g., "使用了 git commit")
+- One-off details with no reusable value (e.g., "修改了文件第42行")
+- Information already common knowledge
+- Transient context only relevant to this specific session
+
+## Extraction Quality Standards
+
+Each case memory MUST:
+1. Be self-contained and actionable
+2. Describe the approach/pattern, not the specific instance
+3. Have a clear summary (3-10 words) capturing the reusable insight
+4. Include 3-5 keywords for retrieval (proper nouns, technical terms)
+
+# OUTPUT FORMAT
+
+Return a JSON object with a "cases" array. Each entry has "text", "summary", "keywords", and "outcome":
+
+{"cases": [
+  {"text": "...", "summary": "...", "keywords": ["..."], "outcome": "success|failure|insight"}
+]}
+
+If no reusable experience is found, return: {"cases": []}
+
+# EXAMPLES
+
+## Example 1: Successful refactoring
+
+Session summary: 用户要求重构认证模块。先跑了全量测试确认基线，然后分步修改，每步跑测试。最后所有测试通过，成功合并。
+
+Output:
+{"cases": [
+  {"text": "重构认证模块时，先跑全量测试确认基线，再分步修改每步验证，确保每步可回退", "summary": "认证模块重构策略", "keywords": ["重构", "认证", "测试", "分步修改"], "outcome": "success"}
+]}
+
+## Example 2: Trivial conversation
+
+Session summary: 用户问了天气情况，然后聊了聊周末计划。
+
+Output:
+{"cases": []}
+
+No reusable task experience found.
+
+## Example 3: Tool failure insight
+
+Session summary: 用户尝试用 Milvus 搜索但报错。发现 collection 需要先 load 才能搜索，加载后成功。
+
+Output:
+{"cases": [
+  {"text": "Milvus collection 搜索前需要先调用 load 加载到内存，否则会报搜索错误", "summary": "Milvus搜索需先load", "keywords": ["Milvus", "collection", "load", "搜索"], "outcome": "insight"}
+]}
+"""
+
+
+async def extract_case_memories(
+    generate_fn: Callable,
+    embed_fn: Callable | None,
+    ltm,
+    session_summary: str,
+    *,
+    task_result: str = "",
+    agent_id: str = "",
+    user_id: str | None = None,
+) -> int:
+    """Extract reusable case memories from a completed task/session.
+
+    Uses the case extraction prompt to identify reusable task experiences
+    from the session summary. Each extracted case is stored in LTM with
+    ``category='case'``.
+
+    Args:
+        generate_fn: LLM generate function (system_prompt, user_msg) -> str
+        embed_fn: Optional embedding function (text) -> list[float]
+        ltm: LongTerm memory instance with ``store_classified()`` method
+        session_summary: The SessionMemory summary text for the completed session
+        task_result: Optional task outcome description (success/failure details)
+        agent_id: When non-empty, case memories are written with scope='agent'
+        user_id: User ID for multi-user isolation
+
+    Returns:
+        Number of case memories extracted and stored.
+    """
+    if not generate_fn or not session_summary:
+        return 0
+
+    # Build user message with session summary + optional task result
+    user_msg = f"## Session Summary\n{session_summary}"
+    if task_result:
+        user_msg += f"\n## Task Result\n{task_result}"
+
+    try:
+        raw = await asyncio.to_thread(generate_fn, _CASE_EXTRACTION_SYSTEM_PROMPT, user_msg)
+    except Exception as e:
+        logger.warning("Case memory extraction LLM call failed: %s", e)
+        return 0
+
+    raw = _strip_code_fence(raw)
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        logger.debug("Case memory extraction: LLM output is not valid JSON: %s", raw[:200])
+        return 0
+
+    if not isinstance(parsed, dict):
+        return 0
+
+    cases = parsed.get("cases", [])
+    if not isinstance(cases, list) or not cases:
+        return 0
+
+    write_scope = "agent" if agent_id else "global"
+    stored_count = 0
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        text = str(case.get("text", "")).strip()
+        if not text:
+            continue
+
+        summary = str(case.get("summary", "")).strip()
+        keywords_raw = case.get("keywords", [])
+        if isinstance(keywords_raw, list):
+            keywords = [str(k).strip() for k in keywords_raw if str(k).strip()]
+        else:
+            keywords = []
+        outcome = str(case.get("outcome", "insight")).strip() or "insight"
+
+        # Compute embedding from summary (concentrated semantic signal)
+        embed_text = summary if summary else text
+        emb = None
+        if embed_fn:
+            try:
+                emb = await asyncio.to_thread(embed_fn, embed_text)
+            except Exception as e:
+                logger.warning("Case memory extraction embed failed: %s", e)
+
+        try:
+            inserted = await ltm.store_classified(
+                text,
+                0.6,  # case memories have higher default importance
+                emb,
+                "case",  # category: case
+                [outcome],  # tags: outcome type
+                "",  # slot_hint: empty
+                scope=write_scope,
+                agent_id=agent_id,
+                user_id=user_id,
+                summary=summary,
+                keywords=keywords,
+            )
+            if inserted:
+                stored_count += 1
+                logger.info(
+                    "Case memory extracted: %s (summary=%s, outcome=%s)",
+                    text[:80], summary[:30], outcome,
+                )
+        except Exception as e:
+            logger.warning("Case memory extraction store failed: %s", e)
+
+    return stored_count
 
 
 # ── User-side preference extraction (LLM with rule fallback) ────────────────

@@ -45,6 +45,7 @@ export const AVAILABLE_AGENT_TOOLS = [
   'deploy_workspace',
   'read_artifact',
   'web_search',
+  'rag_search',
 ] as const
 
 export type AgentToolName = (typeof AVAILABLE_AGENT_TOOLS)[number]
@@ -88,7 +89,7 @@ export const AGENT_TOOL_PRESETS: readonly AgentToolPreset[] = [
     id: 'researcher',
     label: '调研员',
     desc: '联网搜索、交叉验证、产出调研报告',
-    tools: ['write_artifact', 'read_artifact', 'web_search'],
+    tools: ['write_artifact', 'read_artifact', 'web_search', 'rag_search'],
     defaultDescription: '围绕联网搜索、交叉验证与调研报告提供决策支持',
     defaultCapabilities: ['联网搜索', '交叉验证', '调研报告'],
     systemPromptTemplate: `你是一名调研员。你的核心职责是联网搜索、交叉验证、产出结构化调研报告，帮用户做决策。
@@ -162,7 +163,7 @@ export const AGENT_TOOL_PRESETS: readonly AgentToolPreset[] = [
 export const DEFAULT_CUSTOM_AGENT_TOOLS = AGENT_TOOL_PRESETS[0].tools
 
 /**
- * Metadata for the 5 UI-selectable tools. Baseline tools have a separate
+ * Metadata for the 6 UI-selectable tools. Baseline tools have a separate
  * metadata record (`BASELINE_AGENT_TOOL_META`) used for the read-only
  * "baseline tools" hint section in the create/edit dialog.
  */
@@ -172,6 +173,7 @@ export const AGENT_TOOL_META: Record<AgentToolName, { label: string; desc: strin
   deploy_workspace: { label: '部署目录', desc: '把工作区内 dist/build/out 等静态目录生成预览链接与下载包' },
   read_artifact: { label: '读取产物', desc: '查看会话中已有产物的完整内容，便于在其基础上继续改' },
   web_search: { label: '联网搜索', desc: '用 Tavily 搜索公网获取实时信息；调用会消耗 Tavily 额度' },
+  rag_search: { label: '知识库检索', desc: '在知识库中检索相关文档片段，返回匹配的文本块和来源信息' },
 }
 
 /**
@@ -233,7 +235,7 @@ export interface AgentDraftResponse {
 }
 
 /**
- * Filter persisted toolNames to only the 5 UI-selectable tools.
+ * Filter persisted toolNames to only the 6 UI-selectable tools.
  * Baseline tools are not filtered here — they are merged at runtime by
  * the backend (`agent_runner.py`).
  */

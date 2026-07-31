@@ -143,6 +143,37 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         visibility,
     )
 
+    # Create worktree for isolation (degrades to shared workspace if None)
+    from app.services.worktree_service import (
+        cleanup_worktree,
+        create_worktree,
+        merge_worktree_back,
+    )
+    from app.utils.ids import new_tool_call_id
+
+    wt = None
+    if ctx.workspace_path:
+        agent_name = "agent"
+        async with get_local_db() as db:
+            agent_row = (
+                await db.execute(
+                    select(Agent).where(Agent.id == target_agent_id)
+                )
+            ).scalar_one_or_none()
+            if agent_row is not None:
+                agent_name = agent_row.name
+        wt_task_id = new_tool_call_id()
+        wt = await create_worktree(
+            main_workspace=ctx.workspace_path,
+            task_id=wt_task_id,
+            agent_name=agent_name,
+            conversation_id=ctx.conversation_id,
+            user_id=ctx.user_id,
+            agent_id=target_agent_id,
+        )
+
+    workspace_path_arg = wt.path if wt else None
+
     result = await spawn_subagent_loop(
         agent_id=target_agent_id,
         task_description=task_description,
@@ -153,7 +184,17 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         dispatch_depth=ctx.dispatch_depth + 1,
         dispatch_visibility=visibility,
         user_id=ctx.user_id,
+        workspace_path=workspace_path_arg,
     )
+
+    # Merge worktree back and cleanup (only if worktree was created)
+    if wt is not None:
+        try:
+            await merge_worktree_back(wt)
+        except Exception as exc:  # noqa: BLE001 - log but don't block result
+            logger.warning("[task_dispatch] merge_worktree_back failed: %s", exc)
+        finally:
+            await cleanup_worktree(wt)
 
     if result.status == "aborted":
         return err(f"Sub-agent run was aborted: {result.text}")

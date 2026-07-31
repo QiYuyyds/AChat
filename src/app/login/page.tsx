@@ -1,6 +1,6 @@
 'use client'
 
-import { Crown, Loader2 } from 'lucide-react'
+import { Crown, FileCode, Loader2, Network, Workflow } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useState } from 'react'
@@ -18,6 +18,9 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { useAuthStore } from '@/stores/auth-store'
+
+const inputClass =
+  'h-11 px-3.5 bg-muted/40 border-border text-foreground placeholder:text-muted-foreground focus-visible:border-ring/50 focus-visible:ring-2 focus-visible:ring-ring/20 transition-all duration-200'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -78,15 +81,18 @@ export default function LoginPage() {
       <AuthBrandPanel />
 
       <div className="relative flex w-full items-center justify-center overflow-hidden p-6 lg:w-2/5">
-        {/* 高级多层背景 */}
         <AuthBackground variant="form" />
 
-        <div className="auth-fade-up relative z-10 w-full max-w-[420px]">
+        <div className="auth-fade-up relative z-10 w-full max-w-[440px] rounded-3xl border border-border bg-card/50 p-8 backdrop-blur-xl">
           {/* Logo + 标题 */}
           <div className="mb-8 flex flex-col items-center text-center">
             <AuthLogo size={56} className="mb-5" />
-            <h1 className="text-2xl font-semibold tracking-tight">欢迎回来</h1>
-            <p className="mt-1.5 text-sm text-muted-foreground">登录以继续你的协作</p>
+            <h1 className="auth-form-title text-3xl font-bold tracking-tight md:text-4xl">
+              欢迎回来
+            </h1>
+            <p className="mt-2 text-[15px] text-muted-foreground">
+              登录以继续你的协作
+            </p>
           </div>
 
           {/* 表单 */}
@@ -107,7 +113,7 @@ export default function LoginPage() {
                 required
                 autoComplete="email"
                 autoFocus
-                className="h-11 px-3.5 transition-all duration-200"
+                className={inputClass}
               />
             </div>
             <div className="auth-fade-up-delay-2 flex flex-col gap-2">
@@ -125,7 +131,7 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 autoComplete="current-password"
-                className="h-11 px-3.5 transition-all duration-200"
+                className={inputClass}
               />
             </div>
             {error && (
@@ -136,28 +142,31 @@ export default function LoginPage() {
             <Button
               type="submit"
               disabled={submitting}
-              className="auth-fade-up-delay-3 mt-2 h-12 w-full bg-gradient-to-b from-primary to-primary/90 text-sm font-medium tracking-wide transition-all duration-200 hover:shadow-md hover:brightness-110 hover:-translate-y-px active:translate-y-0"
+              className="auth-btn-shimmer auth-fade-up-delay-3 group relative mt-2 h-12 w-full overflow-hidden bg-gradient-to-b from-primary to-primary/90 text-sm font-medium tracking-wide transition-all duration-300 hover:shadow-lg hover:shadow-primary/30 hover:brightness-110 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]"
             >
+              <span className="pointer-events-none absolute inset-0 overflow-hidden">
+                <span className="absolute inset-y-0 left-0 w-1/3 bg-gradient-to-r from-transparent via-foreground/15 to-transparent" />
+              </span>
               {submitting ? <Loader2 className="size-4 animate-spin" /> : '登录'}
             </Button>
           </form>
 
           {/* 分隔线 */}
-          <div className="my-6 flex items-center gap-3">
+          <div className="my-5 flex items-center gap-3">
             <div className="h-px flex-1 bg-border" />
             <span className="text-xs text-muted-foreground">还没有账户</span>
             <div className="h-px flex-1 bg-border" />
           </div>
 
-          {/* 注册链接 — 边框按钮式 */}
+          {/* 注册链接 */}
           <Link
             href="/register"
-            className="block rounded-lg border border-border py-3 text-center text-sm font-medium transition-all duration-200 hover:bg-muted hover:-translate-y-px"
+            className="block rounded-lg border border-border py-3 text-center text-sm font-medium text-foreground transition-all duration-200 hover:bg-muted hover:-translate-y-0.5"
           >
             注册新账户
           </Link>
 
-          {/* VIP 登录 — 次级文字入口 */}
+          {/* VIP 登录 */}
           {vipLoginEnabled && (
             <button
               type="button"
@@ -168,6 +177,24 @@ export default function LoginPage() {
               VIP 登录
             </button>
           )}
+
+          {/* 信任信号 */}
+          <div className="mt-6 flex items-center justify-center gap-4 text-[11px] text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <Workflow className="size-3" />
+              并行调度
+            </span>
+            <span className="size-1 rounded-full bg-border" />
+            <span className="flex items-center gap-1.5">
+              <FileCode className="size-3" />
+              产物预览
+            </span>
+            <span className="size-1 rounded-full bg-border" />
+            <span className="flex items-center gap-1.5">
+              <Network className="size-3" />
+              知识图谱
+            </span>
+          </div>
         </div>
       </div>
 

@@ -19,6 +19,7 @@ import type {
   StreamEvent,
   TurnMetricData,
 } from '@/shared/types'
+import type { PendingMergeConflict } from '@/lib/api'
 import { computeTotalTokens, computeMessageTotalTokens } from '@/shared/usage'
 
 enableMapSet()
@@ -60,6 +61,7 @@ export interface DispatchState {
     branchName: string
     path: string
     mergeStatus?: 'success' | 'conflict'
+    resolutionStatus?: 'success' | 'llm_resolved' | 'manual_resolved' | 'abandoned' | 'conflict'
   }>
 }
 
@@ -133,6 +135,9 @@ interface AppState {
 
   // ─── MCP 工具调用审批等待队列（按 conversationId 分桶）─
   pendingMcpCallsByConv: Record<string, PendingMcpCall[]>
+
+  // ─── Worktree 合并冲突审批等待队列（按 conversationId 分桶）─
+  pendingMergeConflictsByConv: Record<string, PendingMergeConflict[]>
 
   // ─── Workspace 环境提示卡片状态（按 conversationId 分桶）─
   workspaceEnvByConv: Record<string, WorkspaceEnvState>
@@ -233,6 +238,11 @@ interface AppState {
 
   setPendingMcpCallsForConversation(conversationId: string, list: PendingMcpCall[]): void
 
+  setPendingMergeConflictsForConversation(
+    conversationId: string,
+    list: PendingMergeConflict[],
+  ): void
+
   setPendingDispatchPlansForConversation(
     conversationId: string,
     list: PendingDispatchPlan[],
@@ -267,7 +277,7 @@ export const useAppStore = create<AppState>()(
     dispatchesByRunId: {},
     activeConversationId: null,
     previewArtifactId: null,
-    fileExplorerOpen: false,
+    fileExplorerOpen: true,
     openFilesByConv: {},
     activeTabByConv: {},
     replyTargetByConv: {},
@@ -276,6 +286,7 @@ export const useAppStore = create<AppState>()(
     pendingBashCommandsByConv: {},
     pendingQuestionsByConv: {},
     pendingMcpCallsByConv: {},
+    pendingMergeConflictsByConv: {},
     workspaceEnvByConv: {},
     unreadByConv: {},
     mobileSidebarOpen: false,
@@ -342,6 +353,7 @@ export const useAppStore = create<AppState>()(
         delete s.pendingBashCommandsByConv[id]
         delete s.pendingQuestionsByConv[id]
         delete s.pendingMcpCallsByConv[id]
+        delete s.pendingMergeConflictsByConv[id]
         delete s.workspaceEnvByConv[id]
         if (s.activeConversationId === id) s.activeConversationId = null
       }),
@@ -522,6 +534,7 @@ export const useAppStore = create<AppState>()(
         delete s.pendingBashCommandsByConv[conversationId]
         delete s.pendingQuestionsByConv[conversationId]
         delete s.pendingMcpCallsByConv[conversationId]
+        delete s.pendingMergeConflictsByConv[conversationId]
         delete s.unreadByConv[conversationId]
         delete s.workspaceEnvByConv[conversationId]
         if (s.highlightedMessageId && messageIds.has(s.highlightedMessageId)) {
@@ -596,6 +609,12 @@ export const useAppStore = create<AppState>()(
       set((s) => {
         if (list.length === 0) delete s.pendingMcpCallsByConv[conversationId]
         else s.pendingMcpCallsByConv[conversationId] = list
+      }),
+
+    setPendingMergeConflictsForConversation: (conversationId, list) =>
+      set((s) => {
+        if (list.length === 0) delete s.pendingMergeConflictsByConv[conversationId]
+        else s.pendingMergeConflictsByConv[conversationId] = list
       }),
 
     setPendingDispatchPlansForConversation: (conversationId, list) =>
@@ -1147,6 +1166,9 @@ export const useAppStore = create<AppState>()(
             for (const d of Object.values(s.dispatchesByRunId)) {
               if (d.worktreeByTask?.[event.taskId]) {
                 d.worktreeByTask[event.taskId].mergeStatus = event.mergeStatus ?? 'success'
+                if (event.resolutionStatus) {
+                  d.worktreeByTask[event.taskId].resolutionStatus = event.resolutionStatus
+                }
                 if (event.mergeStatus === 'conflict') {
                   d.taskStatus[event.taskId] = 'merge_conflict'
                 }
@@ -1160,6 +1182,32 @@ export const useAppStore = create<AppState>()(
             for (const d of Object.values(s.dispatchesByRunId)) {
               if (d.worktreeByTask) delete d.worktreeByTask[event.taskId]
             }
+            return
+          }
+
+          case 'merge_conflict.pending': {
+            const list = s.pendingMergeConflictsByConv[event.conversationId] ?? []
+            if (list.some((c) => c.id === event.pendingId)) return
+            s.pendingMergeConflictsByConv[event.conversationId] = [
+              ...list,
+              {
+                id: event.pendingId,
+                conversationId: event.conversationId,
+                taskId: event.taskId,
+                conflictFiles: event.conflictFiles,
+                workspacePath: event.workspacePath,
+                createdAt: event.timestamp,
+              },
+            ]
+            return
+          }
+
+          case 'merge_conflict.resolved': {
+            const list = s.pendingMergeConflictsByConv[event.conversationId]
+            if (!list) return
+            const next = list.filter((c) => c.id !== event.pendingId)
+            if (next.length === 0) delete s.pendingMergeConflictsByConv[event.conversationId]
+            else s.pendingMergeConflictsByConv[event.conversationId] = next
             return
           }
 
@@ -1510,7 +1558,8 @@ export const useConversationList = () =>
     ),
   )
 
-export const useAgentList = () => useAppStore(useShallow((s) => Object.values(s.agents)))
+export const useAgentList = () =>
+  useAppStore(useShallow((s) => Object.values(s.agents).filter((a) => !a.isGuide)))
 
 export const usePendingAttachments = (conversationId: string) =>
   useAppStore(useShallow((s) => s.pendingAttachmentsByConv[conversationId] ?? []))
@@ -1674,6 +1723,16 @@ export const useActiveTab = (conversationId: string): string =>
 /** 该会话当前所有待审批的 fs_write（review 模式下 agent 想改文件，等用户决定）。 */
 export const usePendingWrites = (conversationId: string | null): PendingWrite[] =>
   useAppStore(useShallow((s) => (conversationId ? s.pendingWritesByConv[conversationId] ?? [] : [])))
+
+/** 该会话当前所有待解决的 worktree 合并冲突。 */
+export const usePendingMergeConflicts = (
+  conversationId: string | null,
+): PendingMergeConflict[] =>
+  useAppStore(
+    useShallow((s) =>
+      conversationId ? s.pendingMergeConflictsByConv[conversationId] ?? [] : [],
+    ),
+  )
 
 /** 该会话当前所有待审批的关键 bash 命令。 */
 export const usePendingBashCommands = (conversationId: string | null): PendingBashCommand[] =>

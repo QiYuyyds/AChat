@@ -10,33 +10,25 @@ export function AuthBackground({ variant }: AuthBackgroundProps) {
 
   return (
     <>
-      {/* L0 — 基底深色渐变 */}
-      {isBrand ? (
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background:
-              'radial-gradient(ellipse 100% 80% at 50% 50%, oklch(0.48 0.05 55) 0%, oklch(0.38 0.04 55) 60%, oklch(0.30 0.03 55) 100%)',
-          }}
-        />
-      ) : (
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background:
-              'radial-gradient(ellipse 100% 80% at 50% 30%, var(--background) 0%, color-mix(in oklch, var(--background) 80%, var(--muted)) 100%)',
-          }}
-        />
-      )}
+      {/* L0 — 基底渐变 */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background: isBrand
+            ? 'radial-gradient(ellipse 100% 80% at 50% 50%, oklch(0.35 0.06 257) 0%, oklch(0.25 0.04 257) 60%, oklch(0.18 0.02 257) 100%)'
+            : 'radial-gradient(ellipse 100% 80% at 50% 25%, var(--background) 0%, color-mix(in oklch, var(--background) 88%, var(--muted)) 100%)',
+        }}
+      />
 
       {/* L1 — Mesh conic 缓慢旋转色相流动 */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div
-          className="auth-mesh-pan absolute left-1/2 top-1/2 size-[150%] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-30"
+          className="auth-mesh-pan absolute left-1/2 top-1/2 size-[150%] -translate-x-1/2 -translate-y-1/2 rounded-full"
           style={{
+            opacity: isBrand ? 0.30 : 0.12,
             background: isBrand
-              ? 'conic-gradient(from 0deg at 50% 50%, transparent 0deg, oklch(0.55 0.06 70 / 0.4) 60deg, transparent 120deg, oklch(0.72 0.09 70 / 0.3) 180deg, transparent 240deg, oklch(0.50 0.05 55 / 0.35) 300deg, transparent 360deg)'
-              : 'conic-gradient(from 0deg at 50% 50%, transparent 0deg, color-mix(in oklch, var(--primary) 12%, transparent) 60deg, transparent 120deg, color-mix(in oklch, var(--warning) 10%, transparent) 180deg, transparent 240deg, color-mix(in oklch, var(--primary) 8%, transparent) 300deg, transparent 360deg)',
+              ? 'conic-gradient(from 0deg at 50% 50%, transparent 0deg, oklch(0.588 0.166 257 / 0.25) 60deg, transparent 120deg, oklch(0.70 0.11 70 / 0.15) 180deg, transparent 240deg, oklch(0.588 0.166 257 / 0.2) 300deg, transparent 360deg)'
+              : 'conic-gradient(from 0deg at 50% 50%, transparent 0deg, color-mix(in oklch, var(--primary) 8%, transparent) 60deg, transparent 120deg, color-mix(in oklch, var(--warning) 6%, transparent) 180deg, transparent 240deg, color-mix(in oklch, var(--primary) 6%, transparent) 300deg, transparent 360deg)',
             filter: 'blur(60px)',
           }}
         />
@@ -48,12 +40,12 @@ export function AuthBackground({ variant }: AuthBackgroundProps) {
           className="auth-aurora-drift absolute rounded-full"
           style={{
             top: '5%',
-            left: '10%',
+            left: isBrand ? '10%' : '5%',
             width: '40%',
             height: '50%',
             background: isBrand
-              ? 'radial-gradient(circle, oklch(0.72 0.09 70 / 0.35) 0%, transparent 70%)'
-              : 'radial-gradient(circle, color-mix(in oklch, var(--warning) 18%, transparent) 0%, transparent 70%)',
+              ? 'radial-gradient(circle, oklch(0.70 0.11 70 / 0.18) 0%, transparent 70%)'
+              : 'radial-gradient(circle, color-mix(in oklch, var(--warning) 10%, transparent) 0%, transparent 70%)',
             filter: 'blur(40px)',
           }}
         />
@@ -61,12 +53,12 @@ export function AuthBackground({ variant }: AuthBackgroundProps) {
           className="auth-aurora-drift-rev absolute rounded-full"
           style={{
             bottom: '5%',
-            right: '5%',
+            right: isBrand ? '5%' : '10%',
             width: '35%',
             height: '45%',
             background: isBrand
-              ? 'radial-gradient(circle, oklch(0.55 0.06 60 / 0.3) 0%, transparent 70%)'
-              : 'radial-gradient(circle, color-mix(in oklch, var(--primary) 12%, transparent) 0%, transparent 70%)',
+              ? 'radial-gradient(circle, oklch(0.588 0.166 257 / 0.22) 0%, transparent 70%)'
+              : 'radial-gradient(circle, color-mix(in oklch, var(--primary) 8%, transparent) 0%, transparent 70%)',
             filter: 'blur(50px)',
           }}
         />
@@ -74,12 +66,12 @@ export function AuthBackground({ variant }: AuthBackgroundProps) {
           className="auth-aurora-drift absolute rounded-full"
           style={{
             top: '40%',
-            right: '20%',
+            right: isBrand ? '20%' : '15%',
             width: '25%',
             height: '35%',
             background: isBrand
-              ? 'radial-gradient(circle, oklch(0.65 0.07 65 / 0.2) 0%, transparent 70%)'
-              : 'radial-gradient(circle, color-mix(in oklch, var(--primary) 8%, transparent) 0%, transparent 70%)',
+              ? 'radial-gradient(circle, oklch(0.588 0.166 257 / 0.15) 0%, transparent 70%)'
+              : 'radial-gradient(circle, color-mix(in oklch, var(--primary) 5%, transparent) 0%, transparent 70%)',
             filter: 'blur(35px)',
             animationDelay: '5s',
           }}
@@ -91,7 +83,7 @@ export function AuthBackground({ variant }: AuthBackgroundProps) {
         className="pointer-events-none absolute inset-0"
         style={{
           backgroundImage: isBrand
-            ? 'repeating-linear-gradient(0deg, var(--primary-foreground) 0, var(--primary-foreground) 1px, transparent 1px, transparent 48px), repeating-linear-gradient(90deg, var(--primary-foreground) 0, var(--primary-foreground) 1px, transparent 1px, transparent 48px)'
+            ? 'repeating-linear-gradient(0deg, oklch(0.98 0 0) 0, oklch(0.98 0 0) 1px, transparent 1px, transparent 48px), repeating-linear-gradient(90deg, oklch(0.98 0 0) 0, oklch(0.98 0 0) 1px, transparent 1px, transparent 48px)'
             : 'repeating-linear-gradient(0deg, var(--foreground) 0, var(--foreground) 1px, transparent 1px, transparent 48px), repeating-linear-gradient(90deg, var(--foreground) 0, var(--foreground) 1px, transparent 1px, transparent 48px)',
           opacity: isBrand ? 0.04 : 0.025,
           maskImage:
@@ -106,7 +98,7 @@ export function AuthBackground({ variant }: AuthBackgroundProps) {
         className="pointer-events-none absolute inset-0 mix-blend-overlay"
         style={{
           backgroundImage: grainSvg,
-          opacity: isBrand ? 0.06 : 0.04,
+          opacity: isBrand ? 0.06 : 0.035,
         }}
       />
 
@@ -115,8 +107,8 @@ export function AuthBackground({ variant }: AuthBackgroundProps) {
         className="pointer-events-none absolute inset-0"
         style={{
           background: isBrand
-            ? 'radial-gradient(ellipse 100% 100% at 50% 50%, transparent 50%, oklch(0.15 0.01 55 / 0.5) 100%)'
-            : 'radial-gradient(ellipse 100% 100% at 50% 50%, transparent 60%, color-mix(in oklch, var(--muted) 50%, transparent) 100%)',
+            ? 'radial-gradient(ellipse 100% 100% at 50% 50%, transparent 50%, oklch(0.10 0.004 280 / 0.5) 100%)'
+            : 'radial-gradient(ellipse 100% 100% at 50% 50%, transparent 60%, color-mix(in oklch, var(--muted) 40%, transparent) 100%)',
         }}
       />
     </>

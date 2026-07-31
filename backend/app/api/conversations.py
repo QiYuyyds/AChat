@@ -17,7 +17,6 @@ from app.db.models import User
 from app.schemas import (
     CreateConversationRequest,
     SendMessageRequest,
-    SetRagModeRequest,
 )
 from app.services import conversation_service, deploy_command_service
 
@@ -189,25 +188,6 @@ async def update_conversation(conversation_id: str, req: Request, user: User = D
             )
     except ValueError as err:
         return _err(str(err), 400)
-    return JSONResponse(content={"conversation": _model(conversation)})
-
-
-# ─── /conversations/{id}/rag-mode ────────────────────────────────────────────
-@router.patch("/conversations/{conversation_id}/rag-mode")
-async def set_rag_mode(conversation_id: str, req: Request, user: User = Depends(get_current_user)) -> JSONResponse:
-    await verify_conversation_ownership(conversation_id, user.id)
-    raw = await _read_json(req)
-    try:
-        body = SetRagModeRequest.model_validate(raw)
-    except ValidationError as exc:
-        return _invalid_body(exc)
-
-    try:
-        conversation = await conversation_service.set_rag_mode(
-            conversation_id, body.rag_enabled
-        )
-    except ValueError as err:
-        return _err(str(err), 404)
     return JSONResponse(content={"conversation": _model(conversation)})
 
 

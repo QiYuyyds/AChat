@@ -57,7 +57,7 @@
 |---|---|---|
 | 后端框架 | FastAPI（Python 3.11+） | 不用 Flask/Django |
 | ORM | SQLAlchemy 2.0 async | 不用 Tortoise / Peewee |
-| 驱动 | asyncpg（PostgreSQL） | 已从 SQLite 迁移到 PostgreSQL |
+| 驱动 | asyncpg（PostgreSQL）+ aiosqlite（SQLite） | 双 DB 架构：本地 SQLite[WAL] + 远端 PostgreSQL |
 | 验证 | Pydantic v2 + pydantic-settings | — |
 | AI 适配器 | Claude Code / Codex 走 **CLI 子进程**（stream-json / JSON-RPC 2.0）；Custom 走 `openai` Python SDK | CLI 路线：工具/沙箱/审批由 CLI 自管，AChat 仅翻译事件流 |
 | 包管理 | pip + venv（`pyproject.toml`） | 不用 poetry/uv（保持简单） |
@@ -75,7 +75,7 @@
 | Elasticsearch 8.14 | 全文检索（RAG BM25） | 无全文检索 |
 | Neo4j 5 | 知识图谱（KGStore / GraphMemory） | GraphMemory no-op |
 | Kafka | 事件总线增强（可选） | 用 in-process EventBus |
-| ~~Redis 7~~ | ~~元数据缓存 + 异步 DB 写入~~ | **已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict 缓存替代 |
+| ~~Redis 7~~ | ~~元数据缓存 + 异步 DB 写入~~ | **已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代 |
 | Phoenix | Agent 可观测性后端（OTel Trace + Eval 评分 · :6006 Web UI · :4317 OTLP gRPC） | OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路 |
 
 > 代码风格上，前端用 TypeScript，后端用 Python。改前端代码遵守 TS 规范，改后端代码遵守 Python 规范。两端的共享契约是 `src/shared/` 里的纯类型定义（前端）和 `backend/app/schemas/` 里的 Pydantic 模型（后端），两者保持 camelCase 字段兼容。
@@ -153,7 +153,7 @@ message.parts = [
 Custom agent（SDK 路线）的工具分两层：
 
 - **Baseline 工具（9 个，必备不可选）**：`read_attachment` / `ask_user` / `fs_list` / `fs_read` / `fs_write` / `fs_edit` / `fs_grep` / `fs_glob` / `bash`。这些工具在运行时由 `agent_runner.execute_simple_run` 自动合并，**不存入 `agent.tool_names`**。
-- **可选工具（5 个，UI 勾选）**：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `web_search`。这些存入 `agent.tool_names`。
+- **可选工具（6 个，UI 勾选）**：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `web_search` / `rag_search`。这些存入 `agent.tool_names`。
 - 运行时合并：`effective_tools = BASELINE_AGENT_TOOLS + agent.tool_names + 自动注入工具`
 - CLI agent（Claude Code / Codex）**不参与** baseline 合并，使用各自 CLI 内置工具集
 - 前端 `src/shared/agent-builder-config.ts` 与后端 `backend/app/api/agents.py` 的 `_BASELINE_AGENT_TOOLS` 必须保持一致
@@ -401,8 +401,11 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `specs/user-auth/spec.md` — 用户认证与多用户隔离
 - `specs/run-internal-compaction/spec.md` — ReAct loop 内压缩（五阶段 pipeline）
 - `specs/guide-agent/spec.md` — ★ 小A Guide Agent（全局悬浮助手 + 7 个管理工具 + 双活跃会话模型）
+- `specs/worktree-conflict-resolution/spec.md` — Worktree 三层递进冲突解决（Auto → LLM → Human）
 
 > ⚠️ 可观测性与评测代码已在 `backend/app/observability/` 落地，但 OpenSpec 主 spec 尚未建立（见 `openspec/changes/add-agent-observability/` 与 `add-rag-evaluation/`）。用户资料管理（profile）代码在 `backend/app/api/profile.py`，但未单独建立 OpenSpec capability。
+>
+> ⚠️ 结构化记忆增强（LTM `summary` / `keywords` / `content_scope` 字段 + 双路检索）和 `rag_search` 迁移为 Agent 级工具的 OpenSpec change 尚在 `openspec/changes/` 未 archive（见 `add-structured-memory-items/` 与 `move-rag-to-agent-tool/`）。
 
 ### `specs/`（编号版详细规格）
 
@@ -425,6 +428,8 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `17-orchestrator-plan-review.md` — Orchestrator 计划审批
 - `18-document-knowledge-base.md` — Document + Version 知识库体系
 - `19-unified-agent-loop.md` — 统一 Agent Loop（solo / coordinated / subagent 模式，替代旧三阶段 Orchestrator）
+
+> OpenSpec 主 specs 现有 **18 个** capability spec（含 `worktree-conflict-resolution`）。
 
 ### `skills/`（可复用开发任务模板）
 

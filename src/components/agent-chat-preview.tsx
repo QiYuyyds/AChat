@@ -25,14 +25,14 @@ const SCRIPT: AgentMessage[] = [
   {
     role: 'user',
     name: '你',
-    accent: 'oklch(0.70 0.010 70)',
+    accent: 'oklch(0.52 0.004 280)',
     Icon: User,
     content: '帮我把认证模块从 session 迁移到 JWT，并补全单元测试',
   },
   {
     role: 'orchestrator',
     name: 'Orchestrator',
-    accent: 'oklch(0.80 0.11 75)',
+    accent: 'oklch(0.588 0.166 257)',
     Icon: Workflow,
     content: '已拆分为 2 个并行子任务',
     dispatch: true,
@@ -44,7 +44,7 @@ const SCRIPT: AgentMessage[] = [
   {
     role: 'agent',
     name: 'Claude',
-    accent: 'oklch(0.70 0.06 60)',
+    accent: 'oklch(0.58 0.08 270)',
     Icon: Bot,
     content: '分析 auth/session.py，提取现有认证逻辑',
     chips: [{ type: 'tool', label: 'fs_read' }],
@@ -52,7 +52,7 @@ const SCRIPT: AgentMessage[] = [
   {
     role: 'agent',
     name: 'Codex',
-    accent: 'oklch(0.70 0.08 150)',
+    accent: 'oklch(0.60 0.08 200)',
     Icon: SquareTerminal,
     content: '检索测试覆盖，定位未覆盖分支',
     chips: [{ type: 'tool', label: 'fs_grep' }],
@@ -60,7 +60,7 @@ const SCRIPT: AgentMessage[] = [
   {
     role: 'agent',
     name: 'Claude',
-    accent: 'oklch(0.70 0.06 60)',
+    accent: 'oklch(0.58 0.08 270)',
     Icon: Bot,
     content: 'JWT 模块已重构，产物已提交',
     chips: [{ type: 'artifact', label: 'auth/jwt.py' }],
@@ -68,7 +68,7 @@ const SCRIPT: AgentMessage[] = [
   {
     role: 'agent',
     name: 'Codex',
-    accent: 'oklch(0.70 0.08 150)',
+    accent: 'oklch(0.60 0.08 200)',
     Icon: SquareTerminal,
     content: '覆盖率 42% → 87%，测试产物已生成',
     chips: [{ type: 'artifact', label: 'test_auth.py' }],
@@ -76,17 +76,17 @@ const SCRIPT: AgentMessage[] = [
   {
     role: 'orchestrator',
     name: 'Orchestrator',
-    accent: 'oklch(0.80 0.11 75)',
+    accent: 'oklch(0.588 0.166 257)',
     Icon: Workflow,
     content: '任务完成 · 5 个产物已聚合',
     chips: [{ type: 'status', label: '已完成' }],
   },
 ]
 
-const HOLD_MS = 3600
+const HOLD_MS = 3000
 const RESET_MS = 700
-const USER_STEP_MS = 450
-const AGENT_STEP_MS = 1500
+const USER_STEP_MS = 400
+const AGENT_STEP_MS = 1200
 
 type Phase = 'typing' | 'hold' | 'reset'
 
@@ -126,9 +126,9 @@ export function AgentChatPreview() {
   const fading = phase === 'reset'
 
   const members = [
-    { name: 'Orchestrator', accent: 'oklch(0.80 0.11 75)', Icon: Workflow },
-    { name: 'Claude', accent: 'oklch(0.70 0.06 60)', Icon: Bot },
-    { name: 'Codex', accent: 'oklch(0.70 0.08 150)', Icon: SquareTerminal },
+    { name: 'Orchestrator', accent: 'oklch(0.588 0.166 257)', Icon: Workflow },
+    { name: 'Claude', accent: 'oklch(0.58 0.08 270)', Icon: Bot },
+    { name: 'Codex', accent: 'oklch(0.60 0.08 200)', Icon: SquareTerminal },
   ]
 
   return (
@@ -143,7 +143,7 @@ export function AgentChatPreview() {
             {members.map((m) => (
               <span
                 key={m.name}
-                className="flex size-7 items-center justify-center rounded-full ring-2 ring-[oklch(0.30_0.03_55)]"
+                className="flex size-7 items-center justify-center rounded-full ring-2 ring-[oklch(0.20_0.004_280)]"
                 style={{
                   backgroundColor: `color-mix(in oklch, ${m.accent} 35%, transparent)`,
                 }}
@@ -174,7 +174,11 @@ export function AgentChatPreview() {
         }`}
       >
         {SCRIPT.slice(0, step).map((msg, i) => (
-          <MessageRow key={i} msg={msg} />
+          <MessageRow
+            key={i}
+            msg={msg}
+            highlight={phase === 'hold' && i === SCRIPT.length - 1}
+          />
         ))}
         {showTyping && <TypingRow msg={SCRIPT[step]} />}
 
@@ -220,11 +224,17 @@ function Avatar({ msg }: { msg: AgentMessage }) {
   )
 }
 
-function MessageRow({ msg }: { msg: AgentMessage }) {
+function MessageRow({
+  msg,
+  highlight = false,
+}: {
+  msg: AgentMessage
+  highlight?: boolean
+}) {
   const isUser = msg.role === 'user'
   return (
     <div
-      className={`chat-msg-in flex gap-2.5 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}
+      className={`chat-msg-in flex gap-2.5 ${isUser ? 'flex-row-reverse' : 'flex-row'} ${highlight ? 'chat-complete-bounce' : ''}`}
     >
       <Avatar msg={msg} />
       <div

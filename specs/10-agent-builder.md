@@ -14,7 +14,7 @@
 - 行为：systemPrompt
 - 模型：custom 走 modelProvider + modelId；SDK adapter 走 modelId
 - 凭据：可选 apiKey / apiBaseUrl（per-agent override）
-- 能力：custom 走 toolNames（5 个可选工具勾选 + 9 个 baseline 自动合并）+ supportsVision；SDK adapter 使用各自内置工具集
+- 能力：custom 走 toolNames（6 个可选工具勾选 + 9 个 baseline 自动合并）+ supportsVision；SDK adapter 使用各自内置工具集
 
 **自建不可成为 Orchestrator**：当前 service 把 `isOrchestrator` 写死为 `false`（`agent-service.ts:44`）。Orchestrator 只能通过 seed 数据预置（`src/db/seed.ts`）。UI 没有创建 Orchestrator 的入口。**TODO**：未来如要支持「自建 Orchestrator」，需要：
 1. CreateAgentDialog 加 `isOrchestrator` toggle
@@ -37,7 +37,7 @@
 | `modelId` | string | — | provider 默认 | 切换 provider 时自动重置 |
 | `apiKey` | string | — | `''` | 命名 provider 留空走 env var；`openai-compatible` 必填 per-agent key |
 | `apiBaseUrl` | string | — | `''` | Claude Code 可填 Anthropic 兼容 endpoint；Codex 仅可填 Codex/Responses 兼容 endpoint；Custom `openai-compatible` 必填 Chat Completions 兼容 endpoint |
-| `toolNames` | string[] | — | coder 预设 | UI 可勾选 5 个：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `web_search`；另有 9 个 baseline 工具（`read_attachment` / `ask_user` / `fs_list` / `fs_read` / `fs_write` / `fs_edit` / `fs_grep` / `fs_glob` / `bash`）对所有 custom agent 自动启用，UI 不可选，运行时由 `agent_runner.py` 合并 |
+| `toolNames` | string[] | — | coder 预设 | UI 可勾选 6 个：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `web_search` / `rag_search`；另有 9 个 baseline 工具（`read_attachment` / `ask_user` / `fs_list` / `fs_read` / `fs_write` / `fs_edit` / `fs_grep` / `fs_glob` / `bash`）对所有 custom agent 自动启用，UI 不可选，运行时由 `agent_runner.py` 合并 |
 | `mcpServerIds` | string[] | — | `[]` | 启用的 MCP server ID 列表；仅 `adapterName === 'custom'` 时显示选择区（Spec 15） |
 | `supportsVision` | boolean | — | `true` | 决定是否把图片 base64 注入 messages |
 | `avatar` | string | — | `'🤖'` | service 层默认（UI 当前不暴露） |
@@ -117,25 +117,25 @@ const BASELINE_AGENT_TOOLS = [
 
 所有 custom adapter agent 在运行时自动合并这 9 个 baseline 工具（由 `agent_runner.py:execute_simple_run` 的 `dict.fromkeys(_BASELINE_AGENT_TOOLS + configured)` 去重合并）。UI 展示为只读提示区，不可勾选。SDK adapter（claude-code / codex）不参与 baseline 合并，使用 CLI 内置工具。
 
-### UI 可选工具（5 个）
+### UI 可选工具（6 个）
 
 ```typescript
 const AVAILABLE_AGENT_TOOLS = [
   'write_artifact', 'deploy_artifact', 'deploy_workspace',
-  'read_artifact', 'web_search',
+  'read_artifact', 'web_search', 'rag_search',
 ] as const
 ```
 
-UI 只展示这 5 个 checkbox。每个勾选项展示面向用户的中文 label + 一句权限说明 + 原始工具名（来自 `AGENT_TOOL_META`）。
+UI 只展示这 6 个 checkbox。每个勾选项展示面向用户的中文 label + 一句权限说明 + 原始工具名（来自 `AGENT_TOOL_META`）。
 
 ### 角色预设（4 个）
 
-工具区提供 4 个角色预设，每个预设绑定 5 个可选工具的子集 + 系统提示词模板。systemPromptTemplate 职责收窄为 4 件事：角色定位、产出策略、行为约束、质量标准。工具用法、多步骤计划引导、子任务派发引导由第 2/3 层 prompt 负责，不在 template 中重复。
+工具区提供 4 个角色预设，每个预设绑定 6 个可选工具的子集 + 系统提示词模板。systemPromptTemplate 职责收窄为 4 件事：角色定位、产出策略、行为约束、质量标准。工具用法、多步骤计划引导、子任务派发引导由第 2/3 层 prompt 负责，不在 template 中重复。
 
 | 预设 | UI 可选工具 | systemPromptTemplate 要点 |
 |---|---|---|
 | 程序员 (coder) | `deploy_workspace` / `read_artifact` | workspace 内直接改源码、运行命令、验证结果；代码落盘不用 artifact |
-| 调研员 (researcher) | `write_artifact` / `read_artifact` / `web_search` | 联网搜索 + 交叉验证 + 结构化调研报告；标注来源时效 |
+| 调研员 (researcher) | `write_artifact` / `read_artifact` / `web_search` / `rag_search` | 联网搜索 + 知识库检索 + 交叉验证 + 结构化调研报告；标注来源时效 |
 | 协调者 (orchestrator) | `write_artifact` / `read_artifact` | 群聊项目经理：拆分 / 派发 / 聚合；自己不直接执行业务工作 |
 | 写作 (writer) | `write_artifact` / `deploy_artifact` / `read_artifact` | 技术文档 / 内容文案 / 审查报告 / 网页原型四类场景 |
 

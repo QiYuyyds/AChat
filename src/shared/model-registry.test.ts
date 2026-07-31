@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { getModelLimits, getModelPricing } from '@/shared/model-registry'
+import { EFFECTIVE_CONTEXT_CAP, getModelLimits, getModelPricing } from '@/shared/model-registry'
 
 describe('getModelPricing', () => {
   it('returns DeepSeek V4 Flash pricing for deepseek-chat', () => {
@@ -43,14 +43,35 @@ describe('getModelPricing', () => {
   })
 })
 
-describe('getModelLimits (unchanged, regression check)', () => {
-  it('still returns context window for DeepSeek models with pricing', () => {
+describe('getModelLimits', () => {
+  it('returns physical context window for DeepSeek models', () => {
     const limits = getModelLimits('deepseek', 'deepseek-chat')
     expect(limits.contextWindow).toBe(1_000_000)
   })
 
-  it('returns default reserve when outputReserve not specified', () => {
+  it('caps effective context window to 200K for DeepSeek models', () => {
     const limits = getModelLimits('deepseek', 'deepseek-chat')
-    expect(limits.outputReserve).toBe(4096)
+    expect(limits.effectiveContextWindow).toBe(EFFECTIVE_CONTEXT_CAP)
+    expect(limits.effectiveContextWindow).toBe(200_000)
+  })
+
+  it('returns 13_000 outputReserve for all DeepSeek models', () => {
+    for (const modelId of [
+      'deepseek-chat',
+      'deepseek-v4-flash',
+      'deepseek-v4',
+      'deepseek-v4-pro',
+      'deepseek-reasoner',
+      'deepseek-r1',
+    ]) {
+      const limits = getModelLimits('deepseek', modelId)
+      expect(limits.outputReserve).toBe(13_000)
+    }
+  })
+
+  it('effectiveContextWindow equals contextWindow when below cap', () => {
+    const limits = getModelLimits('openai', 'gpt-4o')
+    expect(limits.contextWindow).toBe(128_000)
+    expect(limits.effectiveContextWindow).toBe(128_000)
   })
 })
