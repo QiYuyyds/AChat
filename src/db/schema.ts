@@ -93,6 +93,11 @@ export const conversations = sqliteTable(
     /** 对话摘要（≤50字），首次对话后自动生成；NULL 表示尚未生成 */
     summary: text('summary'),
 
+    /** Fork origin: source conversation ID this one was forked from (nullable for normal conversations) */
+    parentConversationId: text('parent_conversation_id'),
+    /** Fork origin: message ID in source conversation at which the fork occurred */
+    forkPointMessageId: text('fork_point_message_id'),
+
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },

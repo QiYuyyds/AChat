@@ -506,6 +506,55 @@ async def _human_resolve_conflicts(
     )
 
 
+# ─── Smart .gitignore patterns for ensure_git_init ─────────────────────────
+_SMART_GITIGNORE_PATTERNS = """\
+node_modules/
+__pycache__/
+*.pyc
+dist/
+build/
+.next/
+out/
+target/
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+.agenthub-data/
+"""
+
+
+def _ensure_gitignore(workspace_path: str) -> None:
+    """Write a smart .gitignore when none exists, or append .agenthub-data/ if missing.
+
+    - No .gitignore: write the full smart template (node_modules, __pycache__, etc.)
+    - Existing .gitignore: only append .agenthub-data/ if not already present
+    """
+    gitignore = os.path.join(workspace_path, ".gitignore")
+    if not os.path.exists(gitignore):
+        try:
+            with open(gitignore, "w", encoding="utf-8") as fh:
+                fh.write(_SMART_GITIGNORE_PATTERNS)
+        except OSError as exc:
+            logger.warning("write .gitignore failed: %s", exc)
+        return
+
+    # Existing .gitignore — append .agenthub-data/ if not already present.
+    try:
+        with open(gitignore, encoding="utf-8") as fh:
+            existing = fh.read()
+        if ".agenthub-data/" not in existing:
+            with open(gitignore, "a", encoding="utf-8") as fh:
+                prefix = "" if existing.endswith("\n") else "\n"
+                fh.write(f"{prefix}.agenthub-data/\n")
+    except OSError as exc:
+        logger.warning("append .gitignore failed: %s", exc)
+
+
 # ─── lifecycle ──────────────────────────────────────────────────────────────
 async def ensure_git_init(workspace_path: str) -> bool:
     """Initialise *workspace_path* as a git repo with an empty commit + .gitignore.
@@ -525,13 +574,7 @@ async def ensure_git_init(workspace_path: str) -> bool:
     await _run_git(workspace_path, "config", "user.email", "achat@local")
     await _run_git(workspace_path, "config", "user.name", "AChat")
 
-    gitignore = os.path.join(workspace_path, ".gitignore")
-    if not os.path.exists(gitignore):
-        try:
-            with open(gitignore, "w", encoding="utf-8") as fh:
-                fh.write(".agenthub-data/\n")
-        except OSError as exc:
-            logger.warning("write .gitignore failed: %s", exc)
+    _ensure_gitignore(workspace_path)
 
     # Initial commit to establish a valid HEAD (required for worktree creation).
     await _run_git(workspace_path, "add", "-A")
@@ -751,3 +794,97 @@ def _publish_worktree_event(
         resolution_status=resolution_status,  # type: ignore[arg-type]
     )
     event_bus.publish(event, user_id=wt.user_id)
+
+
+# ─── Fork worktree lifecycle (persistent, no merge-back) ────────────────────
+def _fork_worktree_path(fork_conv_id: str, user_id: str | None = None) -> str:
+    """Path for a fork conversation's worktree under .agenthub-data/workspaces/users/{uid}/{conv_id}/."""
+    base = get_worktrees_root(user_id)
+    return os.path.join(base, fork_conv_id)
+
+
+async def create_fork_worktree(
+    source_workspace_path: str,
+    fork_conv_id: str,
+    user_id: str | None = None,
+) -> WorktreeRef | None:
+    """Create a persistent git worktree for a forked conversation.
+
+    Unlike DAG worktrees, this worktree persists for the lifetime of the
+    forked conversation and is NOT merged back. Branch name: ``fork/{conv_id}``.
+    """
+    wt_path = _fork_worktree_path(fork_conv_id, user_id)
+    branch_name = f"fork/{fork_conv_id}"
+
+    async with _lock_manager.lock_for(source_workspace_path):
+        if os.path.exists(wt_path):
+            shutil.rmtree(wt_path, ignore_errors=True)
+        os.makedirs(os.path.dirname(wt_path), exist_ok=True)
+
+        is_git = is_git_repo(source_workspace_path)
+        if is_git:
+            rc, _, err = await _run_git(
+                source_workspace_path, "worktree", "add", "-b", branch_name, wt_path, "HEAD"
+            )
+            if rc != 0:
+                logger.warning(
+                    "git worktree add failed for fork %s: %s", fork_conv_id, err
+                )
+                shutil.rmtree(wt_path, ignore_errors=True)
+                return None
+        else:
+            try:
+                shutil.copytree(source_workspace_path, wt_path)
+            except OSError as exc:
+                logger.warning(
+                    "copytree fork worktree failed for %s: %s", fork_conv_id, exc
+                )
+                return None
+
+    ref = WorktreeRef(
+        task_id=fork_conv_id,
+        branch_name=branch_name,
+        path=wt_path,
+        main_workspace_path=source_workspace_path,
+        is_git=is_git,
+        conversation_id=fork_conv_id,
+        user_id=user_id,
+    )
+    return ref
+
+
+async def cleanup_fork_worktree(workspace_path: str, branch_name: str) -> None:
+    """Remove a fork conversation's worktree and branch.
+
+    Called when a forked conversation is deleted. The source workspace
+    (main_workspace_path) is NOT affected.
+    """
+    if not workspace_path or not os.path.isdir(workspace_path):
+        return
+
+    # Determine the source git repo from the worktree's own .git pointer
+    # (git worktree creates a .git file pointing to the main repo).
+    source_repo = None
+    git_file = os.path.join(workspace_path, ".git")
+    if os.path.isfile(git_file):
+        try:
+            with open(git_file, encoding="utf-8") as fh:
+                content = fh.read().strip()
+                if content.startswith("gitdir:"):
+                    # Path like: /path/to/main/.git/worktrees/<wt_id>
+                    gitdir = content.split("gitdir:", 1)[1].strip()
+                    source_repo = os.path.dirname(
+                        os.path.dirname(os.path.abspath(gitdir))
+                    )
+        except OSError:
+            pass
+
+    if source_repo and is_git_repo(source_repo):
+        async with _lock_manager.lock_for(source_repo):
+            if os.path.isdir(workspace_path):
+                await _run_git(
+                    source_repo, "worktree", "remove", "--force", workspace_path
+                )
+            await _run_git(source_repo, "branch", "-D", branch_name)
+    else:
+        shutil.rmtree(workspace_path, ignore_errors=True)

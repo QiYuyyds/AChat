@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -16,6 +18,31 @@ from app.db.models import User
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "agenthub_token"
+
+# In-process user cache: user_id -> (User, expires_at)
+_user_cache: dict[str, tuple[User, float]] = {}
+_USER_CACHE_TTL = 60  # seconds
+
+# Per-user locks to prevent thundering-herd PG queries on concurrent cache miss
+_user_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_user_lock(user_id: str) -> asyncio.Lock:
+    """Get or create an asyncio.Lock for the given user_id."""
+    lock = _user_locks.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_locks[user_id] = lock
+    return lock
+
+
+def _invalidate_user_cache(user_id: str) -> None:
+    """Manually evict a user from the in-process cache.
+
+    Called by change-password / logout-all endpoints to immediately
+    invalidate stale tokens rather than waiting for TTL expiry.
+    """
+    _user_cache.pop(user_id, None)
 
 
 def _extract_token(request: Request) -> str | None:
@@ -37,6 +64,56 @@ def _extract_token(request: Request) -> str | None:
         return auth_header[7:]
 
     return None
+
+
+async def _resolve_user(db: AsyncSession, user_id: str, token_ver: int) -> User:
+    """Resolve a user from cache or PG, with per-user lock for herd safety.
+
+    Raises HTTPException(401) if the user is not found or token_version mismatches.
+    """
+    credentials_exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+        headers={"WWW-Authenticate": 'Bearer realm="agenthub"'},
+    )
+
+    # Fast path: check cache without lock
+    cached = _user_cache.get(user_id)
+    if cached is not None:
+        user, expires_at = cached
+        if time.time() < expires_at:
+            if user.token_version != token_ver:
+                _user_cache.pop(user_id, None)
+                raise credentials_exc
+            logger.debug("user_cache hit user_id=%s", user_id)
+            return user
+
+    # Slow path: acquire per-user lock to prevent thundering herd
+    lock = _get_user_lock(user_id)
+    async with lock:
+        # Re-check cache after acquiring lock (another request may have filled it)
+        cached = _user_cache.get(user_id)
+        if cached is not None:
+            user, expires_at = cached
+            if time.time() < expires_at:
+                if user.token_version != token_ver:
+                    _user_cache.pop(user_id, None)
+                    raise credentials_exc
+                logger.debug("user_cache hit user_id=%s", user_id)
+                return user
+
+        logger.debug("user_cache miss user_id=%s", user_id)
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+
+        if user is None:
+            raise credentials_exc
+
+        if user.token_version != token_ver:
+            raise credentials_exc
+
+        _user_cache[user_id] = (user, time.time() + _USER_CACHE_TTL)
+        return user
 
 
 async def get_current_user(
@@ -65,17 +142,7 @@ async def get_current_user(
     if not user_id:
         raise credentials_exception
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-
-    if user is None:
-        raise credentials_exception
-
-    # token_version mismatch → password changed or logout-all
-    if user.token_version != token_ver:
-        raise credentials_exception
-
-    return user
+    return await _resolve_user(db, user_id, token_ver)
 
 
 async def get_current_user_optional(
@@ -100,11 +167,10 @@ async def get_current_user_optional(
     if not user_id:
         return None
 
-    result = await db.execute(select(User).where(User.id == user_id))
-    user = result.scalar_one_or_none()
-    if user is None or user.token_version != token_ver:
+    try:
+        return await _resolve_user(db, user_id, token_ver)
+    except HTTPException:
         return None
-    return user
 
 
 def set_auth_cookie(response, token: str) -> None:

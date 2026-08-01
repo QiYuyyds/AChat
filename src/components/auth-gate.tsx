@@ -1,60 +1,38 @@
 'use client'
 
 import { Loader2 } from 'lucide-react'
-import { usePathname, useRouter } from 'next/navigation'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
-import { useAuthStore } from '@/stores/auth-store'
 import { useAppStore } from '@/stores/app-store'
-
-const PUBLIC_ROUTES = ['/login', '/register']
+import { hasToken, useAuthStore } from '@/stores/auth-store'
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
-  const router = useRouter()
-  const pathname = usePathname()
-  const { isLoading, isAuthenticated, initialize, user } = useAuthStore()
+  const { isLoading, initialize, user } = useAuthStore()
   const setUserId = useAppStore((s) => s.setUserId)
   const initialized = useRef(false)
+  // Gate localStorage access behind mount to avoid SSR/CSR hydration mismatch:
+  // hasToken() reads localStorage which returns false on server but may return
+  // true on client, causing the server spinner to mismatch the client workspace.
+  const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
+    setMounted(true)
     if (!initialized.current) {
       initialized.current = true
       void initialize()
     }
   }, [initialize])
 
-  const isPublicRoute = PUBLIC_ROUTES.includes(pathname)
-
   useEffect(() => {
     setUserId(user?.id ?? null)
   }, [user, setUserId])
 
-  useEffect(() => {
-    if (isLoading) return
-
-    if (!isAuthenticated && !isPublicRoute) {
-      router.replace('/login')
-    } else if (isAuthenticated && isPublicRoute) {
-      router.replace('/')
-    }
-  }, [isLoading, isAuthenticated, isPublicRoute, router])
-
-  if (isLoading) {
+  if (!mounted || (isLoading && !hasToken())) {
     return (
       <div className="flex h-dvh items-center justify-center bg-background">
         <Loader2 className="size-6 animate-spin text-muted-foreground" />
       </div>
     )
-  }
-
-  // On public routes, render regardless of auth state (redirect handled above)
-  if (isPublicRoute) {
-    return <>{children}</>
-  }
-
-  // On protected routes, only render if authenticated
-  if (!isAuthenticated) {
-    return null
   }
 
   return <>{children}</>

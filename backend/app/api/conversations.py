@@ -16,9 +16,11 @@ from app.auth.ownership import verify_conversation_ownership
 from app.db.models import User
 from app.schemas import (
     CreateConversationRequest,
+    ForkConversationRequest,
     SendMessageRequest,
 )
 from app.services import conversation_service, deploy_command_service
+from app.services.conversation_service import GitInitRequiredError
 
 router = APIRouter()
 
@@ -272,6 +274,48 @@ async def regenerate(conversation_id: str, user: User = Depends(get_current_user
             "triggerMessageId": result.trigger_message_id,
             "runIds": result.run_ids,
         }
+    )
+
+
+# ─── /conversations/{id}/fork ────────────────────────────────────────────────
+@router.post("/conversations/{conversation_id}/fork")
+async def fork_conversation(
+    conversation_id: str, req: Request, user: User = Depends(get_current_user)
+) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
+    raw = await _read_json(req)
+    try:
+        body = ForkConversationRequest.model_validate(raw)
+    except ValidationError as exc:
+        return _invalid_body(exc)
+
+    try:
+        new_conv = await conversation_service.fork_conversation(
+            source_conv_id=conversation_id,
+            fork_point_message_id=body.fork_point_message_id,
+            user_id=user.id,
+            confirm_git_init=body.confirm_git_init,
+        )
+    except GitInitRequiredError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "Git initialization required",
+                "requiresGitInit": True,
+                "sourcePath": exc.source_path,
+            },
+        )
+    except ValueError as err:
+        message = str(err)
+        if "not found" in message.lower():
+            return _err(message, 404)
+        if "streaming" in message.lower():
+            return _err(message, 400)
+        return _err(message, 500)
+
+    return JSONResponse(
+        status_code=201,
+        content={"conversation": _model(new_conv)},
     )
 
 

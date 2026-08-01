@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertTriangle, FilePenLine, FileStack, Files, Menu, MessagesSquare, MoreHorizontal, PanelRight, UploadCloud, UserRoundPlus, X } from 'lucide-react'
+import { AlertTriangle, FilePenLine, FileStack, Files, GitBranch, Menu, MessagesSquare, MoreHorizontal, PanelRight, UploadCloud, UserRoundPlus, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { AddAgentDialog } from '@/components/add-agent-dialog'
@@ -67,6 +67,8 @@ export function ChatPanel() {
   const [filesOpen, setFilesOpen] = useState(false)
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [forkBannerDismissed, setForkBannerDismissed] = useState(false)
+  const conversations = useAppStore((s) => s.conversations)
   const dragCounter = useRef(0)
   const { handleFiles, uploading } = useAttachmentUpload(conv?.id ?? '')
 
@@ -109,6 +111,11 @@ export function ChatPanel() {
       cancelled = true
     }
   }, [conv, setPendingDispatchPlansForConversation])
+
+  // Reset fork banner when conversation changes
+  useEffect(() => {
+    setForkBannerDismissed(false)
+  }, [conv?.id])
 
   const handleDragEnter = (e: React.DragEvent) => {
     if (!e.dataTransfer.types.includes('Files')) return
@@ -347,6 +354,21 @@ export function ChatPanel() {
       {activeTab === 'chat' || !openFiles.includes(activeTab) ? (
         <>
           <PinnedMessagesBar conversationId={conv.id} />
+          {conv.parentConversationId && !forkBannerDismissed && (
+            <div className="flex items-center gap-2 border-b bg-muted/40 px-4 py-1.5 text-xs text-muted-foreground">
+              <GitBranch className="size-3 shrink-0" />
+              <span className="min-w-0 truncate">
+                🔀 从 [{conversations[conv.parentConversationId]?.title ?? '原对话'}] 分支
+              </span>
+              <button
+                type="button"
+                onClick={() => setForkBannerDismissed(true)}
+                className="ml-auto shrink-0 transition hover:text-foreground"
+              >
+                <X className="size-3" />
+              </button>
+            </div>
+          )}
           <WorkspaceEnvHintCard conversationId={conv.id} />
           <MessageList conversationId={conv.id} />
           <PendingBashCommandsPanel conversationId={conv.id} />

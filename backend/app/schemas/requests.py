@@ -42,6 +42,15 @@ class UpdateConversationRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ForkConversationRequest(BaseModel):
+    """Request to fork a conversation from a specific message."""
+
+    fork_point_message_id: str = Field(alias="forkPointMessageId")
+    confirm_git_init: bool = Field(default=False, alias="confirmGitInit")
+
+    model_config = {"populate_by_name": True}
+
+
 class ConversationResponse(BaseModel):
     """Response containing a conversation."""
 
@@ -56,6 +65,8 @@ class ConversationResponse(BaseModel):
     fs_write_approval_mode: Literal["auto", "review"] = Field(alias="fsWriteApprovalMode")
     summary: str | None = None
     dispatch_mode: str = Field(default="solo", alias="dispatchMode")
+    parent_conversation_id: str | None = Field(default=None, alias="parentConversationId")
+    fork_point_message_id: str | None = Field(default=None, alias="forkPointMessageId")
     created_at: int = Field(alias="createdAt")
     updated_at: int = Field(alias="updatedAt")
     workspace_mode: Literal["sandbox", "local"] = Field(alias="workspaceMode")

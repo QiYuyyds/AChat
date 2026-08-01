@@ -21,6 +21,7 @@ interface AuthState {
   config: AuthConfig
   isLoading: boolean
   isAuthenticated: boolean
+  showLoginDialog: boolean
 
   initialize: () => Promise<void>
   login: (email: string, password: string) => Promise<void>
@@ -29,9 +30,17 @@ interface AuthState {
   logout: () => Promise<void>
   refreshToken: () => Promise<boolean>
   updateAvatar: (avatarUrl: string) => void
+  openLoginDialog: () => void
+  closeLoginDialog: () => void
 }
 
 const TOKEN_STORAGE_KEY = 'agenthub_access_token'
+const AUTH_CACHE_KEY = 'agenthub_auth_cache'
+
+const DEFAULT_CONFIG: AuthConfig = {
+  allowRegistration: false,
+  vipLoginEnabled: false,
+}
 
 function storeToken(token: string): void {
   try {
@@ -57,45 +66,118 @@ export function getAccessToken(): string | null {
   }
 }
 
+export function hasToken(): boolean {
+  return getAccessToken() !== null
+}
+
+function _storeAuthCache(user: AuthUser | null, config: AuthConfig): void {
+  try {
+    localStorage.setItem(
+      AUTH_CACHE_KEY,
+      JSON.stringify({ user, config }),
+    )
+  } catch {
+    // best-effort
+  }
+}
+
+function _loadCachedAuth(): { user: AuthUser | null; config: AuthConfig } | null {
+  try {
+    const raw = localStorage.getItem(AUTH_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as { user: AuthUser | null; config: AuthConfig }
+    return {
+      user: parsed.user ?? null,
+      config: {
+        allowRegistration: parsed.config?.allowRegistration ?? false,
+        vipLoginEnabled: parsed.config?.vipLoginEnabled ?? false,
+      },
+    }
+  } catch {
+    return null
+  }
+}
+
+function _clearAuthCache(): void {
+  try {
+    localStorage.removeItem(AUTH_CACHE_KEY)
+  } catch {
+    // best-effort
+  }
+}
+
 let refreshPromise: Promise<boolean> | null = null
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
-  config: { allowRegistration: false, vipLoginEnabled: false },
+  config: DEFAULT_CONFIG,
   isLoading: true,
   isAuthenticated: false,
+  showLoginDialog: false,
 
   initialize: async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/auth/me`, {
-        credentials: 'include',
+    // Listen for auth-expired events from authFetch 401 fallback
+    const onAuthExpired = () => {
+      set({ isAuthenticated: false, showLoginDialog: true })
+    }
+    window.addEventListener('auth-expired', onAuthExpired as EventListener)
+
+    const token = getAccessToken()
+
+    // Optimistic path: token present → render immediately, verify in background
+    if (token) {
+      const cached = _loadCachedAuth()
+      set({
+        user: cached?.user ?? null,
+        config: cached?.config ?? DEFAULT_CONFIG,
+        isAuthenticated: true,
+        isLoading: false,
       })
-      if (res.ok) {
-        const data = await res.json()
-        set({
-          user: data.user,
-          config: {
+
+      // Background verification — update user/config if they changed
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/auth/me`, {
+          credentials: 'include',
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.ok) {
+          const data = await res.json()
+          const newConfig: AuthConfig = {
             allowRegistration: data.config?.allowRegistration ?? false,
             vipLoginEnabled: data.config?.vipLoginEnabled ?? false,
-          },
-          isAuthenticated: true,
-          isLoading: false,
-        })
-      } else {
-        const configRes = await fetch(`${API_BASE_URL}/api/auth/config`, {
-          credentials: 'include',
-        })
-        const config = configRes.ok ? await configRes.json() : {}
-        set({
-          user: null,
-          config: {
-            allowRegistration: config.allowRegistration ?? false,
-            vipLoginEnabled: config.vipLoginEnabled ?? false,
-          },
-          isAuthenticated: false,
-          isLoading: false,
-        })
+          }
+          set({ user: data.user, config: newConfig })
+          _storeAuthCache(data.user, newConfig)
+        }
+        // 401 is handled by authFetch's auth-expired event for API calls;
+        // this bare fetch doesn't go through authFetch, so handle 401 here
+        if (res.status === 401) {
+          clearToken()
+          _clearAuthCache()
+          set({ user: null, isAuthenticated: false, showLoginDialog: true })
+        }
+      } catch {
+        // Network error — keep optimistic state; authFetch will handle it
+        // on the next API call if the token is truly invalid
       }
+      return
+    }
+
+    // No token — first-time user: fetch config to determine registration/VIP
+    try {
+      const configRes = await fetch(`${API_BASE_URL}/api/auth/config`, {
+        credentials: 'include',
+      })
+      const config = configRes.ok ? await configRes.json() : {}
+      set({
+        user: null,
+        config: {
+          allowRegistration: config.allowRegistration ?? false,
+          vipLoginEnabled: config.vipLoginEnabled ?? false,
+        },
+        isAuthenticated: false,
+        isLoading: false,
+      })
     } catch {
       set({ user: null, isAuthenticated: false, isLoading: false })
     }
@@ -114,13 +196,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     const data = await res.json()
     storeToken(data.tokens?.access_token ?? '')
+    const config: AuthConfig = {
+      allowRegistration: data.config?.allowRegistration ?? false,
+      vipLoginEnabled: data.config?.vipLoginEnabled ?? false,
+    }
+    _storeAuthCache(data.user, config)
     set({
       user: data.user,
-      config: {
-        allowRegistration: data.config?.allowRegistration ?? false,
-        vipLoginEnabled: data.config?.vipLoginEnabled ?? false,
-      },
+      config,
       isAuthenticated: true,
+      showLoginDialog: false,
     })
   },
 
@@ -137,13 +222,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     const data = await res.json()
     storeToken(data.tokens?.access_token ?? '')
+    const config: AuthConfig = {
+      allowRegistration: data.config?.allowRegistration ?? false,
+      vipLoginEnabled: data.config?.vipLoginEnabled ?? true,
+    }
+    _storeAuthCache(data.user, config)
     set({
       user: data.user,
-      config: {
-        allowRegistration: data.config?.allowRegistration ?? false,
-        vipLoginEnabled: data.config?.vipLoginEnabled ?? true,
-      },
+      config,
       isAuthenticated: true,
+      showLoginDialog: false,
     })
   },
 
@@ -160,12 +248,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     const data = await res.json()
     storeToken(data.tokens?.access_token ?? '')
+    const config: AuthConfig = {
+      allowRegistration: data.config?.allowRegistration ?? true,
+      vipLoginEnabled: data.config?.vipLoginEnabled ?? false,
+    }
+    _storeAuthCache(data.user, config)
     set({
       user: data.user,
-      config: {
-        allowRegistration: data.config?.allowRegistration ?? true,
-        vipLoginEnabled: data.config?.vipLoginEnabled ?? false,
-      },
+      config,
       isAuthenticated: true,
     })
   },
@@ -180,6 +270,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // best-effort
     }
     clearToken()
+    _clearAuthCache()
     set({ user: null, isAuthenticated: false })
   },
 
@@ -194,21 +285,25 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (res.ok) {
           const data = await res.json()
           storeToken(data.tokens?.access_token ?? '')
+          const config: AuthConfig = {
+            allowRegistration: data.config?.allowRegistration ?? get().config.allowRegistration,
+            vipLoginEnabled: data.config?.vipLoginEnabled ?? get().config.vipLoginEnabled,
+          }
+          _storeAuthCache(data.user, config)
           set({
             user: data.user,
-            config: {
-              allowRegistration: data.config?.allowRegistration ?? get().config.allowRegistration,
-              vipLoginEnabled: data.config?.vipLoginEnabled ?? get().config.vipLoginEnabled,
-            },
+            config,
             isAuthenticated: true,
           })
           return true
         }
         clearToken()
+        _clearAuthCache()
         set({ user: null, isAuthenticated: false })
         return false
       } catch {
         clearToken()
+        _clearAuthCache()
         set({ user: null, isAuthenticated: false })
         return false
       } finally {
@@ -221,7 +316,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   updateAvatar: (avatarUrl: string) => {
     set((state) => {
       if (!state.user) return state
-      return { user: { ...state.user, avatarUrl } }
+      const updated = { ...state.user, avatarUrl }
+      _storeAuthCache(updated, state.config)
+      return { user: updated }
     })
+  },
+
+  openLoginDialog: () => {
+    set({ showLoginDialog: true })
+  },
+
+  closeLoginDialog: () => {
+    set({ showLoginDialog: false })
   },
 }))

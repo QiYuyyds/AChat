@@ -86,6 +86,7 @@ from app.schemas.requests import (
     CreateVenvResponse,
     EditMessageRequest,
     ErrorResponse,
+    ForkConversationRequest,
     FsListEntry,
     FsListResponse,
     FsReadResponse,
@@ -177,6 +178,7 @@ __all__ = [
     "ArtifactRefPart",
     # Requests
     "CreateConversationRequest",
+    "ForkConversationRequest",
     "UpdateConversationRequest",
     "ConversationResponse",
     "SendMessageRequest",

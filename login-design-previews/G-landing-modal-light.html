@@ -1,0 +1,1529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AChat - Landing + Modal Login (Light)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #fafafa;
+    --bg-warm: #f4f4f5;
+    --bg-elev: #ffffff;
+    --bg-card: #ffffff;
+    --bg-sidebar: #f8f8f9;
+    --bg-glass: rgba(0,0,0,0.025);
+    --fg: #18181b;
+    --fg-soft: #3f3f46;
+    --muted: #71717a;
+    --muted-2: #a1a1aa;
+    --muted-3: #c4c4c8;
+    --border: rgba(0,0,0,0.06);
+    --border-bright: rgba(0,0,0,0.09);
+    --border-soft: rgba(0,0,0,0.04);
+    --accent: #0066ff;
+    --accent-deep: #004ecb;
+    --accent-soft: rgba(0,102,255,0.06);
+    --accent-ring: rgba(0,102,255,0.12);
+    --success: #16a34a;
+    --success-soft: rgba(22,163,74,0.08);
+    --warning: #d97706;
+    --purple: #7c3aed;
+    --purple-soft: rgba(124,58,237,0.07);
+    --teal: #0891b2;
+    --teal-soft: rgba(8,145,178,0.07);
+    --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.02);
+    --shadow-md: 0 4px 12px rgba(0,0,0,0.04), 0 2px 6px rgba(0,0,0,0.02);
+    --shadow-lg: 0 20px 50px -12px rgba(0,0,0,0.08), 0 8px 24px -8px rgba(0,0,0,0.03);
+    --shadow-xl: 0 40px 80px -20px rgba(0,0,0,0.1), 0 20px 40px -12px rgba(0,0,0,0.05);
+    --shadow-modal: 0 40px 80px -16px rgba(0,0,0,0.12), 0 12px 32px -8px rgba(0,0,0,0.05), 0 4px 12px -4px rgba(0,0,0,0.03);
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  body {
+    font-family: 'Manrope', -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    min-height: 100dvh;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* ===== 背景层 ===== */
+  .bg-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  .bg-base {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 120% 100% at 50% 28%, #f8f8f6 0%, #f4f4f2 100%);
+  }
+
+  /* 智能体神经 mesh - 有机连接网络 */
+  .bg-mesh {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+  }
+
+  .bg-mesh svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .neural-mesh {
+    animation: meshBreath 14s ease-in-out infinite;
+    transform-origin: 50% 40%;
+  }
+
+  /* 连接路径 - 点状脉冲流 */
+  .neural-link {
+    fill: none;
+    stroke-width: 0.8;
+    stroke-linecap: round;
+    stroke-dasharray: 1 14;
+  }
+
+  .neural-link.blue { stroke: rgba(0,102,255,0.09); animation: pulseFlow 5s linear infinite; }
+  .neural-link.purple { stroke: rgba(124,58,237,0.09); animation: pulseFlow 6s linear infinite; }
+  .neural-link.teal { stroke: rgba(8,145,178,0.09); animation: pulseFlow 7s linear infinite; }
+  .neural-link.gray { stroke: rgba(0,0,0,0.045); animation: pulseFlow 8s linear infinite; }
+
+  /* 节点 - “放电”呼吸 */
+  .neural-node {
+    animation: nodeFire 4s ease-in-out infinite;
+  }
+  .neural-node.blue {
+    fill: rgba(0,102,255,0.3);
+    filter: drop-shadow(0 0 3px rgba(0,102,255,0.2));
+  }
+  .neural-node.accent {
+    fill: rgba(0,102,255,0.4);
+    filter: drop-shadow(0 0 4px rgba(0,102,255,0.25));
+  }
+  .neural-node.purple {
+    fill: rgba(124,58,237,0.3);
+    filter: drop-shadow(0 0 3px rgba(124,58,237,0.2));
+  }
+  .neural-node.teal {
+    fill: rgba(8,145,178,0.3);
+    filter: drop-shadow(0 0 3px rgba(8,145,178,0.2));
+  }
+
+  /* ===== 导航栏 ===== */
+  .topnav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 50;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 36px;
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    background: rgba(250,250,250,0.75);
+    border-bottom: 1px solid var(--border);
+    animation: fadeDown 0.6s var(--ease-out) both;
+  }
+
+  .nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+
+  .nav-brand .mark {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--fg);
+    color: var(--bg-elev);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+
+  .nav-brand .name {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+
+  .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .nav-link {
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+    text-decoration: none;
+    border-radius: 9px;
+    transition: all 0.2s var(--ease-out);
+  }
+
+  .nav-link:hover {
+    color: var(--fg);
+    background: var(--bg-glass);
+  }
+
+  .nav-link.btn-register {
+    color: var(--fg);
+    border: 1px solid var(--border-bright);
+  }
+
+  .nav-link.btn-register:hover {
+    background: var(--bg-glass);
+    border-color: var(--muted-2);
+  }
+
+  .nav-link.btn-login {
+    background: var(--fg);
+    color: var(--bg-elev);
+    font-weight: 600;
+  }
+
+  .nav-link.btn-login:hover {
+    background: #27272a;
+  }
+
+  /* ===== 主页面 - 分屏布局 ===== */
+  .page {
+    position: relative;
+    z-index: 1;
+    min-height: 100dvh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 72px 48px 32px;
+  }
+
+  .split-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 56px;
+    max-width: 1140px;
+    width: 100%;
+    align-items: center;
+  }
+
+  /* ===== 左侧 Hero ===== */
+  .hero-side {
+    max-width: 520px;
+    animation: fadeUp 0.7s var(--ease-out) 0.1s both;
+  }
+
+  .hero-side .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 13px;
+    border-radius: 20px;
+    border: 1px solid var(--border-bright);
+    background: var(--bg-elev);
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--muted);
+    letter-spacing: 0.01em;
+    margin-bottom: 18px;
+    box-shadow: var(--shadow-xs);
+  }
+
+  .eyebrow-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--success);
+    margin-right: 7px;
+    flex-shrink: 0;
+    animation: livePulse 2.4s ease-in-out infinite;
+  }
+
+  .hero-side h1 {
+    font-size: clamp(32px, 4.2vw, 44px);
+    font-weight: 800;
+    letter-spacing: -0.038em;
+    line-height: 1.1;
+    color: var(--fg);
+  }
+
+  .hero-side h1 .accent-text {
+    color: var(--accent);
+  }
+
+  .hero-side .desc {
+    margin-top: 16px;
+    font-size: 15px;
+    color: var(--muted);
+    line-height: 1.55;
+    max-width: 460px;
+  }
+
+  .hero-cta {
+    display: flex;
+    gap: 10px;
+    margin-top: 24px;
+  }
+
+  .cta-primary {
+    height: 44px;
+    padding: 0 26px;
+    background: var(--fg);
+    color: var(--bg-elev);
+    border: none;
+    border-radius: 11px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s var(--ease-out);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .cta-primary:hover {
+    background: #27272a;
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+  }
+
+  .cta-primary:active {
+    transform: translateY(0);
+  }
+
+  .cta-secondary {
+    height: 44px;
+    padding: 0 22px;
+    background: transparent;
+    color: var(--fg);
+    border: 1px solid var(--border-bright);
+    border-radius: 11px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    transition: all 0.2s var(--ease-out);
+  }
+
+  .cta-secondary:hover {
+    background: var(--bg-glass);
+    border-color: var(--muted-2);
+  }
+
+  /* 左侧特性列表 */
+  .hero-features {
+    margin-top: 32px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .hero-feature {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .hero-feature .f-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    background: var(--bg-warm);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--fg-soft);
+  }
+
+  .hero-feature .f-icon svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .hero-feature .f-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: 2px;
+  }
+
+  .hero-feature .f-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--fg);
+    letter-spacing: -0.005em;
+  }
+
+  .hero-feature .f-desc {
+    font-size: 12.5px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+
+  /* ===== 右侧 群聊预览 ===== */
+  .chat-side {
+    position: relative;
+    z-index: 0;
+    animation: chatPreviewIn 1s var(--ease-spring) 0.3s both;
+  }
+
+  /* 光台 - 卡片底部柔和光斑 */
+  .chat-side::after {
+    content: "";
+    position: absolute;
+    bottom: -24px;
+    left: 10%;
+    right: 10%;
+    height: 40px;
+    background: radial-gradient(ellipse, rgba(0,102,255,0.08) 0%, transparent 70%);
+    filter: blur(20px);
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  .chat-preview {
+    display: grid;
+    grid-template-columns: 136px 1fr;
+    border-radius: 18px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    overflow: hidden;
+    box-shadow:
+      var(--shadow-lg),
+      0 30px 60px -20px rgba(0,102,255,0.12),
+      0 12px 24px -8px rgba(124,58,237,0.06);
+    height: 460px;
+    transform: perspective(2000px) rotateY(-2deg) rotateX(1deg);
+    transform-style: preserve-3d;
+    transition: transform 0.6s var(--ease-out);
+  }
+
+  .chat-preview:hover {
+    transform: perspective(2000px) rotateY(0deg) rotateX(0deg);
+  }
+
+  /* 浮动标签 - 突破卡片边界制造纵深 */
+  .floating-chip {
+    position: absolute;
+    z-index: 5;
+    padding: 8px 14px;
+    border-radius: 12px;
+    background: rgba(255,255,255,0.9);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border-bright);
+    box-shadow: var(--shadow-md);
+    font-size: 12px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    animation: chipFloat 6s ease-in-out infinite;
+  }
+
+  .floating-chip .chip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .floating-chip-1 {
+    top: 8%;
+    right: -40px;
+    color: var(--success);
+  }
+
+  .floating-chip-1 .chip-dot { background: var(--success); }
+
+  .floating-chip-2 {
+    bottom: 18%;
+    left: -28px;
+    color: var(--warning);
+    animation-delay: -3s;
+  }
+
+  .floating-chip-2 .chip-dot { background: var(--warning); }
+
+  /* 侧边栏 */
+  .chat-sidebar {
+    background: var(--bg-sidebar);
+    border-right: 1px solid var(--border-soft);
+    padding: 14px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: hidden;
+  }
+
+  .sidebar-header {
+    padding: 2px 8px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--muted-2);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .agent-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 9px;
+    transition: background 0.15s ease;
+  }
+
+  .agent-item:hover {
+    background: rgba(0,0,0,0.025);
+  }
+
+  .agent-avatar-wrap {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .agent-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+  }
+
+  .agent-avatar.user { background: var(--bg-warm); color: var(--fg-soft); }
+  .agent-avatar.orch { background: rgba(0,102,255,0.1); color: var(--accent); }
+  .agent-avatar.claude { background: rgba(124,58,237,0.1); color: var(--purple); }
+  .agent-avatar.codex { background: rgba(8,145,178,0.1); color: var(--teal); }
+
+  .agent-status {
+    position: absolute;
+    bottom: -1px;
+    right: -1px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 2px solid var(--bg-sidebar);
+  }
+
+  .agent-status.active { background: var(--success); }
+  .agent-status.working { background: var(--accent); }
+  .agent-status.idle { background: var(--muted-3); }
+
+  .agent-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .agent-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: -0.005em;
+  }
+
+  .agent-role {
+    font-size: 10px;
+    color: var(--muted-2);
+  }
+
+  /* 主聊天区 */
+  .chat-main {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-shrink: 0;
+  }
+
+  .chat-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .chat-title .name { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+  .chat-title .sub { font-size: 10.5px; color: var(--muted-2); }
+
+  .live-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: 20px;
+    background: var(--success-soft);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--success);
+    letter-spacing: 0.02em;
+  }
+
+  .live-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--success);
+    animation: livePulse 2.4s ease-in-out infinite;
+  }
+
+  /* 消息流 */
+  .chat-body {
+    flex: 1;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-bright) transparent;
+  }
+
+  .chat-body::-webkit-scrollbar { width: 4px; }
+  .chat-body::-webkit-scrollbar-track { background: transparent; }
+  .chat-body::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 4px; }
+
+  .msg {
+    display: flex;
+    gap: 8px;
+    animation: msgIn 0.4s var(--ease-spring) both;
+  }
+
+  .msg.user { flex-direction: row-reverse; }
+
+  .msg-avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .msg-avatar.user { background: var(--bg-warm); color: var(--fg-soft); }
+  .msg-avatar.orch { background: rgba(0,102,255,0.08); color: var(--accent); }
+  .msg-avatar.claude { background: rgba(124,58,237,0.07); color: var(--purple); }
+  .msg-avatar.codex { background: rgba(8,145,178,0.08); color: var(--teal); }
+
+  .msg-content {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    max-width: 82%;
+  }
+
+  .msg.user .msg-content { align-items: flex-end; }
+
+  .msg-bubble {
+    padding: 7px 12px;
+    border-radius: 12px;
+    font-size: 12.5px;
+    line-height: 1.45;
+  }
+
+  .msg.user .msg-bubble { background: var(--bg-warm); color: var(--fg-soft); }
+  .msg.orch .msg-bubble {
+    background: rgba(0,102,255,0.05);
+    border: 1px solid rgba(0,102,255,0.08);
+    color: var(--fg);
+  }
+  .msg.agent .msg-bubble {
+    background: var(--bg-warm);
+    color: var(--fg-soft);
+  }
+
+  /* 计划卡片 */
+  .plan-card {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-top: 3px;
+    box-shadow: var(--shadow-xs);
+  }
+
+  .plan-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-bottom: 7px;
+    margin-bottom: 7px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+
+  .plan-header svg {
+    width: 13px;
+    height: 13px;
+    color: var(--accent);
+  }
+
+  .plan-header span {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--fg);
+    letter-spacing: -0.005em;
+  }
+
+  .plan-task {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 0;
+  }
+
+  .plan-task + .plan-task { margin-top: 2px; }
+
+  .plan-task .task-check {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .plan-task.done .task-check {
+    background: var(--success);
+    color: white;
+  }
+
+  .plan-task.done .task-check svg {
+    width: 8px;
+    height: 8px;
+  }
+
+  .plan-task.progress .task-check {
+    border: 1.5px solid var(--accent);
+    background: transparent;
+  }
+
+  .plan-task .task-name {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--fg-soft);
+    flex: 1;
+  }
+
+  .plan-task.progress .task-name { color: var(--muted); }
+
+  .plan-task .task-assignee {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--muted-2);
+    padding: 1px 6px;
+    border-radius: 5px;
+    background: var(--bg-warm);
+  }
+
+  .plan-task.done .task-assignee { color: var(--success); background: var(--success-soft); }
+  .plan-task.progress .task-assignee { color: var(--accent); background: var(--accent-soft); }
+
+  /* 产物标签 */
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 1px 2px 0;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    font-size: 9.5px;
+    font-weight: 500;
+  }
+
+  .chip.artifact { background: rgba(217,119,6,0.08); color: var(--warning); }
+  .chip.status { background: var(--success-soft); color: var(--success); }
+
+  /* 打字指示器 */
+  .typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 0;
+  }
+
+  .typing-dots {
+    display: flex;
+    gap: 3px;
+    padding: 6px 10px;
+    background: var(--bg-warm);
+    border-radius: 11px;
+  }
+
+  .typing-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--muted-2);
+    animation: typingBounce 1.4s infinite ease-in-out;
+  }
+
+  .typing-dot:nth-child(2) { animation-delay: 0.15s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
+  .typing-label {
+    font-size: 10px;
+    color: var(--muted-2);
+    font-weight: 500;
+  }
+
+  /* 聊天底部 */
+  .chat-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-soft);
+    flex-shrink: 0;
+  }
+
+  .chat-input {
+    flex: 1;
+    height: 34px;
+    border-radius: 9px;
+    border: 1px solid var(--border);
+    background: var(--bg-warm);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    font-size: 12px;
+    color: var(--muted-2);
+  }
+
+  .chat-send {
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    background: var(--fg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--bg-elev);
+  }
+
+  /* ===== 登录模态框 ===== */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(24,24,27,0.28);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    opacity: 0;
+    transition: opacity 0.3s var(--ease-out);
+  }
+
+  .modal-overlay.active {
+    display: flex;
+    opacity: 1;
+  }
+
+  .modal-card {
+    width: 100%;
+    max-width: 400px;
+    margin: 0 24px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 40px 36px 36px;
+    box-shadow: var(--shadow-modal);
+    transform: scale(0.95) translateY(16px);
+    transition: transform 0.35s var(--ease-spring);
+    position: relative;
+  }
+
+  .modal-overlay.active .modal-card {
+    transform: scale(1) translateY(0);
+  }
+
+  .modal-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 24px;
+    right: 24px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+    border-radius: 24px 24px 0 0;
+  }
+
+  .modal-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    border: none;
+    background: var(--bg-warm);
+    color: var(--muted);
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s var(--ease-out);
+  }
+
+  .modal-close:hover {
+    background: var(--border-bright);
+    color: var(--fg);
+  }
+
+  .modal-logo {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 24px;
+  }
+
+  .modal-logo .mark {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--fg);
+    color: var(--bg-elev);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    box-shadow: 0 4px 12px rgba(24,24,27,0.15);
+  }
+
+  .modal-heading {
+    text-align: center;
+    margin-bottom: 28px;
+  }
+
+  .modal-heading h2 {
+    font-size: 23px;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    color: var(--fg);
+  }
+
+  .modal-heading p {
+    margin-top: 7px;
+    font-size: 13.5px;
+    color: var(--muted);
+    line-height: 1.4;
+  }
+
+  .modal-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .modal-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .modal-field label {
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--fg-soft);
+    letter-spacing: -0.005em;
+  }
+
+  .modal-field input {
+    background: var(--bg-warm);
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    padding: 12px 14px;
+    font-size: 14px;
+    font-family: inherit;
+    color: var(--fg);
+    outline: none;
+    transition: all 0.2s var(--ease-out);
+  }
+
+  .modal-field input::placeholder { color: var(--muted-2); }
+
+  .modal-field input:focus {
+    border-color: var(--accent);
+    background: var(--bg-elev);
+    box-shadow: 0 0 0 4px var(--accent-ring);
+  }
+
+  .modal-field-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .forgot-link {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--accent);
+    text-decoration: none;
+    transition: color 0.2s ease;
+  }
+
+  .forgot-link:hover { color: var(--accent-deep); }
+
+  .modal-btn {
+    margin-top: 6px;
+    height: 46px;
+    background: var(--fg);
+    color: var(--bg-elev);
+    border: none;
+    border-radius: 11px;
+    font-family: inherit;
+    font-size: 14.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s var(--ease-out);
+    box-shadow: 0 2px 8px rgba(24,24,27,0.12);
+  }
+
+  .modal-btn:hover {
+    background: #27272a;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(24,24,27,0.16);
+  }
+
+  .modal-btn:active {
+    transform: translateY(0);
+  }
+
+  .modal-divider {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin: 20px 0 14px;
+  }
+
+  .modal-divider .line { flex: 1; height: 1px; background: var(--border); }
+  .modal-divider span { font-size: 12px; color: var(--muted-2); font-weight: 500; }
+
+  .modal-link-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 46px;
+    border: 1px solid var(--border-bright);
+    border-radius: 11px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--fg);
+    text-decoration: none;
+    transition: all 0.2s var(--ease-out);
+  }
+
+  .modal-link-btn:hover {
+    background: var(--bg-warm);
+    border-color: var(--muted-2);
+  }
+
+  /* ===== 动画 ===== */
+  @keyframes nodeFire {
+    0%, 75%, 100% { opacity: 0.3; }
+    10% { opacity: 1; }
+    25% { opacity: 0.5; }
+  }
+
+  @keyframes pulseFlow {
+    to { stroke-dashoffset: -75; }
+  }
+
+  @keyframes meshBreath {
+    0%, 100% { transform: scale(1); opacity: 0.9; }
+    50% { transform: scale(1.02); opacity: 1; }
+  }
+
+  @keyframes livePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+
+  @keyframes msgIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes fadeDown {
+    from { opacity: 0; transform: translateY(-10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes typingBounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+    30% { transform: translateY(-4px); opacity: 1; }
+  }
+
+  @keyframes chatPreviewIn {
+    from { opacity: 0; transform: translateY(24px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  @keyframes chipFloat {
+    0%, 100% { transform: translateY(0) rotate(0deg); }
+    50% { transform: translateY(-8px) rotate(-0.5deg); }
+  }
+
+  /* ===== Reduced Motion ===== */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+    .neural-node, .neural-link, .neural-mesh, .live-dot, .typing-dot, .floating-chip, .eyebrow-dot { animation: none !important; }
+    .chat-preview { transform: none !important; }
+  }
+
+  /* ===== 响应式 ===== */
+  @media (max-height: 820px) {
+    .chat-preview { height: 420px; }
+    .hero-features { margin-top: 24px; padding-top: 18px; gap: 10px; }
+  }
+
+  @media (max-height: 740px) {
+    .hero-side .desc { display: none; }
+    .hero-features { display: none; }
+    .chat-preview { height: 400px; }
+  }
+
+  @media (max-width: 1024px) {
+    .split-layout { gap: 36px; }
+    .chat-preview { grid-template-columns: 120px 1fr; }
+  }
+
+  @media (max-width: 860px) {
+    .split-layout {
+      grid-template-columns: 1fr;
+      gap: 28px;
+      max-width: 560px;
+    }
+    .hero-side { max-width: 100%; text-align: center; }
+    .hero-side .eyebrow { margin-bottom: 14px; }
+    .hero-cta { justify-content: center; }
+    .hero-side .desc { margin-left: auto; margin-right: auto; }
+    .hero-features { display: none; }
+    .chat-preview { height: 400px; grid-template-columns: 110px 1fr; transform: none; }
+    .floating-chip { display: none; }
+    .chat-side::after { display: none; }
+  }
+
+  @media (max-width: 520px) {
+    .topnav { padding: 12px 18px; }
+    .nav-link { padding: 6px 10px; font-size: 12px; }
+    .page { padding: 56px 16px 16px; }
+    .hero-side h1 { font-size: 28px; }
+    .chat-preview { grid-template-columns: 1fr; height: 380px; }
+    .chat-sidebar { display: none; }
+    .modal-card { padding: 32px 24px 28px; border-radius: 20px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 背景层: 智能体神经 mesh -->
+<div class="bg-layer">
+  <div class="bg-base"></div>
+  <div class="bg-mesh">
+    <svg viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+      <g class="neural-mesh">
+        <!-- 横向连接链 (上) -->
+        <path class="neural-link blue" d="M 120 150 Q 240 130 360 95" />
+        <path class="neural-link blue" d="M 360 95 Q 500 160 640 185" style="animation-delay:-1s" />
+        <path class="neural-link blue" d="M 640 185 Q 780 135 920 120" style="animation-delay:-2s" />
+        <path class="neural-link purple" d="M 920 120 Q 1060 165 1200 175" style="animation-delay:-0.5s" />
+        <path class="neural-link teal" d="M 1200 175 Q 1290 120 1380 105" style="animation-delay:-1.5s" />
+
+        <!-- 横向连接链 (中) -->
+        <path class="neural-link purple" d="M 80 370 Q 280 330 480 320" style="animation-delay:-2.5s" />
+        <path class="neural-link blue" d="M 480 320 Q 650 380 820 395" style="animation-delay:-3s" />
+        <path class="neural-link blue" d="M 820 395 Q 990 350 1160 345" style="animation-delay:-3.5s" />
+        <path class="neural-link teal" d="M 1160 345 Q 1260 390 1360 385" style="animation-delay:-4s" />
+
+        <!-- 横向连接链 (下) -->
+        <path class="neural-link blue" d="M 60 590 Q 220 540 380 540" style="animation-delay:-1.2s" />
+        <path class="neural-link teal" d="M 380 540 Q 560 610 740 620" style="animation-delay:-2.2s" />
+        <path class="neural-link purple" d="M 740 620 Q 900 560 1060 565" style="animation-delay:-3.2s" />
+        <path class="neural-link blue" d="M 1060 565 Q 1200 640 1340 645" style="animation-delay:-0.8s" />
+
+        <!-- 跨行连接 (Agent 间通信) -->
+        <path class="neural-link gray" d="M 360 95 Q 380 220 480 320" style="animation-delay:-1.8s" />
+        <path class="neural-link gray" d="M 920 120 Q 880 280 820 395" style="animation-delay:-2.8s" />
+        <path class="neural-link gray" d="M 1200 175 Q 1170 280 1160 345" style="animation-delay:-3.8s" />
+        <path class="neural-link gray" d="M 480 320 Q 600 500 740 620" style="animation-delay:-4.2s" />
+        <path class="neural-link gray" d="M 820 395 Q 940 500 1060 565" style="animation-delay:-4.5s" />
+
+        <!-- 节点 (上排) -->
+        <circle class="neural-node blue" cx="120" cy="150" r="3" style="animation-delay:0s" />
+        <circle class="neural-node accent" cx="360" cy="95" r="4" style="animation-delay:0.5s" />
+        <circle class="neural-node blue" cx="640" cy="185" r="3" style="animation-delay:1s" />
+        <circle class="neural-node purple" cx="920" cy="120" r="3" style="animation-delay:1.5s" />
+        <circle class="neural-node teal" cx="1200" cy="175" r="3" style="animation-delay:2s" />
+        <circle class="neural-node blue" cx="1380" cy="105" r="3" style="animation-delay:2.5s" />
+
+        <!-- 节点 (中排) -->
+        <circle class="neural-node purple" cx="80" cy="370" r="3" style="animation-delay:3s" />
+        <circle class="neural-node accent" cx="480" cy="320" r="4.5" style="animation-delay:0.3s" />
+        <circle class="neural-node accent" cx="820" cy="395" r="4.5" style="animation-delay:1.8s" />
+        <circle class="neural-node teal" cx="1160" cy="345" r="3" style="animation-delay:3.2s" />
+        <circle class="neural-node blue" cx="1360" cy="385" r="3" style="animation-delay:1.2s" />
+
+        <!-- 节点 (下排) -->
+        <circle class="neural-node blue" cx="60" cy="590" r="3" style="animation-delay:2.8s" />
+        <circle class="neural-node teal" cx="380" cy="540" r="3" style="animation-delay:0.8s" />
+        <circle class="neural-node purple" cx="740" cy="620" r="3" style="animation-delay:2.2s" />
+        <circle class="neural-node accent" cx="1060" cy="565" r="4" style="animation-delay:1.5s" />
+        <circle class="neural-node blue" cx="1340" cy="645" r="3" style="animation-delay:3.5s" />
+      </g>
+    </svg>
+  </div>
+</div>
+
+<!-- 导航栏 -->
+<nav class="topnav">
+  <div class="nav-brand">
+    <div class="mark">A</div>
+    <span class="name">AChat</span>
+  </div>
+  <div class="nav-links">
+    <a href="#" class="nav-link">文档</a>
+    <a href="#" class="nav-link">GitHub</a>
+    <a href="#" class="nav-link btn-register">注册</a>
+    <a href="#" class="nav-link btn-login" onclick="openModal(event)">登录</a>
+  </div>
+</nav>
+
+<!-- 主页面 - 分屏布局 -->
+<div class="page">
+  <div class="split-layout">
+
+    <!-- 左侧 Hero -->
+    <div class="hero-side">
+      <div class="eyebrow">
+        <span class="eyebrow-dot"></span>
+        3 个 Agent 正在线 · 实时协作中
+      </div>
+      <h1>
+        多个 Agent，<span class="accent-text">一个群聊</span>
+      </h1>
+      <p class="desc">
+        Orchestrator 自动拆任务、并行调度、聚合产物。你只管发需求，Agent 在群里协作完成。
+      </p>
+      <div class="hero-cta">
+        <button class="cta-primary" onclick="openModal(event)">开始使用</button>
+        <a href="#" class="cta-secondary">了解更多</a>
+      </div>
+
+      <!-- 特性列表 -->
+      <div class="hero-features">
+        <div class="hero-feature">
+          <div class="f-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+          </div>
+          <div class="f-text">
+            <span class="f-title">多 Agent 并行调度</span>
+            <span class="f-desc">Orchestrator 自动拆分任务，分配给最合适的 Agent</span>
+          </div>
+        </div>
+        <div class="hero-feature">
+          <div class="f-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+          </div>
+          <div class="f-text">
+            <span class="f-title">产物自动聚合</span>
+            <span class="f-desc">代码、文档、演示文稿统一管理，支持内联预览</span>
+          </div>
+        </div>
+        <div class="hero-feature">
+          <div class="f-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+              <line x1="8" y1="21" x2="16" y2="21"/>
+              <line x1="12" y1="17" x2="12" y2="21"/>
+            </svg>
+          </div>
+          <div class="f-text">
+            <span class="f-title">本地优先部署</span>
+            <span class="f-desc">数据自主可控，基础设施可独立降级</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右侧 群聊预览 -->
+    <div class="chat-side">
+      <div class="floating-chip floating-chip-1">
+        <span class="chip-dot"></span>
+        Claude completed
+      </div>
+      <div class="floating-chip floating-chip-2">
+        <span class="chip-dot"></span>
+        auth/jwt.py
+      </div>
+      <div class="chat-preview">
+
+        <!-- 侧边栏 -->
+        <div class="chat-sidebar">
+          <div class="sidebar-header">成员</div>
+          <div class="agent-item">
+            <div class="agent-avatar-wrap">
+              <div class="agent-avatar user">你</div>
+              <div class="agent-status active"></div>
+            </div>
+            <div class="agent-info">
+              <span class="agent-name">你</span>
+              <span class="agent-role">发起者</span>
+            </div>
+          </div>
+          <div class="agent-item">
+            <div class="agent-avatar-wrap">
+              <div class="agent-avatar orch">O</div>
+              <div class="agent-status active"></div>
+            </div>
+            <div class="agent-info">
+              <span class="agent-name">Orchestrator</span>
+              <span class="agent-role">调度</span>
+            </div>
+          </div>
+          <div class="agent-item">
+            <div class="agent-avatar-wrap">
+              <div class="agent-avatar claude">C</div>
+              <div class="agent-status active"></div>
+            </div>
+            <div class="agent-info">
+              <span class="agent-name">Claude</span>
+              <span class="agent-role">开发</span>
+            </div>
+          </div>
+          <div class="agent-item">
+            <div class="agent-avatar-wrap">
+              <div class="agent-avatar codex">X</div>
+              <div class="agent-status working"></div>
+            </div>
+            <div class="agent-info">
+              <span class="agent-name">Codex</span>
+              <span class="agent-role">测试</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 主聊天区 -->
+        <div class="chat-main">
+          <div class="chat-header">
+            <div class="chat-header-left">
+              <div class="chat-title">
+                <span class="name">重构认证模块</span>
+                <span class="sub">4 人协作 · 并行执行中</span>
+              </div>
+            </div>
+            <div class="live-badge">
+              <span class="live-dot"></span>
+              LIVE
+            </div>
+          </div>
+
+          <div class="chat-body">
+            <!-- 用户消息 -->
+            <div class="msg user">
+              <div class="msg-avatar user">你</div>
+              <div class="msg-content">
+                <div class="msg-bubble">帮我把认证模块从 session 迁移到 JWT，并补全单元测试</div>
+              </div>
+            </div>
+
+            <!-- Orchestrator + 计划卡片 -->
+            <div class="msg orch">
+              <div class="msg-avatar orch">O</div>
+              <div class="msg-content">
+                <div class="msg-bubble">已分析需求，拆分为 2 个并行子任务</div>
+                <div class="plan-card">
+                  <div class="plan-header">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M9 11l3 3L22 4"/>
+                      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+                    </svg>
+                    <span>执行计划</span>
+                  </div>
+                  <div class="plan-task done">
+                    <span class="task-check">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                    </span>
+                    <span class="task-name">重构 JWT 认证</span>
+                    <span class="task-assignee">Claude</span>
+                  </div>
+                  <div class="plan-task progress">
+                    <span class="task-check"></span>
+                    <span class="task-name">补全单元测试</span>
+                    <span class="task-assignee">Codex</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Claude 完成消息 -->
+            <div class="msg agent">
+              <div class="msg-avatar claude">C</div>
+              <div class="msg-content">
+                <div class="msg-bubble">JWT 模块重构完成，已提交产物</div>
+                <div class="chips">
+                  <span class="chip artifact">auth/jwt.py</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Codex 打字中 -->
+            <div class="msg agent">
+              <div class="msg-avatar codex">X</div>
+              <div class="msg-content">
+                <div class="typing-indicator">
+                  <div class="typing-dots">
+                    <span class="typing-dot"></span>
+                    <span class="typing-dot"></span>
+                    <span class="typing-dot"></span>
+                  </div>
+                  <span class="typing-label">Codex 正在编写测试…</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="chat-footer">
+            <div class="chat-input">输入消息，@ 提及 Agent…</div>
+            <div class="chat-send">→</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ===== 登录模态框 ===== -->
+<div class="modal-overlay" id="loginModal" onclick="closeModalOnOverlay(event)">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal()">&times;</button>
+
+    <div class="modal-logo">
+      <div class="mark">A</div>
+    </div>
+
+    <div class="modal-heading">
+      <h2>欢迎回来</h2>
+      <p>登录以继续你的多 Agent 协作</p>
+    </div>
+
+    <form class="modal-form" onsubmit="event.preventDefault()">
+      <div class="modal-field">
+        <label>邮箱</label>
+        <input type="email" placeholder="you@example.com" />
+      </div>
+      <div class="modal-field">
+        <div class="modal-field-row">
+          <label>密码</label>
+          <a href="#" class="forgot-link">忘记密码？</a>
+        </div>
+        <input type="password" placeholder="输入密码" />
+      </div>
+      <button type="submit" class="modal-btn">登录</button>
+    </form>
+
+    <div class="modal-divider">
+      <div class="line"></div>
+      <span>还没有账户</span>
+      <div class="line"></div>
+    </div>
+
+    <a href="#" class="modal-link-btn">注册新账户</a>
+  </div>
+</div>
+
+<script>
+  function openModal(e) {
+    if (e) e.preventDefault();
+    document.getElementById('loginModal').classList.add('active');
+  }
+
+  function closeModal() {
+    document.getElementById('loginModal').classList.remove('active');
+  }
+
+  function closeModalOnOverlay(e) {
+    if (e.target === e.currentTarget) closeModal();
+  }
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeModal();
+  });
+</script>
+
+</body>
+</html>

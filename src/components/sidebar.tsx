@@ -1,6 +1,6 @@
 'use client'
 
-import { Archive, ArchiveRestore, Cable, ChevronDown, ChevronRight, Database, Ellipsis, Gauge, Library, LogOut, MessagesSquare, Moon, Package, Pencil, Pin, PinOff, Plus, Search, Settings as SettingsIcon, Sun, Trash2, User, Users, Wrench, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Cable, ChevronDown, ChevronRight, Database, Ellipsis, Gauge, GitBranch, Library, LogOut, MessagesSquare, Moon, Package, Pencil, Pin, PinOff, Plus, Search, Settings as SettingsIcon, Sun, Trash2, User, Users, Wrench, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
 
@@ -51,7 +51,7 @@ import { cn } from '@/lib/utils'
 import type { AgentRow, ConversationRow } from '@/db/schema'
 import { useAppStore, useConversationList, useUnreadCount } from '@/stores/app-store'
 import type { SidebarMode } from '@/stores/app-store'
-import { useAuthStore } from '@/stores/auth-store'
+import { hasToken, useAuthStore } from '@/stores/auth-store'
 
 export function Sidebar() {
   const mobileOpen = useAppStore((s) => s.mobileSidebarOpen)
@@ -64,6 +64,8 @@ export function Sidebar() {
   const agents = useAppStore((s) => s.agents)
   const removeConversation = useAppStore((s) => s.removeConversation)
   const upsertConversation = useAppStore((s) => s.upsertConversation)
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const openLoginDialog = useAuthStore((s) => s.openLoginDialog)
 
   const mode = useAppStore((s) => s.sidebarMode)
   const setMode = useAppStore((s) => s.setSidebarMode)
@@ -137,6 +139,7 @@ export function Sidebar() {
   }
 
   useEffect(() => {
+    if (!hasToken()) return
     fetchConversations().then(setConversations).catch(console.error)
     fetchAgents().then(setAgents).catch(console.error)
   }, [setConversations, setAgents])
@@ -172,6 +175,10 @@ export function Sidebar() {
   }
 
   const pickMode = (m: SidebarMode) => {
+    if (!isAuthenticated) {
+      openLoginDialog()
+      return
+    }
     if (mobileOpen && mode === m) {
       setMobileSidebarOpen(false)
       return
@@ -198,12 +205,13 @@ export function Sidebar() {
         )}
       >
         {/* AChat 标题 */}
-        <div className="flex shrink-0 items-center border-b px-4 py-3">
+        <div className="flex shrink-0 items-center gap-2 border-b px-4 py-3">
+          <img src="/favicon.ico" alt="AChat logo" className="size-6 shrink-0 rounded-sm" />
           <h1 className="truncate text-base font-semibold">AChat</h1>
         </div>
 
         {/* 导航按钮 */}
-        <nav className="flex shrink-0 flex-col gap-0 px-1 py-1">
+        <nav className={cn('flex shrink-0 flex-col gap-0 px-1 py-1', !isAuthenticated && 'opacity-50 pointer-events-none')}>
           <RailButton mode={mode} self="conversations" onClick={() => pickMode('conversations')} icon={<MessagesSquare className="size-5" />} label="对话" />
           <RailButton mode={mode} self="artifacts" onClick={() => pickMode('artifacts')} icon={<Package className="size-5" />} label="产物库" />
           <RailButton mode={mode} self="agents" onClick={() => pickMode('agents')} icon={<Users className="size-5" />} label="Agents" />
@@ -227,7 +235,7 @@ export function Sidebar() {
                   size="icon-sm"
                   variant="outline"
                   className="shrink-0"
-                  onClick={() => setDialogOpen(true)}
+                  onClick={() => isAuthenticated ? setDialogOpen(true) : openLoginDialog()}
                   title="新建对话"
                   aria-label="新建对话"
                 >
@@ -398,6 +406,8 @@ export function Sidebar() {
 }
 
 function BottomActionBar() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const openLoginDialog = useAuthStore((s) => s.openLoginDialog)
   const user = useAuthStore((s) => s.user)
   const logout = useAuthStore((s) => s.logout)
   const { resolvedTheme, setTheme } = useTheme()
@@ -412,10 +422,11 @@ function BottomActionBar() {
   }, [])
 
   useEffect(() => {
+    if (!isAuthenticated) return
     fetchProfile()
       .then((p) => setProfileName(p.name))
       .catch(() => setProfileName(null))
-  }, [])
+  }, [isAuthenticated])
 
   const avatarSrc = user?.avatarUrl
     ? `${API_BASE_URL}${user.avatarUrl}`
@@ -423,6 +434,28 @@ function BottomActionBar() {
 
   const isDark = resolvedTheme === 'dark'
 
+  // Unauthenticated: show login button
+  if (!isAuthenticated) {
+    return (
+      <div className="flex shrink-0 items-center gap-2 border-t px-3 py-3">
+        <button
+          type="button"
+          onClick={openLoginDialog}
+          className="flex w-full items-center gap-2 text-left transition-colors hover:text-foreground"
+          title="登录"
+          aria-label="登录"
+        >
+          <User className="size-5 shrink-0 text-muted-foreground" />
+          <span className="min-w-0 flex-1 truncate text-xs font-medium text-muted-foreground">
+            登录
+          </span>
+          <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+        </button>
+      </div>
+    )
+  }
+
+  // Authenticated: show avatar + settings dropdown
   return (
     <>
       <div className="flex shrink-0 items-center gap-2 border-t px-3 py-3">
@@ -541,6 +574,9 @@ function ConversationItem({
           ) : (
             <div className="flex items-center gap-1">
               {isPinned && <Pin className="size-3 shrink-0 fill-warning text-warning" />}
+              {conversation.parentConversationId && (
+                <GitBranch className="size-3 shrink-0 text-muted-foreground" />
+              )}
               <div className="truncate text-sm font-medium">{conversation.title}</div>
             </div>
           )}

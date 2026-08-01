@@ -278,7 +278,7 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 
 **认证流程**：
 - 密码用 bcrypt（cost factor 12）哈希存储
-- JWT 分 access token（1h）和 refresh token（7d），存在 HttpOnly cookie 中
+- JWT 分 access token 和 refresh token，均 10 年有效期（实际不过期），存在 HttpOnly cookie 中；session 在后端重启（JWT secret 重新生成）或手动 logout 时失效
 - `token_version` 字段用于全局吊销（改密码 / logout-all 时 +1）
 - SSE 连接通过 cookie（同源）或 `?token=` query param（跨域 dev）认证
 

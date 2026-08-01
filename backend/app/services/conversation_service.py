@@ -39,6 +39,7 @@ from app.db.engine import get_local_db
 from app.db.models import (
     Agent,
     AgentRun,
+    Artifact,
     Attachment,
     ContextSummary,
     Conversation,
@@ -57,9 +58,19 @@ from app.services.deploy_command_service import DeployCommandResult
 from app.services.event_bus import event_bus
 from app.services.pending_dispatch_plans import pending_dispatch_plans
 from app.services.runner_registry import get_agent_runner
-from app.services.worktree_service import ensure_git_init
+from app.services.worktree_service import (
+    cleanup_fork_worktree,
+    create_fork_worktree,
+    ensure_git_init,
+    is_git_repo,
+)
 from app.utils.clock import now_ms
-from app.utils.ids import new_conversation_id, new_message_id, new_workspace_id
+from app.utils.ids import (
+    new_artifact_id,
+    new_conversation_id,
+    new_message_id,
+    new_workspace_id,
+)
 from app.utils.platform import IS_WINDOWS
 from app.utils.workspace_utils import is_path_safe
 
@@ -154,6 +165,194 @@ class ClearConversationHistoryResult:
     deleted_summary_count: int
 
 
+# ─── Fork ────────────────────────────────────────────────────────────────────
+class GitInitRequiredError(Exception):
+    """Raised when fork source is not a git repo and user hasn't confirmed git init."""
+
+    def __init__(self, source_path: str) -> None:
+        self.source_path = source_path
+        super().__init__(f"Git initialization required for: {source_path}")
+
+
+@dataclass
+class ForkConversationResult:
+    conversation: ConversationResponse
+
+
+async def fork_conversation(
+    *,
+    source_conv_id: str,
+    fork_point_message_id: str,
+    user_id: str | None = None,
+    confirm_git_init: bool = False,
+) -> ConversationResponse:
+    """Create a new conversation by deep-copying messages from source up to fork point.
+
+    The new conversation gets its own workspace (git worktree of source) and
+    its own copies of messages and artifacts. The source conversation is not modified.
+    """
+    now = now_ms()
+    new_conv_id = new_conversation_id()
+
+    # ── Load source conversation + workspace ──────────────────────────
+    async with get_local_db() as db:
+        source_conv = await _require_conversation(db, source_conv_id)
+
+        # Validate fork point message
+        fork_msg = await _get_message(db, source_conv_id, fork_point_message_id)
+        if fork_msg is None:
+            raise ValueError("Message not found")
+        if fork_msg.status == "streaming":
+            raise ValueError("Cannot fork from a message that is still streaming")
+
+        # Load source workspace
+        ws_result = await db.execute(
+            select(Workspace).where(Workspace.conversation_id == source_conv_id)
+        )
+        source_ws = ws_result.scalar_one_or_none()
+        if source_ws is None:
+            raise ValueError(f"Source workspace not found for conversation: {source_conv_id}")
+
+    # Determine source workspace effective cwd
+    source_cwd = source_ws.root_path
+    if source_ws.mode == "local" and source_ws.bound_path:
+        source_cwd = source_ws.bound_path
+
+    # ── Git init check ────────────────────────────────────────────────
+    if not is_git_repo(source_cwd):
+        if not confirm_git_init:
+            raise GitInitRequiredError(source_cwd)
+        try:
+            await ensure_git_init(source_cwd)
+        except Exception as exc:
+            raise ValueError(f"Failed to initialize git in source directory: {exc}") from exc
+
+    # ── Create fork worktree ──────────────────────────────────────────
+    worktree_ref = await create_fork_worktree(source_cwd, new_conv_id, user_id)
+    if worktree_ref is None:
+        raise ValueError("Failed to create fork workspace")
+    worktree_path = worktree_ref.path
+
+    # ── Title deduplication ───────────────────────────────────────────
+    base_title = f"{source_conv.title} (分支)"
+    resolved_title = await _deduplicate_fork_title(base_title, source_conv_id, user_id)
+
+    try:
+        # ── Create new Conversation + Workspace ───────────────────────
+        async with get_local_db() as db:
+            new_conv = Conversation(
+                id=new_conv_id,
+                user_id=user_id,
+                title=resolved_title,
+                mode=source_conv.mode,
+                archived=False,
+                pinned_at=None,
+                fs_write_approval_mode=source_conv.fs_write_approval_mode,
+                rag_enabled=False,
+                dispatch_mode=source_conv.dispatch_mode,
+                parent_conversation_id=source_conv_id,
+                fork_point_message_id=fork_point_message_id,
+                created_at=now,
+                updated_at=now,
+            )
+            new_conv.agent_ids_list = source_conv.agent_ids_list
+            new_conv.pinned_message_ids_list = []
+            new_conv.bookmarked_message_ids_list = []
+
+            new_ws = Workspace(
+                id=new_workspace_id(),
+                conversation_id=new_conv_id,
+                root_path=worktree_path,
+                mode="sandbox",
+                bound_path=None,
+                created_at=now,
+            )
+            db.add(new_conv)
+            db.add(new_ws)
+
+            # ── Deep-copy messages ─────────────────────────────────────
+            msg_result = await db.execute(
+                select(Message).where(
+                    Message.conversation_id == source_conv_id,
+                    Message.hidden == False,  # noqa: E712
+                    Message.created_at <= fork_msg.created_at,
+                ).order_by(Message.created_at)
+            )
+            source_messages = msg_result.scalars().all()
+
+            for src_msg in source_messages:
+                new_msg = Message(
+                    id=new_message_id(),
+                    conversation_id=new_conv_id,
+                    role=src_msg.role,
+                    agent_id=src_msg.agent_id,
+                    parts=src_msg.parts,
+                    status=src_msg.status,
+                    parent_message_id=src_msg.parent_message_id,
+                    mentioned_agent_ids=src_msg.mentioned_agent_ids,
+                    run_id=src_msg.run_id,
+                    usage=src_msg.usage,
+                    hidden=src_msg.hidden,
+                    created_at=src_msg.created_at,
+                )
+                db.add(new_msg)
+
+            # ── Deep-copy artifacts ────────────────────────────────────
+            art_result = await db.execute(
+                select(Artifact).where(
+                    Artifact.conversation_id == source_conv_id,
+                    Artifact.created_at <= fork_msg.created_at,
+                ).order_by(Artifact.created_at)
+            )
+            source_artifacts = art_result.scalars().all()
+
+            for src_art in source_artifacts:
+                new_art = Artifact(
+                    id=new_artifact_id(),
+                    conversation_id=new_conv_id,
+                    type=src_art.type,
+                    title=src_art.title,
+                    content=src_art.content,
+                    version=1,
+                    parent_artifact_id=None,
+                    created_by_agent_id=src_art.created_by_agent_id,
+                    created_at=src_art.created_at,
+                )
+                db.add(new_art)
+
+            mode, bound_path, env_pref = await _ws_meta(db, new_conv_id)
+            response = _conversation_response(new_conv, mode, bound_path, env_pref)
+
+    except Exception:
+        # Rollback: clean up worktree and any partial DB rows
+        await cleanup_fork_worktree(worktree_path, f"fork/{new_conv_id}")
+        raise
+
+    return response
+
+
+async def _deduplicate_fork_title(
+    base_title: str,
+    source_conv_id: str,
+    user_id: str | None,
+) -> str:
+    """Find a unique fork title: base, base 2, base 3, ..."""
+    async with get_local_db() as db:
+        result = await db.execute(
+            select(Conversation.title).where(
+                Conversation.parent_conversation_id == source_conv_id,
+            )
+        )
+        existing = {row[0] for row in result.all()}
+
+    if base_title not in existing:
+        return base_title
+    n = 2
+    while f"{base_title[:-1]} {n})" in existing:
+        n += 1
+    return f"{base_title[:-1]} {n})"
+
+
 # ─── Conversion helpers ─────────────────────────────────────────────────────
 def _conversation_response(
     conv: Conversation,
@@ -173,6 +372,8 @@ def _conversation_response(
         fs_write_approval_mode=conv.fs_write_approval_mode,
         summary=conv.summary,
         dispatch_mode=getattr(conv, "dispatch_mode", None) or "solo",
+        parent_conversation_id=getattr(conv, "parent_conversation_id", None),
+        fork_point_message_id=getattr(conv, "fork_point_message_id", None),
         created_at=conv.created_at,
         updated_at=conv.updated_at,
         workspace_mode=ws_mode,
@@ -483,6 +684,8 @@ async def create_conversation(
         fs_write_approval_mode="review",
         rag_enabled=False,
         summary=None,
+        parent_conversation_id=None,
+        fork_point_message_id=None,
         created_at=now,
         updated_at=now,
         workspace_mode=workspace_mode,
@@ -688,6 +891,8 @@ async def _delete_conversation_unlocked(conversation_id: str) -> None:
         if conv.mode == "guide":
             raise ValueError("Guide conversations cannot be deleted")
 
+        is_fork = getattr(conv, "parent_conversation_id", None) is not None
+
         ws_result = await db.execute(
             select(Workspace.root_path).where(
                 Workspace.conversation_id == conversation_id
@@ -701,14 +906,25 @@ async def _delete_conversation_unlocked(conversation_id: str) -> None:
         await db.execute(delete(Conversation).where(Conversation.id == conversation_id))
 
     if root_path:
-        try:
-            await _rmdir_with_retry(root_path)
-        except OSError as err:  # noqa: BLE001 - workspace removal is best-effort
-            logger.warning(
-                "[delete_conversation] failed to remove workspace dir %s: %s",
-                root_path,
-                err,
-            )
+        if is_fork:
+            # Forked conversations have a git worktree that needs branch cleanup.
+            try:
+                await cleanup_fork_worktree(root_path, f"fork/{conversation_id}")
+            except Exception as err:  # noqa: BLE001 - worktree cleanup is best-effort
+                logger.warning(
+                    "[delete_conversation] cleanup_fork_worktree failed for %s: %s",
+                    root_path,
+                    err,
+                )
+        else:
+            try:
+                await _rmdir_with_retry(root_path)
+            except OSError as err:  # noqa: BLE001 - workspace removal is best-effort
+                logger.warning(
+                    "[delete_conversation] failed to remove workspace dir %s: %s",
+                    root_path,
+                    err,
+                )
 
     clear_claude_code_session(conversation_id)
     clear_codex_session(conversation_id)

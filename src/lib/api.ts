@@ -109,6 +109,10 @@ export async function authFetch(
         },
       }
       res = await fetch(input, retryInit)
+    } else {
+      // Token refresh failed — dispatch auth-expired event so AuthStore
+      // opens the LoginDialog. Avoids importing AuthStore (circular dep).
+      window.dispatchEvent(new CustomEvent('auth-expired'))
     }
   }
 
@@ -239,6 +243,37 @@ export async function createConversation(body: CreateConversationBody): Promise<
       body: JSON.stringify(body),
     }),
   )
+  return conversation
+}
+
+/** Error returned when fork source needs git init confirmation */
+export interface ForkGitInitError {
+  requiresGitInit: true
+  sourcePath: string
+}
+
+export async function forkConversation(
+  conversationId: string,
+  forkPointMessageId: string,
+  confirmGitInit?: boolean,
+): Promise<ConversationWithMeta> {
+  const res = await authFetch(
+    `${API_BASE_URL}/api/conversations/${conversationId}/fork`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ forkPointMessageId, confirmGitInit: confirmGitInit ?? false }),
+    },
+  )
+  if (res.status === 409) {
+    const body = await res.json()
+    throw { requiresGitInit: true, sourcePath: body.sourcePath ?? '' } as ForkGitInitError
+  }
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`HTTP ${res.status}: ${body || res.statusText}`)
+  }
+  const { conversation } = await res.json<{ conversation: ConversationWithMeta }>()
   return conversation
 }
 

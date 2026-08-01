@@ -283,6 +283,14 @@ class Conversation(Base):
         String, name="dispatch_mode", nullable=False, default="solo"
     )
 
+    # Fork origin tracking (nullable — normal conversations have both null).
+    parent_conversation_id: Mapped[str | None] = mapped_column(
+        String, name="parent_conversation_id", nullable=True
+    )
+    fork_point_message_id: Mapped[str | None] = mapped_column(
+        String, name="fork_point_message_id", nullable=True
+    )
+
     created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
 

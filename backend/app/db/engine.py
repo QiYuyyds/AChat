@@ -48,7 +48,7 @@ async def init_db() -> None:
         remote_kwargs.update(
             pool_size=10,
             max_overflow=20,
-            pool_pre_ping=False,
+            pool_pre_ping=True,
             pool_recycle=3600,
         )
     _remote_engine = create_async_engine(settings.database_url, **remote_kwargs)
@@ -170,6 +170,9 @@ _PG_MIGRATION_STATEMENTS = [
     "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS env_preference VARCHAR",
     # ─── Guide agent marker ───
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS is_guide BOOLEAN NOT NULL DEFAULT FALSE",
+    # ─── Conversation fork columns ───
+    "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS parent_conversation_id TEXT",
+    "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS fork_point_message_id TEXT",
 ]
 
 # ── SQLite-compatible migration statements ────────────────────────────
@@ -194,6 +197,8 @@ _SQLITE_MIGRATION_STATEMENTS = [
     "ALTER TABLE conversations ADD COLUMN user_id VARCHAR",
     "ALTER TABLE conversations ADD COLUMN summary TEXT",
     "ALTER TABLE conversations ADD COLUMN dispatch_mode VARCHAR NOT NULL DEFAULT 'solo'",
+    "ALTER TABLE conversations ADD COLUMN parent_conversation_id VARCHAR",
+    "ALTER TABLE conversations ADD COLUMN fork_point_message_id VARCHAR",
     # ─── messages: multi-user + hidden ───
     "ALTER TABLE messages ADD COLUMN hidden BOOLEAN NOT NULL DEFAULT 0",
     # ─── workspaces: env_preference ───
