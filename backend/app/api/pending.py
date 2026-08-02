@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from app.auth.dependencies import get_current_user
 from app.auth.ownership import verify_conversation_ownership
 from app.db.models import User
-from app.schemas.dispatch import AskUserAnswer
+from app.schemas.dispatch import AskUserAnswer, DispatchPlanItem
 from app.services import conversation_service
 from app.services.pending_bash_commands import pending_bash_commands
 from app.services.pending_dispatch_plans import pending_dispatch_plans
@@ -229,7 +229,18 @@ async def resolve_pending_dispatch_plan(
             return JSONResponse({"error": result.get("error")}, status_code=400)
         return JSONResponse({"ok": True})
 
-    result = pending_dispatch_plans.approve(plan_id)
+    # Parse optional modified plan when approving
+    modified_plan: list[DispatchPlanItem] | None = None
+    if action == "approve" and raw.get("plan") is not None:
+        raw_plan = raw.get("plan")
+        if not isinstance(raw_plan, list):
+            return _invalid_body()
+        try:
+            modified_plan = [DispatchPlanItem.model_validate(item) for item in raw_plan]
+        except Exception:
+            return _invalid_body()
+
+    result = pending_dispatch_plans.approve(plan_id, modified_plan=modified_plan)
     if not result.ok:
         return JSONResponse({"error": result.error}, status_code=400)
     return JSONResponse({"ok": True})

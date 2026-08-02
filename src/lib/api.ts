@@ -12,6 +12,7 @@ import type {
   CreateDocumentRequest,
   DeployCandidateRecord,
   DeployStatusRecord,
+  DispatchPlanItem,
   DocumentRow,
   IngestResult,
   PendingBashCommand,
@@ -574,6 +575,20 @@ export async function approvePendingDispatchPlan(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'approve' }),
+    }),
+  )
+}
+
+export async function approvePendingDispatchPlanWithPlan(
+  conversationId: string,
+  planId: string,
+  plan: DispatchPlanItem[],
+): Promise<void> {
+  await json<{ ok: true }>(
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/pending-dispatch-plans/${planId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'approve', plan }),
     }),
   )
 }

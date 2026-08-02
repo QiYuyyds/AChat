@@ -101,6 +101,9 @@ interface AppState {
   // ─── 右侧文件浏览器面板（与 artifact preview 互斥）─
   fileExplorerOpen: boolean
 
+  // ─── DAG 节点选中的任务 id（右侧 TaskDetailPanel 开合控制）─
+  selectedTaskId: string | null
+
   // ─── 中间 tab 容器：每个会话的「对话 + 打开的文件 tab」状态 ─
   // tab id: 'chat' 表示主对话；其它是相对 workspace 的文件路径
   openFilesByConv: Record<string, string[]>      // 文件路径列表（按打开顺序）
@@ -204,6 +207,7 @@ interface AppState {
   removeArtifacts(artifactIds: string[]): void
 
   setFileExplorerOpen(open: boolean): void
+  setSelectedTaskId(id: string | null): void
   openFile(conversationId: string, path: string): void
   closeFile(conversationId: string, path: string): void
   setActiveTab(conversationId: string, tab: string): void
@@ -278,6 +282,7 @@ export const useAppStore = create<AppState>()(
     activeConversationId: null,
     previewArtifactId: null,
     fileExplorerOpen: true,
+    selectedTaskId: null,
     openFilesByConv: {},
     activeTabByConv: {},
     replyTargetByConv: {},
@@ -445,6 +450,11 @@ export const useAppStore = create<AppState>()(
       set((s) => {
         s.fileExplorerOpen = open
         if (open) s.previewArtifactId = null // 与 artifact preview 互斥
+      }),
+
+    setSelectedTaskId: (id) =>
+      set((s) => {
+        s.selectedTaskId = id
       }),
 
     openFile: (conversationId, filePath) =>
@@ -831,6 +841,17 @@ export const useAppStore = create<AppState>()(
               s.messageIdsByConv[event.conversationId].push(event.messageId)
             }
             attachDispatchToMessageForRun(s.dispatchesByRunId, event.runId, event.messageId)
+            // DAG dispatch 子任务消息隐藏：如果 runId 属于某个 approved dispatch 的 childRunIds，标记 hidden=true
+            if (event.runId) {
+              for (const dispatch of Object.values(s.dispatchesByRunId)) {
+                if (dispatch.reviewStatus !== 'approved') continue
+                const childRunIds = Object.values(dispatch.childRunIds)
+                if (childRunIds.includes(event.runId)) {
+                  s.messages[event.messageId].hidden = true
+                  break
+                }
+              }
+            }
             // 未读 +1 不在 message.start 触发：claude-code-adapter 整个 run 只发一次 message.start
             // 且发生时用户通常仍在该会话（被 activeConversationId === conv 抑制），导致后续切走再也不计未读。
             // 改在 message.end 触发，两个 adapter 都能可靠 +1，且每个 msg 仅 +1 一次。
@@ -884,6 +905,10 @@ export const useAppStore = create<AppState>()(
               part.startedAt = event.timestamp
             }
             msg.parts[event.partIndex] = part
+            // ask_user 工具调用翻转 hidden → visible，确保用户可在聊天流中交互
+            if (msg.hidden && part.type === 'tool_use' && part.toolName === 'ask_user') {
+              msg.hidden = false
+            }
             return
           }
 
@@ -1656,6 +1681,45 @@ export function useTurnMetrics(
     if (!runId) return undefined
     return s.runsByConv[conversationId]?.[runId]?.turnMetrics
   })
+}
+
+/** 根据 selectedTaskId 查出对应子任务的 childRunId、消息列表、turnMetrics、dispatch 引用。 */
+export function useSelectedTaskDetail(
+  conversationId: string,
+): {
+  task: DispatchPlanItem | null
+  childRunId: string | null
+  messages: MessageRow[]
+  turnMetrics: Record<number, TurnMetricData> | undefined
+  dispatch: DispatchState | null
+} {
+  const selectedTaskId = useAppStore((s) => s.selectedTaskId)
+  const dispatchesByRunId = useAppStore((s) => s.dispatchesByRunId)
+  const runs = useAppStore((s) => s.runsByConv[conversationId] ?? null)
+  const messageIds = useAppStore((s) => s.messageIdsByConv[conversationId] ?? null)
+  const messages = useAppStore((s) => s.messages)
+
+  return useMemo(() => {
+    if (!selectedTaskId) {
+      return { task: null, childRunId: null, messages: [], turnMetrics: undefined, dispatch: null }
+    }
+    if (!runs) {
+      return { task: null, childRunId: null, messages: [], turnMetrics: undefined, dispatch: null }
+    }
+    for (const runId in runs) {
+      const dispatch = dispatchesByRunId[runId]
+      if (!dispatch) continue
+      const childRunId = dispatch.childRunIds[selectedTaskId]
+      if (!childRunId) continue
+      const task = dispatch.plan.find((t) => t.id === selectedTaskId) ?? null
+      const childMessages = (messageIds ?? [])
+        .map((id) => messages[id])
+        .filter((m) => m && m.runId === childRunId)
+      const turnMetrics = runs[childRunId]?.turnMetrics
+      return { task, childRunId, messages: childMessages, turnMetrics, dispatch }
+    }
+    return { task: null, childRunId: null, messages: [], turnMetrics: undefined, dispatch: null }
+  }, [selectedTaskId, dispatchesByRunId, runs, messageIds, messages])
 }
 
 /** 该会话是否有待审批的 Orchestrator 计划。返回 { planId, runId } 供对话式修改路由。 */

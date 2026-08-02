@@ -512,3 +512,136 @@
     animation: none;
   }
 }
+
+/* ===== DAG Graph — 任务执行态动态特效 ===== */
+
+/* Running 节点：脉冲辉光呼吸 */
+@keyframes dag-node-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 0 0 color-mix(in oklch, var(--warning) 0%, transparent),
+      0 0 8px 1px color-mix(in oklch, var(--warning) 8%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px color-mix(in oklch, var(--warning) 12%, transparent),
+      0 0 16px 3px color-mix(in oklch, var(--warning) 15%, transparent);
+  }
+}
+.dag-node-running { animation: dag-node-glow 2s ease-in-out infinite; }
+
+/* Running 节点：光带扫过 shimmer */
+@keyframes dag-shimmer-sweep {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+.dag-shimmer-track {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.dag-shimmer-track::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 35%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklch, var(--warning) 10%, transparent),
+    transparent
+  );
+  animation: dag-shimmer-sweep 2.8s ease-in-out infinite;
+}
+
+/* Running 节点底部进度条流动 */
+@keyframes dag-progress-flow {
+  0%   { background-position: 0% 0%; }
+  100% { background-position: 200% 0%; }
+}
+.dag-progress-bar {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--warning) 20%, transparent),
+    color-mix(in oklch, var(--warning) 60%, transparent),
+    color-mix(in oklch, var(--warning) 20%, transparent)
+  );
+  background-size: 200% 100%;
+  animation: dag-progress-flow 1.5s linear infinite;
+}
+
+/* Complete 节点：短暂绿色辉光 */
+@keyframes dag-node-complete-flash {
+  0%   { box-shadow: 0 0 0 0 color-mix(in oklch, var(--success) 35%, transparent); }
+  60%  { box-shadow: 0 0 0 6px color-mix(in oklch, var(--success) 8%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--success) 0%, transparent); }
+}
+.dag-node-complete { animation: dag-node-complete-flash 1.2s ease-out; }
+
+/* Edge 流动虚线 */
+@keyframes dag-edge-flow {
+  to { stroke-dashoffset: -24; }
+}
+.dag-edge-flowing {
+  stroke-dasharray: 8 6;
+  animation: dag-edge-flow 0.8s linear infinite;
+}
+
+/* Pending 节点轻微呼吸 */
+@keyframes dag-node-pending {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.88; }
+}
+.dag-node-pending { animation: dag-node-pending 3s ease-in-out infinite; }
+
+/* 审批待办气泡 */
+@keyframes dag-approval-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--warning) 40%, transparent);
+  }
+  50% {
+    transform: scale(1.08);
+    box-shadow: 0 0 0 6px color-mix(in oklch, var(--warning) 0%, transparent);
+  }
+}
+.dag-approval-badge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  border-radius: 9999px;
+  background: color-mix(in oklch, var(--warning) 88%, white);
+  color: white;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: 0 2px 6px -1px color-mix(in oklch, var(--warning) 50%, transparent);
+  animation: dag-approval-pulse 1.5s ease-in-out infinite;
+  pointer-events: none;
+}
+.dag-approval-count {
+  font-size: 9px;
+  min-width: 10px;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dag-node-running,
+  .dag-shimmer-track::before,
+  .dag-progress-bar,
+  .dag-node-complete,
+  .dag-edge-flowing,
+  .dag-node-pending,
+  .dag-approval-badge {
+    animation: none;
+  }
+}

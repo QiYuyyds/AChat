@@ -21,7 +21,7 @@ export function MessageList({ conversationId }: { conversationId: string }) {
   const childRunWaveMap = useChildRunWaveMap(conversationId)
   const runningRuns = useTopLevelRunningRuns(conversationId)
   const segments = useMemo(
-    () => buildSegments(messages, childRunWaveMap),
+    () => buildSegments(messages.filter((m) => !m.hidden), childRunWaveMap),
     [messages, childRunWaveMap],
   )
   const setMessagesForConversation = useAppStore((s) => s.setMessagesForConversation)

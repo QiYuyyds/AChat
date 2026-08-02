@@ -163,6 +163,13 @@ async def execute_dag(
     results: dict[str, NodeResult] = {}
     failed_ids: set[str] = set()
 
+    logger.info(
+        "[dag_executor] starting DAG execution parent_run=%s waves=%d total_tasks=%d",
+        ctx.parent_run_id,
+        len(waves),
+        len(tasks),
+    )
+
     with start_span(
         "dag.execute",
         **{
@@ -388,6 +395,13 @@ async def _execute_node(
             dispatch_visibility=ctx.dispatch_visibility,
             user_id=ctx.user_id,
             workspace_path=workspace_path_arg,
+        )
+
+        logger.info(
+            "[dag_executor] node=%s completed status=%s run=%s",
+            task.id,
+            result.status,
+            child_run_id_holder[0] if child_run_id_holder else "none",
         )
 
         # Merge worktree back and cleanup (only if worktree was created)

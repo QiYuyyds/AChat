@@ -11,6 +11,7 @@ import { MemoryMainPanel } from '@/components/memory-library'
 import { MessageHighlightLayer } from '@/components/message-highlight-layer'
 import { SelectionPopover } from '@/components/selection-popover'
 import { Sidebar } from '@/components/sidebar'
+import { TaskDetailPanel } from '@/components/task-detail-panel'
 import { WelcomeScreen } from '@/components/welcome-screen'
 import { WorkspaceBackground } from '@/components/workspace-background'
 import { useAppStore } from '@/stores/app-store'
@@ -37,6 +38,7 @@ export default function Home() {
       )}
       <FileExplorerPanel />
       <ArtifactPreviewPanel />
+      <TaskDetailPanel />
       <SelectionPopover />
       <MessageHighlightLayer />
       {isAuthenticated && <GuideFloatingPanel />}
