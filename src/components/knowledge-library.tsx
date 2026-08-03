@@ -52,7 +52,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 // ─── Obsidian Vault Section ──────────────────────────────────
 
-function ObsidianVaultSection({ onSelectFile }: { onSelectFile: (id: string) => void }) {
+export function ObsidianVaultSection({ onSelectFile }: { onSelectFile: (id: string) => void }) {
   const [tree, setTree] = useState<DocumentTree | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -251,7 +251,7 @@ function ObsidianVaultSection({ onSelectFile }: { onSelectFile: (id: string) => 
 
 // ─── My Documents Section (flat list) ────────────────────────
 
-function MyDocumentsSection() {
+export function MyDocumentsSection() {
   const [documents, setDocuments] = useState<DocumentRow[]>([])
   const [loading, setLoading] = useState(true)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)

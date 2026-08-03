@@ -154,7 +154,7 @@ async def test_handler_agent_not_in_conversation(db):
         session.add(Agent(
             id="ag_alice", name="Alice", avatar="A", description="helper",
             system_prompt="alice", adapter_name="mock",
-            is_builtin=False, is_orchestrator=False, supports_vision=False,
+            is_builtin=False, is_orchestrator=False,
             created_at=now,
         ))
 
@@ -204,13 +204,13 @@ async def test_handler_valid_plan_returns_results(db, monkeypatch):
         session.add(Agent(
             id="ag_alice", name="Alice", avatar="A", description="helper",
             system_prompt="alice", adapter_name="mock",
-            is_builtin=False, is_orchestrator=False, supports_vision=False,
+            is_builtin=False, is_orchestrator=False,
             created_at=now,
         ))
         session.add(Agent(
             id="ag_orch", name="Orch", avatar="O", description="orch",
             system_prompt="orch", adapter_name="mock",
-            is_builtin=True, is_orchestrator=True, supports_vision=False,
+            is_builtin=True, is_orchestrator=True,
             created_at=now,
         ))
         session.add(AgentRun(
@@ -352,13 +352,13 @@ async def test_plan_approval_approve_executes(db, monkeypatch):
         session.add(Agent(
             id="ag_alice", name="Alice", avatar="A", description="helper",
             system_prompt="alice", adapter_name="mock",
-            is_builtin=False, is_orchestrator=False, supports_vision=False,
+            is_builtin=False, is_orchestrator=False,
             created_at=now,
         ))
         session.add(Agent(
             id="ag_orch", name="Orch", avatar="O", description="orch",
             system_prompt="orch", adapter_name="mock",
-            is_builtin=True, is_orchestrator=True, supports_vision=False,
+            is_builtin=True, is_orchestrator=True,
             created_at=now,
         ))
         session.add(AgentRun(

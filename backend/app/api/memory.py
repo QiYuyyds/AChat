@@ -18,8 +18,9 @@ from sqlalchemy import String, cast, select
 
 from app.auth.dependencies import get_current_user
 from app.auth.ownership import verify_conversation_ownership
-from app.db.engine import get_db
+from app.db.engine import get_local_db, get_remote_db
 from app.db.models import ContextSummary, Conversation, LongTermMemory, User, UserPreference
+from app.memory.consolidation import Item
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,27 @@ def _ltm_row_to_dict(row: LongTermMemory) -> dict[str, Any]:
         "agentId": row.agent_id or "",
         "createdAt": row.created_at,
         "lastAccessed": row.last_accessed,
+        "summary": getattr(row, "summary", "") or "",
+        "keywords": list(row.keywords) if getattr(row, "keywords", None) else [],
+        "contentScope": getattr(row, "content_scope", "") or "",
+    }
+
+
+def _ltm_item_to_dict(item: Item) -> dict[str, Any]:
+    """Serialize an in-memory Item to a dict, excluding embedding."""
+    return {
+        "id": item.id,
+        "content": item.content,
+        "importance": item.importance,
+        "category": item.category or "",
+        "tags": list(item.tags) if item.tags else [],
+        "scope": item.scope,
+        "agentId": item.agent_id or "",
+        "createdAt": item.created_at,
+        "lastAccessed": item.last_accessed,
+        "summary": item.summary,
+        "keywords": list(item.keywords) if item.keywords else [],
+        "contentScope": item.content_scope,
     }
 
 
@@ -58,6 +80,9 @@ class LTMUpdateRequest(BaseModel):
     importance: float | None = None
     category: str | None = None
     tags: list[str] | None = None
+    summary: str | None = None
+    keywords: list[str] | None = None
+    contentScope: str | None = None
 
 
 class PreferenceUpdateRequest(BaseModel):
@@ -79,11 +104,32 @@ async def list_ltm_memories(
     """List long-term memory entries with optional filtering and pagination.
 
     Embeddings are never included in the response.
+    Tries the in-memory LongTerm cache first (via MemoryService);
+    falls back to direct PG query when MemoryService is not initialized.
     """
     page = max(1, page)
     size = max(1, min(100, size))
 
-    async with get_db() as session:
+    # Try MemoryService (in-memory cache) first
+    svc = _get_memory_service()
+    if svc is not None and svc.ltm is not None:
+        items, total = await svc.ltm.list_items(
+            agent_id=agent_id,
+            category=category,
+            tag=tag,
+            page=page,
+            size=size,
+            user_id=user.id,
+        )
+        return JSONResponse({
+            "items": [_ltm_item_to_dict(it) for it in items],
+            "total": total,
+            "page": page,
+            "size": size,
+        })
+
+    # Fallback: direct PG query (MemoryService not initialized)
+    async with get_remote_db() as session:
         stmt = select(LongTermMemory).where(
             LongTermMemory.user_id == user.id
         ).order_by(LongTermMemory.id)
@@ -140,7 +186,8 @@ async def update_ltm_memory(
         )
 
     old_content: str | None = None
-    async with get_db() as session:
+    old_summary: str | None = None
+    async with get_remote_db() as session:
         row = await session.get(LongTermMemory, memory_id)
         if row is None or row.user_id != user.id:
             return JSONResponse(
@@ -148,6 +195,7 @@ async def update_ltm_memory(
                 content={"error": f"Memory {memory_id} not found"},
             )
         old_content = row.content
+        old_summary = getattr(row, "summary", "") or ""
 
     updated = await svc.ltm.update_item(
         memory_id=memory_id,
@@ -155,6 +203,9 @@ async def update_ltm_memory(
         importance=body.importance,
         category=body.category,
         tags=body.tags,
+        summary=body.summary,
+        keywords=body.keywords,
+        content_scope=body.contentScope,
     )
     if updated is None:
         return JSONResponse(
@@ -162,8 +213,12 @@ async def update_ltm_memory(
             content={"error": f"Memory {memory_id} not found in memory"},
         )
 
-    # content changed → async recompute embedding
-    if body.content is not None and body.content != old_content:
+    # summary changed → recompute embedding using new summary (embedding is
+    # summary-based per the dual-path retrieval policy); otherwise content
+    # changed → recompute using content (backward compat).
+    if body.summary is not None and body.summary != old_summary:
+        asyncio.create_task(_recompute_embedding(svc, memory_id, body.summary))
+    elif body.content is not None and body.content != old_content:
         asyncio.create_task(_recompute_embedding(svc, memory_id, body.content))
 
     # sync graph memory node content (if Neo4j available)
@@ -207,7 +262,7 @@ async def list_preferences(
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
     """List all user preference key-value pairs."""
-    async with get_db() as session:
+    async with get_remote_db() as session:
         stmt = select(UserPreference).where(UserPreference.user_id == user.id)
         result = await session.execute(stmt)
         rows = result.scalars().all()
@@ -229,7 +284,7 @@ async def update_preference(
 ) -> JSONResponse:
     """Edit a preference value (upsert)."""
     import time as _time
-    async with get_db() as session:
+    async with get_remote_db() as session:
         existing = await session.get(
             UserPreference, {"user_id": user.id, "key": key}
         )
@@ -243,6 +298,8 @@ async def update_preference(
                 value=body.value,
                 updated_at=_time.time(),
             ))
+    from app.infra.cache_helpers import invalidate_user_preferences_cache
+    await invalidate_user_preferences_cache(user.id)
     return JSONResponse({"ok": True})
 
 
@@ -253,7 +310,7 @@ async def delete_preference(
 ) -> JSONResponse:
     """Delete a preference key."""
     from sqlalchemy import delete as sa_delete
-    async with get_db() as session:
+    async with get_remote_db() as session:
         result = await session.execute(
             sa_delete(UserPreference).where(
                 (UserPreference.user_id == user.id)
@@ -268,6 +325,8 @@ async def delete_preference(
             content={"error": f"Preference '{key}' not found"},
         )
 
+    from app.infra.cache_helpers import invalidate_user_preferences_cache
+    await invalidate_user_preferences_cache(user.id)
     return JSONResponse({"ok": True})
 
 
@@ -297,7 +356,7 @@ async def get_session_memory(
 
     # Fetch conversation title for display
     title = ""
-    async with get_db() as session:
+    async with get_local_db() as session:
         conv = await session.get(Conversation, conversation_id)
         if conv:
             title = conv.title
@@ -315,7 +374,7 @@ async def list_session_memories(
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
     """List all conversations that have session memory summaries."""
-    async with get_db() as session:
+    async with get_local_db() as session:
         stmt = (
             select(
                 ContextSummary.conversation_id,
@@ -338,7 +397,7 @@ async def list_session_memories(
     conv_ids = [r[0] for r in rows]
     titles: dict[str, str] = {}
     if conv_ids:
-        async with get_db() as session:
+        async with get_local_db() as session:
             stmt = select(Conversation.id, Conversation.title).where(
                 Conversation.id.in_(conv_ids)
             )

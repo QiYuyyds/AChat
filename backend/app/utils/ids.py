@@ -109,3 +109,13 @@ def new_mcp_server_id() -> str:
 def new_pending_mcp_call_id() -> str:
     """Generate pending MCP call ID: pmc_<nanoid>"""
     return _gen_id("pmc_")
+
+
+def new_pending_merge_conflict_id() -> str:
+    """Generate pending merge conflict ID: pmc_<nanoid>"""
+    return _gen_id("pmcf_")
+
+
+def new_model_profile_id() -> str:
+    """Generate model profile ID: mp_<nanoid>"""
+    return _gen_id("mp_")

@@ -86,10 +86,10 @@ async def _pre_tool_use(ctx: HookContext) -> HookResult | None:
     elif ctx.tool_name == "fs_write":
         from sqlalchemy import select
 
-        from app.db.engine import get_db
+        from app.db.engine import get_local_db
         from app.db.models import Conversation
 
-        async with get_db() as db:
+        async with get_local_db() as db:
             result = await db.execute(
                 select(Conversation).where(Conversation.id == ctx.conversation_id)
             )

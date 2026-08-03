@@ -303,15 +303,9 @@ class ProfileSource(ContextSource):
             prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
         elif user_id != "default_user":
             try:
-                from sqlalchemy import select
+                from app.infra.cache_helpers import get_user_preferences_cached
 
-                from app.db.engine import get_db
-                from app.db.models import UserPreference as _UP
-
-                async with get_db() as session:
-                    stmt = select(_UP).where(_UP.user_id == user_id)
-                    rows = (await session.execute(stmt)).scalars().all()
-                    prefs = {r.key: r.value for r in rows}
+                prefs = await get_user_preferences_cached(user_id)
             except Exception as e:
                 logger.warning(
                     "ProfileSource DB query failed for user %s: %s", user_id, e

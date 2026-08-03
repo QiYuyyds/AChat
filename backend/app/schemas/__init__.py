@@ -26,6 +26,12 @@ from app.schemas.dispatch import (
     PendingQuestion,
     PendingWrite,
 )
+from app.schemas.model_profile import (
+    CreateModelProfileRequest,
+    ModelProfileOut,
+    ModelProfileTestResult,
+    UpdateModelProfileRequest,
+)
 from app.schemas.document import (
     DeleteDocumentResponse,
     DocumentDetailResponse,
@@ -86,6 +92,7 @@ from app.schemas.requests import (
     CreateVenvResponse,
     EditMessageRequest,
     ErrorResponse,
+    ForkConversationRequest,
     FsListEntry,
     FsListResponse,
     FsReadResponse,
@@ -106,7 +113,6 @@ from app.schemas.requests import (
     SearchResponse,
     SendMessageRequest,
     SendMessageResponse,
-    SetRagModeRequest,
     SettingsResponse,
     UpdateAgentRequest,
     UpdateConversationRequest,
@@ -178,12 +184,12 @@ __all__ = [
     "ArtifactRefPart",
     # Requests
     "CreateConversationRequest",
+    "ForkConversationRequest",
     "UpdateConversationRequest",
     "ConversationResponse",
     "SendMessageRequest",
     "EditMessageRequest",
     "SendMessageResponse",
-    "SetRagModeRequest",
     "CreateAgentRequest",
     "UpdateAgentRequest",
     "AgentResponse",
@@ -227,6 +233,11 @@ __all__ = [
     "VipLoginRequest",
     "RefreshRequest",
     "ChangePasswordRequest",
+    # Model Profiles
+    "CreateModelProfileRequest",
+    "UpdateModelProfileRequest",
+    "ModelProfileOut",
+    "ModelProfileTestResult",
     # Documents
     "WriteDocumentRequest",
     "IngestVersionRequest",

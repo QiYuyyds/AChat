@@ -173,7 +173,7 @@ async def test_task_dispatch_clone_self_no_agentId(db, monkeypatch):
         session.add(Agent(
             id="ag_solo", name="Solo", avatar="S", description="solo agent",
             system_prompt="solo", adapter_name="mock",
-            is_builtin=False, is_orchestrator=False, supports_vision=False,
+            is_builtin=False, is_orchestrator=False,
             created_at=now,
         ))
         session.add(AgentRun(
@@ -240,7 +240,7 @@ async def test_task_dispatch_clone_self_with_own_agentId(db, monkeypatch):
         session.add(Agent(
             id="ag_solo", name="Solo", avatar="S", description="solo agent",
             system_prompt="solo", adapter_name="mock",
-            is_builtin=False, is_orchestrator=False, supports_vision=False,
+            is_builtin=False, is_orchestrator=False,
             created_at=now,
         ))
         session.add(AgentRun(
@@ -307,13 +307,13 @@ async def test_task_dispatch_group_member_visible(db, monkeypatch):
         session.add(Agent(
             id="ag_orch", name="Orch", avatar="O", description="orchestrator",
             system_prompt="orch", adapter_name="mock",
-            is_builtin=True, is_orchestrator=True, supports_vision=False,
+            is_builtin=True, is_orchestrator=True,
             created_at=now,
         ))
         session.add(Agent(
             id="ag_front", name="Front", avatar="F", description="frontend",
             system_prompt="front", adapter_name="mock",
-            is_builtin=False, is_orchestrator=False, supports_vision=False,
+            is_builtin=False, is_orchestrator=False,
             created_at=now,
         ))
         session.add(AgentRun(
@@ -426,7 +426,7 @@ async def test_dispatch_plan_clone_self_no_agentId(db, monkeypatch):
         session.add(Agent(
             id="ag_solo", name="Solo", avatar="S", description="solo",
             system_prompt="solo", adapter_name="mock",
-            is_builtin=False, is_orchestrator=False, supports_vision=False,
+            is_builtin=False, is_orchestrator=False,
             created_at=now,
         ))
         session.add(AgentRun(
@@ -513,7 +513,7 @@ async def test_build_history_excludes_hidden_messages(db):
         session.add(Agent(
             id="ag_1", name="Agent", avatar="A", description="test",
             system_prompt="test", adapter_name="mock",
-            is_builtin=False, is_orchestrator=False, supports_vision=False,
+            is_builtin=False, is_orchestrator=False,
             created_at=now,
         ))
         # Visible user message

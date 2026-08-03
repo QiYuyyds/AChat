@@ -3,13 +3,13 @@
 import {
   Archive,
   AlertTriangle,
-  BookOpen,
+  ArrowUp,
   Bot,
   CircleHelp,
+  Cpu,
   Download,
-  Paperclip,
+  Plus,
   Rocket,
-  Send,
   Settings,
   Shield,
   Sparkles,
@@ -37,6 +37,7 @@ import {
 } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import type { AgentRow, ConversationWithMeta, MessageRow } from '@/db/schema'
+import type { ModelProfile } from '@/shared/types'
 import {
   abortRun,
   clearConversationHistory as clearConversationHistoryAPI,
@@ -46,9 +47,7 @@ import {
   reviseDispatchPlan,
   sendMessage as sendMessageAPI,
   setFsWriteApprovalMode,
-  setRagMode,
   type SkillSummary,
-  uploadAttachment as uploadAttachmentAPI,
 } from '@/lib/api'
 import { getToolDisplayName } from '@/lib/tool-display'
 import { emitUiCommand } from '@/lib/ui-command-events'
@@ -111,8 +110,8 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
   {
     id: 'agents',
     command: '/agents',
-    label: 'Agents',
-    description: '打开 Agent 管理',
+    label: '联系人',
+    description: '打开联系人管理',
     icon: Bot,
   },
 ]
@@ -241,7 +240,15 @@ function safeFileName(value: string): string {
   return (cleaned || 'conversation').slice(0, 80)
 }
 
-export function MessageInput({ conversationId }: { conversationId: string }) {
+export function MessageInput({
+  conversationId,
+  handleFiles,
+  uploading,
+}: {
+  conversationId: string
+  handleFiles: (files: FileList | File[] | null) => Promise<void>
+  uploading: Array<{ tempId: string; name: string }>
+}) {
   const [content, setContent] = useState('')
   const [mentionedIds, setMentionedIds] = useState<string[]>([])
   const [selectedSkills, setSelectedSkills] = useState<string[]>([])
@@ -256,7 +263,6 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
   const [exporting, setExporting] = useState(false)
   const [sending, setSending] = useState(false)
   const [aborting, setAborting] = useState(false)
-  const [uploading, setUploading] = useState<Array<{ tempId: string; name: string }>>([])
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -268,13 +274,15 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
   const conversation = useAppStore((s) => s.conversations[conversationId])
   const upsertConversation = useAppStore((s) => s.upsertConversation)
   const agents = useAppStore((s) => s.agents)
+  const modelProfiles = useAppStore((s) => s.modelProfiles)
+  const selectedProfileId = useAppStore((s) => s.selectedProfileIdByConv[conversationId] ?? null)
+  const setSelectedProfileId = useAppStore((s) => s.setSelectedProfileId)
   const runningRuns = useTopLevelRunningRuns(conversationId)
   const isRunning = runningRuns.length > 0
   // 计划待审批时，输入框改作「对计划提修改意见」用——即使 orchestrator run 仍在 running 也放开
   const planReview = usePendingPlanReviewForConversation(conversationId)
-  const composerLocked = isRunning && !planReview
+  const composerLocked = planReview !== null
   const pending = usePendingAttachments(conversationId)
-  const addPendingAttachment = useAppStore((s) => s.addPendingAttachment)
   const removePendingAttachment = useAppStore((s) => s.removePendingAttachment)
   const clearPendingAttachments = useAppStore((s) => s.clearPendingAttachments)
   const [modeBusy, setModeBusy] = useState(false)
@@ -292,6 +300,15 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
   }, [pendingQuote])
 
   const isGroup = conversation?.mode === 'group'
+
+  // Check if conversation has any SDK (Custom) agents → show model selector
+  const hasSdkAgent = useMemo(() => {
+    if (!conversation) return false
+    return conversation.agentIds.some((id) => agents[id]?.adapterName === 'custom')
+  }, [conversation, agents])
+
+  const profileList = useMemo(() => Object.values(modelProfiles).sort((a, b) => b.createdAt - a.createdAt), [modelProfiles])
+  const selectedProfile = selectedProfileId ? modelProfiles[selectedProfileId] : null
 
   // 可被 @ 的 agent：群聊里所有成员，包含 Orchestrator
   // (@ Orchestrator 是合法语义：用户明确请求 Orchestrator 接手)
@@ -320,7 +337,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
               pending.length > 0 || uploading.length > 0
                 ? '请先移除附件'
                 : isRunning
-                  ? '请先中止正在运行的 Agent'
+                  ? '请先中止或等待排队中的 Agent'
                   : command.description,
             disabled: sending || isRunning || pending.length > 0 || uploading.length > 0,
           }
@@ -421,7 +438,6 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
     setSelectedSkills([])
     setTrigger(null)
     setSlashTrigger(null)
-    setUploading([])
   }, [conversationId])
 
   const mentionedAgents = mentionedIds.map((id) => agents[id]).filter(Boolean)
@@ -533,25 +549,19 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
     removePendingAttachment(conversationId, id)
   }
 
-  const handleFileSelect = async (files: FileList | null) => {
-    if (!files || files.length === 0) return
-    const list = Array.from(files)
-    const placeholders = list.map((f) => ({ tempId: nanoid(), name: f.name }))
-    setUploading((prev) => [...prev, ...placeholders])
-
-    await Promise.all(
-      list.map(async (file, i) => {
-        const tempId = placeholders[i].tempId
-        try {
-          const att = await uploadAttachmentAPI(conversationId, file)
-          addPendingAttachment(conversationId, att)
-        } catch (err) {
-          console.error('[MessageInput] upload failed', err)
-        } finally {
-          setUploading((prev) => prev.filter((p) => p.tempId !== tempId))
-        }
-      }),
-    )
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const imageFiles: File[] = []
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) imageFiles.push(file)
+      }
+    }
+    if (imageFiles.length === 0) return
+    e.preventDefault()
+    void handleFiles(imageFiles)
   }
 
   const clearSlashCommandInput = () => {
@@ -766,7 +776,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
       return
     }
 
-    if ((!text && !hasAttachments && selectedSkills.length === 0) || sending || isRunning) return
+    if ((!text && !hasAttachments && selectedSkills.length === 0) || sending) return
 
     const exactSlashCommand = allSlashCommands.find((command) => command.command === text)
     if (exactSlashCommand) {
@@ -812,6 +822,7 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
         mentionedAgentIds: mentionedIds,
         parentMessageId: parentId,
         attachmentIds,
+        modelProfileId: hasSdkAgent ? (selectedProfileId ?? undefined) : undefined,
       })
       replaceLocalMessageId(tempId, result.messageId)
       upsertReturnedMessages(result.messages)
@@ -847,24 +858,9 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
     }
   }
 
-  // Task 6.2: RAG toggle logic
-  const ragEnabled = conversation?.ragEnabled ?? false
-  const toggleRagMode = async () => {
-    if (modeBusy || !conversation) return
-    const nextEnabled = !ragEnabled
-    setModeBusy(true)
-    try {
-      const updated = await setRagMode(conversationId, nextEnabled)
-      upsertConversation(updated)
-    } catch (err) {
-      console.error('[MessageInput] toggle RAG mode failed', err)
-    } finally {
-      setModeBusy(false)
-    }
-  }
 
   return (
-    <div className="relative shrink-0 border-t bg-background p-3">
+    <div className="relative shrink-0 -translate-y-2 bg-background px-2 pb-3 pt-0.5">
       {/* 引用预览 */}
       {replyMessage && (
         <div className="mb-2">
@@ -1056,7 +1052,38 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
         </div>
       )}
 
-      <div className="flex items-center gap-2">
+      {/* Gemini 风格胶囊输入条 */}
+      <div className="mx-auto flex max-w-3xl items-center rounded-full border bg-muted/50 px-0.5 shadow-[var(--shadow-sm)] transition-shadow focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10">
+        {/* 左侧附件按钮 */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            void handleFiles(e.target.files)
+            e.target.value = '' // 允许同名文件再次选择
+          }}
+        />
+        <button
+          type="button"
+          className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+          onClick={() => fileInputRef.current?.click()}
+          title="附件 / 图片"
+        >
+          <Plus className="size-3.5" />
+        </button>
+
+        {/* 模型选择器：仅 SDK 会话显示 */}
+        {hasSdkAgent && (
+          <ModelSelector
+            profiles={profileList}
+            selectedProfile={selectedProfile}
+            onSelect={(id) => setSelectedProfileId(conversationId, id)}
+          />
+        )}
+
+        {/* 输入框 */}
         <Textarea
           ref={textareaRef}
           data-testid="composer-input"
@@ -1064,111 +1091,151 @@ export function MessageInput({ conversationId }: { conversationId: string }) {
           onChange={handleChange}
           onSelect={handleSelect}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           placeholder={
             planReview
-              ? '对计划提修改意见，或点上方执行/拒绝…'
-              : isRunning
-                ? '当前有 Agent 正在响应…'
-                : isGroup
-                  ? '输入消息，@ 指定 Agent，Enter 发送，Shift+Enter 换行'
-                  : '输入消息，Enter 发送，Shift+Enter 换行'
+              ? '对计划提修改意见…'
+              : isGroup
+                ? '@ 指定 Agent，Enter 发送'
+                : '输入消息…'
           }
-          className="min-h-[44px] max-h-40 resize-none"
+          className="min-h-[40px] max-h-28 resize-none border-0 bg-transparent px-2 py-1.5 text-[13px] leading-6 shadow-none focus-visible:ring-0 focus-visible:border-transparent placeholder:text-muted-foreground/60"
           disabled={composerLocked}
         />
 
-        {/* 文件上传 */}
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            void handleFileSelect(e.target.files)
-            e.target.value = '' // 允许同名文件再次选择
-          }}
-        />
-        {/* 辅助按钮组（紧贴）—— 让 Paperclip + 审批模式视觉成一组，与右侧主操作按钮 send 区分 */}
-        <div className="flex items-center gap-0.5 rounded-lg bg-muted/40 p-1">
-          <Button
+        {/* 右侧操作区 */}
+        <div className="flex shrink-0 items-center">
+          {/* 审批模式开关 */}
+          <button
             type="button"
-            size="icon"
-            variant="ghost"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isRunning}
-            title="附件 / 图片"
-          >
-            <Paperclip className="size-4" />
-          </Button>
-          {/* fs_write 审批模式开关：绿色 = Review（默认安全），红色 = Auto（直写） */}
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
+            className="flex size-6 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
             onClick={() => void toggleApprovalMode()}
             disabled={modeBusy}
             title={
               approvalMode === 'review'
-                ? 'Review 模式 · Agent 写入需审批（点击切到 Auto，直接生效 ⚠）'
-                : '⚠ Auto 模式 · Agent 写入直接生效（点击切回 Review）'
+                ? 'Review 模式 · 点击切到 Auto'
+                : '⚠ Auto 模式 · 点击切回 Review'
             }
-            className={cn(
-              approvalMode === 'review'
-                ? 'bg-success/10 text-success hover:bg-success/20 hover:text-success'
-                : 'bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive',
-            )}
           >
             {approvalMode === 'review' ? (
-              <Shield className="size-4" />
+              <Shield className={cn('size-3', modeBusy && 'opacity-50')} />
             ) : (
-              <Zap className="size-4" />
+              <Zap className={cn('size-3 text-destructive', modeBusy && 'opacity-50')} />
             )}
-          </Button>
-          {/* Task 6.1: RAG 知识库检索开关 */}
-          <Button
+          </button>
+
+          {isRunning && !composerLocked && (
+            <button
+              type="button"
+              onClick={() => void abortAll()}
+              disabled={aborting}
+              className="flex size-6 items-center justify-center rounded-full text-destructive hover:bg-destructive/10 transition-colors"
+              title="中止全部"
+              data-testid="composer-abort"
+            >
+              <Square className="size-3 fill-current" />
+            </button>
+          )}
+
+          {/* 发送按钮 */}
+          <button
             type="button"
-            size="icon"
-            variant="ghost"
-            onClick={() => void toggleRagMode()}
-            disabled={modeBusy}
-            title={
-              ragEnabled
-                ? 'RAG 已启用 · Agent 可检索与管理知识库'
-                : '启用 RAG 知识库检索'
-            }
-            className={cn(
-              ragEnabled
-                ? 'bg-primary/10 text-primary hover:bg-primary/20 hover:text-primary'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            <BookOpen className="size-4" />
-          </Button>
-        </div>
-        {composerLocked ? (
-          <Button
-            onClick={() => void abortAll()}
-            disabled={aborting}
-            size="icon"
-            variant="destructive"
-            title="中止全部"
-            data-testid="composer-abort"
-          >
-            <Square className="size-4 fill-current" />
-          </Button>
-        ) : (
-          <Button
             onClick={() => void submit()}
-            disabled={(!content.trim() && pending.length === 0) || sending}
-            size="icon"
+            disabled={composerLocked || (!content.trim() && pending.length === 0) || sending}
+            className="flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm transition-all enabled:hover:bg-primary/90 enabled:active:scale-95 disabled:opacity-30 disabled:pointer-events-none"
             title="发送 (Enter)"
             data-testid="composer-send"
-            className="enabled:shadow-[var(--shadow-sm)] transition-shadow"
           >
-            <Send className="size-4" />
-          </Button>
-        )}
+            <ArrowUp className="size-4" />
+          </button>
+        </div>
       </div>
+    </div>
+  )
+}
+
+function ModelSelector({
+  profiles,
+  selectedProfile,
+  onSelect,
+}: {
+  profiles: ModelProfile[]
+  selectedProfile: ModelProfile | null
+  onSelect: (id: string | null) => void
+}) {
+  const setSidebarMode = useAppStore((s) => s.setSidebarMode)
+  const [open, setOpen] = useState(false)
+
+  // Zero profiles: show prompt to configure
+  if (profiles.length === 0) {
+    return (
+      <button
+        type="button"
+        onClick={() => setSidebarMode('resources')}
+        className="flex shrink-0 items-center gap-1 rounded-full border border-destructive/30 bg-destructive/5 px-2 py-0.5 text-[10px] text-destructive transition hover:bg-destructive/10"
+        title="未配置模型档，点击去配置"
+      >
+        <Cpu className="size-3" />
+        <span>配置模型</span>
+      </button>
+    )
+  }
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+        title="选择模型档"
+      >
+        <Cpu className="size-3" />
+        <span className="max-w-[80px] truncate">
+          {selectedProfile?.name ?? '默认'}
+        </span>
+      </button>
+      {open && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute bottom-full left-0 z-50 mb-2 max-h-60 min-w-[180px] overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+            <div className="px-2 py-1 text-[10px] text-muted-foreground">
+              选择模型档
+            </div>
+            {profiles.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => {
+                  onSelect(p.id)
+                  setOpen(false)
+                }}
+                className={cn(
+                  'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition',
+                  selectedProfile?.id === p.id && 'bg-accent',
+                )}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium">
+                    {p.name}
+                    {p.isDefault && (
+                      <span className="ml-1 text-[9px] text-warning">★</span>
+                    )}
+                  </div>
+                  <div className="truncate text-[10px] text-muted-foreground">
+                    {p.provider} / {p.modelId}
+                  </div>
+                </div>
+                {selectedProfile?.id === p.id && (
+                  <span className="shrink-0 text-[10px] text-primary">✓</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }

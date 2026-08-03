@@ -11,7 +11,8 @@ MCP ``tools/list`` and ``tools/call`` JSON-RPC 2.0 requests into
 
 **Synchronous I/O**: Uses blocking stdin/stdout (not asyncio) because
 Windows ``ProactorEventLoop`` has known issues with pipe I/O.  Async
-tool handlers are run in a dedicated asyncio event loop per call.
+tool handlers are run in a single module-level asyncio event loop reused
+across all calls (see ``_get_mcp_event_loop``).
 
 Usage (spawned by Claude CLI, not run directly)::
 
@@ -35,6 +36,8 @@ import tempfile
 import time
 from typing import Any
 
+from app.config import apply_env_overrides
+from app.db.engine import init_db
 from app.tools.base import ToolContext, ToolDef, ToolResult
 from app.tools.registry import tool_registry
 
@@ -211,16 +214,28 @@ class McpBridge:
             }, req_id)
 
 
+_mcp_event_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_mcp_event_loop() -> asyncio.AbstractEventLoop:
+    """Return a single module-level event loop, creating it on first use.
+
+    Reusing one loop avoids per-call creation/teardown overhead and prevents
+    cross-loop reference bugs when async tool handlers hold asyncio primitives
+    (Event, Lock, etc.) created on a prior, now-closed loop.
+    """
+    global _mcp_event_loop
+    if _mcp_event_loop is None or _mcp_event_loop.is_closed():
+        _mcp_event_loop = asyncio.new_event_loop()
+    return _mcp_event_loop
+
+
 def _execute_tool(tool: ToolDef, args: dict, ctx: ToolContext) -> ToolResult:
     """Execute a tool handler — handles both sync and async handlers."""
     result = tool.handler(args, ctx)
     if asyncio.iscoroutine(result):
-        # Run the async handler in a temporary event loop.
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(result)
-        finally:
-            loop.close()
+        loop = _get_mcp_event_loop()
+        result = loop.run_until_complete(result)
     return result
 
 
@@ -232,6 +247,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--run-id", required=True)
     p.add_argument("--workspace-path", required=True)
     p.add_argument("--agent-id", required=True)
+    p.add_argument("--user-id", default=None)
+    p.add_argument("--tool-names", default="",
+                   help="Comma-separated tool names to expose (empty = default set)")
     return p.parse_args()
 
 
@@ -257,9 +275,17 @@ def main() -> None:
     except Exception:
         pass
 
+    # Determine which tools to expose: if --tool-names is provided,
+    # filter to that set; otherwise fall back to the default CLI_MCP_TOOL_NAMES.
+    if args.tool_names:
+        requested = {n.strip() for n in args.tool_names.split(",") if n.strip()}
+        tool_name_set = requested
+    else:
+        tool_name_set = CLI_MCP_TOOL_NAMES
+
     tools = {
         name: tool_registry.get(name)
-        for name in CLI_MCP_TOOL_NAMES
+        for name in tool_name_set
         if tool_registry.get(name) is not None
     }
     if not tools:
@@ -269,12 +295,24 @@ def main() -> None:
     _log(f"exposing {len(tools)} tools: {sorted(tools.keys())}")
     _log(f"startup marker: {marker_path}")
 
+    # Initialize database engines so tool handlers can use get_db().
+    # The MCP bridge is a separate process — it doesn't go through the
+    # FastAPI lifespan that normally calls init_db().
+    apply_env_overrides()
+    try:
+        asyncio.run(init_db())
+        _log("database initialized")
+    except Exception as exc:
+        _log(f"FATAL: init_db failed: {exc}")
+        sys.exit(1)
+
     ctx = ToolContext(
         conversation_id=args.conversation_id,
         workspace_path=args.workspace_path,
         agent_id=args.agent_id,
         run_id=args.run_id,
         cancel_event=asyncio.Event(),
+        user_id=args.user_id,
     )
 
     bridge = McpBridge(ctx, tools)

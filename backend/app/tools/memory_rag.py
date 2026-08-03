@@ -146,6 +146,8 @@ async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
                 "importance": item.importance,
                 "score": item.score,
                 "category": item.category,
+                "summary": getattr(item, 'summary', '') or '',
+                "keywords": list(item.keywords) if getattr(item, 'keywords', None) else [],
             }
             for item in items
         ]

@@ -29,8 +29,8 @@ from sqlalchemy import and_, select, update
 from app.adapters.base import AdapterAttachment, AdapterInput, CustomConfig
 from app.adapters.registry import agent_registry
 from app.config import get_settings
-from app.db.engine import get_db
-from app.db.models import Agent, AgentRun, Artifact, Conversation, Message, Workspace
+from app.db.engine import get_local_db
+from app.db.models import Agent, AgentRun, Artifact, Conversation, Message, ModelProfile, Workspace
 from app.schemas.artifacts import ArtifactRecord
 from app.schemas.events import (
     ArtifactCreateEvent,
@@ -42,6 +42,7 @@ from app.schemas.events import (
     PlanStepUpdateEvent,
     PartStartEvent,
     RunEndEvent,
+    RunQueuedEvent,
     RunStartEvent,
     RunUsageEvent,
     StreamEvent,
@@ -53,10 +54,8 @@ from app.schemas.messages import DeployStatusRecord, MessageUsage
 from app.services import runner_registry
 from app.services.attachment_service import get_attachment_absolute_path
 from app.services.context_compaction_service import (
-    AUTO_COMPACT_WATERMARK,
     CompactionSkipped,
     compact_conversation,
-    count_uncompacted_messages,
     estimate_uncompacted_tokens,
     prefix_prompt_with_context_summary,
 )
@@ -64,7 +63,6 @@ from app.services.conversation_context import BuildHistoryOptions, build_history
 from app.services.event_bus import event_bus
 from app.services.project_artifact import build_project_files
 from app.services.runner_registry import RunHandle
-from app.services.settings_service import get_app_settings, get_user_settings
 from app.tools.base import ToolContext
 from app.tools.registry import (
     tool_registry,  # noqa: F401 - parity import (tool resolution lives in adapters)
@@ -201,7 +199,7 @@ async def _post_run_memory_hook(
         await ms.on_message_end("user", prompt, conversation_id=conversation_id, user_id=user_id)
         # Collect agent output text from output_message_ids
         if result.output_message_ids:
-            async with get_db() as db:
+            async with get_local_db() as db:
                 from app.db.models import Message
                 for msg_id in result.output_message_ids:
                     msg = (
@@ -217,10 +215,10 @@ async def _post_run_memory_hook(
                         agent_text = "\n".join(text_parts)
 
                         # Collect tool call failures so memory_writer can
-                        # extract them as tool_failure category. Tool errors
-                        # live in tool_result parts (isError=True), not in
-                        # the assistant's text output — without this they
-                        # are invisible to extract_memory_from_reply.
+                        # extract them as memories. Tool errors live in
+                        # tool_result parts (isError=True), not in the
+                        # assistant's text output — without this they
+                        # are invisible to extract_ltm_memories.
                         import json as _json
                         tool_names: dict[str, str] = {}
                         for p in parts:
@@ -249,6 +247,14 @@ async def _post_run_memory_hook(
 
                         if agent_text:
                             await ms.on_message_end("assistant", agent_text, agent_id, conversation_id=conversation_id, user_id=user_id)
+
+        # Case memory extraction at task completion
+        try:
+            asyncio.create_task(ms._safe_extract_case_memories(
+                conversation_id, agent_id, user_id=user_id,
+            ))
+        except Exception:
+            pass
     except Exception as e:
         logger.warning("_post_run_memory_hook error: %s", e)
 
@@ -270,7 +276,7 @@ async def _maybe_generate_summary_hook(
     try:
         from app.services.conversation_service import maybe_generate_summary
 
-        async with get_db() as db:
+        async with get_local_db() as db:
             first_msg = (
                 await db.execute(
                     select(Message).where(Message.id == result.output_message_ids[0])
@@ -312,12 +318,10 @@ async def _maybe_auto_compact_hook(
     override_prompt: str | None = None,
     agent_id: str | None = None,
 ) -> None:
-    """Background hook: auto-compact conversation context when watermark reached.
+    """Background hook: auto-compact conversation context on token threshold.
 
-    Triggers ``compact_conversation(silent=True)`` when either:
-    - the uncompacted message count >= AUTO_COMPACT_WATERMARK (10), OR
-    - the estimated token usage of uncompacted messages exceeds 87% of the
-      model's context window (when agent model info is available).
+    Triggers ``compact_conversation(silent=True)`` when the estimated token
+    usage of uncompacted messages exceeds 87% of the model's context window.
 
     Skipped for sub-agent runs (``override_prompt`` non-empty) to avoid
     side-effects on the parent conversation's context.
@@ -333,53 +337,41 @@ async def _maybe_auto_compact_hook(
         )
         return
 
-    try:
-        watermark = await count_uncompacted_messages(conversation_id)
-        logger.info(
-            "[auto-compact] conv=%s watermark=%d threshold=%d",
+    # Guard: agent_id is required for token-based trigger
+    if not agent_id:
+        logger.warning(
+            "[auto-compact] conv=%s skipped: agent_id is required for "
+            "token-based trigger",
             conversation_id,
-            watermark,
-            AUTO_COMPACT_WATERMARK,
         )
-        if watermark >= AUTO_COMPACT_WATERMARK:
+        return
+
+    try:
+        model_limit = await _get_agent_model_limit(agent_id)
+        if not model_limit or model_limit <= 0:
+            return
+
+        token_threshold = int(model_limit * 0.87)
+        estimated_tokens = await estimate_uncompacted_tokens(conversation_id)
+        logger.info(
+            "[auto-compact] conv=%s estimated_tokens=%d token_threshold=%d "
+            "(87%% of %d)",
+            conversation_id,
+            estimated_tokens,
+            token_threshold,
+            model_limit,
+        )
+        if estimated_tokens > token_threshold:
             result = await compact_conversation(conversation_id, silent=True)
             logger.info(
-                "[auto-compact] conv=%s compacted=%d silent=True summary_id=%s "
-                "ctx_before=%d ctx_after=%d",
+                "[auto-compact] conv=%s compacted (token trigger) "
+                "summary_id=%s ctx_before=%d ctx_after=%d",
                 conversation_id,
-                result.summary.source_message_count,
                 result.summary.id,
                 result.ctx_before,
                 result.ctx_after,
             )
             return
-
-        # O1: token-based trigger — compacts when estimated tokens > 87% of
-        # the model's context window, even if the message count is low.
-        if agent_id:
-            model_limit = await _get_agent_model_limit(agent_id)
-            if model_limit and model_limit > 0:
-                token_threshold = int(model_limit * 0.87)
-                estimated_tokens = await estimate_uncompacted_tokens(conversation_id)
-                logger.info(
-                    "[auto-compact] conv=%s estimated_tokens=%d token_threshold=%d "
-                    "(87%% of %d)",
-                    conversation_id,
-                    estimated_tokens,
-                    token_threshold,
-                    model_limit,
-                )
-                if estimated_tokens > token_threshold:
-                    result = await compact_conversation(conversation_id, silent=True)
-                    logger.info(
-                        "[auto-compact] conv=%s compacted (token trigger) "
-                        "summary_id=%s ctx_before=%d ctx_after=%d",
-                        conversation_id,
-                        result.summary.id,
-                        result.ctx_before,
-                        result.ctx_after,
-                    )
-                    return
     except CompactionSkipped as skip:
         logger.info(
             "[auto-compact] conv=%s skipped: %s (silent)",
@@ -391,15 +383,38 @@ async def _maybe_auto_compact_hook(
 
 
 async def _get_agent_model_limit(agent_id: str) -> int | None:
-    """Look up the context window for the agent's configured model."""
+    """Look up the context window for the agent's resolved model.
+
+    Resolves from the user's default ModelProfile (SDK agents) or returns
+    None (CLI agents — auto-compact skips model-limit check).
+    """
     try:
         from app.infra.cache_helpers import get_agent_cached
 
         agent = await get_agent_cached(agent_id)
         if agent is None:
             return None
-        limits = get_model_limits(agent.model_provider, agent.model_id)
-        return limits.context_window
+        # CLI agents: no model limit (CLI manages its own context)
+        if agent.adapter_name in ("claude-code", "codex"):
+            return None
+        # SDK agents: resolve from user's default ModelProfile
+        if agent.user_id:
+            async with get_local_db() as db:
+                profile = (
+                    await db.execute(
+                        select(ModelProfile)
+                        .where(
+                            ModelProfile.user_id == agent.user_id,
+                            ModelProfile.is_default == True,  # noqa: E712
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if profile is None:
+                    return None
+                limits = get_model_limits(profile.provider, profile.model_id)
+                return limits.effective_context_window
+        return None
     except Exception as e:
         logger.warning("[auto-compact] failed to get model limit for agent %s: %s", agent_id, e)
         return None
@@ -501,6 +516,8 @@ class RunArgs:
     dispatch_mode: str = "solo"
     # multi-user: owning user for SSE event filtering and data isolation
     user_id: str | None = None
+    # ModelProfile id selected per-message (plan B); None → use user's default profile
+    model_profile_id: str | None = None
 
 
 @dataclass
@@ -980,7 +997,7 @@ async def _run_react_loop(  # noqa: C901
     model_limit = 0
     if model_id:
         try:
-            model_limit = get_model_limits(model_provider, model_id).context_window
+            model_limit = get_model_limits(model_provider, model_id).effective_context_window
         except Exception:
             model_limit = 0
 
@@ -1542,6 +1559,153 @@ _active_runs: dict[str, tuple[asyncio.Task[RunResult], asyncio.Event]] = {}
 sub_agent_run_semaphore = _Semaphore(MAX_CONCURRENT_SUB_AGENT_RUNS)
 
 
+# ─── Queued runs (per-conversation FIFO queue) ──────────────────────────────
+@dataclass
+class _QueuedRunSpec:
+    """Parameters for a run waiting in the per-conversation queue."""
+
+    run_id: str
+    agent_id: str
+    conversation_id: str
+    trigger_message_id: str
+    user_id: str | None
+    model_profile_id: str | None = None
+
+
+_queued_runs: dict[str, list[_QueuedRunSpec]] = {}
+
+
+def enqueue_run(
+    *,
+    agent_id: str,
+    conversation_id: str,
+    trigger_message_id: str,
+    user_id: str | None = None,
+    model_profile_id: str | None = None,
+) -> str:
+    """Create a queued run: AgentRun row with status='queued' + RunQueuedEvent.
+
+    The run will be started automatically when all active runs for the same
+    conversation finish (see :func:`_drain_queued_runs`).
+    """
+    run_id = new_run_id()
+    now = now_ms()
+
+    async def _create_and_publish() -> None:
+        async with get_local_db() as db:
+            db.add(
+                AgentRun(
+                    id=run_id,
+                    conversation_id=conversation_id,
+                    agent_id=agent_id,
+                    trigger_message_id=trigger_message_id,
+                    status="queued",
+                    parent_run_id=None,
+                    started_at=now,
+                )
+            )
+        publish(
+            RunQueuedEvent(
+                conversation_id=conversation_id,
+                timestamp=now,
+                run_id=run_id,
+                agent_id=agent_id,
+                trigger_message_id=trigger_message_id,
+            ),
+            user_id=user_id,
+        )
+
+    # Fire-and-forget: the DB insert and event publish happen asynchronously.
+    # The caller returns run_id immediately so the API response includes it.
+    asyncio.ensure_future(_create_and_publish())
+    _queued_runs.setdefault(conversation_id, []).append(
+        _QueuedRunSpec(
+            run_id=run_id,
+            agent_id=agent_id,
+            conversation_id=conversation_id,
+            trigger_message_id=trigger_message_id,
+            user_id=user_id,
+            model_profile_id=model_profile_id,
+        )
+    )
+    return run_id
+
+
+def cancel_queued_run(run_id: str) -> bool:
+    """Remove a queued run from the queue and mark it as aborted in DB.
+
+    Returns True if the run was found and cancelled, False otherwise.
+    """
+    for conv_id, queue in _queued_runs.items():
+        for i, spec in enumerate(queue):
+            if spec.run_id == run_id:
+                queue.pop(i)
+                if not queue:
+                    _queued_runs.pop(conv_id, None)
+                # Mark as aborted in DB + emit RunEndEvent
+                async def _cancel() -> None:
+                    now = now_ms()
+                    try:
+                        async with get_local_db() as db:
+                            run = (
+                                await db.execute(
+                                    select(AgentRun).where(AgentRun.id == run_id)
+                                )
+                            ).scalar_one_or_none()
+                            if run is not None and run.status == "queued":
+                                run.status = "aborted"
+                                run.finished_at = now
+                    except RuntimeError:
+                        pass
+                    publish(
+                        RunEndEvent(
+                            conversation_id=spec.conversation_id,
+                            timestamp=now,
+                            run_id=run_id,
+                            status="aborted",
+                            error=None,
+                        ),
+                        user_id=spec.user_id,
+                    )
+
+                asyncio.ensure_future(_cancel())
+                return True
+    return False
+
+
+def has_queued_runs(conversation_id: str) -> bool:
+    """Check if a conversation has any queued runs."""
+    return bool(_queued_runs.get(conversation_id))
+
+
+def _start_queued_run(spec: _QueuedRunSpec) -> None:
+    """Start a queued run: update DB row to 'running' and spawn execute_run."""
+    run_id = spec.run_id
+    cancel_event = asyncio.Event()
+    args = RunArgs(
+        agent_id=spec.agent_id,
+        conversation_id=spec.conversation_id,
+        trigger_message_id=spec.trigger_message_id,
+        user_id=spec.user_id,
+        model_profile_id=spec.model_profile_id,
+    )
+    task = asyncio.create_task(execute_run(run_id, cancel_event, args))
+    _active_runs[run_id] = (task, cancel_event)
+    task.add_done_callback(lambda _t: _active_runs.pop(run_id, None))
+    task.add_done_callback(_log_uncaught)
+
+
+def _drain_queued_runs(conversation_id: str) -> None:
+    """Start the next queued run for a conversation (FIFO order)."""
+    queue = _queued_runs.get(conversation_id)
+    if not queue:
+        return
+    spec = queue.pop(0)
+    if not queue:
+        _queued_runs.pop(conversation_id, None)
+    _start_queued_run(spec)
+
+
 # ─── Facade (port of AgentRunner.run/abort) ──────────────────────────────────
 class AgentRunnerImpl:
     """Synchronous facade: spawn an asyncio task, return the handle immediately."""
@@ -1554,6 +1718,7 @@ class AgentRunnerImpl:
         trigger_message_id: str,
         parent_run_id: str | None = None,
         user_id: str | None = None,
+        model_profile_id: str | None = None,
     ) -> RunHandle:
         run_id = new_run_id()
         cancel_event = asyncio.Event()
@@ -1574,6 +1739,7 @@ class AgentRunnerImpl:
             parent_run_id=parent_run_id,
             parent_cancel_event=parent_cancel_event,
             user_id=user_id,
+            model_profile_id=model_profile_id,
         )
         task = asyncio.create_task(execute_run(run_id, cancel_event, args))
         _active_runs[run_id] = (task, cancel_event)
@@ -1582,6 +1748,8 @@ class AgentRunnerImpl:
         return RunHandle(run_id=run_id)
 
     def abort(self, run_id: str) -> bool:
+        if cancel_queued_run(run_id):
+            return True
         entry = _active_runs.get(run_id)
         if not entry:
             return False
@@ -1649,7 +1817,7 @@ async def execute_run(
             run_id, args, f"Workspace not found for conversation: {args.conversation_id}"
     )
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         trigger_message = (
             await db.execute(
                 select(Message).where(
@@ -1760,7 +1928,7 @@ async def execute_run(
                     args.conversation_id, args.agent_id, prompt, result
                 )
             )
-            # ─── Auto-compact hook (watermark + token based silent compaction) ───
+            # ─── Auto-compact hook (token-based silent compaction) ───
             asyncio.create_task(
                 _maybe_auto_compact_hook(
                     args.conversation_id, args.override_prompt, args.agent_id
@@ -1800,7 +1968,7 @@ async def _resolve_mcp_configs(agent: Agent) -> list[Any]:
     from app.db.models import McpServer
     from app.mcp.client_manager import build_mcp_server_configs_from_db
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(McpServer).where(
                 McpServer.id.in_(server_ids),
@@ -1904,25 +2072,6 @@ async def execute_simple_run(
                 args.agent_id,
             )
 
-    # Task 4.1: Dynamically inject RAG tools if conversation has rag_enabled=true
-    RAG_TOOLS = ["rag_search", "rag_ingest", "rag_list_documents", "rag_delete_document"]
-    async with get_db() as db:
-        from app.db.models import Conversation
-        conv = (
-            await db.execute(select(Conversation).where(Conversation.id == args.conversation_id))
-        ).scalar_one_or_none()
-        if conv and conv.rag_enabled:
-            if agent.adapter_name in SDK_ADAPTERS:
-                existing = set(base_tool_names)
-                new_tools = [t for t in RAG_TOOLS if t not in existing]
-                if new_tools:
-                    base_tool_names = list(base_tool_names) + new_tools
-                    logger.info(
-                        "[AgentRunner] Injected RAG tools %s for conversation %s (rag_enabled=true)",
-                        new_tools,
-                        args.conversation_id,
-                    )
-
     base_tool_names = _inject_code_intelligence_tool(
         list(base_tool_names), agent, workspace
     )
@@ -1984,7 +2133,7 @@ async def execute_simple_run(
     # prefix/suffix and breaking the cache prefix at messages[1].
     if adapter_input.prompt and adapter_input.prompt != prompt:
         try:
-            async with get_db() as db:
+            async with get_local_db() as db:
                 result = await db.execute(
                     select(Message).where(Message.id == args.trigger_message_id)
                 )
@@ -2038,8 +2187,8 @@ async def execute_simple_run(
         try:
             stream = _run_react_loop(
                 adapter, adapter_input, cancel_event,
-                run_id, args.agent_id, args.conversation_id, agent.model_id,
-                model_provider=agent.model_provider,
+                run_id, args.agent_id, args.conversation_id, adapter_input.model_id,
+                model_provider=adapter_input.custom_config.model_provider if adapter_input.custom_config else None,
                 resume_from_turn=resume_from_turn,
                 mcp_manager=mcp_manager,
                 dispatch_depth=args.dispatch_depth,
@@ -2122,7 +2271,7 @@ async def maybe_create_project_artifact(
 
     artifact_id = new_artifact_id()
     created_at = now_ms()
-    async with get_db() as db:
+    async with get_local_db() as db:
         artifact = Artifact(
             id=artifact_id,
             conversation_id=conversation_id,
@@ -2191,15 +2340,13 @@ async def consume_stream(
     output_key_by_artifact_id: dict[str, str] = {}
     tool_name_by_call_id: dict[str, str] = {}
     current_message_id: str | None = None
+    completed_message_ids: set[str] = set()
     _plan_stats_payload: dict | None = None
     stop_reason: str | None = None
     stop_reason_label: str | None = None
 
-    from app.services.async_db_writer import register_parts_buffer, unregister_parts_buffer
-    register_parts_buffer(run_id, parts_buffer)
-
-    redis_client = _get_redis_client()
-    use_stream = redis_client is not None
+    # Direct-write mode: persist all events to local SQLite (dual-DB) or remote PG (server mode).
+    # Redis Stream write-behind has been removed in the dual-DB migration.
 
     # Wrap the stream iteration in a try/finally so that the underlying async
     # generator is always properly closed — even when we break early on a
@@ -2216,14 +2363,13 @@ async def consume_stream(
                     stop_reason = event.stop_reason
                     stop_reason_label = getattr(event, "stop_reason_label", None)
 
+            # Publish to SSE before persisting — SSE delivery is never blocked
+            # by remote database write latency.
+            if not (hidden and event.type in _VISIBLE_EVENT_TYPES):
+                publish(event, user_id=user_id)
             await persist_event(
                 event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
             )
-            # Hidden runs (clone-subagent): persist to DB but don't push visible
-            # content events to SSE. run.usage / turn.metric still go through
-            # so the frontend can track token usage.
-            if not (hidden and event.type in _VISIBLE_EVENT_TYPES):
-                publish(event, user_id=user_id)
 
             if event.type == "artifact.create":
                 output_key = output_key_by_artifact_id.get(event.artifact.id)
@@ -2237,7 +2383,6 @@ async def consume_stream(
                 ref_part = {"type": "artifact_ref", "artifactId": event.artifact.id}
                 parts.append(ref_part)
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(
                         PartStartEvent(
@@ -2249,30 +2394,29 @@ async def consume_stream(
                         ),
                         user_id=user_id,
                     )
-
-            if event.type == "deploy.status":
-                parts = parts_buffer.get(event.message_id, [])
+                await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
+            # deploy.status: append a deploy_status part to the live message
+            if event.type == "deploy.status" and current_message_id:
+                parts = parts_buffer.get(current_message_id, [])
                 part_index = len(parts)
                 deploy_part = {
                     "type": "deploy_status",
                     "deployment": event.deployment.model_dump(by_alias=True),
                 }
                 parts.append(deploy_part)
-                parts_buffer[event.message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
+                parts_buffer[current_message_id] = parts
                 if not hidden:
                     publish(
                         PartStartEvent(
                             conversation_id=event.conversation_id,
                             timestamp=now_ms(),
-                            message_id=event.message_id,
+                            message_id=current_message_id,
                             part_index=part_index,
                             part=deploy_part,
                         ),
                         user_id=user_id,
                     )
-
-            # plan.created: inject execution_plan part (symmetric to artifact.create → artifact_ref)
+                await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
             if event.type == "plan.created" and current_message_id:
                 parts = parts_buffer.get(current_message_id, [])
                 part_index = len(parts)
@@ -2284,7 +2428,6 @@ async def consume_stream(
                 }
                 parts.append(plan_part)
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(
                         PartStartEvent(
@@ -2296,6 +2439,7 @@ async def consume_stream(
                         ),
                         user_id=user_id,
                     )
+                await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
 
             # plan.step_update: update execution_plan part steps in parts_buffer
             if event.type == "plan.step_update" and current_message_id:
@@ -2306,9 +2450,9 @@ async def consume_stream(
                         p["steps"] = updated_steps
                         break
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(event, user_id=user_id)
+                await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
 
             # dispatch.start → plan step auto-update (mark step as in_progress)
             if event.type == "dispatch.start":
@@ -2374,16 +2518,21 @@ async def consume_stream(
                         p["newContent"] = event.new_content
                         break
                 parts_buffer[current_message_id] = parts
-                await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                 if not hidden:
                     publish(event, user_id=user_id)
+                await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
 
             # Run-end cleanup: finalize all execution_plan parts + write stats + clear registries
             if event.type == "run.end":
-                # Finalize execution_plan step statuses in parts_buffer
-                if current_message_id:
-                    run_status = event.status
-                    parts = parts_buffer.get(current_message_id, [])
+                # Finalize execution_plan step statuses in parts_buffer.
+                # current_message_id is already None here (cleared by message.end
+                # which always arrives before run.end), so we iterate all messages
+                # in parts_buffer for this run instead.
+                run_status = event.status
+                for msg_id, parts in parts_buffer.items():
+                    has_plan = any(p.get("type") == "execution_plan" for p in parts)
+                    if not has_plan:
+                        continue
                     plan_changed = False
                     for p in parts:
                         if p.get("type") != "execution_plan":
@@ -2395,9 +2544,8 @@ async def consume_stream(
                             elif step.get("status") == "pending":
                                 step["status"] = "skipped"
                                 plan_changed = True
+                    parts_buffer[msg_id] = parts
                     if plan_changed:
-                        parts_buffer[current_message_id] = parts
-                        await _persist_or_stream(redis_client, run_id, event, parts, use_stream, message_id=current_message_id)
                         from app.schemas.plan import PlanStep as PlanStepModel
                         for p in parts:
                             if p.get("type") == "execution_plan":
@@ -2411,15 +2559,16 @@ async def consume_stream(
                                         ),
                                         user_id=user_id,
                                     )
+                        await _persist_or_stream(None, run_id, event, parts, False, message_id=msg_id)
 
-                # Compute plan usage stats (DB write deferred to finalize to avoid connection pool errors)
+                # Run-end cleanup (DB write deferred to finalize to avoid connection pool errors)
                 from app.services.plan_registry import plan_registry as _plan_registry_stats
                 _all_plans = list(_plan_registry_stats._plans.values())
                 if _all_plans:
                     plan = _all_plans[-1]
                     # Mirror the finalized statuses from parts_buffer into the registry
-                    if current_message_id:
-                        for p in parts_buffer.get(current_message_id, []):
+                    for _msg_id, parts in parts_buffer.items():
+                        for p in parts:
                             if p.get("type") != "execution_plan":
                                 continue
                             finalized_by_id = {s["id"]: s["status"] for s in p.get("steps", [])}
@@ -2446,6 +2595,7 @@ async def consume_stream(
                 _plan_registry.cleanup_run()
 
             if event.type == "message.end":
+                completed_message_ids.add(event.message_id)
                 current_message_id = None
             if event.type == "tool.result":
                 tool_name = tool_name_by_call_id.get(event.call_id)
@@ -2469,37 +2619,41 @@ async def consume_stream(
                             result=control["result"],
                             is_error=bool(control.get("isError", False)),
                         )
+                        if not hidden:
+                            publish(result_event, user_id=user_id)
                         await persist_event(
                             result_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
                         )
-                        if not hidden:
-                            publish(result_event, user_id=user_id)
 
                     end_event = MessageEndEvent(
                         conversation_id=event.conversation_id,
                         timestamp=now_ms(),
                         message_id=event.message_id,
                     )
+                    if not hidden:
+                        publish(end_event, user_id=user_id)
                     await persist_event(
                         end_event, parts_buffer, run_id, agent_id, output_message_ids, artifact_ids, hidden
                     )
-                    if not hidden:
-                        publish(end_event, user_id=user_id)
                     current_message_id = None
                     break
     finally:
+        # Final synchronous flush: ensure all parts are in the DB before cleanup.
+        if parts_buffer:
+            try:
+                async with get_local_db() as db:
+                    for msg_id, parts in parts_buffer.items():
+                        values: dict[str, Any] = {"parts": parts}
+                        if msg_id in completed_message_ids:
+                            values["status"] = "complete"
+                        await db.execute(
+                            update(Message).where(Message.id == msg_id).values(**values)
+                        )
+            except Exception:
+                logger.debug("[consume_stream] final sync flush failed", exc_info=True)
         # Ensure the underlying stream's async generator is closed so that
         # adapter cleanup (subprocess shutdown, connection close) runs.
         # aclose() is a no-op on an already-exhausted generator.
-        unregister_parts_buffer(run_id)
-        # Delete the Redis Stream for this run (all events flushed)
-        _redis = _get_redis_client()
-        if _redis is not None:
-            try:
-                from app.services.async_db_writer import stream_key
-                await _redis.delete(stream_key(run_id))
-            except Exception:
-                logger.debug("[consume_stream] failed to delete stream for run %s", run_id, exc_info=True)
         _aclose = getattr(stream, "aclose", None)
         if _aclose is not None:
             try:
@@ -2540,36 +2694,30 @@ async def persist_event(
 ) -> None:
     """Persist a stream event into the messages / runs tables (camelCase parts).
 
-    When Redis is available, deferrable events (part.start/delta/end, tool.call/result,
-    deploy.status) are XADD'd to a per-run Redis Stream instead of writing to PG
-    synchronously. A background consumer flushes them in batches. Non-deferrable
-    events (message.start, message.end, run.usage, message.usage) remain synchronous.
+    All events are written directly to local SQLite (dual-DB mode) or remote
+    PostgreSQL (server mode) via get_db(). Usage events (run.usage,
+    message.usage) are persisted via fire-and-forget asyncio.create_task.
+    Redis Stream write-behind has been removed in the dual-DB migration.
     """
     etype = event.type
-    redis_client = _get_redis_client()
-    use_stream = redis_client is not None
 
     if etype == "run.usage":
-        # adapter-reported run token usage -> agent_runs.usage (latest wins)
-        async with get_db() as db:
-            await db.execute(
-                update(AgentRun)
-                .where(AgentRun.id == event.run_id)
-                .values(usage=event.usage.model_dump(by_alias=True))
-            )
+        session_id = getattr(event, "session_id", None)
+        asyncio.create_task(_update_run_usage(
+            event.run_id,
+            event.usage.model_dump(by_alias=True),
+            session_id=session_id,
+            conversation_id=event.conversation_id,
+            agent_id=agent_id,
+        ))
         return
     if etype == "message.usage":
-        async with get_db() as db:
-            await db.execute(
-                update(Message)
-                .where(Message.id == event.message_id)
-                .values(usage=event.usage.model_dump(by_alias=True))
-            )
+        asyncio.create_task(_update_message_usage(event.message_id, event.usage.model_dump(by_alias=True)))
         return
     if etype == "message.start":
         parts_buffer[event.message_id] = []
         output_message_ids.append(event.message_id)
-        async with get_db() as db:
+        async with get_local_db() as db:
             msg = Message(
                 id=event.message_id,
                 conversation_id=event.conversation_id,
@@ -2595,7 +2743,7 @@ async def persist_event(
             part_dict["startedAt"] = event.timestamp
         parts[event.part_index] = part_dict
         parts_buffer[event.message_id] = parts
-        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
+        await _persist_or_stream(None, run_id, event, parts, False)
         return
     if etype == "part.end":
         parts = parts_buffer.get(event.message_id)
@@ -2603,7 +2751,7 @@ async def persist_event(
             part = parts[event.part_index]
             if isinstance(part, dict) and part.get("type") == "thinking":
                 part["endedAt"] = event.timestamp
-        await _persist_or_stream(redis_client, run_id, event, parts or [], use_stream)
+        await _persist_or_stream(None, run_id, event, parts or [], False)
         return
     if etype == "part.delta":
         parts = parts_buffer.get(event.message_id)
@@ -2620,7 +2768,7 @@ async def persist_event(
         appendable = {"text.append": "text", "thinking.append": "thinking", "code.append": "code"}
         if appendable.get(dtype) == part.get("type"):
             part["content"] = part.get("content", "") + text
-        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
+        await _persist_or_stream(None, run_id, event, parts, False)
         return
     if etype == "tool.call":
         parts = parts_buffer.get(event.message_id, [])
@@ -2634,7 +2782,7 @@ async def persist_event(
             }
         )
         parts_buffer[event.message_id] = parts
-        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
+        await _persist_or_stream(None, run_id, event, parts, False)
         return
     if etype == "tool.result":
         parts = parts_buffer.get(event.message_id, [])
@@ -2648,90 +2796,108 @@ async def persist_event(
             }
         )
         parts_buffer[event.message_id] = parts
-        await _persist_or_stream(redis_client, run_id, event, parts, use_stream)
+        await _persist_or_stream(None, run_id, event, parts, False)
         return
     if etype == "message.end":
-        # Synchronous final flush: write latest parts to PG, update status
         final_parts = parts_buffer.get(event.message_id, [])
-        async with get_db() as db:
+        async with get_local_db() as db:
             await db.execute(
                 update(Message)
                 .where(Message.id == event.message_id)
                 .values(status="complete", parts=final_parts)
             )
-        parts_buffer.pop(event.message_id, None)
-        # Delete the Redis Stream for this run (all events have been flushed)
-        if redis_client is not None:
-            try:
-                from app.services.async_db_writer import stream_key
-
-                await redis_client.delete(stream_key(run_id))
-            except Exception:
-                logger.debug(
-                    "[persist_event] failed to delete stream for run %s",
-                    run_id,
-                    exc_info=True,
-                )
         return
     if etype == "artifact.create":
         artifact_ids.append(event.artifact.id)
         return
 
 
-def _get_redis_client() -> Any | None:
-    """Return the Redis client from infrastructure, or None if unavailable."""
-    from app.infra.factory import get_infrastructure
-
-    infra = get_infrastructure()
-    if infra is None:
-        return None
-    return infra.redis_client
-
-
 async def _persist_or_stream(
-    redis_client: Any | None,
-    run_id: str,
-    event: StreamEvent,
+    _redis_client: Any | None,
+    _run_id: str,
+    _event: StreamEvent,
     parts: list[dict],
-    use_stream: bool,
+    _use_stream: bool,
     *,
     message_id: str | None = None,
 ) -> None:
-    """Route a deferrable event to Redis Stream or fall back to synchronous DB write."""
-    if use_stream and redis_client is not None:
-        try:
-            from app.services.async_db_writer import xadd_event
+    """Directly write message parts to the database.
 
-            event_json = event.model_dump_json(by_alias=True)
-            await xadd_event(redis_client, run_id, event_json)
-            return
-        except Exception as e:
-            logger.warning("[persist_event] XADD failed, falling back to sync: %s", e)
-    fallback_id = message_id if message_id is not None else event.message_id
+    Redis Stream write-behind has been removed. This function now always
+    writes directly to the database (SQLite in dual-DB mode, PG in server mode).
+    The signature is kept for backward compatibility with callers that haven't
+    been updated yet.
+    """
+    fallback_id = message_id if message_id is not None else _event.message_id
     await _update_message_parts(fallback_id, parts)
 
 
 async def _update_message_parts(message_id: str, parts: list[dict]) -> None:
-    async with get_db() as db:
+    async with get_local_db() as db:
         await db.execute(
             update(Message).where(Message.id == message_id).values(parts=parts)
         )
 
 
+async def _update_run_usage(
+    run_id: str,
+    usage: dict,
+    *,
+    session_id: str | None = None,
+    conversation_id: str | None = None,
+    agent_id: str | None = None,
+) -> None:
+    """Fire-and-forget: update agent_runs.usage + cli_session_id (latest wins)."""
+    try:
+        values: dict = {"usage": usage}
+        if session_id:
+            values["cli_session_id"] = session_id
+        async with get_local_db() as db:
+            await db.execute(
+                update(AgentRun).where(AgentRun.id == run_id).values(**values)
+            )
+        if session_id and conversation_id and agent_id:
+            from app.adapters.session_store import set_claude_code_session
+            set_claude_code_session(conversation_id, agent_id, session_id)
+    except Exception as e:
+        logger.warning("[persist_event] fire-and-forget run.usage update failed for run %s: %s", run_id, e)
+
+
+async def _update_message_usage(message_id: str, usage: dict) -> None:
+    """Fire-and-forget: update messages.usage (latest wins, failures logged)."""
+    try:
+        async with get_local_db() as db:
+            await db.execute(
+                update(Message).where(Message.id == message_id).values(usage=usage)
+            )
+    except Exception as e:
+        logger.warning("[persist_event] fire-and-forget message.usage update failed for msg %s: %s", message_id, e)
+
+
 # ─── DB / event helpers ──────────────────────────────────────────────────────
 async def insert_run(run_id: str, args: RunArgs, agent_id: str) -> None:
-    async with get_db() as db:
-        db.add(
-            AgentRun(
-                id=run_id,
-                conversation_id=args.conversation_id,
-                agent_id=agent_id,
-                trigger_message_id=args.trigger_message_id,
-                status="running",
-                parent_run_id=args.parent_run_id,
-                started_at=now_ms(),
+    now = now_ms()
+    async with get_local_db() as db:
+        existing = (
+            await db.execute(select(AgentRun).where(AgentRun.id == run_id))
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.status = "running"
+            existing.started_at = now
+            existing.finished_at = None
+            existing.error = None
+        else:
+            db.add(
+                AgentRun(
+                    id=run_id,
+                    conversation_id=args.conversation_id,
+                    agent_id=agent_id,
+                    trigger_message_id=args.trigger_message_id,
+                    status="running",
+                    parent_run_id=args.parent_run_id,
+                    started_at=now,
+                )
             )
-        )
 
 
 async def _insert_run_or_resume(run_id: str, args: RunArgs, agent_id: str) -> None:
@@ -2740,7 +2906,7 @@ async def _insert_run_or_resume(run_id: str, args: RunArgs, agent_id: str) -> No
         await insert_run(run_id, args, agent_id)
         return
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         run = (
             await db.execute(select(AgentRun).where(AgentRun.id == run_id))
         ).scalar_one_or_none()
@@ -2776,7 +2942,7 @@ async def finalize(
             logger.warning("[finalize] skip _persist_unresolved_tool_failures: %s", e)
 
     try:
-        async with get_db() as db:
+        async with get_local_db() as db:
             run = (
                 await db.execute(select(AgentRun).where(AgentRun.id == run_id))
             ).scalar_one_or_none()
@@ -2811,7 +2977,7 @@ async def finalize(
             logger.warning("[finalize] skip _emit_error_visualisation: %s", e)
 
     try:
-        async with get_db() as db:
+        async with get_local_db() as db:
             conv = (
                 await db.execute(select(Conversation).where(Conversation.id == args.conversation_id))
             ).scalar_one_or_none()
@@ -2835,6 +3001,21 @@ async def finalize(
             stop_reason_label=result.stop_reason_label,
         ),
         user_id=args.user_id,
+    )
+
+    _drain_queued_runs(args.conversation_id)
+
+    # Record finalize snapshot for online rule evaluation
+    from app.observability.instrumentation import AGENTHUB_STOP_REASON, AGENTHUB_TOTAL_TURNS
+    from app.observability.run_collector import run_span_collector
+    _existing = run_span_collector.collect(run_id)
+    _llm_turns = sum(1 for s in _existing if "llm.generate" in str(s.get("name", "")))
+    run_span_collector.record(
+        run_id, "agent.finalize",
+        **{
+            AGENTHUB_STOP_REASON: result.stop_reason or status,
+            AGENTHUB_TOTAL_TURNS: _llm_turns,
+        },
     )
 
     return RunResult(
@@ -2862,7 +3043,7 @@ async def _emit_error_visualisation(
     # prefer: append the error to this run's latest agent message, if any
     last_message_id = output_message_ids[-1] if output_message_ids else None
     if last_message_id:
-        async with get_db() as db:
+        async with get_local_db() as db:
             msg = (
                 await db.execute(select(Message).where(Message.id == last_message_id))
             ).scalar_one_or_none()
@@ -2883,7 +3064,7 @@ async def _emit_error_visualisation(
 
     # else: create a fresh error message
     error_message_id = f"msg_err_{run_id}"
-    async with get_db() as db:
+    async with get_local_db() as db:
         msg = Message(
             id=error_message_id,
             conversation_id=args.conversation_id,
@@ -2936,7 +3117,7 @@ async def _persist_unresolved_tool_failures(
 ) -> None:
     """Close any tool_use parts with no matching tool_result (synthesize an error)."""
     result = _build_unresolved_tool_failure_result(status, error)
-    async with get_db() as db:
+    async with get_local_db() as db:
         messages = (
             await db.execute(select(Message).where(Message.run_id == run_id))
         ).scalars().all()
@@ -2994,29 +3175,52 @@ def _build_unresolved_tool_failure_result(status: str, error: str | None) -> str
 
 async def finalize_ok(run_id: str, args: RunArgs, result: RunExecutionResult) -> RunResult:
     from app.observability import start_span
+    from app.observability.instrumentation import (
+        AGENTHUB_AGENT_ID,
+        AGENTHUB_CONVERSATION_ID,
+        AGENTHUB_DURATION_MS,
+        AGENTHUB_RUN_ID,
+        AGENTHUB_STOP_REASON,
+        AGENTHUB_TOTAL_TOKENS,
+        AGENTHUB_TOTAL_TURNS,
+    )
     with start_span(
         "agent.finalize",
-        agent_id=args.agent_id,
-        run_id=run_id,
-        conversation_id=args.conversation_id,
-        total_turns=getattr(result, 'turns', 0),
-        total_tokens=getattr(result, 'total_tokens', 0),
-        duration_ms=getattr(result, 'duration_ms', 0),
-    ) as span:
+        **{
+            AGENTHUB_AGENT_ID: args.agent_id,
+            AGENTHUB_RUN_ID: run_id,
+            AGENTHUB_CONVERSATION_ID: args.conversation_id,
+            AGENTHUB_TOTAL_TURNS: getattr(result, 'turns', 0),
+            AGENTHUB_TOTAL_TOKENS: getattr(result, 'total_tokens', 0),
+            AGENTHUB_DURATION_MS: getattr(result, 'duration_ms', 0),
+            AGENTHUB_STOP_REASON: result.stop_reason or "complete",
+        },
+    ):
         return await finalize(run_id, args, "complete", result)
 
 
 async def finalize_failed(run_id: str, args: RunArgs, error: str) -> RunResult:
     from app.observability import start_span
+    from app.observability.instrumentation import (
+        AGENTHUB_AGENT_ID,
+        AGENTHUB_CONVERSATION_ID,
+        AGENTHUB_ERROR,
+        AGENTHUB_RUN_ID,
+        AGENTHUB_STOP_REASON,
+        AGENTHUB_SUCCESS,
+    )
     with start_span(
         "agent.finalize",
-        agent_id=args.agent_id,
-        run_id=run_id,
-        conversation_id=args.conversation_id,
+        **{
+            AGENTHUB_AGENT_ID: args.agent_id,
+            AGENTHUB_RUN_ID: run_id,
+            AGENTHUB_CONVERSATION_ID: args.conversation_id,
+            AGENTHUB_STOP_REASON: "failed",
+        },
     ) as span:
         if span.is_recording():
-            span.set_attribute("agenthub.success", False)
-            span.set_attribute("agenthub.error", str(error)[:500])
+            span.set_attribute(AGENTHUB_SUCCESS, False)
+            span.set_attribute(AGENTHUB_ERROR, str(error)[:500])
         return await finalize(run_id, args, "failed", _empty_run_execution_result(), error)
 
 
@@ -3028,9 +3232,14 @@ async def _run_online_eval_hook(run_id: str) -> None:
     """Background hook: run online rule evaluation after agent run completes."""
     try:
         from app.observability.eval_rules import run_eval_and_log
-        await run_eval_and_log(run_id, [])
+        from app.observability.run_collector import run_span_collector
+        spans = run_span_collector.collect(run_id)
+        await run_eval_and_log(run_id, spans)
     except Exception as e:
         logger.warning("Online eval hook failed: %s", e)
+    finally:
+        from app.observability.run_collector import run_span_collector
+        run_span_collector.clear(run_id)
 
 
 # ─── Adapter input construction (port of buildAdapterInput) ──────────────────
@@ -3088,6 +3297,24 @@ async def build_adapter_input(
     is_cli = agent.adapter_name in CLI_ADAPTERS
     is_sdk = agent.adapter_name in SDK_ADAPTERS
 
+    # ── ModelProfile resolution (SDK only; CLI agents skip) ──────────
+    model_profile: ModelProfile | None = None
+    is_guide = getattr(agent, "is_guide", False)
+    if is_sdk:
+        if is_guide:
+            # Guide agent resolves model from GUIDE_AGENT_* env vars
+            model_profile = _build_guide_model_profile()
+        else:
+            model_profile = await _resolve_model_profile(
+                args.model_profile_id, args.user_id
+            )
+            if model_profile is None:
+                raise ValueError(
+                    "No model profile configured. Please create one in the "
+                    "「模型」(Model Profiles) tab before sending messages to "
+                    "SDK (Custom) agents."
+                )
+
     # ── system prompt (shared by both paths) ──────────────────────────
     base_system_prompt = system_prompt_override or agent.system_prompt
     system_prompt_with_workspace = (
@@ -3110,7 +3337,7 @@ async def build_adapter_input(
     # ── API key ─────────────────────────────────────────────────────
     if is_cli:
         # CLI agents use their own authentication (claude login / codex login).
-        # Only inject per-agent API key override via extra_env when explicitly set.
+        # Agent entity no longer stores api_key / api_base_url.
         effective_api_key: str | None = None
         effective_api_base_url: str | None = None
         cli_extra_env: dict[str, str] = {}
@@ -3127,34 +3354,21 @@ async def build_adapter_input(
                 cli_extra_env["USERPROFILE"] = user_home
             else:
                 cli_extra_env["HOME"] = user_home
-        if agent.api_key:
-            if agent.adapter_name == "claude-code":
-                cli_extra_env["ANTHROPIC_API_KEY"] = agent.api_key
-            elif agent.adapter_name == "codex":
-                cli_extra_env["OPENAI_API_KEY"] = agent.api_key
-        if agent.api_base_url:
-            if agent.adapter_name == "claude-code":
-                cli_extra_env["ANTHROPIC_BASE_URL"] = agent.api_base_url
-            elif agent.adapter_name == "codex":
-                cli_extra_env["OPENAI_BASE_URL"] = agent.api_base_url
-    else:
-        # SDK path: full four-layer key chain (agent > app_settings > env > OAuth).
-        effective_api_key = agent.api_key
-        effective_api_base_url = agent.api_base_url
+    elif is_sdk:
+        # SDK path: resolve model/key from ModelProfile.
+        effective_api_key = model_profile.api_key if model_profile else None
+        effective_api_base_url = model_profile.api_base_url if model_profile else None
         cli_extra_env = {}
-        if not effective_api_key or (
-            not effective_api_base_url and agent.adapter_name == "claude-code"
-        ):
-            settings = await get_user_settings(args.user_id) if args.user_id else await get_app_settings()
-            if not effective_api_key:
-                effective_api_key = _pick_settings_key(settings, agent)
-            if not effective_api_base_url and agent.adapter_name == "claude-code":
-                effective_api_base_url = settings.anthropic_base_url
+    else:
+        # Mock / test adapters: no model profile, no API key.
+        effective_api_key = None
+        effective_api_base_url = None
+        cli_extra_env = {}
 
     # ── cross-run history: SDK only (CLI agents use session resume) ──
     history: list[dict] = []
     if is_sdk and not args.override_prompt:
-        async with get_db() as db:
+        async with get_local_db() as db:
             conv = (
                 await db.execute(
                     select(Conversation).where(Conversation.id == args.conversation_id)
@@ -3164,11 +3378,14 @@ async def build_adapter_input(
         if agent_count > 1:
             system_prompt_with_workspace += "\n\n" + GROUP_CHAT_SYSTEM_NOTE
 
-        limits = get_model_limits(agent.model_provider, agent.model_id)
+        limits = get_model_limits(
+            model_profile.provider if model_profile else None,
+            model_profile.model_id if model_profile else None,
+        )
         prompt_estimate = (
             estimate_tokens(system_prompt_with_workspace) + estimate_tokens(prompt) + 512
         )
-        history_budget = max(0, limits.context_window - limits.output_reserve - prompt_estimate)
+        history_budget = max(0, limits.effective_context_window - limits.output_reserve - prompt_estimate)
         try:
             history = await build_history_for(
                 agent.id,
@@ -3176,6 +3393,8 @@ async def build_adapter_input(
                 BuildHistoryOptions(
                     exclude_message_id=args.trigger_message_id,
                     token_budget=history_budget,
+                    model_context_limit=limits.effective_context_window,
+                    prompt_estimate=prompt_estimate,
                 ),
                 user_id=args.user_id or "",
             )
@@ -3190,7 +3409,6 @@ async def build_adapter_input(
     #     guide agents skip — they use management tools for explicit queries,
     #     so ProfileSource/ToolStateSource DB lookups are pure overhead) ─
     dynamic_prefix = ""
-    is_guide = getattr(agent, "is_guide", False)
     if is_sdk and not is_guide:
         assembler = _get_prompt_assembler()
         if assembler and not args.override_prompt:
@@ -3277,18 +3495,30 @@ async def build_adapter_input(
     # ── custom_config: SDK only ──────────────────────────────────────
     custom_config = (
         CustomConfig(
-            model_provider=agent.model_provider,
-            supports_vision=agent.supports_vision,
+            model_provider=model_profile.provider,
+            supports_vision=model_profile.supports_vision,
         )
-        if is_sdk and agent.model_provider and agent.model_id
+        if is_sdk and model_profile
         else None
     )
 
     # ── CLI-specific fields ──────────────────────────────────────────
     cli_exec_path = agent.executable_path if is_cli else None
     cli_custom_args = agent.custom_args_list if is_cli else None
-    # Session resume: deferred until AgentRun gets a session_id column.
+    # Session resume: query the latest CLI session ID from the in-memory cache
+    # (hot path) or DB (cache miss after backend restart).
     cli_resume_session_id: str | None = None
+    if is_cli:
+        from app.adapters.session_store import get_claude_code_session
+        try:
+            cli_resume_session_id = await get_claude_code_session(
+                args.conversation_id, agent.id
+            )
+        except Exception:
+            logger.debug(
+                "[agent-runner] get_claude_code_session failed; continuing without resume",
+                exc_info=True,
+            )
 
     return AdapterInput(
         agent_id=agent.id,
@@ -3299,7 +3529,7 @@ async def build_adapter_input(
         system_prompt=system_prompt_with_workspace,
         api_key=effective_api_key,
         api_base_url=effective_api_base_url,
-        model_id=agent.model_id,
+        model_id=model_profile.model_id if is_sdk and model_profile else None,
         tool_names=tool_names,
         attachments=attachments if len(attachments) > 0 else None,
         history=history if len(history) > 0 else None,
@@ -3310,11 +3540,82 @@ async def build_adapter_input(
         custom_args=cli_custom_args,
         resume_session_id=cli_resume_session_id,
         mcp_config=None,  # MCP bridge deferred
+        user_id=args.user_id,
     )
 
 
+def _build_guide_model_profile() -> ModelProfile:
+    """Build an in-memory ModelProfile from GUIDE_AGENT_* env vars.
+
+    The guide agent (小A) uses env-driven model config instead of a user-scoped
+    ModelProfile. This avoids requiring users to configure a profile before
+    using the guide. The env vars fall back to DEEPSEEK_API_KEY.
+    """
+    import os
+
+    provider = os.environ.get("GUIDE_AGENT_MODEL_PROVIDER", "deepseek")
+    model_id = os.environ.get("GUIDE_AGENT_MODEL_ID", "deepseek-v4-flash")
+    api_key = (
+        os.environ.get("GUIDE_AGENT_API_KEY")
+        or os.environ.get("DEEPSEEK_API_KEY")
+        or None
+    )
+    api_base_url = os.environ.get("GUIDE_AGENT_API_BASE_URL") or None
+
+    return ModelProfile(
+        id="mp_guide_builtin",
+        user_id="",  # not persisted; guide agent has no user
+        name="Guide Agent (env)",
+        provider=provider,
+        model_id=model_id,
+        api_key=api_key,
+        api_base_url=api_base_url,
+        is_default=False,
+        supports_vision=False,
+        last_test_status="untested",
+        last_tested_at=None,
+        created_at=now_ms(),
+        updated_at=now_ms(),
+    )
+
+
+async def _resolve_model_profile(
+    profile_id: str | None, user_id: str | None
+) -> ModelProfile | None:
+    """Resolve ModelProfile: explicit profile_id → user default → None.
+
+    If profile_id is provided but not found (or not owned), falls back to
+    the user's default profile and logs a warning.
+    """
+    if not user_id:
+        return None
+    async with get_local_db() as db:
+        if profile_id:
+            profile = await db.get(ModelProfile, profile_id)
+            if profile and profile.user_id == user_id:
+                return profile
+            logger.warning(
+                "[agent-runner] model profile %s not found or not owned; "
+                "falling back to default",
+                profile_id,
+            )
+        result = await db.execute(
+            select(ModelProfile)
+            .where(
+                ModelProfile.user_id == user_id,
+                ModelProfile.is_default == True,  # noqa: E712
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+
 def _pick_settings_key(settings: Any, agent: Agent) -> str | None:
-    """Pick the global settings key matching the agent's adapter / provider."""
+    """Pick the global settings key matching the CLI adapter (CLI agents only).
+
+    SDK agents resolve keys from ModelProfile; this function is retained for
+    CLI agents that may still need a settings-based key fallback.
+    """
     import os
 
     if agent.adapter_name == "claude-code":
@@ -3329,15 +3630,6 @@ def _pick_settings_key(settings: Any, agent: Agent) -> str | None:
             or os.environ.get("CODEX_API_KEY")
             or os.environ.get("OPENAI_API_KEY")
         )
-    provider = agent.model_provider
-    if provider == "anthropic":
-        return settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if provider == "openai":
-        return settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
-    if provider == "deepseek":
-        return settings.deepseek_api_key or os.environ.get("DEEPSEEK_API_KEY")
-    if provider == "volcano-ark":
-        return settings.ark_api_key or os.environ.get("ARK_API_KEY")
     return None
 
 
@@ -3376,9 +3668,9 @@ def _build_agent_hub_tool_guidance(
 ) -> str:
     """Build the per-tool usage guidance appended to the system prompt."""
     tools = set(tool_names)
-    is_sdk_agent = agent.adapter_name in ("claude-code", "codex")
-    if is_sdk_agent:
-        sdk_agent_hub_tools = [
+    is_cli_agent = agent.adapter_name in ("claude-code", "codex")
+    if is_cli_agent:
+        cli_agent_hub_tools = [
             "write_artifact",
             "read_artifact",
             "update_artifact",
@@ -3386,7 +3678,7 @@ def _build_agent_hub_tool_guidance(
             "deploy_workspace",
             ASK_USER_TOOL_NAME,
         ]
-        tools.update(sdk_agent_hub_tools)
+        tools.update(cli_agent_hub_tools)
 
     sections: list[str] = []
 
@@ -3396,7 +3688,7 @@ def _build_agent_hub_tool_guidance(
     has_workspace_file_tools = (
         "fs_read" in tools or "fs_write" in tools or "bash" in tools
         or "fs_list" in tools or "fs_glob" in tools or "fs_grep" in tools
-        or "code_explore" in tools or is_sdk_agent
+        or "code_explore" in tools or is_cli_agent
     )
 
     if len(tools) > 0:
@@ -3417,8 +3709,8 @@ def _build_agent_hub_tool_guidance(
                 "## 本地项目模式",
                 "当前 workspace 是用户绑定的真实本地文件夹。用户要求创建、修改、初始化、调试、构建前后端项目或源码文件时，必须优先直接操作 workspace 文件。",
                 (
-                    "- 使用 SDK 自带的 Read / Write / Edit / Bash / shell 工具读写文件、安装依赖、运行构建与测试。"
-                    if is_sdk_agent
+                    "- 使用 CLI 自带的 Read / Write / Edit / Bash / shell 工具读写文件、安装依赖、运行构建与测试。"
+                    if is_cli_agent
                     else "- 使用 fs_read / fs_write / bash 读写文件、安装依赖、运行构建与测试。"
                 ),
                 "- 不要用 write_artifact 保存应该落盘到本地项目的源码、package.json、tsconfig、server/client 文件或构建配置。",
@@ -3626,32 +3918,15 @@ def _build_agent_hub_tool_guidance(
             ]
         )
 
-    has_rag = any(t in tools for t in ("rag_search", "rag_ingest", "rag_list_documents", "rag_delete_document"))
-    if has_rag:
-        rag_lines = [
-            "### RAG 知识库工具",
-            "当前会话已启用 RAG 知识库检索，你可以使用以下工具操作知识库：",
-        ]
-        if "rag_search" in tools:
-            rag_lines.append(
-                '- rag_search({ query: "检索关键词" })：在知识库中检索相关文档片段，返回匹配的文本块和来源信息。'
-            )
-        if "rag_ingest" in tools:
-            rag_lines.append(
-                '- rag_ingest({ document: "文本内容", title: "文档标题" })：将新内容入库到知识库，供后续检索使用。'
-            )
-        if "rag_list_documents" in tools:
-            rag_lines.append(
-                '- rag_list_documents({})：列出知识库中已有的文档列表。'
-            )
-        if "rag_delete_document" in tools:
-            rag_lines.append(
-                '- rag_delete_document({ document_id: "doc_xxx" })：从知识库中删除指定文档。'
-            )
-        rag_lines.append(
-            "使用建议：用户提问涉及已有知识库内容时，优先调用 rag_search 检索；用户要求保存信息时，用 rag_ingest 入库。"
+    if "rag_search" in tools:
+        add(
+            [
+                "### rag_search",
+                "用途：在知识库中检索相关文档片段，返回匹配的文本块和来源信息。",
+                '正确案例：用户问"我们的技术栈是什么"，调用 rag_search({ query: "项目技术栈" }) 检索已有知识库文档。',
+                "使用建议：用户提问涉及已有知识库内容时，优先调用 rag_search 检索；文档入库由知识库侧边栏管理，不要尝试入库操作。",
+            ]
         )
-        add(rag_lines)
 
     return "\n\n".join(sections)
 

@@ -59,6 +59,9 @@ class MemoryService:
         # LLM generate function (injected for memory extraction)
         self._generate_fn: Callable | None = None
 
+        # Cache last user message per conversation for full-conversation LTM extraction
+        self._last_user_msg: dict[str, str] = {}
+
         self._initialized = False
 
     def set_embed_fn(self, fn: Callable) -> None:
@@ -107,6 +110,12 @@ class MemoryService:
             "enabled" if self.graph_memory else "disabled",
         )
 
+        # Background migration: add structured fields to existing LTM items
+        # that lack a summary. Idempotent — items with summary are skipped.
+        # Non-blocking — runs as a background task.
+        if self._generate_fn:
+            asyncio.create_task(self._safe_migrate_existing_memories())
+
     async def on_message_end(
         self, role: str, content: str, agent_id: str = "",
         conversation_id: str = "",
@@ -143,9 +152,13 @@ class MemoryService:
             logger.warning("ChatHistory PG write failed: %s", e)
 
         if role == "assistant":
-            # Assistant message: trigger LLM-based memory extraction (background)
+            # Assistant message: trigger LLM-based LTM extraction (background).
+            # Retrieve cached user message for full-conversation extraction.
             if self._generate_fn and len(content) >= 10 and not self._is_trivial_reply(content):
-                asyncio.create_task(self._safe_extract_memory(content, agent_id, user_id=user_id))
+                user_msg = self._last_user_msg.pop(conversation_id, "")
+                asyncio.create_task(self._safe_extract_ltm(
+                    user_msg, content, agent_id, user_id=user_id,
+                ))
             # Session Memory incremental extraction (background, after turn ends)
             if conversation_id:
                 asyncio.create_task(self._safe_extract_session_memory(conversation_id))
@@ -154,9 +167,12 @@ class MemoryService:
         if role != "user":
             return
 
-        # User messages drive preference extraction only. Raw user text is no
-        # longer dumped into LTM — LTM is fed exclusively by category-routed
-        # extraction from assistant replies (see memory_writer).
+        # Cache user message for LTM extraction (retrieved when assistant reply arrives)
+        if conversation_id:
+            self._last_user_msg[conversation_id] = content
+
+        # User messages drive preference extraction only. LTM is fed by
+        # full-conversation extraction (see _safe_extract_ltm).
         #
         # Single extraction pass: the LLM path is primary. Running the coarse
         # rule pass alongside it only produces duplicate keys (喜好 vs
@@ -295,6 +311,9 @@ class MemoryService:
                                 tags=list(item.tags) if item.tags else [],
                                 category=item.category,
                                 slot_hint=item.slot_hint,
+                                summary=getattr(item, 'summary', '') or '',
+                                keywords=list(item.keywords) if getattr(item, 'keywords', None) else [],
+                                content_scope=getattr(item, 'content_scope', '') or '',
                                 last_accessed=item.last_accessed,
                                 scope=item.scope,
                                 agent_id=item.agent_id or None,
@@ -375,22 +394,28 @@ class MemoryService:
         except Exception as e:
             logger.warning("Preference consolidation failed: %s", e)
 
-    async def _safe_extract_memory(self, content: str, agent_id: str = "", *, user_id: str | None = None) -> None:
-        """Extract memory facts from assistant reply using LLM (background task)."""
+    async def _safe_extract_ltm(
+        self, user_msg: str, assistant_msg: str, agent_id: str = "", *, user_id: str | None = None,
+    ) -> None:
+        """Extract LTM memories from full conversation using LLM (background task).
+
+        Uses the V3-adapted extraction prompt to process both user and assistant
+        messages in a single LLM call, producing natural language memory strings.
+        """
         try:
-            from app.memory.memory_writer import extract_memory_from_reply
-            await extract_memory_from_reply(
+            from app.memory.memory_writer import extract_ltm_memories
+            await extract_ltm_memories(
                 generate_fn=self._generate_fn,
                 embed_fn=self._embed_fn,
                 ltm=self.ltm,
-                content=content,
-                preference=self.preference,
+                user_msg=user_msg,
+                assistant_msg=assistant_msg,
                 existing_keys=list(self.preference.data.keys()),
                 agent_id=agent_id,
                 user_id=user_id,
             )
         except Exception as e:
-            logger.warning("Memory extraction failed: %s", e)
+            logger.warning("LTM memory extraction failed: %s", e)
 
     async def _safe_extract_session_memory(self, conversation_id: str) -> None:
         """Check and run Session Memory extraction (background task)."""
@@ -419,6 +444,158 @@ class MemoryService:
                 logger.info("LLM preference overlay: %d keys", len(prefs))
         except Exception as e:
             logger.warning("LLM preference extraction failed: %s", e)
+
+    async def _safe_migrate_existing_memories(self) -> None:
+        """Background migration: generate summary + keywords for existing LTM items.
+
+        Iterates LTM items that lack a ``summary``, calls the LLM to generate
+        a summary + keywords from the content, recomputes the embedding from
+        the summary, and writes the updated fields back to PostgreSQL.
+
+        Idempotent: items with a non-empty summary are skipped.
+        Resilient: individual item failures are logged and skipped — migration
+        continues to the next item.
+        Non-blocking: runs as a background task, does not block service startup.
+        """
+        if not self._generate_fn:
+            return
+
+        try:
+            import json
+            from app.memory.memory_writer import _strip_code_fence
+
+            migration_prompt = (
+                "You are a Memory Summarizer. Given a memory content, produce a concise "
+                "summary (3-10 characters Chinese or 3-10 words English) and 3-5 retrieval "
+                "keywords (proper nouns, technical terms).\n\n"
+                "Summary rules:\n"
+                "- Must be self-contained and understandable without full content\n"
+                "- Capture the core topic as a concise title\n"
+                "- No generic words like 'memory', 'user', 'project'\n\n"
+                "Keywords rules:\n"
+                "- Prefer proper nouns, core concepts, technical terms\n"
+                "- No generic words like 'user', 'project', 'system'\n\n"
+                "Output JSON: {\"summary\": \"...\", \"keywords\": [\"...\"]}\n"
+                "If the content is too short or trivial, return: {\"summary\": \"\", \"keywords\": []}"
+            )
+
+            migrated = 0
+            skipped = 0
+            failed = 0
+            for item in self.ltm.items:
+                if item.summary:
+                    skipped += 1
+                    continue
+
+                try:
+                    raw = await asyncio.to_thread(
+                        self._generate_fn, migration_prompt, item.content[:500],
+                    )
+                    raw = _strip_code_fence(raw)
+                    parsed = json.loads(raw)
+                    if not isinstance(parsed, dict):
+                        failed += 1
+                        continue
+
+                    new_summary = str(parsed.get("summary", "")).strip()
+                    kw_raw = parsed.get("keywords", [])
+                    if isinstance(kw_raw, list):
+                        new_keywords = [str(k).strip() for k in kw_raw if str(k).strip()]
+                    else:
+                        new_keywords = []
+
+                    if not new_summary:
+                        failed += 1
+                        continue
+
+                    # Recompute embedding from summary
+                    new_emb = None
+                    if self._embed_fn:
+                        try:
+                            new_emb = await asyncio.to_thread(self._embed_fn, new_summary)
+                        except Exception as e:
+                            logger.warning("Migration embed failed for item %s: %s", item.id, e)
+
+                    # Update in-memory item
+                    item.summary = new_summary
+                    item.keywords = new_keywords
+                    if new_emb:
+                        item.embedding = new_emb
+
+                    # Write back to PG
+                    if item.id is not None:
+                        try:
+                            from sqlalchemy import update as sa_update
+                            from app.db.models import LongTermMemory
+                            async with get_db() as session:
+                                values = {
+                                    "summary": new_summary,
+                                    "keywords": new_keywords,
+                                }
+                                if new_emb:
+                                    values["embedding"] = new_emb
+                                stmt = (
+                                    sa_update(LongTermMemory)
+                                    .where(LongTermMemory.id == item.id)
+                                    .values(**values)
+                                )
+                                await session.execute(stmt)
+                        except Exception as e:
+                            logger.warning("Migration PG write failed for item %s: %s", item.id, e)
+
+                    migrated += 1
+                except Exception as e:
+                    failed += 1
+                    logger.debug("Migration failed for item %s: %s", item.id, e)
+                    continue
+
+            logger.info(
+                "LTM structured migration: migrated=%d, skipped=%d, failed=%d, total=%d",
+                migrated, skipped, failed, len(self.ltm.items),
+            )
+        except Exception as e:
+            logger.warning("LTM structured migration failed: %s", e)
+
+    async def _safe_extract_case_memories(
+        self,
+        conversation_id: str,
+        agent_id: str = "",
+        *,
+        user_id: str | None = None,
+        task_result: str = "",
+    ) -> None:
+        """Extract reusable case memories at task/conversation completion.
+
+        Uses the existing SessionMemory summary as input. If no summary
+        exists or case extraction is disabled, this method is a no-op.
+        Runs as a background task so it never blocks the main run path.
+        """
+        if not getattr(self.settings, 'case_extraction_enabled', True):
+            return
+
+        if not self._generate_fn:
+            return
+
+        try:
+            # Get session summary — case extraction only runs when a summary exists
+            session_record = await self.session_memory.get(conversation_id)
+            if session_record is None or not session_record.summary:
+                return
+
+            from app.memory.memory_writer import extract_case_memories
+            count = await extract_case_memories(
+                generate_fn=self._generate_fn,
+                embed_fn=self._embed_fn,
+                ltm=self.ltm,
+                session_summary=session_record.summary,
+                task_result=task_result,
+                agent_id=agent_id,
+                user_id=user_id,
+            )
+            if count > 0:
+                logger.info("Case memories extracted: %d from conv=%s", count, conversation_id)
+        except Exception as e:
+            logger.warning("Case memory extraction failed: %s", e)
 
     @staticmethod
     def _is_trivial_reply(content: str) -> bool:

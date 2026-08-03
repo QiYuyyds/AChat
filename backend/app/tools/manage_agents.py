@@ -37,11 +37,11 @@ async def _manage_agents_handler(args: dict[str, Any], ctx: ToolContext) -> Tool
 async def _list_agents(args: dict[str, Any], user_id: str) -> ToolResult:
     from sqlalchemy import or_, select
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import Agent
 
     include_builtin = args.get("include_builtin", True)
-    async with get_db() as db:
+    async with get_local_db() as db:
         query = select(Agent).where(
             or_(Agent.user_id.is_(None), Agent.user_id == user_id)
         )
@@ -72,14 +72,9 @@ async def _create_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
         "description": args.get("description", ""),
         "systemPrompt": args.get("system_prompt", ""),
         "adapterName": "custom",
-        "modelProvider": args.get("model_provider"),
-        "modelId": args.get("model_id"),
-        "apiKey": args.get("api_key"),
-        "apiBaseUrl": args.get("api_base_url"),
         "toolNames": args.get("tool_names", []),
         "skillNames": args.get("skill_names", []),
         "mcpServerIds": args.get("mcp_server_ids", []),
-        "supportsVision": args.get("supports_vision", False),
         "isOrchestrator": args.get("is_orchestrator", False),
         "memoryEnabled": args.get("memory_enabled", False),
         "capabilities": [],
@@ -98,7 +93,7 @@ async def _create_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
 
 async def _update_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) -> ToolResult:
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import Agent
 
     agent_id = args.get("agent_id")
@@ -106,7 +101,7 @@ async def _update_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
         return err("agent_id is required for update action")
 
     # Check the agent exists and is not builtin/guide
-    async with get_db() as db:
+    async with get_local_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
             return err(f"Agent not found: {agent_id}")
@@ -124,14 +119,9 @@ async def _update_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
         "name": "name",
         "description": "description",
         "system_prompt": "systemPrompt",
-        "model_provider": "modelProvider",
-        "model_id": "modelId",
-        "api_key": "apiKey",
-        "api_base_url": "apiBaseUrl",
         "tool_names": "toolNames",
         "skill_names": "skillNames",
         "mcp_server_ids": "mcpServerIds",
-        "supports_vision": "supportsVision",
         "is_orchestrator": "isOrchestrator",
         "memory_enabled": "memoryEnabled",
     }
@@ -167,10 +157,10 @@ async def _delete_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
     if not agent_id:
         return err("agent_id is required for delete action")
 
-    from app.db.engine import get_db
+    from app.db.engine import get_local_db
     from app.db.models import Agent
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
             return err(f"Agent not found: {agent_id}")
@@ -218,14 +208,9 @@ manage_agents_tool = ToolDef(
                 "type": "string",
                 "enum": ["custom", "claude-code", "codex"],
             },
-            "model_provider": {"type": "string"},
-            "model_id": {"type": "string"},
-            "api_key": {"type": "string"},
-            "api_base_url": {"type": "string"},
             "tool_names": {"type": "array", "items": {"type": "string"}},
             "skill_names": {"type": "array", "items": {"type": "string"}},
             "mcp_server_ids": {"type": "array", "items": {"type": "string"}},
-            "supports_vision": {"type": "boolean"},
             "is_orchestrator": {"type": "boolean"},
             "memory_enabled": {"type": "boolean"},
             "agent_id": {"type": "string"},

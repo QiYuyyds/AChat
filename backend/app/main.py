@@ -58,6 +58,9 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     # ─── Seed guide agent (小A) ───
     await _seed_guide_agent()
 
+    # ─── Migrate baked-in agent model config to model_profiles ───
+    await _migrate_agent_model_profiles()
+
     settings = get_settings()
 
     # ─── Optional source intelligence ───
@@ -264,16 +267,6 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     # ─── Startup Status Dashboard ───
     _log_startup_dashboard(settings)
 
-    # ─── Redis cache init + DB writer consumer ───
-    if _infrastructure and _infrastructure.redis_client:
-        from app.infra.cache import init_cache
-        init_cache(_infrastructure.redis_client)
-        try:
-            from app.services.async_db_writer import start_db_writer
-            await start_db_writer(_infrastructure.redis_client)
-        except Exception as e:
-            logger.warning("DBWriterConsumer start failed: %s", e)
-
     # ─── Crash recovery scan ───
     try:
         from app.services.recovery_scan import scan_interrupted_messages
@@ -290,11 +283,6 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
     shutdown_observability()
-    try:
-        from app.services.async_db_writer import stop_db_writer
-        await stop_db_writer()
-    except Exception:
-        pass
     if _memory_service:
         try:
             await _memory_service.close()
@@ -313,26 +301,18 @@ async def _seed_guide_agent() -> None:
     """Idempotently seed the builtin guide agent (小A) at startup.
 
     Creates the agent if it doesn't exist; does nothing if already present.
-    LLM provider/model/key/baseUrl are env-driven so users can pick any
-    OpenAI-compatible backend (DeepSeek, LongCat, etc.). Failures are logged
-    but never block startup.
+    Model config is resolved at runtime from GUIDE_AGENT_* env vars
+    (see agent_runner._build_guide_model_profile).
     """
-    import os
-
     try:
         from sqlalchemy import select
 
-        from app.db.engine import get_db
+        from app.db.engine import get_local_db
         from app.db.models import Agent
         from app.services.guide_prompt import GUIDE_SYSTEM_PROMPT
         from app.utils.clock import now_ms
 
-        model_provider = os.environ.get("GUIDE_AGENT_MODEL_PROVIDER", "deepseek")
-        model_id = os.environ.get("GUIDE_AGENT_MODEL_ID", "deepseek-v4-flash")
-        api_key = os.environ.get("GUIDE_AGENT_API_KEY") or None
-        api_base_url = os.environ.get("GUIDE_AGENT_API_BASE_URL") or None
-
-        async with get_db() as db:
+        async with get_local_db() as db:
             existing = (
                 await db.execute(select(Agent).where(Agent.is_guide.is_(True)))
             ).scalar_one_or_none()
@@ -349,10 +329,6 @@ async def _seed_guide_agent() -> None:
                 description="系统管理引导 Agent，帮你管理 Agent / Skill / MCP / 知识库 / 记忆",
                 system_prompt=GUIDE_SYSTEM_PROMPT,
                 adapter_name="custom",
-                model_provider=model_provider,
-                model_id=model_id,
-                api_key=api_key,
-                api_base_url=api_base_url,
                 tool_names=[
                     "manage_agents",
                     "manage_skills",
@@ -368,12 +344,113 @@ async def _seed_guide_agent() -> None:
                 created_at=now_ms(),
             )
             db.add(guide)
-        logger.info(
-            "Guide agent (小A) seeded successfully (provider=%s, model=%s)",
-            model_provider, model_id,
-        )
+        logger.info("Guide agent (小A) seeded successfully")
     except Exception as e:
         logger.warning("Guide agent seed failed: %s", e)
+
+
+async def _migrate_agent_model_profiles() -> None:
+    """One-time migration: copy baked-in model config from agents to model_profiles.
+
+    Scans the agents table for rows that still have model_provider set (pre-migration),
+    deduplicates by (user_id, provider, model_id, api_key, api_base_url), and inserts
+    into model_profiles. Marks the earliest-created profile per user as default.
+    Builtin agents (user_id IS NULL) are skipped — the guide agent resolves its model
+    from GUIDE_AGENT_* env vars at runtime.
+    """
+    try:
+        from sqlalchemy import select, text
+
+        from app.db.engine import get_local_db
+        from app.db.models import ModelProfile
+        from app.utils.clock import now_ms
+        from app.utils.ids import new_model_profile_id
+
+        async with get_local_db() as db:
+            # Check if agents table still has model_provider column
+            # (may have been dropped by a prior migration on PG)
+            has_col = True
+            try:
+                result = await db.execute(
+                    text("SELECT model_provider FROM agents WHERE model_provider IS NOT NULL LIMIT 1")
+                )
+                result.fetchall()
+            except Exception:
+                has_col = False
+
+            if not has_col:
+                logger.info("Agent model migration: column already dropped, skipping")
+                return
+
+            # Scan agents with baked-in model config (exclude builtin / user_id IS NULL)
+            rows = (
+                await db.execute(
+                    text(
+                        "SELECT id, user_id, model_provider, model_id, "
+                        "api_key, api_base_url, supports_vision, created_at "
+                        "FROM agents "
+                        "WHERE model_provider IS NOT NULL AND model_id IS NOT NULL "
+                        "AND user_id IS NOT NULL "
+                        "ORDER BY created_at ASC"
+                    )
+                )
+            ).fetchall()
+
+            if not rows:
+                logger.info("Agent model migration: no agents with baked-in model config found")
+                return
+
+            migrated = 0
+            for row in rows:
+                _agent_id, user_id, provider, model_id, api_key, api_base_url, supports_vision, _created_at = row
+
+                # Check if a matching profile already exists
+                existing = (
+                    await db.execute(
+                        select(ModelProfile).where(
+                            ModelProfile.user_id == user_id,
+                            ModelProfile.provider == provider,
+                            ModelProfile.model_id == model_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+
+                if existing is not None:
+                    continue
+
+                # Check if user already has any profile (to set is_default)
+                user_profiles_count = (
+                    await db.execute(
+                        select(ModelProfile).where(ModelProfile.user_id == user_id)
+                    )
+                ).scalars().all()
+                is_default = len(user_profiles_count) == 0
+
+                profile = ModelProfile(
+                    id=new_model_profile_id(),
+                    user_id=user_id,
+                    name=f"{provider}/{model_id}",
+                    provider=provider,
+                    model_id=model_id,
+                    api_key=api_key,
+                    api_base_url=api_base_url,
+                    is_default=is_default,
+                    supports_vision=bool(supports_vision),
+                    last_test_status="untested",
+                    last_tested_at=None,
+                    created_at=now_ms(),
+                    updated_at=now_ms(),
+                )
+                db.add(profile)
+                await db.flush()
+                migrated += 1
+
+            logger.info(
+                "Agent model migration: migrated %d model profile(s) from %d agent(s)",
+                migrated, len(rows),
+            )
+    except Exception as e:
+        logger.warning("Agent model migration failed: %s", e)
 
 
 async def _cleanup_orphan_worktrees(settings) -> None:
@@ -446,7 +523,7 @@ def _log_startup_dashboard(settings) -> None:
         if _infrastructure.redis_client:
             infra_status.append("✓ Redis")
         else:
-            infra_status.append("✗ Redis (degraded)")
+            infra_status.append("✗ Redis (removed)")
     else:
         infra_status.append("✗ Infrastructure not initialized")
     
@@ -794,6 +871,7 @@ def create_app() -> FastAPI:
         mcp,
         memory,
         messages,
+        model_profiles,
         obsidian,
         pending,
         plan_usage,
@@ -827,6 +905,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router, prefix="/api", tags=["documents"])
     app.include_router(obsidian.router, prefix="/api", tags=["obsidian"])
     app.include_router(eval.router, prefix="/api", tags=["eval"])
+    app.include_router(model_profiles.router, prefix="/api", tags=["model-profiles"])
     app.include_router(memory.router, prefix="", tags=["memory"])
     app.include_router(skills.router, prefix="/api", tags=["skills"])
     app.include_router(mcp.router, prefix="/api", tags=["mcp"])

@@ -26,7 +26,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Artifact, Conversation, Message
 from app.infra.cache_helpers import get_workspace_cached
 from app.schemas.events import MessageRecord
@@ -129,7 +129,7 @@ def decide_deploy_command(
 # ─── DB-backed helpers ──────────────────────────────────────────────────────
 async def list_deploy_candidates(conversation_id: str) -> list[DeployCandidateRecord]:
     """All web_app artifacts in a conversation, newest first."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Artifact)
             .where(Artifact.conversation_id == conversation_id, Artifact.type == "web_app")
@@ -268,7 +268,7 @@ async def _insert_system_message(
     created_at = max(now_ms(), (after_created_at or 0) + 1)
     message_id = new_message_id()
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         msg = Message(
             id=message_id,
             conversation_id=conversation_id,

@@ -26,6 +26,7 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
   const conv = useAppStore((s) => s.conversations[conversationId])
   const upsertMessage = useAppStore((s) => s.upsertMessage)
   const setCtxOverride = useAppStore((s) => s.setCtxOverride)
+  const modelProfiles = useAppStore((s) => s.modelProfiles)
   const [compacting, setCompacting] = useState(false)
 
   if (total.runCount === 0) return null
@@ -40,15 +41,14 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
   )
   const hasCacheData = total.cacheReadTokens > 0 || total.runCount > 1
 
-  // 取本会话内 contextWindow 最大的 agent 作为可见上限。详见 specs/13-conversation-context.md。
+  // 取本会话内 contextWindow 最大的 model profile 作为可见上限。
   const contextWindow = (() => {
-    if (!conv) return 0
+    const profiles = Object.values(modelProfiles)
+    if (profiles.length === 0) return 0
     let maxCtx = 0
-    for (const aid of conv.agentIds) {
-      const a = agents[aid]
-      if (!a) continue
-      const limits = getModelLimits(a.modelProvider, a.modelId)
-      if (limits.contextWindow > maxCtx) maxCtx = limits.contextWindow
+    for (const p of profiles) {
+      const limits = getModelLimits(p.provider, p.modelId)
+      if (limits.effectiveContextWindow > maxCtx) maxCtx = limits.effectiveContextWindow
     }
     return maxCtx
   })()

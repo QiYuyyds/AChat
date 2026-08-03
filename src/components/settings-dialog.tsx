@@ -14,7 +14,6 @@ import {
   Network,
   Power,
   RotateCw,
-  Settings as SettingsIcon,
   Smartphone,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -40,8 +39,6 @@ import {
   type AppSettingsPatchBody,
   type ConnectionHint,
 } from '@/lib/api'
-import { subscribeUiCommand } from '@/lib/ui-command-events'
-
 interface SettingsForm {
   anthropicApiKey: string
   anthropicBaseUrl: string
@@ -647,33 +644,6 @@ function KeyField({
       </div>
       {hint && <p className="text-[10px] text-muted-foreground/80">{hint}</p>}
     </div>
-  )
-}
-
-/** 设置 button 入口，挂在 Sidebar header。 */
-export function SettingsButton() {
-  const [open, setOpen] = useState(false)
-
-  useEffect(() => {
-    return subscribeUiCommand((command) => {
-      if (command === 'open-settings') setOpen(true)
-    })
-  }, [])
-
-  return (
-    <>
-      <Button
-        size="icon"
-        variant="ghost"
-        className="group"
-        onClick={() => setOpen(true)}
-        title="API 设置"
-        aria-label="API 设置"
-      >
-        <SettingsIcon className="size-4 motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-out motion-safe:group-hover:rotate-45 motion-safe:group-active:scale-90" />
-      </Button>
-      <SettingsDialog open={open} onOpenChange={setOpen} />
-    </>
   )
 }
 

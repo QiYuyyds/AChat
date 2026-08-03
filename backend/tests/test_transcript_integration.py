@@ -40,7 +40,6 @@ async def _seed_agent_and_conversation(db, user_id: str) -> tuple[str, str]:
             model_id="gpt-4o-mini",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now,
             user_id=user_id,
         )

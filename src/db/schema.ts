@@ -19,22 +19,6 @@ export const agents = sqliteTable('agents', {
   systemPrompt: text('system_prompt').notNull(),
   adapterName: text('adapter_name').$type<AdapterName>().notNull(),
 
-  modelProvider: text('model_provider').$type<ModelProvider>(),
-  modelId: text('model_id'),
-  /**
-   * 该 agent 单独的 API key。优先级高于 app_settings / env var。
-   * Codex adapter 会把最终 key 注入隔离 CODEX_HOME 下的 SDK runtime。
-   */
-  apiKey: text('api_key'),
-
-  /**
-   * 该 agent 单独的 API base URL。
-   * NULL 表示走 adapter 默认 endpoint；Claude Code 还可走 app_settings.anthropicBaseUrl。
-   * 配合 apiKey 一起用：base URL 非空时，SDK adapter 会把 apiKey 作为对应 token 传入。
-   * Codex 只支持 Codex/Responses 兼容 endpoint，Chat Completions-only provider 需走 custom。
-   */
-  apiBaseUrl: text('api_base_url'),
-
   toolNames: text('tool_names', { mode: 'json' }).$type<string[]>().notNull(),
 
   skillNames: text('skill_names', { mode: 'json' }).$type<string[]>().notNull().default(sql`'[]'`),
@@ -53,10 +37,29 @@ export const agents = sqliteTable('agents', {
   isBuiltin: integer('is_builtin', { mode: 'boolean' }).notNull().default(false),
   isOrchestrator: integer('is_orchestrator', { mode: 'boolean' }).notNull().default(false),
   isGuide: integer('is_guide', { mode: 'boolean' }).notNull().default(false),
-  supportsVision: integer('supports_vision', { mode: 'boolean' }).notNull().default(false),
+  memoryEnabled: integer('memory_enabled', { mode: 'boolean' }).notNull().default(false),
 
   createdAt: integer('created_at').notNull(),
 })
+
+// ─── Model Profiles ─────────────────────────────────────────
+export const modelProfiles = sqliteTable('model_profiles', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull(),
+  name: text('name').notNull(),
+  provider: text('provider').$type<ModelProvider>().notNull(),
+  modelId: text('model_id').notNull(),
+  apiKey: text('api_key'),
+  apiBaseUrl: text('api_base_url'),
+  isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
+  supportsVision: integer('supports_vision', { mode: 'boolean' }).notNull().default(false),
+  lastTestStatus: text('last_test_status').notNull().default('untested'),
+  lastTestedAt: integer('last_tested_at'),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull(),
+})
+
+export type ModelProfileRow = typeof modelProfiles.$inferSelect
 
 // ─── Conversations ───────────────────────────────────────────
 export const conversations = sqliteTable(
@@ -90,11 +93,13 @@ export const conversations = sqliteTable(
       .notNull()
       .default('review'),
 
-    /** RAG 知识库检索开关：启用后 Agent 可调用 rag_search/rag_ingest 等工具 */
-    ragEnabled: integer('rag_enabled', { mode: 'boolean' }).notNull().default(false),
-
     /** 对话摘要（≤50字），首次对话后自动生成；NULL 表示尚未生成 */
     summary: text('summary'),
+
+    /** Fork origin: source conversation ID this one was forked from (nullable for normal conversations) */
+    parentConversationId: text('parent_conversation_id'),
+    /** Fork origin: message ID in source conversation at which the fork occurred */
+    forkPointMessageId: text('fork_point_message_id'),
 
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),

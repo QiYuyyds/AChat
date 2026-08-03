@@ -83,10 +83,10 @@ class RAGService:
         try:
             from sqlalchemy import func, select
 
-            from app.db.engine import get_db
+            from app.db.engine import get_remote_db
             from app.db.models import RagChunk
 
-            async with get_db() as session:
+            async with get_remote_db() as session:
                 stmt = select(func.count()).select_from(RagChunk)
                 result = await session.execute(stmt)
                 count = result.scalar() or 0
@@ -138,11 +138,11 @@ class RAGService:
         """
         from sqlalchemy import delete, select
 
-        from app.db.engine import get_db
+        from app.db.engine import get_remote_db
         from app.db.models import RagChunk
 
         # 1. Collect pg_ids before deleting (needed for ES/Milvus cleanup)
-        async with get_db() as session:
+        async with get_remote_db() as session:
             id_result = await session.execute(
                 select(RagChunk.id).where(RagChunk.doc_hash == doc_hash)
             )
@@ -188,11 +188,11 @@ class RAGService:
         """
         from sqlalchemy import delete, select
 
-        from app.db.engine import get_db
+        from app.db.engine import get_remote_db
         from app.db.models import RagChunk
 
         # 1. Collect pg_ids + doc_hashes before deleting
-        async with get_db() as session:
+        async with get_remote_db() as session:
             rows_result = await session.execute(
                 select(RagChunk.id, RagChunk.doc_hash).where(
                     RagChunk.document_id == document_id

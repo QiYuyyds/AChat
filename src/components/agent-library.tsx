@@ -107,7 +107,6 @@ export function AgentLibrary() {
                   </div>
                   <div className="mt-0.5 font-mono text-[9px] text-muted-foreground">
                     {a.adapterName}
-                    {a.modelId ? ` · ${a.modelId}` : ''}
                   </div>
                 </div>
                 <div className="flex shrink-0 self-center gap-1 opacity-0 transition group-hover:opacity-100">

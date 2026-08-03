@@ -101,7 +101,7 @@ class Agent(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("users.id"), name="user_id", nullable=True
+        String, name="user_id", nullable=True
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     avatar: Mapped[str] = mapped_column(String, nullable=False)
@@ -115,19 +115,6 @@ class Agent(Base):
     )
     adapter_name: Mapped[str] = mapped_column(
         String, name="adapter_name", nullable=False
-    )
-
-    model_provider: Mapped[str | None] = mapped_column(
-        String, name="model_provider", nullable=True
-    )
-    model_id: Mapped[str | None] = mapped_column(
-        String, name="model_id", nullable=True
-    )
-    api_key: Mapped[str | None] = mapped_column(
-        String, name="api_key", nullable=True
-    )
-    api_base_url: Mapped[str | None] = mapped_column(
-        String, name="api_base_url", nullable=True
     )
 
     tool_names: Mapped[list] = mapped_column(JSONB, name="tool_names", nullable=False, default=list)
@@ -165,9 +152,6 @@ class Agent(Base):
     )
     is_guide: Mapped[bool] = mapped_column(
         Boolean, name="is_guide", nullable=False, default=False
-    )
-    supports_vision: Mapped[bool] = mapped_column(
-        Boolean, name="supports_vision", nullable=False, default=False
     )
     memory_enabled: Mapped[bool] = mapped_column(
         Boolean, name="memory_enabled", nullable=False, default=False
@@ -247,7 +231,7 @@ class Conversation(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id"), name="user_id", nullable=False
+        String, name="user_id", nullable=False
     )
     title: Mapped[str] = mapped_column(String, nullable=False)
     mode: Mapped[str] = mapped_column(String, nullable=False)  # 'single' | 'group'
@@ -270,6 +254,9 @@ class Conversation(Base):
         String, name="fs_write_approval_mode", nullable=False, default="review"
     )
 
+    # Deprecated: rag_enabled is no longer read or written by application code.
+    # RAG tool availability is now determined solely by agent.toolNames containing "rag_search".
+    # Column retained for backward compat to avoid DB migration risk.
     rag_enabled: Mapped[bool] = mapped_column(
         Boolean, name="rag_enabled", nullable=False, default=False
     )
@@ -278,6 +265,14 @@ class Conversation(Base):
 
     dispatch_mode: Mapped[str] = mapped_column(
         String, name="dispatch_mode", nullable=False, default="solo"
+    )
+
+    # Fork origin tracking (nullable — normal conversations have both null).
+    parent_conversation_id: Mapped[str | None] = mapped_column(
+        String, name="parent_conversation_id", nullable=True
+    )
+    fork_point_message_id: Mapped[str | None] = mapped_column(
+        String, name="fork_point_message_id", nullable=True
     )
 
     created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
@@ -558,6 +553,12 @@ class AgentRun(Base):
         BigInteger, name="finished_at", nullable=True
     )
 
+    # CLI agent session ID for cross-run resume (e.g. claude --resume <session_id>).
+    # NULL for SDK agent runs or CLI runs that failed before capturing a session ID.
+    cli_session_id: Mapped[str | None] = mapped_column(
+        String, name="cli_session_id", nullable=True
+    )
+
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="runs")
     agent: Mapped["Agent"] = relationship(back_populates="runs")
@@ -744,6 +745,53 @@ class UserSettings(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
 
 
+class ModelProfile(Base):
+    """User-scoped reusable model configuration (provider + model_id + key + url).
+
+    Replaces the per-Agent model fields (model_provider / model_id / api_key /
+    api_base_url / supports_vision) that were removed. Each profile is a named,
+    testable model configuration that can be selected per-message in the input bar.
+    """
+
+    __tablename__ = "model_profiles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, name="user_id", nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    model_id: Mapped[str] = mapped_column(String, name="model_id", nullable=False)
+    api_key: Mapped[str | None] = mapped_column(
+        String, name="api_key", nullable=True
+    )
+    api_base_url: Mapped[str | None] = mapped_column(
+        String, name="api_base_url", nullable=True
+    )
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, name="is_default", nullable=False, default=False
+    )
+    supports_vision: Mapped[bool] = mapped_column(
+        Boolean, name="supports_vision", nullable=False, default=False
+    )
+    # 'untested' | 'ok' | 'fail'
+    last_test_status: Mapped[str] = mapped_column(
+        String(16), name="last_test_status", nullable=False, default="untested"
+    )
+    last_tested_at: Mapped[int | None] = mapped_column(
+        BigInteger, name="last_tested_at", nullable=True
+    )
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+
+    __table_args__ = (
+        Index("idx_model_profiles_user", "user_id"),
+        # Partial unique index: at most one is_default=true per user.
+        # On SQLite this is handled at application level; on PG the index is
+        # created via the migration statements in engine.py.
+    )
+
+
 class McpServer(Base):
     """MCP server configuration — globally defined, per-agent opted-in."""
 
@@ -751,7 +799,7 @@ class McpServer(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(
-        String, ForeignKey("users.id"), name="user_id", nullable=False
+        String, name="user_id", nullable=False
     )
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     transport: Mapped[str] = mapped_column(String, nullable=False)  # 'stdio' | 'sse' | 'streamable_http'
@@ -790,12 +838,17 @@ class LongTermMemory(Base):
     user_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("users.id"), name="user_id", nullable=True
     )
+    # Structured fields for dual-path retrieval (summary embedding + keyword Jaccard)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    keywords: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    content_scope: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     __table_args__ = (
         Index("idx_ltm_category", "category"),
         Index("idx_ltm_created", "created_at"),
         Index("idx_ltm_scope_agent", "scope", "agent_id"),
         Index("idx_ltm_user", "user_id"),
+        Index("idx_ltm_content_scope", "content_scope"),
     )
 
 

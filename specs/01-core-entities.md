@@ -19,11 +19,7 @@ interface Agent {
   systemPrompt: string          // 决定 Agent 行为的核心
   adapterName: AdapterName      // 'claude-code' | 'codex' | 'custom' | 'mock'
 
-  // 仅 adapterName === 'custom' 时使用
-  modelProvider?: ModelProvider
-  modelId?: string              // 厂商内部 model id
-  apiKey?: string               // per-agent 自定义 key；NULL 走 app_settings → env var；Claude Code 还可走 OAuth（详见 Spec 05 §API key 解析、Spec 08 §8）
-  apiBaseUrl?: string           // per-agent 自定义 API endpoint；openai-compatible 必填；NULL 时 Claude Code 可走 app_settings.anthropicBaseUrl，Codex 走隔离 CODEX_HOME + SDK 默认 endpoint
+  // 模型配置已移至 ModelProfile（详见下方 §ModelProfile）
 
   toolNames: string[]           // 该 Agent 可调用的工具，引用 Spec 07
   skillNames: string[]          // 该 Agent 装备的 skill slug（仅 custom adapter；内容存 <data_dir>/skills/，不入库）。详见 openspec/changes/add-agent-skills
@@ -31,23 +27,23 @@ interface Agent {
   isBuiltin: boolean            // 内置（不可删；可改）
   isOrchestrator: boolean       // 标记为协调者；同会话最多 1 个
   isGuide: boolean              // 标记为管理引导 Agent；跳过 baseline 工具合并，仅注入管理工具 + ask_user
-  supportsVision: boolean       // 决定是否把图片附件以 multimodal 投递（详见 Spec 05）
+
+  // CLI agent 字段（仅 claude-code / codex）
+  executablePath?: string       // CLI 二进制路径（NULL 走 PATH 查找）
+  protocolFamily?: string       // 'claude-code' | 'codex'
+  customArgs?: string[]         // 用户自定义 CLI 参数（--model 等安全敏感参数会被过滤）
 
   createdAt: number             // unix ms
 }
 
 type AdapterName = 'claude-code' | 'codex' | 'custom' | 'mock'
-type ModelProvider = 'anthropic' | 'openai' | 'deepseek' | 'volcano-ark' | 'openai-compatible'
 ```
 
 **约束**：
 - `isOrchestrator: true` 的 Agent 必须 `toolNames.includes('plan_tasks')`（早期 spec 用过 `dispatch_to_agent` 命名，已统一为 `plan_tasks`，详见 Spec 07）
-- `adapterName === 'custom'` 时 `modelProvider` 和 `modelId` 必填
-- `modelProvider === 'openai-compatible'` 时 `apiKey` 与 `apiBaseUrl` 必填；`apiBaseUrl` 必须是 OpenAI Chat Completions 兼容 endpoint（例如通义千问 compatible-mode、智谱、MiniMax、OpenRouter、SiliconFlow 等兼容地址）
+- 模型配置（provider / modelId / apiKey / apiBaseUrl / supportsVision）已移至 ModelProfile 实体，Agent 不再存储这些字段
 - `skillNames` 仅 `adapterName === 'custom'` 时消费；SDK adapter（claude-code / codex）强制 `[]`（与 `toolNames` 同处理）。运行时只注入 skill 的 name+description，正文经 `load_skill` 按需读回（渐进式披露）
-- `adapterName === 'claude-code'` 时 `modelProvider` 忽略；`modelId` 可选（默认走 SDK 默认模型 `claude-opus-4-7`）；`toolNames` 强制 `[]`（Claude Code 用 SDK 内置工具集，详见 Spec 07）
-- `adapterName === 'codex'` 时 `modelProvider` 忽略；`modelId` 可选（默认 `gpt-5-codex`）；`toolNames` 强制 `[]`（Codex 用 SDK 内置工具集，详见 Spec 05）；`apiBaseUrl` 必须是 Codex/Responses 兼容 endpoint
-- `apiKey` / `apiBaseUrl` 是 per-agent 凭据：`apiBaseUrl` 非空时，`apiKey` 作为对应 SDK / endpoint 的 token；Claude Code、Codex、Custom openai-compatible 的 Base URL 协议不相同，Chat Completions-only provider 走 Custom adapter
+- `adapterName === 'claude-code'` / `'codex'` 时 `toolNames` 强制 `[]`（CLI 用内置工具集）；`executablePath` / `protocolFamily` / `customArgs` 仅 CLI adapter 使用
 - `isGuide: true` 的 Agent 必须 `isBuiltin: true`；不可修改、不可删除；跳过 baseline 工具合并（详见 Spec 05 §baseline 跳过）
 - `isBuiltin: true` 的 Agent 不可删除但可修改配置（详见 Spec 10）
 - 删除 Agent 不级联删除使用它的 Conversation；前端应展示「已停用 Agent」灰态
@@ -295,6 +291,37 @@ interface Attachment {
 | ToolCall（内存中） | `call_` |
 
 ID 用 `nanoid(12)`，URL-safe alphabet。详见 `src/server/ids.ts`。
+
+---
+
+## 9. ModelProfile
+
+用户级模型配置。独立于 Agent 实体，可在输入栏按消息选择。
+
+```typescript
+interface ModelProfile {
+  id: string                    // mp_<nanoid>
+  userId: string                // 所属用户（隔离）
+  name: string                  // 用户可读名称，如 "DeepSeek Chat"
+  provider: string              // 'deepseek' | 'openai' | 'anthropic' | 'volcano-ark' | 'openai-compatible'
+  modelId: string               // 厂商内部 model id，如 'deepseek-chat'
+  apiKey: string                // API key（掩码返回前端）
+  apiBaseUrl: string | null     // 自定义 endpoint（null 走 SDK 默认）
+  isDefault: boolean            // 用户默认 profile（每用户最多 1 个）
+  supportsVision: boolean       // 是否支持图片附件 multimodal 投递
+  lastTestStatus: 'untested' | 'ok' | 'fail'
+  lastTestedAt: number | null   // unix ms
+  createdAt: number
+  updatedAt: number
+}
+```
+
+**约束**：
+- 仅 SDK (Custom) agent 运行时解析 ModelProfile；CLI agent (claude-code / codex) 跳过
+- 运行时解析优先级：显式 `modelProfileId` → 用户默认 profile → 拒绝运行
+- 引用已删 profile → 回退默认 profile + 警告
+- 删除默认 profile 时，最早的剩余 profile 自动成为新默认
+- `apiKey` 在 API 响应中掩码返回（`****` + 后 4 位）
 
 ---
 

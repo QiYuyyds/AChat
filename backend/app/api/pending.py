@@ -12,11 +12,12 @@ from fastapi.responses import JSONResponse
 from app.auth.dependencies import get_current_user
 from app.auth.ownership import verify_conversation_ownership
 from app.db.models import User
-from app.schemas.dispatch import AskUserAnswer
+from app.schemas.dispatch import AskUserAnswer, DispatchPlanItem
 from app.services import conversation_service
 from app.services.pending_bash_commands import pending_bash_commands
 from app.services.pending_dispatch_plans import pending_dispatch_plans
 from app.services.pending_mcp_calls import pending_mcp_calls
+from app.services.pending_merge_conflicts import pending_merge_conflicts
 from app.services.pending_questions import pending_questions
 from app.services.pending_writes import pending_writes
 
@@ -228,7 +229,18 @@ async def resolve_pending_dispatch_plan(
             return JSONResponse({"error": result.get("error")}, status_code=400)
         return JSONResponse({"ok": True})
 
-    result = pending_dispatch_plans.approve(plan_id)
+    # Parse optional modified plan when approving
+    modified_plan: list[DispatchPlanItem] | None = None
+    if action == "approve" and raw.get("plan") is not None:
+        raw_plan = raw.get("plan")
+        if not isinstance(raw_plan, list):
+            return _invalid_body()
+        try:
+            modified_plan = [DispatchPlanItem.model_validate(item) for item in raw_plan]
+        except Exception:
+            return _invalid_body()
+
+    result = pending_dispatch_plans.approve(plan_id, modified_plan=modified_plan)
     if not result.ok:
         return JSONResponse({"error": result.error}, status_code=400)
     return JSONResponse({"ok": True})
@@ -273,5 +285,71 @@ async def resolve_pending_mcp_call(
     if not ok:
         return JSONResponse(
             {"error": "Failed to process pending MCP call"}, status_code=500
+        )
+    return JSONResponse({"ok": True})
+
+
+# ─── pending-merge-conflicts ─────────────────────────────────────────────────
+@router.get("/api/conversations/{conversation_id}/pending-merge-conflicts")
+async def list_pending_merge_conflicts(
+    conversation_id: str,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
+    conflicts = pending_merge_conflicts.list_by_conversation(conversation_id)
+    return JSONResponse(
+        {"pendingMergeConflicts": [c.model_dump(by_alias=True) for c in conflicts]}
+    )
+
+
+@router.post(
+    "/api/conversations/{conversation_id}/pending-merge-conflicts/{pending_id}/resolve"
+)
+async def resolve_pending_merge_conflict(
+    conversation_id: str,
+    pending_id: str,
+    req: Request,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    await verify_conversation_ownership(conversation_id, user.id)
+    raw = await _read_json(req)
+    if not isinstance(raw, dict) or raw.get("action") not in (
+        "ours",
+        "theirs",
+        "edit",
+        "abandon",
+    ):
+        return _invalid_body()
+
+    action = raw["action"]
+    file_contents: dict[str, str] | None = None
+    if action == "edit":
+        fc = raw.get("fileContents")
+        if not isinstance(fc, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in fc.items()
+        ):
+            return _invalid_body()
+        file_contents = fc
+
+    existing = pending_merge_conflicts.get(pending_id)
+    if existing is None or existing.conversation_id != conversation_id:
+        return JSONResponse(
+            {"error": "Pending merge conflict not found"}, status_code=404
+        )
+
+    resolution_strategy = "manual" if action != "abandon" else "abandoned"
+    resolved_files = list(existing.conflict_files) if action != "abandon" else []
+
+    decision: dict[str, Any] = {
+        "action": action,
+        "file_contents": file_contents,
+        "resolution_strategy": resolution_strategy,
+        "resolved_files": resolved_files,
+    }
+
+    ok = pending_merge_conflicts.resolve(pending_id, decision)
+    if not ok:
+        return JSONResponse(
+            {"error": "Failed to resolve pending merge conflict"}, status_code=500
         )
     return JSONResponse({"ok": True})

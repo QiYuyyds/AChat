@@ -3,8 +3,10 @@
 > Drizzle ORM + SQLite。本 spec 描述 9 张表的字段、索引、外键级联策略，是 Spec 01 实体的物理映射。**修改字段需先讨论。**
 >
 > 7 张「业务表」（agents / conversations / messages / artifacts / workspaces / attachments / agent_runs）映射 Spec 01 的 7 个实体；`conversation_context_summaries` 是上下文压缩基础设施表；`app_settings` 是单行配置表，不对应实体。
+>
+> **双数据库架构**：后端已迁移到双 DB 架构（本地 SQLite + 远端 PostgreSQL），详见下方「双数据库架构」节和 `docs/dual-database-design.md`。
 
-源文件：`src/db/schema.ts`
+源文件：`src/db/schema.ts`（前端 Drizzle 遗留）、`backend/app/db/models.py`（后端 SQLAlchemy 实际实现）
 
 ---
 
@@ -16,6 +18,49 @@
 4. **boolean 用 `INTEGER 0/1`**（drizzle `mode: 'boolean'`）
 5. **外键 + cascade**：会话是 aggregate root，删除时级联清掉 messages / artifacts / workspaces / attachments / agent_runs / conversation_context_summaries
 6. **不引入复合主键 / 多列唯一约束**（除 workspaces 的 unique conversationId），关系通过 ID 字段维护
+
+---
+
+## 双数据库架构
+
+### 表分类
+
+后端使用 SQLAlchemy 2.0 async，双引擎初始化：
+
+| 分类 | 引擎 | 表（共 22 张） | 路由函数 |
+|---|---|---|---|
+| **本地表（10 张）** | SQLite（WAL 模式，~0.1ms RTT） | messages, conversations, agent_runs, agent_run_checkpoints, artifacts, workspaces, attachments, conversation_context_summaries, agents, mcp_servers | `get_local_db()` |
+| **远端表（12 张）** | PostgreSQL（~50ms RTT） | users, user_settings, user_preferences, global_settings, app_settings, rag_chunks, long_term_memory, chat_history, memory_nodes, memory_edges, documents, document_versions | `get_remote_db()` |
+
+路由常量定义在 `backend/app/db/table_routing.py`。
+
+### 单 DB 回退
+
+不设置 `DATABASE_LOCAL_URL` 时，`get_local_db()` 回退到远端 PG session（单 DB 模式，向后兼容）。`get_db` 设为 `get_remote_db` 别名用于过渡期兼容。
+
+### 跨库 FK 移除
+
+3 个跨库 FK 已移除 `ForeignKey("users.id")` 约束，改为纯 String 列：
+- `conversations.user_id` → 纯 String 列（App 层 JWT 校验）
+- `agents.user_id` → 纯 String 列（nullable）
+- `mcp_servers.user_id` → 纯 String 列（nullable）
+
+SQLite 内部 FK 保持不变（`messages.agent_id → agents.id` 等），`PRAGMA foreign_keys=ON` 确保级联删除生效。
+
+### SQLite WAL 配置
+
+本地 SQLite 引擎初始化时配置：
+- `PRAGMA journal_mode=WAL`：读不阻塞写、写不阻塞读
+- `PRAGMA foreign_keys=ON`：启用外键级联
+- `PRAGMA busy_timeout=5000`：写锁竞争时等待 5 秒
+
+### 进程内缓存（替代 Redis）
+
+Redis 已完全移除，以下缓存改用进程内 dict TTL（5min）或直读：
+- `UserSettings` / `GlobalSettings`：远端 PG 直读 + 进程内 dict 缓存
+- `UserPreference`：每次 run 读取，写频率极低，进程内 dict 缓存
+- `Agent` / `Workspace`：本地 SQLite 直读（0.1ms），无需缓存
+- `LongTermMemory` recall：已在 `LongTermMemoryStore.items` 进程内存中
 
 ---
 
@@ -194,6 +239,7 @@ agent_runs {
   error               text              // failed 时存错误概要
   parent_run_id       text              // Orchestrator 派出的子 run 指向父 run
   usage               text JSON         // RunUsage：{ inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, lastInputTokens?, model? }；null = 该 run 未上报（mock / 中途失败）
+  cli_session_id      text              // CLI agent 会话恢复 ID（claude --resume / codex thread resume）；SDK agent 或失败 run 为 NULL
   started_at          int  NOT NULL
   finished_at         int               // null = 仍在 running
 }

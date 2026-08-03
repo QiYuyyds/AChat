@@ -23,9 +23,10 @@ from types import SimpleNamespace
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, Artifact, Conversation, Message
 from app.infra.cache_helpers import get_agent_cached
+from app.memory.session_memory import SessionMemory
 from app.services.compact_markers import CompactMarkerBuilder
 from app.services.compact_pipeline import (
     FOLD_TURN_THRESHOLD,
@@ -42,11 +43,18 @@ from app.services.prompt_assembler import (
     Query,
     RuntimeContext,
 )
-from app.services.transcript_renderer import estimate_dict_message_tokens
+from app.services.transcript_renderer import (
+    estimate_dict_message_tokens,
+    estimate_full_message_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAX_TURNS = 20
+# Ratio threshold for cross-run history pruning. When loaded history tokens
+# (including prompt estimate) divided by model_context_limit is below this
+# value, full history is injected without pruning. This forms a 0.05 buffer
+# below run-internal compaction stage 1 (0.70).
+PRE_RUN_COMPACT_RATIO = 0.65
 
 # Cross-run replay: cap tool_result text to avoid blowing the history budget.
 # prune_old_tool_results already replaces large results with a marker, but this
@@ -61,7 +69,7 @@ ChatMessage = dict
 class BuildHistoryOptions:
     """Options for build_history_for (mirrors the TS BuildHistoryOptions)."""
 
-    # How many recent (non-pinned) messages to load. None → default 20.
+    # How many recent (non-pinned) messages to load. None → no limit (load all uncompacted).
     max_turns: int | None = None
     # Whether to inject pinned messages. None → True.
     include_pinned: bool | None = None
@@ -69,6 +77,10 @@ class BuildHistoryOptions:
     exclude_message_id: str | None = None
     # Token budget for history only (excl. system / current user). None → no cut.
     token_budget: int | None = None
+    # Model context window size (tokens) for ratio-aware pruning. None → no pruning.
+    model_context_limit: int | None = None
+    # System + prompt + safety token estimate, supplied by build_adapter_input.
+    prompt_estimate: int = 0
 
 
 @dataclass
@@ -175,13 +187,23 @@ def prune_old_tool_results(
     replaces the part with a ``CompactMarkerBuilder.build_tool_result_marker``.
     ``code_explore`` and ``fs_read(mode=outline/head)`` results are preserved
     verbatim.
+
+    IMPORTANT: callers MUST ensure all ORM Message objects are detached from
+    the session (e.g. via ``db.expunge_all()``) before calling this function.
+    This function writes compact markers back to ``msg.parts_list``; if the
+    objects are still attached, the session auto-commits on exit and
+    permanently corrupts the DB. The ``copy.deepcopy`` below prevents
+    in-place mutation of the *returned* list, but the re-assignment
+    ``msg.parts_list = parts`` still marks the ORM object dirty.
     """
+    import copy
+
     recent, old = _keep_recent_turns_messages(messages, k=keep_recent_turns)
     if not old:
         return messages
 
     for msg in old:
-        parts = msg.parts_list
+        parts = copy.deepcopy(msg.parts_list)
         tool_use_map = _build_tool_use_map(parts)
         modified = False
         for j, p in enumerate(parts):
@@ -347,12 +369,12 @@ async def _build_history_with_assembler(
 ) -> list[ChatMessage]:
     """Build history using PromptAssembler for schema-driven context assembly."""
     opts = options or BuildHistoryOptions()
-    max_turns = opts.max_turns if opts.max_turns is not None else DEFAULT_MAX_TURNS
+    max_turns = opts.max_turns
     exclude_message_id = opts.exclude_message_id
 
     latest_summary = await get_latest_context_summary(conversation_id)
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         # Load recent messages for query context
         recent_stmt = (
             select(Message)
@@ -362,8 +384,9 @@ async def _build_history_with_assembler(
                 Message.hidden == False,  # noqa: E712 - SQLAlchemy filter
             )
             .order_by(Message.created_at.desc())
-            .limit(max_turns)
         )
+        if max_turns is not None:
+            recent_stmt = recent_stmt.limit(max_turns)
         if exclude_message_id:
             recent_stmt = recent_stmt.where(Message.id != exclude_message_id)
         if latest_summary is not None:
@@ -434,15 +457,15 @@ async def _build_history_legacy(
 ) -> list[ChatMessage]:
     """Original implementation preserved for backward compatibility."""
     opts = options or BuildHistoryOptions()
-    max_turns = opts.max_turns if opts.max_turns is not None else DEFAULT_MAX_TURNS
+    max_turns = opts.max_turns
     include_pinned = opts.include_pinned if opts.include_pinned is not None else True
     exclude_message_id = opts.exclude_message_id
     token_budget = opts.token_budget
 
     latest_summary = await get_latest_context_summary(conversation_id)
 
-    async with get_db() as db:
-        # Recent N complete messages (desc by time, flipped to asc below).
+    async with get_local_db() as db:
+        # Recent complete messages (desc by time, flipped to asc below).
         recent_stmt = (
             select(Message)
             .where(
@@ -451,8 +474,9 @@ async def _build_history_legacy(
                 Message.hidden == False,  # noqa: E712 - SQLAlchemy filter
             )
             .order_by(Message.created_at.desc())
-            .limit(max_turns)
         )
+        if max_turns is not None:
+            recent_stmt = recent_stmt.limit(max_turns)
         if exclude_message_id:
             recent_stmt = recent_stmt.where(Message.id != exclude_message_id)
         if latest_summary is not None:
@@ -513,9 +537,24 @@ async def _build_history_legacy(
             by_id[m.id] = m
         merged = sorted(by_id.values(), key=lambda m: m.created_at)
 
-        # O1: prune large old tool_results, then fold old messages.
-        merged = prune_old_tool_results(merged)
-        merged = fold_old_messages(merged, pinned_ids=pinned_id_set)
+        # Detach all ORM objects from the session before any compaction logic
+        # runs. prune_old_tool_results writes compact markers back to
+        # msg.parts_list; if the objects are still attached, the session
+        # auto-commits on exit and permanently corrupts the DB.
+        db.expunge_all()
+
+        # Ratio-aware pruning: only prune when history + prompt fills a
+        # significant fraction of the context window. Below the threshold,
+        # full history is injected so the LLM can see prior tool results.
+        loaded_tokens = estimate_full_message_tokens(merged)
+        if opts.model_context_limit and opts.model_context_limit > 0:
+            ratio = (loaded_tokens + opts.prompt_estimate) / opts.model_context_limit
+        else:
+            ratio = 0.0
+
+        if ratio >= PRE_RUN_COMPACT_RATIO:
+            merged = prune_old_tool_results(merged)
+            merged = fold_old_messages(merged, pinned_ids=pinned_id_set)
 
         # Batch-load artifact titles for artifact_ref folding.
         artifact_ids = _collect_artifact_ids(merged)
@@ -538,6 +577,31 @@ async def _build_history_legacy(
             ),
             )
         )
+    else:
+        # No ContextSummary — try SessionMemory as a lighter fallback.
+        session_mem = await SessionMemory().get(conversation_id)
+        if session_mem and session_mem.summary:
+            covers_ts = (
+                session_mem.covers_up_to
+                if session_mem.covers_up_to is not None
+                else 0
+            )
+            sm_content = (
+                f'<session_memory covers_up_to="{covers_ts}">\n'
+                f"{session_mem.summary}\n"
+                "</session_memory>"
+            )
+            sm_message: ChatMessage = {"role": "user", "content": sm_content}
+            items.append(
+                _Item(
+                    msg_id="session_memory",
+                    is_pinned=True,
+                    serialized=[sm_message],
+                    tokens=estimate_dict_message_tokens(
+                        sm_message, include_reasoning=False
+                    ),
+                )
+            )
     for msg in merged:
         serialized = _serialize_message(msg, agent_id, artifact_titles, agent_names)
         if not serialized:

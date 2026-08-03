@@ -86,6 +86,7 @@ export const toolRegistry = buildRegistry()
 | `code_explore` | 基于代码图谱回答结构性问题 | 读文件系统 / 进程 | 需要分析项目结构 / 调用链的 agent（仅 local workspace 且图谱就绪时可用） |
 | `bash` | 在 workspace 内跑 shell 命令 | 进程 / 文件系统 | 需要 git / 编译 / 测试的 agent |
 | `web_search` | 用 Tavily 搜公网 | 调外部 API（`api.tavily.com`，耗 Tavily 额度） | 需要实时联网信息的 custom agent（**opt-in，不自动注入**） |
+| `rag_search` | 在知识库中检索相关文档片段 | 调用 RAGService（Milvus 向量 + ES 全文 + Neo4j 图谱混合检索） | 需要知识库检索能力的 custom agent（**opt-in，不自动注入**） |
 | `load_skill` | 按需读回装备 skill 的 `SKILL.md` 正文（渐进式披露） | 读 `<data_dir>/skills/` | custom agent 装备 ≥1 skill 时由 `agent_runner` **自动注入**（详见 openspec/changes/add-agent-skills） |
 | `write_skill` | agent 自建 skill 写入本地 skill 库 | 写 `<data_dir>/skills/<slug>/` | 需要沉淀可复用流程的 custom agent（**opt-in，不自动注入**） |
 
@@ -540,7 +541,7 @@ curl -s http://127.0.0.1:3000/health
 
 **参数**：`{ query: string }`(非空)。
 
-**装备方式**:**opt-in,仅 custom agent**。agent 的 `tool_names` 里含 `web_search` 才生效;不像 `memory_recall` / RAG 工具那样被 `agent_runner` 自动注入。SDK(claude/codex)agent 的 `tool_names` 在创建时被强制清空,用各自 SDK 自带工具,**拿不到本工具**。
+**装备方式**:**opt-in,仅 custom agent**。agent 的 `tool_names` 里含 `web_search` 才生效;不被 `agent_runner` 自动注入。SDK(claude/codex)agent 的 `tool_names` 在创建时被强制清空,用各自 SDK 自带工具,**拿不到本工具**。
 
 **密钥**:`TAVILY_API_KEY`,经 `config.Settings.tavily_api_key` + `apply_env_overrides` 从 `.env` 兜底读取;不硬编码。缺 key 时 handler 返回错误结果,不崩溃、不在启动时拒服务。
 
@@ -554,6 +555,24 @@ curl -s http://127.0.0.1:3000/health
 **返回**:`{ answer: string | null, results: [{ title, url, content, score }] }`。结果限 **top-5**,每条 `content` 截断到 **2000 字符**(防灌爆 context;Tavily 返回属不可信外部文本,见 §安全)。
 
 **审批**:无审批门(只读外部调用,不改 host / 文件 / 依赖,与 `rag_search` 一致)。
+
+### rag_search
+
+源文件：`backend/app/tools/memory_rag.py`
+
+在知识库中检索相关文档片段，返回匹配的文本块和来源信息。
+
+**参数**：`{ query: string }`（非空）。
+
+**装备方式**：**opt-in，仅 custom agent**。agent 的 `tool_names` 里含 `rag_search` 才生效，走与 `web_search` 完全相同的路径（`agent.tool_names` → baseline merge → `tool_registry.resolve`）。不被 `agent_runner` 自动注入。SDK agent 拿不到本工具。
+
+> **注意**：`rag_search` 曾经通过会话级 `Conversation.rag_enabled` 标记动态注入（连同 `rag_ingest` / `rag_list_documents` / `rag_delete_document`）。此机制已废弃——`rag_enabled` 列保留但不再被读写，`rag_search` 现为 agent 级 opt-in 工具。其余 3 个 RAG 管理工具保留在 tool registry 但不再注入任何 agent（文档管理由知识库侧边栏 UI 和 guide agent 的 `manage_documents` 覆盖）。
+
+**检索后端**：RAGService 混合检索（Milvus 向量 + Elasticsearch 全文 + Neo4j 知识图谱），降级时返回空结果或指导性错误（不阻断主对话流）。
+
+**返回**：`{ query, results: [{ content, source, score }], truncated }`。结果数量上限由 RAGService 配置。
+
+**审批**：无审批门（只读检索，不改 host / 文件 / 依赖，与 `web_search` 一致）。
 
 ---
 

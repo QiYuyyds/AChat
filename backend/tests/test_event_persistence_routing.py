@@ -56,7 +56,6 @@ async def _seed_agent(agent_id: str = "ag_1", user_id: str = "test_user_1") -> N
             adapter_name="mock",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now_ms(),
             user_id=user_id,
         )

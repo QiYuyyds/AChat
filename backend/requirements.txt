@@ -29,8 +29,7 @@ neo4j>=5.0.0
 # Kafka (optional event bus)
 kafka-python>=2.0.0
 
-# Redis (optional, for metadata cache + async DB writes via Redis Streams)
-redis[hiredis]>=5.0.0
+# Redis (removed — replaced by local SQLite + process-internal cache)
 
 # Utilities
 pathspec>=0.12.0

@@ -22,6 +22,9 @@ export interface LongTermMemoryItem {
   agentId: string
   createdAt: number
   lastAccessed: number
+  summary: string
+  keywords: string[]
+  contentScope: string
 }
 
 export interface LongTermMemoryListResponse {
@@ -36,6 +39,9 @@ export interface LTMUpdateBody {
   importance?: number
   category?: string
   tags?: string[]
+  summary?: string
+  keywords?: string[]
+  contentScope?: string
 }
 
 export interface PreferenceItem {

@@ -75,11 +75,11 @@ async def _delete_document(args: dict[str, Any], user_id: str, ctx: ToolContext)
     if not document_id:
         return err("document_id is required for delete action")
 
-    from app.db.engine import get_db
+    from app.db.engine import get_remote_db
     from app.db.models import Document
     from app.services.document_service import DocumentService
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         doc = await db.get(Document, document_id)
         if doc is None or doc.user_id != user_id:
             return err(f"Document not found: {document_id}")
@@ -100,10 +100,10 @@ async def _refresh_document(args: dict[str, Any], user_id: str, ctx: ToolContext
     if not document_id:
         return err("document_id is required for refresh action")
 
-    from app.db.engine import get_db
+    from app.db.engine import get_remote_db
     from app.db.models import Document
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         doc = await db.get(Document, document_id)
         if doc is None or doc.user_id != user_id:
             return err(f"Document not found: {document_id}")

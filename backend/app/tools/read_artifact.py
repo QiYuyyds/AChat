@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Artifact
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
 
@@ -37,7 +37,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     except ValidationError as e:
         return err(f"Invalid args: {e}")
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Artifact).where(
                 Artifact.id == parsed.artifact_id,

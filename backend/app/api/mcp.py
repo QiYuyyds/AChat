@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.auth.dependencies import get_current_user
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, McpServer, User
 from app.infra.cache_helpers import invalidate_agent_cache
 from app.mcp.client_manager import McpClientManager, McpServerConfig
@@ -119,7 +119,7 @@ def _validate_create(body: McpServerCreate) -> str | None:
 @router.get("/mcp/servers")
 async def list_mcp_servers(user: User = Depends(get_current_user)) -> JSONResponse:
     """List all MCP servers with sensitive fields masked."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(select(McpServer).order_by(McpServer.created_at))
         rows = result.scalars().all()
     return JSONResponse({"servers": [_server_to_dict(r) for r in rows]})
@@ -146,7 +146,7 @@ async def create_mcp_server(body: McpServerCreate, user: User = Depends(get_curr
         created_at=now_ms(),
     )
     try:
-        async with get_db() as db:
+        async with get_local_db() as db:
             db.add(server)
             await db.commit()
     except IntegrityError:
@@ -160,7 +160,7 @@ async def create_mcp_server(body: McpServerCreate, user: User = Depends(get_curr
 @router.patch("/mcp/servers/{server_id}")
 async def update_mcp_server(server_id: str, body: McpServerUpdate, user: User = Depends(get_current_user)) -> JSONResponse:
     """Update an existing MCP server."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(select(McpServer).where(McpServer.id == server_id))
         server = result.scalar_one_or_none()
         if server is None:
@@ -203,7 +203,7 @@ async def update_mcp_server(server_id: str, body: McpServerUpdate, user: User = 
 @router.delete("/mcp/servers/{server_id}")
 async def delete_mcp_server(server_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     """Delete an MCP server and remove it from all agents' mcp_server_ids."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(select(McpServer).where(McpServer.id == server_id))
         server = result.scalar_one_or_none()
         if server is None:
@@ -229,7 +229,7 @@ async def delete_mcp_server(server_id: str, user: User = Depends(get_current_use
 @router.post("/mcp/servers/{server_id}/test")
 async def test_mcp_server(server_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     """Test connection: establish temporary connection, listTools, close."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(select(McpServer).where(McpServer.id == server_id))
         server = result.scalar_one_or_none()
         if server is None:

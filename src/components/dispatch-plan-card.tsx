@@ -1,7 +1,8 @@
 'use client'
 
+import dynamic from 'next/dynamic'
 import { Ban, Check, CheckCircle2, Circle, GitBranch, Loader2, Network, RotateCw, X, XCircle, AlertTriangle } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -9,11 +10,21 @@ import { AgentAvatar } from '@/components/agent-avatar'
 import { TurnTimeline } from '@/components/turn-timeline'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
-import { approvePendingDispatchPlan, rejectPendingDispatchPlan } from '@/lib/api'
+import { approvePendingDispatchPlan, approvePendingDispatchPlanWithPlan, rejectPendingDispatchPlan } from '@/lib/api'
+import { validateDagFrontend } from '@/lib/dag-validate'
 import { cn } from '@/lib/utils'
 import type { DispatchState } from '@/stores/app-store'
-import { useAppStore, useTurnMetrics } from '@/stores/app-store'
-import type { DispatchTaskStatus } from '@/shared/types'
+import { useAppStore, usePendingBashCommands, usePendingMcpCalls, usePendingQuestions, usePendingWrites, useTurnMetrics } from '@/stores/app-store'
+import type { DispatchPlanItem, DispatchTaskStatus } from '@/shared/types'
+
+const DispatchDAGGraph = dynamic(
+  () => import('@/components/dispatch-dag-graph').then((m) => m.DispatchDAGGraph),
+  { ssr: false },
+)
+
+function shouldUseDagGraph(plan: DispatchPlanItem[]): boolean {
+  return plan.length > 2 || plan.some((t) => (t.dependsOn ?? []).length > 0)
+}
 
 interface DispatchPlanCardProps {
   conversationId: string
@@ -45,13 +56,23 @@ function DispatchPlanReviewCard({
 }) {
   const [busy, setBusy] = useState<null | 'approve' | 'reject'>(null)
   const [error, setError] = useState<string | null>(null)
+  const [editedPlan, setEditedPlan] = useState<DispatchPlanItem[] | null>(null)
+  const agents = useAppStore((s) => s.agents)
+  const validationErrors = useMemo(
+    () => (editedPlan ? validateDagFrontend(editedPlan) : []),
+    [editedPlan],
+  )
 
   const handleApprove = async () => {
     if (busy) return
     setBusy('approve')
     setError(null)
     try {
-      await approvePendingDispatchPlan(conversationId, pendingPlanId)
+      if (editedPlan) {
+        await approvePendingDispatchPlanWithPlan(conversationId, pendingPlanId, editedPlan)
+      } else {
+        await approvePendingDispatchPlan(conversationId, pendingPlanId)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setBusy(null)
@@ -94,7 +115,7 @@ function DispatchPlanReviewCard({
             <Button
               size="sm"
               onClick={() => void handleApprove()}
-              disabled={!!busy}
+              disabled={!!busy || validationErrors.length > 0}
               className="h-7 bg-primary px-2 text-primary-foreground hover:bg-primary/90"
             >
               {busy === 'approve' ? (
@@ -113,10 +134,20 @@ function DispatchPlanReviewCard({
           </div>
         )}
 
-        <PlanTaskList conversationId={conversationId} dispatch={dispatch} />
+        {shouldUseDagGraph(dispatch.plan) ? (
+          <DispatchDAGGraph
+            dispatch={dispatch}
+            editable
+            onPlanChange={setEditedPlan}
+            agents={agents}
+            validationErrors={validationErrors}
+          />
+        ) : (
+          <PlanTaskList conversationId={conversationId} dispatch={dispatch} />
+        )}
 
         <div className="text-[11px] leading-5 text-muted-foreground">
-          想改计划？在下方对话框直接说，例如「把 t2 改成依赖 t1」「设计任务交给后端 agent」——Orchestrator
+          想改计划？点击「添加节点」新增任务，双击节点编辑，拖拽连线创建依赖，或在下方对话框直接说——Orchestrator
           会据此重排，再给你确认。
         </div>
       </div>
@@ -267,6 +298,13 @@ function DispatchPlanReadOnlyCard({
   conversationId: string
   dispatch: DispatchState
 }) {
+  const agents = useAppStore((s) => s.agents)
+  const selectedTaskId = useAppStore((s) => s.selectedTaskId)
+  const setSelectedTaskId = useAppStore((s) => s.setSelectedTaskId)
+  const pendingWrites = usePendingWrites(conversationId)
+  const pendingBashCommands = usePendingBashCommands(conversationId)
+  const pendingQuestions = usePendingQuestions(conversationId)
+  const pendingMcpCalls = usePendingMcpCalls(conversationId)
   const total = dispatch.plan.length
   const displayStatuses = dispatch.plan.map((task) =>
     dispatch.reviewStatus === 'rejected' ? 'skipped' : (dispatch.taskStatus[task.id] ?? 'pending'),
@@ -277,6 +315,19 @@ function DispatchPlanReadOnlyCard({
   const hasSkipped = displayStatuses.some((s) => s === 'skipped')
   const progress = total > 0 ? Math.round((done / total) * 100) : 0
   const rejected = dispatch.reviewStatus === 'rejected'
+
+  const pendingApprovals = useMemo(() => {
+    const map: Record<string, number> = {}
+    for (const [taskId, childRunId] of Object.entries(dispatch.childRunIds)) {
+      let count = 0
+      count += pendingWrites.filter((p) => p.runId === childRunId).length
+      count += pendingBashCommands.filter((p) => p.runId === childRunId).length
+      count += pendingQuestions.filter((p) => p.runId === childRunId).length
+      count += pendingMcpCalls.filter((p) => p.runId === childRunId).length
+      if (count > 0) map[taskId] = count
+    }
+    return map
+  }, [dispatch.childRunIds, pendingWrites, pendingBashCommands, pendingQuestions, pendingMcpCalls])
 
   return (
     <Card
@@ -314,7 +365,11 @@ function DispatchPlanReadOnlyCard({
           />
         </div>
 
-        <PlanTaskList conversationId={conversationId} dispatch={dispatch} />
+        {shouldUseDagGraph(dispatch.plan) ? (
+          <DispatchDAGGraph dispatch={dispatch} editable={false} agents={agents} selectedTaskId={selectedTaskId} onTaskSelect={setSelectedTaskId} pendingApprovals={pendingApprovals} />
+        ) : (
+          <PlanTaskList conversationId={conversationId} dispatch={dispatch} />
+        )}
       </div>
     </Card>
   )

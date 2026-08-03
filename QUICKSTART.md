@@ -1,6 +1,6 @@
 # AChat 快速启动指南
 
-> 本指南帮助你从零搭建 AChat 本地开发环境。项目为前后端分离架构：前端 Next.js + 后端 Python FastAPI + PostgreSQL 主库 + 可选基础设施（Milvus / Elasticsearch / Neo4j / Redis / Phoenix 可观测性后端）。后端还集成了代码图谱智能（CodeGraph 本地运行时）、Obsidian 知识同步、外部 MCP 接入等增强能力。
+> 本指南帮助你从零搭建 AChat 本地开发环境。项目为前后端分离架构：前端 Next.js + 后端 Python FastAPI + 双 DB 架构（本地 SQLite[WAL] + 远端 PostgreSQL）+ 可选基础设施（Milvus / Elasticsearch / Neo4j / Phoenix 可观测性后端）。后端还集成了代码图谱智能（CodeGraph 本地运行时）、Obsidian 知识同步、外部 MCP 接入等增强能力。
 
 ## 环境要求
 
@@ -29,7 +29,7 @@ pnpm install
 
 ## 3. 启动基础设施服务（推荐）
 
-AChat 后端依赖 PostgreSQL 作为主库。RAG 混合检索和记忆系统还需要 Milvus、Elasticsearch、Neo4j；Redis 提供元数据缓存和异步 DB 写入；Phoenix 提供全链路追踪和评测（均可降级，不配也能跑）。
+AChat 后端采用双 DB 架构：本地 SQLite[WAL] 承载对话热数据，远端 PostgreSQL 承载用户系统与知识/RAG 数据。RAG 混合检索和记忆系统还需要 Milvus、Elasticsearch、Neo4j；Phoenix 提供全链路追踪和评测（均可降级，不配也能跑）。
 
 ### 方式 A：一键启动全部基础设施（Docker Compose）
 
@@ -37,7 +37,9 @@ AChat 后端依赖 PostgreSQL 作为主库。RAG 混合检索和记忆系统还�
 docker compose -f docker-compose.infra.yml up -d
 ```
 
-这会启动 PostgreSQL（:5432）、Milvus（:19530）、Elasticsearch（:9200）、Neo4j（:7474/:7687）、Redis（:6379）、Phoenix（:6006 Web UI / :4317 OTLP gRPC）。
+这会启动 PostgreSQL（:5432）、Milvus（:19530）、Elasticsearch（:9200）、Neo4j（:7474/:7687）、Phoenix（:6006 Web UI / :4317 OTLP gRPC）。
+
+> ~~Redis~~ 已移除（双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代）。
 
 ### 方式 B：仅启动 PostgreSQL（最小化）
 
@@ -84,8 +86,12 @@ cp .env.example .env
 编辑 `backend/.env`，**最小配置**（仅核心对话功能）：
 
 ```env
-# 数据库（指向 Docker 启动的 PostgreSQL）
+# 远端数据库（指向 Docker 启动的 PostgreSQL）
 DATABASE_URL=postgresql+asyncpg://agenthub:agenthub@localhost:5432/agenthub
+# 本地数据库（对话热数据，默认 SQLite[WAL]）
+DATABASE_LOCAL_URL=sqlite+aiosqlite:///./.agenthub-data/local.db
+# JWT 密钥（用户认证）
+JWT_SECRET=请改为一个随机字符串
 
 # AI API Key（至少配一个）
 ANTHROPIC_API_KEY=你的密钥
@@ -100,6 +106,8 @@ DEEPSEEK_API_KEY=你的密钥
 ```env
 # ── 基础 ──
 DATABASE_URL=postgresql+asyncpg://agenthub:agenthub@localhost:5432/agenthub
+DATABASE_LOCAL_URL=sqlite+aiosqlite:///./.agenthub-data/local.db
+JWT_SECRET=请改为一个随机字符串
 ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 DEEPSEEK_API_KEY=                # ★ 小A Guide Agent 默认 provider 的 key（开箱即用必需）
@@ -125,9 +133,6 @@ ENABLE_GRAPH=true
 EMBEDDING_API_KEY=
 EMBEDDING_API_URL=
 EMBEDDING_MODEL=
-
-# ── Redis（元数据缓存 + 异步 DB 写入，留空=禁用退化为同步 DB 读写）──
-REDIS_URL=
 
 # ── 可观测性（OpenTelemetry + Arize Phoenix）──
 TRACE_ENABLED=true           # false = 禁用可观测性（OTel 全 no-op）
@@ -155,7 +160,7 @@ EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge（默认关闭）
 # GUIDE_AGENT_API_BASE_URL=              # 自定义 base URL（留空用 provider 默认）
 ```
 
-> **降级说明**：Milvus / ES / Neo4j / Embedding / Redis / Phoenix 任一不配，后端仍能正常启动和对话，只是对应功能降级（向量检索退化为 TF cosine、无全文检索、无图谱、无语义召回、退化为同步 DB 读写、无 Trace/Eval 数据）。启动时后端会打印状态面板，一目了然。
+> **降级说明**：Milvus / ES / Neo4j / Embedding / Phoenix 任一不配，后端仍能正常启动和对话，只是对应功能降级（向量检索退化为 TF cosine、无全文检索、无图谱、无语义召回、无 Trace/Eval 数据）。启动时后端会打印状态面板，一目了然。
 >
 > **Phoenix Web UI**：基础设施启动后访问 `http://localhost:6006` 可查看 Agent 运行的 Trace 瀑布流和 Eval 评分。`trace_enabled=false` 时可观测性全关闭。
 
@@ -186,7 +191,7 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"; pnpm dev
 
 **★ 小A 全局悬浮助手**：登录后会在主界面右下角自动展开一个悬浮面板——这是小A，AChat 的管理门面 Agent。你可以用自然语言跟它说「帮我创建一个程序员 Agent」「整理一下我的记忆」「看看最近的会话」等，它会调用 7 个管理工具完成操作，无需手动点 UI。快捷键 `Ctrl+G`（macOS `Cmd+G`）收起/展开面板。小A 开箱即用：默认走 DeepSeek provider，只要配了 `DEEPSEEK_API_KEY` 就能用；也可通过 `GUIDE_AGENT_*` 环境变量切换 provider/model/key。
 
-**创建自定义 Agent**：在 Agent 库中点击「创建 Agent」，选择 4 种角色预设之一（程序员 / 调研员 / 协调者 / 写作），预设自带匹配的 system prompt 和工具推荐。所有 custom agent 自带 9 个基础工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment），另可勾选 5 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search）。
+**创建自定义 Agent**：在 Agent 库中点击「创建 Agent」，选择 4 种角色预设之一（程序员 / 调研员 / 协调者 / 写作），预设自带匹配的 system prompt 和工具推荐。所有 custom agent 自带 9 个基础工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment），另可勾选 6 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search/rag_search）。
 
 **代码图谱智能**：在 Local 模式的会话中，侧栏会显示代码图谱开关。首次启用时会提示下载 CodeGraph 运行时（自动下载到 `.agenthub-data/runtimes/codegraph/`），完成后 Agent 可通过 `code_explore` 工具探索项目代码结构。
 

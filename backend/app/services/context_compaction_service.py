@@ -19,8 +19,8 @@ from dataclasses import dataclass
 
 from sqlalchemy import and_, asc, desc, select
 
-from app.db.engine import get_db
-from app.db.models import Agent, AgentRun, Attachment, ContextSummary, Conversation, Message
+from app.db.engine import get_local_db
+from app.db.models import Agent, AgentRun, Attachment, ContextSummary, Conversation, Message, ModelProfile
 from app.schemas.events import MessageAddedEvent, MessageRecord
 from app.schemas.messages import ContextSummaryRecord
 from app.services.event_bus import event_bus
@@ -41,13 +41,6 @@ MIN_COMPACTABLE = 2
 # Token floor on the compactable slice: gate on size, not count, so a short
 # conversation isn't summarised for no gain while a few huge messages still can.
 MIN_COMPACT_TOKENS = 800
-# Auto-compact trigger: when uncompacted message count reaches this watermark,
-# _maybe_auto_compact_hook fires compact_conversation(silent=True).
-# With 1M-context models (DeepSeek V4), 30 messages (~150k tokens) is a
-# reasonable safety net — the token-based trigger (87% of context window)
-# is the primary mechanism, this is the backup.
-AUTO_COMPACT_WATERMARK = 30
-
 # Friendly notices for benign "nothing to compact" outcomes (not errors).
 _TOO_SHORT_NOTICE = "当前对话还太短，暂时不需要压缩上下文。"
 _TOO_LITTLE_NOTICE = "待压缩的内容太少，压缩收益不明显，暂不压缩。"
@@ -111,7 +104,7 @@ async def get_latest_context_summary(conversation_id: str) -> ContextSummary | N
     records (``summary_type='session'``) are excluded because they have
     a separate lifecycle and coverage tracking.
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(ContextSummary)
             .where(
@@ -129,13 +122,13 @@ async def get_latest_context_summary(conversation_id: str) -> ContextSummary | N
 async def count_uncompacted_messages(conversation_id: str) -> int:
     """Count completed messages after the last summary's coverage window.
 
-    Returns the watermark used by ``_maybe_auto_compact_hook`` to decide
-    whether to trigger auto-compaction. When no prior summary exists, counts
-    all complete messages in the conversation.
+    Informational only — no longer used as an auto-compact trigger.
+    When no prior summary exists, counts all complete messages in the
+    conversation.
     """
     latest = await get_latest_context_summary(conversation_id)
     since_created_at = latest.covered_until_created_at if latest else None
-    async with get_db() as db:
+    async with get_local_db() as db:
         where = [
             Message.conversation_id == conversation_id,
             Message.status == "complete",
@@ -158,7 +151,7 @@ async def estimate_uncompacted_tokens(conversation_id: str) -> int:
     """
     latest = await get_latest_context_summary(conversation_id)
     since_created_at = latest.covered_until_created_at if latest else None
-    async with get_db() as db:
+    async with get_local_db() as db:
         where = [
             Message.conversation_id == conversation_id,
             Message.status == "complete",
@@ -239,7 +232,7 @@ async def compact_conversation(
     conversation missing, or the summariser returning empty.
     """
     # a) conversation exists?
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await db.get(Conversation, conversation_id)
         if conv is None:
             raise ValueError("会话不存在")
@@ -251,7 +244,7 @@ async def compact_conversation(
     since_created_at = latest.covered_until_created_at if latest else None
 
     # c) load completed messages after the cut-off, oldest first
-    async with get_db() as db:
+    async with get_local_db() as db:
         where = [
             Message.conversation_id == conversation_id,
             Message.status == "complete",
@@ -388,7 +381,7 @@ async def compact_conversation(
     summary_id = new_context_summary_id()
     created_at = now_ms()
     token_estimate = estimate_tokens(full_transcript)
-    async with get_db() as db:
+    async with get_local_db() as db:
         row = ContextSummary(
             id=summary_id,
             conversation_id=conversation_id,
@@ -439,7 +432,7 @@ async def compact_conversation(
             content = f"{content}\n\n{cap_block}"
 
         sys_parts = [{"type": "text", "content": content}]
-        async with get_db() as db:
+        async with get_local_db() as db:
             sys_msg = Message(
                 id=sys_msg_id,
                 conversation_id=conversation_id,
@@ -498,37 +491,45 @@ async def compact_conversation(
 async def _pick_summary_model(
     agent_ids: list[str],
 ) -> tuple[str, str, str | None, str | None, str]:
-    """First Custom agent (adapter_name='custom') with a full model config.
+    """First Custom agent (adapter_name='custom') with a user-scoped ModelProfile.
 
     Returns (model_provider, model_id, api_key, api_base_url, agent_id).
     Raises ValueError when no model-backed agent exists (e.g. CLI-only chat).
     """
     if not agent_ids:
         raise ValueError("当前会话没有配置模型的 agent，无法生成摘要")
-    async with get_db() as db:
+    async with get_local_db() as db:
         agents = (
             (await db.execute(select(Agent).where(Agent.id.in_(agent_ids))))
             .scalars()
             .all()
         )
     by_id = {a.id: a for a in agents}
-    # preserve conversation agent order
     for aid in agent_ids:
         agent = by_id.get(aid)
-        if (
-            agent is not None
-            and agent.adapter_name == "custom"
-            and agent.model_provider
-            and agent.model_id
-        ):
-            return (agent.model_provider, agent.model_id, agent.api_key, agent.api_base_url, aid)
+        if agent is None or agent.adapter_name != "custom":
+            continue
+        if not agent.user_id:
+            continue
+        async with get_local_db() as db:
+            profile = (
+                await db.execute(
+                    select(ModelProfile).where(
+                        ModelProfile.user_id == agent.user_id,
+                        ModelProfile.is_default == True,  # noqa: E712
+                    ).limit(1)
+                )
+            ).scalar_one_or_none()
+        if profile is None:
+            continue
+        return (profile.provider, profile.model_id, profile.api_key, profile.api_base_url, aid)
     raise ValueError("当前会话没有配置模型的 agent，无法生成摘要")
 
 
 async def _load_agent_names(agent_ids: list[str]) -> dict[str, str]:
     if not agent_ids:
         return {}
-    async with get_db() as db:
+    async with get_local_db() as db:
         agents = (
             (await db.execute(select(Agent).where(Agent.id.in_(agent_ids))))
             .scalars()
@@ -706,7 +707,7 @@ async def _build_capability_context(
 
     # Active attachments
     try:
-        async with get_db() as db:
+        async with get_local_db() as db:
             atts = (
                 (
                     await db.execute(
@@ -726,7 +727,7 @@ async def _build_capability_context(
 
     # Active dispatch plan
     try:
-        async with get_db() as db:
+        async with get_local_db() as db:
             run = (
                 (
                     await db.execute(

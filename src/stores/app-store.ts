@@ -10,6 +10,7 @@ import type {
   DispatchPlanItem,
   DispatchTaskStatus,
   MessagePart,
+  ModelProfile,
   PendingBashCommand,
   PendingDispatchPlan,
   PendingMcpCall,
@@ -19,6 +20,7 @@ import type {
   StreamEvent,
   TurnMetricData,
 } from '@/shared/types'
+import type { PendingMergeConflict } from '@/lib/api'
 import { computeTotalTokens, computeMessageTotalTokens } from '@/shared/usage'
 
 enableMapSet()
@@ -27,13 +29,15 @@ export type SidebarMode =
   | 'conversations'
   | 'artifacts'
   | 'agents'
-  | 'analytics'
-  | 'knowledge'
-  | 'skills'
-  | 'mcp'
-  | 'memory'
+  | 'resources'
+  | 'cognition'
+  | 'extensions'
 
 export type MemoryTab = 'long-term' | 'preferences' | 'session'
+
+export type CognitionTab = 'knowledge' | 'memory'
+
+export type ResourcesTab = 'models' | 'analytics'
 
 /** Workspace env hint card state (per conversation). */
 export interface WorkspaceEnvState {
@@ -60,6 +64,7 @@ export interface DispatchState {
     branchName: string
     path: string
     mergeStatus?: 'success' | 'conflict'
+    resolutionStatus?: 'success' | 'llm_resolved' | 'manual_resolved' | 'abandoned' | 'conflict'
   }>
 }
 
@@ -77,6 +82,9 @@ interface AppState {
   // ─── 实体 ──────────────────────────────────────────
   conversations: Record<string, ConversationWithMeta>
   agents: Record<string, AgentRow>
+  modelProfiles: Record<string, ModelProfile>
+  /** Per-conversation selected model profile id (plan B: per-message model selection). */
+  selectedProfileIdByConv: Record<string, string | null>
   messages: Record<string, MessageRow>
   artifacts: Record<string, ArtifactRow>
 
@@ -98,6 +106,9 @@ interface AppState {
 
   // ─── 右侧文件浏览器面板（与 artifact preview 互斥）─
   fileExplorerOpen: boolean
+
+  // ─── DAG 节点选中的任务 id（右侧 TaskDetailPanel 开合控制）─
+  selectedTaskId: string | null
 
   // ─── 中间 tab 容器：每个会话的「对话 + 打开的文件 tab」状态 ─
   // tab id: 'chat' 表示主对话；其它是相对 workspace 的文件路径
@@ -134,6 +145,9 @@ interface AppState {
   // ─── MCP 工具调用审批等待队列（按 conversationId 分桶）─
   pendingMcpCallsByConv: Record<string, PendingMcpCall[]>
 
+  // ─── Worktree 合并冲突审批等待队列（按 conversationId 分桶）─
+  pendingMergeConflictsByConv: Record<string, PendingMergeConflict[]>
+
   // ─── Workspace 环境提示卡片状态（按 conversationId 分桶）─
   workspaceEnvByConv: Record<string, WorkspaceEnvState>
 
@@ -150,6 +164,14 @@ interface AppState {
   // ─── 记忆管理子 Tab（long-term / preferences / session）──
   memoryTab: MemoryTab
   setMemoryTab(tab: MemoryTab): void
+
+  // ─── 沉淀主 Tab（knowledge / memory）──
+  cognitionTab: CognitionTab
+  setCognitionTab(tab: CognitionTab): void
+
+  // ─── 配额子 Tab（models / analytics）──
+  resourcesTab: ResourcesTab
+  setResourcesTab(tab: ResourcesTab): void
 
   // ─── 知识库当前选中的文档 ID（主视图展示详情）──
   selectedKnowledgeDocId: string | null
@@ -185,6 +207,11 @@ interface AppState {
   upsertAgent(agent: AgentRow): void
   removeAgent(agentId: string): void
 
+  setModelProfiles(list: ModelProfile[]): void
+  upsertModelProfile(profile: ModelProfile): void
+  removeModelProfile(profileId: string): void
+  setSelectedProfileId(conversationId: string, profileId: string | null): void
+
   setMessagesForConversation(conversationId: string, list: MessageRow[]): void
   /** 单条 message upsert（编辑后重发场景：服务端写完 user message，前端要自己塞进 store）。 */
   upsertMessage(message: MessageRow): void
@@ -199,6 +226,7 @@ interface AppState {
   removeArtifacts(artifactIds: string[]): void
 
   setFileExplorerOpen(open: boolean): void
+  setSelectedTaskId(id: string | null): void
   openFile(conversationId: string, path: string): void
   closeFile(conversationId: string, path: string): void
   setActiveTab(conversationId: string, tab: string): void
@@ -233,6 +261,11 @@ interface AppState {
 
   setPendingMcpCallsForConversation(conversationId: string, list: PendingMcpCall[]): void
 
+  setPendingMergeConflictsForConversation(
+    conversationId: string,
+    list: PendingMergeConflict[],
+  ): void
+
   setPendingDispatchPlansForConversation(
     conversationId: string,
     list: PendingDispatchPlan[],
@@ -259,6 +292,8 @@ export const useAppStore = create<AppState>()(
   immer((set) => ({
     conversations: {},
     agents: {},
+    modelProfiles: {},
+    selectedProfileIdByConv: {},
     messages: {},
     artifacts: {},
     messageIdsByConv: {},
@@ -267,7 +302,8 @@ export const useAppStore = create<AppState>()(
     dispatchesByRunId: {},
     activeConversationId: null,
     previewArtifactId: null,
-    fileExplorerOpen: false,
+    fileExplorerOpen: true,
+    selectedTaskId: null,
     openFilesByConv: {},
     activeTabByConv: {},
     replyTargetByConv: {},
@@ -276,11 +312,14 @@ export const useAppStore = create<AppState>()(
     pendingBashCommandsByConv: {},
     pendingQuestionsByConv: {},
     pendingMcpCallsByConv: {},
+    pendingMergeConflictsByConv: {},
     workspaceEnvByConv: {},
     unreadByConv: {},
     mobileSidebarOpen: false,
     sidebarMode: 'conversations',
     memoryTab: 'long-term',
+    cognitionTab: 'knowledge',
+    resourcesTab: 'models',
     selectedKnowledgeDocId: null,
     pendingQuoteForInput: null,
     highlightedMessageId: null,
@@ -342,6 +381,7 @@ export const useAppStore = create<AppState>()(
         delete s.pendingBashCommandsByConv[id]
         delete s.pendingQuestionsByConv[id]
         delete s.pendingMcpCallsByConv[id]
+        delete s.pendingMergeConflictsByConv[id]
         delete s.workspaceEnvByConv[id]
         if (s.activeConversationId === id) s.activeConversationId = null
       }),
@@ -359,6 +399,31 @@ export const useAppStore = create<AppState>()(
     removeAgent: (agentId) =>
       set((s) => {
         delete s.agents[agentId]
+      }),
+
+    setModelProfiles: (list) =>
+      set((s) => {
+        s.modelProfiles = {}
+        for (const p of list) s.modelProfiles[p.id] = p
+      }),
+
+    upsertModelProfile: (profile) =>
+      set((s) => {
+        s.modelProfiles[profile.id] = profile
+      }),
+
+    removeModelProfile: (profileId) =>
+      set((s) => {
+        delete s.modelProfiles[profileId]
+        // Clear any per-conversation selection pointing to the deleted profile
+        for (const [convId, pid] of Object.entries(s.selectedProfileIdByConv)) {
+          if (pid === profileId) s.selectedProfileIdByConv[convId] = null
+        }
+      }),
+
+    setSelectedProfileId: (conversationId, profileId) =>
+      set((s) => {
+        s.selectedProfileIdByConv[conversationId] = profileId
       }),
 
     setMessagesForConversation: (conversationId, list) =>
@@ -408,6 +473,16 @@ export const useAppStore = create<AppState>()(
         s.memoryTab = tab
       }),
 
+    setCognitionTab: (tab) =>
+      set((s) => {
+        s.cognitionTab = tab
+      }),
+
+    setResourcesTab: (tab) =>
+      set((s) => {
+        s.resourcesTab = tab
+      }),
+
     setSelectedKnowledgeDocId: (id) =>
       set((s) => {
         s.selectedKnowledgeDocId = id
@@ -433,6 +508,11 @@ export const useAppStore = create<AppState>()(
       set((s) => {
         s.fileExplorerOpen = open
         if (open) s.previewArtifactId = null // 与 artifact preview 互斥
+      }),
+
+    setSelectedTaskId: (id) =>
+      set((s) => {
+        s.selectedTaskId = id
       }),
 
     openFile: (conversationId, filePath) =>
@@ -522,6 +602,7 @@ export const useAppStore = create<AppState>()(
         delete s.pendingBashCommandsByConv[conversationId]
         delete s.pendingQuestionsByConv[conversationId]
         delete s.pendingMcpCallsByConv[conversationId]
+        delete s.pendingMergeConflictsByConv[conversationId]
         delete s.unreadByConv[conversationId]
         delete s.workspaceEnvByConv[conversationId]
         if (s.highlightedMessageId && messageIds.has(s.highlightedMessageId)) {
@@ -596,6 +677,12 @@ export const useAppStore = create<AppState>()(
       set((s) => {
         if (list.length === 0) delete s.pendingMcpCallsByConv[conversationId]
         else s.pendingMcpCallsByConv[conversationId] = list
+      }),
+
+    setPendingMergeConflictsForConversation: (conversationId, list) =>
+      set((s) => {
+        if (list.length === 0) delete s.pendingMergeConflictsByConv[conversationId]
+        else s.pendingMergeConflictsByConv[conversationId] = list
       }),
 
     setPendingDispatchPlansForConversation: (conversationId, list) =>
@@ -697,6 +784,27 @@ export const useAppStore = create<AppState>()(
           case 'heartbeat':
             return
 
+          case 'run.queued': {
+            s.runsByConv[event.conversationId] ??= {}
+            s.runsByConv[event.conversationId][event.runId] = {
+              id: event.runId,
+              conversationId: event.conversationId,
+              agentId: event.agentId,
+              triggerMessageId: event.triggerMessageId,
+              status: 'queued',
+              error: null,
+              parentRunId: null,
+              usage: null,
+              startedAt: event.timestamp,
+              finishedAt: null,
+              turnMetrics: {},
+              turnMetricsComplete: false,
+              stopReason: null,
+              stopReasonLabel: null,
+            }
+            return
+          }
+
           case 'run.start': {
             s.runsByConv[event.conversationId] ??= {}
             s.runsByConv[event.conversationId][event.runId] = {
@@ -791,6 +899,17 @@ export const useAppStore = create<AppState>()(
               s.messageIdsByConv[event.conversationId].push(event.messageId)
             }
             attachDispatchToMessageForRun(s.dispatchesByRunId, event.runId, event.messageId)
+            // DAG dispatch 子任务消息隐藏：如果 runId 属于某个 approved dispatch 的 childRunIds，标记 hidden=true
+            if (event.runId) {
+              for (const dispatch of Object.values(s.dispatchesByRunId)) {
+                if (dispatch.reviewStatus !== 'approved') continue
+                const childRunIds = Object.values(dispatch.childRunIds)
+                if (childRunIds.includes(event.runId)) {
+                  s.messages[event.messageId].hidden = true
+                  break
+                }
+              }
+            }
             // 未读 +1 不在 message.start 触发：claude-code-adapter 整个 run 只发一次 message.start
             // 且发生时用户通常仍在该会话（被 activeConversationId === conv 抑制），导致后续切走再也不计未读。
             // 改在 message.end 触发，两个 adapter 都能可靠 +1，且每个 msg 仅 +1 一次。
@@ -844,6 +963,10 @@ export const useAppStore = create<AppState>()(
               part.startedAt = event.timestamp
             }
             msg.parts[event.partIndex] = part
+            // ask_user 工具调用翻转 hidden → visible，确保用户可在聊天流中交互
+            if (msg.hidden && part.type === 'tool_use' && part.toolName === 'ask_user') {
+              msg.hidden = false
+            }
             return
           }
 
@@ -1126,6 +1249,9 @@ export const useAppStore = create<AppState>()(
             for (const d of Object.values(s.dispatchesByRunId)) {
               if (d.worktreeByTask?.[event.taskId]) {
                 d.worktreeByTask[event.taskId].mergeStatus = event.mergeStatus ?? 'success'
+                if (event.resolutionStatus) {
+                  d.worktreeByTask[event.taskId].resolutionStatus = event.resolutionStatus
+                }
                 if (event.mergeStatus === 'conflict') {
                   d.taskStatus[event.taskId] = 'merge_conflict'
                 }
@@ -1139,6 +1265,32 @@ export const useAppStore = create<AppState>()(
             for (const d of Object.values(s.dispatchesByRunId)) {
               if (d.worktreeByTask) delete d.worktreeByTask[event.taskId]
             }
+            return
+          }
+
+          case 'merge_conflict.pending': {
+            const list = s.pendingMergeConflictsByConv[event.conversationId] ?? []
+            if (list.some((c) => c.id === event.pendingId)) return
+            s.pendingMergeConflictsByConv[event.conversationId] = [
+              ...list,
+              {
+                id: event.pendingId,
+                conversationId: event.conversationId,
+                taskId: event.taskId,
+                conflictFiles: event.conflictFiles,
+                workspacePath: event.workspacePath,
+                createdAt: event.timestamp,
+              },
+            ]
+            return
+          }
+
+          case 'merge_conflict.resolved': {
+            const list = s.pendingMergeConflictsByConv[event.conversationId]
+            if (!list) return
+            const next = list.filter((c) => c.id !== event.pendingId)
+            if (next.length === 0) delete s.pendingMergeConflictsByConv[event.conversationId]
+            else s.pendingMergeConflictsByConv[event.conversationId] = next
             return
           }
 
@@ -1489,18 +1641,21 @@ export const useConversationList = () =>
     ),
   )
 
-export const useAgentList = () => useAppStore(useShallow((s) => Object.values(s.agents)))
+export const useAgentList = () =>
+  useAppStore(useShallow((s) => Object.values(s.agents).filter((a) => !a.isGuide)))
 
 export const usePendingAttachments = (conversationId: string) =>
   useAppStore(useShallow((s) => s.pendingAttachmentsByConv[conversationId] ?? []))
 
-/** 当前会话中正在跑的顶层 run（parentRunId 为空的，用于「中止」按钮）。 */
+/** 当前会话中正在跑或排队的顶层 run（parentRunId 为空的，用于「中止」按钮和排队指示器）。 */
 export const useTopLevelRunningRuns = (conversationId: string) =>
   useAppStore(
     useShallow((s) => {
       const runs = s.runsByConv[conversationId]
       if (!runs) return []
-      return Object.values(runs).filter((r) => r.status === 'running' && !r.parentRunId)
+      return Object.values(runs).filter(
+        (r) => (r.status === 'running' || r.status === 'queued') && !r.parentRunId,
+      )
     }),
   )
 
@@ -1586,6 +1741,45 @@ export function useTurnMetrics(
   })
 }
 
+/** 根据 selectedTaskId 查出对应子任务的 childRunId、消息列表、turnMetrics、dispatch 引用。 */
+export function useSelectedTaskDetail(
+  conversationId: string,
+): {
+  task: DispatchPlanItem | null
+  childRunId: string | null
+  messages: MessageRow[]
+  turnMetrics: Record<number, TurnMetricData> | undefined
+  dispatch: DispatchState | null
+} {
+  const selectedTaskId = useAppStore((s) => s.selectedTaskId)
+  const dispatchesByRunId = useAppStore((s) => s.dispatchesByRunId)
+  const runs = useAppStore((s) => s.runsByConv[conversationId] ?? null)
+  const messageIds = useAppStore((s) => s.messageIdsByConv[conversationId] ?? null)
+  const messages = useAppStore((s) => s.messages)
+
+  return useMemo(() => {
+    if (!selectedTaskId) {
+      return { task: null, childRunId: null, messages: [], turnMetrics: undefined, dispatch: null }
+    }
+    if (!runs) {
+      return { task: null, childRunId: null, messages: [], turnMetrics: undefined, dispatch: null }
+    }
+    for (const runId in runs) {
+      const dispatch = dispatchesByRunId[runId]
+      if (!dispatch) continue
+      const childRunId = dispatch.childRunIds[selectedTaskId]
+      if (!childRunId) continue
+      const task = dispatch.plan.find((t) => t.id === selectedTaskId) ?? null
+      const childMessages = (messageIds ?? [])
+        .map((id) => messages[id])
+        .filter((m) => m && m.runId === childRunId)
+      const turnMetrics = runs[childRunId]?.turnMetrics
+      return { task, childRunId, messages: childMessages, turnMetrics, dispatch }
+    }
+    return { task: null, childRunId: null, messages: [], turnMetrics: undefined, dispatch: null }
+  }, [selectedTaskId, dispatchesByRunId, runs, messageIds, messages])
+}
+
 /** 该会话是否有待审批的 Orchestrator 计划。返回 { planId, runId } 供对话式修改路由。 */
 export const usePendingPlanReviewForConversation = (conversationId: string) =>
   useAppStore(
@@ -1651,6 +1845,16 @@ export const useActiveTab = (conversationId: string): string =>
 /** 该会话当前所有待审批的 fs_write（review 模式下 agent 想改文件，等用户决定）。 */
 export const usePendingWrites = (conversationId: string | null): PendingWrite[] =>
   useAppStore(useShallow((s) => (conversationId ? s.pendingWritesByConv[conversationId] ?? [] : [])))
+
+/** 该会话当前所有待解决的 worktree 合并冲突。 */
+export const usePendingMergeConflicts = (
+  conversationId: string | null,
+): PendingMergeConflict[] =>
+  useAppStore(
+    useShallow((s) =>
+      conversationId ? s.pendingMergeConflictsByConv[conversationId] ?? [] : [],
+    ),
+  )
 
 /** 该会话当前所有待审批的关键 bash 命令。 */
 export const usePendingBashCommands = (conversationId: string | null): PendingBashCommand[] =>
@@ -1761,7 +1965,9 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
     let lastInputTs = -1
 
     // Phase 1: 从有 run.usage 的 run 累加，记录这些 runId 以避免 Phase 2 重复计数
-    // Subagent runs (parentRunId set) roll up to the top-level parent agent.
+    // Subagent runs (parentRunId set) with the SAME agent as the parent roll up
+    // to the parent's subagent fields (clone-self dispatch). Subagent runs with
+    // a DIFFERENT agent (DAG cross-agent dispatch) are counted independently.
     const runsWithUsage = new Set<string>()
     if (runs) {
       // Build run map for parent chain walking
@@ -1777,18 +1983,43 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           topRun = runMap.get(topRun.parentRunId)!
         }
         const isSubagent = topRun.id !== run.id
-        const targetAgentId = topRun.agentId
+        const isCloneSelf = isSubagent && run.agentId === topRun.agentId
         const sub = u.inputTokens + u.outputTokens
 
-        if (isSubagent) {
-          // Roll up: don't count in top-level totals, attribute to parent's subagent fields
-          const d = detail[targetAgentId] ??= {
+        if (isCloneSelf) {
+          // Clone-self: roll up to parent agent's subagent fields
+          const d = detail[topRun.agentId] ??= {
             inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
             cacheReadTokens: 0, totalTokens: 0, runCount: 0,
             subagentTokens: 0, subagentRunCount: 0,
           }
           d.subagentTokens += sub
           d.subagentRunCount++
+          if (u.model) d.model = u.model
+        } else if (isSubagent) {
+          // Cross-agent dispatch (DAG): count independently under child agent
+          const runTotal = computeTotalTokens(
+            u.inputTokens, u.outputTokens, u.cacheCreationTokens, u.cacheReadTokens,
+          )
+          result.inputTokens += u.inputTokens
+          result.outputTokens += u.outputTokens
+          result.cacheCreationTokens += u.cacheCreationTokens
+          result.cacheReadTokens += u.cacheReadTokens
+          result.totalTokens += runTotal
+          result.runCount++
+          result.byAgent[run.agentId] = (result.byAgent[run.agentId] ?? 0) + runTotal
+          if (u.model) result.byModel[u.model] = (result.byModel[u.model] ?? 0) + runTotal
+          const d = detail[run.agentId] ??= {
+            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
+            cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+            subagentTokens: 0, subagentRunCount: 0,
+          }
+          d.inputTokens += u.inputTokens
+          d.outputTokens += u.outputTokens
+          d.cacheCreationTokens += u.cacheCreationTokens
+          d.cacheReadTokens += u.cacheReadTokens
+          d.totalTokens += runTotal
+          d.runCount++
           if (u.model) d.model = u.model
         } else {
           // Top-level run: count normally
@@ -1836,7 +2067,7 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
         if (m.runId && runsWithUsage.has(m.runId)) continue
 
         const u = m.usage
-        const provider = m.agentId ? agents[m.agentId]?.modelProvider : undefined
+        const provider = undefined
         const msgTotal = computeMessageTotalTokens(
           u.inputTokens, u.outputTokens, u.cacheReadTokens, provider,
         )
@@ -1850,8 +2081,7 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
         }
         if (m.agentId) {
           result.byAgent[m.agentId] = (result.byAgent[m.agentId] ?? 0) + msgTotal
-          const modelId = agents[m.agentId]?.modelId
-          if (modelId) result.byModel[modelId] = (result.byModel[modelId] ?? 0) + msgTotal
+          // modelId no longer available on agent; skip byModel aggregation
           const d = detail[m.agentId] ??= {
             inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
             cacheReadTokens: 0, totalTokens: 0, runCount: 0,
@@ -1862,7 +2092,6 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           d.cacheReadTokens += u.cacheReadTokens
           d.totalTokens += msgTotal
           if (m.runId && !seenRunIds.has(m.runId)) d.runCount++
-          if (modelId) d.model = modelId
         }
         if (m.createdAt > lastInputTs) {
           lastInputTs = m.createdAt

@@ -26,6 +26,8 @@ import logging
 import os
 import re
 import shutil
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,14 +35,16 @@ from sqlalchemy import delete, select
 
 from app.adapters.session_store import clear_claude_code_session, clear_codex_session
 from app.config import get_settings
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import (
     Agent,
     AgentRun,
+    Artifact,
     Attachment,
     ContextSummary,
     Conversation,
     Message,
+    ModelProfile,
     Workspace,
 )
 from app.schemas.events import (
@@ -55,9 +59,19 @@ from app.services.deploy_command_service import DeployCommandResult
 from app.services.event_bus import event_bus
 from app.services.pending_dispatch_plans import pending_dispatch_plans
 from app.services.runner_registry import get_agent_runner
-from app.services.worktree_service import ensure_git_init
+from app.services.worktree_service import (
+    cleanup_fork_worktree,
+    create_fork_worktree,
+    ensure_git_init,
+    is_git_repo,
+)
 from app.utils.clock import now_ms
-from app.utils.ids import new_conversation_id, new_message_id, new_workspace_id
+from app.utils.ids import (
+    new_artifact_id,
+    new_conversation_id,
+    new_message_id,
+    new_workspace_id,
+)
 from app.utils.platform import IS_WINDOWS
 from app.utils.workspace_utils import is_path_safe
 
@@ -66,6 +80,34 @@ logger = logging.getLogger(__name__)
 # Per-conversation pin cap (port of shared/constants.ts PIN_LIMIT_PER_CONVERSATION):
 # bounds how many messages get re-injected into the system prompt.
 PIN_LIMIT_PER_CONVERSATION = 5
+
+
+# ─── Per-conversation write lock ────────────────────────────────────────────
+# Serializes all message-writing operations (send / withdraw / regenerate /
+# clear / delete / revise_plan / edit_and_resend) within a single conversation.
+# Different conversations run in parallel; the same conversation is strictly
+# serial. This prevents timestamp collisions, inconsistent history snapshots
+# between concurrent runs, and withdraw-vs-send race conditions.
+#
+# edit_and_resend acquires the lock once and calls the *_unlocked internal
+# functions to avoid a self-deadlock (asyncio.Lock is non-reentrant).
+class _ConvLockManager:
+    """Per-conversation asyncio.Lock: different conversations parallel, same serial."""
+
+    def __init__(self) -> None:
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def lock_for(self, conversation_id: str) -> AsyncIterator[None]:
+        lock = self._locks.get(conversation_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[conversation_id] = lock
+        async with lock:
+            yield
+
+
+_conv_locks = _ConvLockManager()
 
 # Windows requires an explicit drive letter / UNC for a bound path, otherwise
 # "/tmp" would be resolved against the current drive — not what the user meant.
@@ -124,6 +166,194 @@ class ClearConversationHistoryResult:
     deleted_summary_count: int
 
 
+# ─── Fork ────────────────────────────────────────────────────────────────────
+class GitInitRequiredError(Exception):
+    """Raised when fork source is not a git repo and user hasn't confirmed git init."""
+
+    def __init__(self, source_path: str) -> None:
+        self.source_path = source_path
+        super().__init__(f"Git initialization required for: {source_path}")
+
+
+@dataclass
+class ForkConversationResult:
+    conversation: ConversationResponse
+
+
+async def fork_conversation(
+    *,
+    source_conv_id: str,
+    fork_point_message_id: str,
+    user_id: str | None = None,
+    confirm_git_init: bool = False,
+) -> ConversationResponse:
+    """Create a new conversation by deep-copying messages from source up to fork point.
+
+    The new conversation gets its own workspace (git worktree of source) and
+    its own copies of messages and artifacts. The source conversation is not modified.
+    """
+    now = now_ms()
+    new_conv_id = new_conversation_id()
+
+    # ── Load source conversation + workspace ──────────────────────────
+    async with get_local_db() as db:
+        source_conv = await _require_conversation(db, source_conv_id)
+
+        # Validate fork point message
+        fork_msg = await _get_message(db, source_conv_id, fork_point_message_id)
+        if fork_msg is None:
+            raise ValueError("Message not found")
+        if fork_msg.status == "streaming":
+            raise ValueError("Cannot fork from a message that is still streaming")
+
+        # Load source workspace
+        ws_result = await db.execute(
+            select(Workspace).where(Workspace.conversation_id == source_conv_id)
+        )
+        source_ws = ws_result.scalar_one_or_none()
+        if source_ws is None:
+            raise ValueError(f"Source workspace not found for conversation: {source_conv_id}")
+
+    # Determine source workspace effective cwd
+    source_cwd = source_ws.root_path
+    if source_ws.mode == "local" and source_ws.bound_path:
+        source_cwd = source_ws.bound_path
+
+    # ── Git init check ────────────────────────────────────────────────
+    if not is_git_repo(source_cwd):
+        if not confirm_git_init:
+            raise GitInitRequiredError(source_cwd)
+        try:
+            await ensure_git_init(source_cwd)
+        except Exception as exc:
+            raise ValueError(f"Failed to initialize git in source directory: {exc}") from exc
+
+    # ── Create fork worktree ──────────────────────────────────────────
+    worktree_ref = await create_fork_worktree(source_cwd, new_conv_id, user_id)
+    if worktree_ref is None:
+        raise ValueError("Failed to create fork workspace")
+    worktree_path = worktree_ref.path
+
+    # ── Title deduplication ───────────────────────────────────────────
+    base_title = f"{source_conv.title} (分支)"
+    resolved_title = await _deduplicate_fork_title(base_title, source_conv_id, user_id)
+
+    try:
+        # ── Create new Conversation + Workspace ───────────────────────
+        async with get_local_db() as db:
+            new_conv = Conversation(
+                id=new_conv_id,
+                user_id=user_id,
+                title=resolved_title,
+                mode=source_conv.mode,
+                archived=False,
+                pinned_at=None,
+                fs_write_approval_mode=source_conv.fs_write_approval_mode,
+                rag_enabled=False,
+                dispatch_mode=source_conv.dispatch_mode,
+                parent_conversation_id=source_conv_id,
+                fork_point_message_id=fork_point_message_id,
+                created_at=now,
+                updated_at=now,
+            )
+            new_conv.agent_ids_list = source_conv.agent_ids_list
+            new_conv.pinned_message_ids_list = []
+            new_conv.bookmarked_message_ids_list = []
+
+            new_ws = Workspace(
+                id=new_workspace_id(),
+                conversation_id=new_conv_id,
+                root_path=worktree_path,
+                mode="sandbox",
+                bound_path=None,
+                created_at=now,
+            )
+            db.add(new_conv)
+            db.add(new_ws)
+
+            # ── Deep-copy messages ─────────────────────────────────────
+            msg_result = await db.execute(
+                select(Message).where(
+                    Message.conversation_id == source_conv_id,
+                    Message.hidden == False,  # noqa: E712
+                    Message.created_at <= fork_msg.created_at,
+                ).order_by(Message.created_at)
+            )
+            source_messages = msg_result.scalars().all()
+
+            for src_msg in source_messages:
+                new_msg = Message(
+                    id=new_message_id(),
+                    conversation_id=new_conv_id,
+                    role=src_msg.role,
+                    agent_id=src_msg.agent_id,
+                    parts=src_msg.parts,
+                    status=src_msg.status,
+                    parent_message_id=src_msg.parent_message_id,
+                    mentioned_agent_ids=src_msg.mentioned_agent_ids,
+                    run_id=src_msg.run_id,
+                    usage=src_msg.usage,
+                    hidden=src_msg.hidden,
+                    created_at=src_msg.created_at,
+                )
+                db.add(new_msg)
+
+            # ── Deep-copy artifacts ────────────────────────────────────
+            art_result = await db.execute(
+                select(Artifact).where(
+                    Artifact.conversation_id == source_conv_id,
+                    Artifact.created_at <= fork_msg.created_at,
+                ).order_by(Artifact.created_at)
+            )
+            source_artifacts = art_result.scalars().all()
+
+            for src_art in source_artifacts:
+                new_art = Artifact(
+                    id=new_artifact_id(),
+                    conversation_id=new_conv_id,
+                    type=src_art.type,
+                    title=src_art.title,
+                    content=src_art.content,
+                    version=1,
+                    parent_artifact_id=None,
+                    created_by_agent_id=src_art.created_by_agent_id,
+                    created_at=src_art.created_at,
+                )
+                db.add(new_art)
+
+            mode, bound_path, env_pref = await _ws_meta(db, new_conv_id)
+            response = _conversation_response(new_conv, mode, bound_path, env_pref)
+
+    except Exception:
+        # Rollback: clean up worktree and any partial DB rows
+        await cleanup_fork_worktree(worktree_path, f"fork/{new_conv_id}")
+        raise
+
+    return response
+
+
+async def _deduplicate_fork_title(
+    base_title: str,
+    source_conv_id: str,
+    user_id: str | None,
+) -> str:
+    """Find a unique fork title: base, base 2, base 3, ..."""
+    async with get_local_db() as db:
+        result = await db.execute(
+            select(Conversation.title).where(
+                Conversation.parent_conversation_id == source_conv_id,
+            )
+        )
+        existing = {row[0] for row in result.all()}
+
+    if base_title not in existing:
+        return base_title
+    n = 2
+    while f"{base_title[:-1]} {n})" in existing:
+        n += 1
+    return f"{base_title[:-1]} {n})"
+
+
 # ─── Conversion helpers ─────────────────────────────────────────────────────
 def _conversation_response(
     conv: Conversation,
@@ -141,9 +371,10 @@ def _conversation_response(
         archived=conv.archived,
         pinned_at=conv.pinned_at,
         fs_write_approval_mode=conv.fs_write_approval_mode,
-        rag_enabled=conv.rag_enabled,
         summary=conv.summary,
         dispatch_mode=getattr(conv, "dispatch_mode", None) or "solo",
+        parent_conversation_id=getattr(conv, "parent_conversation_id", None),
+        fork_point_message_id=getattr(conv, "fork_point_message_id", None),
         created_at=conv.created_at,
         updated_at=conv.updated_at,
         workspace_mode=ws_mode,
@@ -208,7 +439,7 @@ async def maybe_generate_summary(
     from app.infra.cache_helpers import get_agent_cached
 
     # Step 1: Quick check — is summary already set? Does the agent have a model?
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await db.get(Conversation, conversation_id)
         if conv is None or conv.summary is not None:
             logger.info(
@@ -222,19 +453,33 @@ async def maybe_generate_summary(
     if agent is None:
         logger.info("[maybe_generate_summary] Skipped: agent not found")
         return
-    if not agent.model_provider or not agent.model_id:
+    if agent.adapter_name != "custom" or not agent.user_id:
         logger.info(
-            "[maybe_generate_summary] Skipped: agent missing model config provider=%s model=%s",
-            agent.model_provider,
-            agent.model_id,
+            "[maybe_generate_summary] Skipped: agent is not SDK or has no user_id"
+        )
+        return
+
+    async with get_local_db() as db:
+        profile = (
+            await db.execute(
+                select(ModelProfile).where(
+                    ModelProfile.user_id == agent.user_id,
+                    ModelProfile.is_default == True,  # noqa: E712
+                ).limit(1)
+            )
+        ).scalar_one_or_none()
+    if profile is None:
+        logger.info(
+            "[maybe_generate_summary] Skipped: no default ModelProfile for user %s",
+            agent.user_id,
         )
         return
 
     agent_name = agent.name
-    model_provider = agent.model_provider
-    model_id = agent.model_id
-    api_key = agent.api_key
-    api_base_url = agent.api_base_url
+    model_provider = profile.provider
+    model_id = profile.model_id
+    api_key = profile.api_key
+    api_base_url = profile.api_base_url
 
     logger.info(
         "[maybe_generate_summary] Calling LLM provider=%s model=%s",
@@ -286,7 +531,7 @@ async def maybe_generate_summary(
         return
 
     # Step 3: Write with double-check for concurrency safety
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await db.get(Conversation, conversation_id)
         if conv is None or conv.summary is not None:
             return  # Another concurrent call already wrote it
@@ -377,7 +622,7 @@ async def create_conversation(
         except Exception as exc:  # noqa: BLE001 - never block conversation creation
             logger.warning("ensure_git_init failed for %s: %s", root_path, exc)
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(select(Agent).where(Agent.id.in_(agent_ids)))
         agents = result.scalars().all()
         if len(agents) != len(agent_ids):
@@ -454,6 +699,8 @@ async def create_conversation(
         fs_write_approval_mode="review",
         rag_enabled=False,
         summary=None,
+        parent_conversation_id=None,
+        fork_point_message_id=None,
         created_at=now,
         updated_at=now,
         workspace_mode=workspace_mode,
@@ -465,7 +712,7 @@ async def create_conversation(
 # ─── List ───────────────────────────────────────────────────────────────────
 async def list_conversations(user_id: str | None = None) -> list[ConversationResponse]:
     """Pinned first (by pinnedAt desc), then by updatedAt desc. Excludes guide-mode conversations."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         query = select(Conversation).where(Conversation.mode != "guide").order_by(
             Conversation.pinned_at.desc(), Conversation.updated_at.desc()
         )
@@ -495,7 +742,7 @@ async def list_conversations(user_id: str | None = None) -> list[ConversationRes
 
 
 async def get_conversation(conversation_id: str) -> ConversationResponse:
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
         return _conversation_response(conv, mode, bound_path, env_pref)
@@ -503,7 +750,7 @@ async def get_conversation(conversation_id: str) -> ConversationResponse:
 
 # ─── Pin / archive / rename / approval-mode ─────────────────────────────────
 async def toggle_pin_conversation(conversation_id: str) -> ConversationResponse:
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv.pinned_at = None if conv.pinned_at else now_ms()
         mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
@@ -513,7 +760,7 @@ async def toggle_pin_conversation(conversation_id: str) -> ConversationResponse:
 async def toggle_archive_conversation(conversation_id: str) -> ConversationResponse:
     # Archive is a conversation-level meta op; it does NOT bump updated_at
     # (shouldn't float to the top of the list), matching toggle_pin.
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv.archived = not conv.archived
         mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
@@ -527,7 +774,7 @@ async def rename_conversation(conversation_id: str, title: str) -> ConversationR
     if len(trimmed) > 100:
         raise ValueError("Title too long (max 100)")
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv.title = trimmed
         conv.updated_at = now_ms()
@@ -546,7 +793,7 @@ async def update_conversation_summary(
     else:
         trimmed = None
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv.summary = trimmed
         conv.updated_at = now_ms()
@@ -557,7 +804,7 @@ async def update_conversation_summary(
 async def set_conversation_approval_mode(
     conversation_id: str, mode: str
 ) -> ConversationResponse:
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv.fs_write_approval_mode = mode
         conv.updated_at = now_ms()
@@ -565,23 +812,12 @@ async def set_conversation_approval_mode(
         return _conversation_response(conv, ws_mode, bound_path, env_pref)
 
 
-async def set_rag_mode(
-    conversation_id: str, enabled: bool
-) -> ConversationResponse:
-    """Task 3.3: Update conversation rag_enabled flag."""
-    async with get_db() as db:
-        conv = await _require_conversation(db, conversation_id)
-        conv.rag_enabled = enabled
-        conv.updated_at = now_ms()
-        ws_mode, bound_path, env_pref = await _ws_meta(db, conversation_id)
-        return _conversation_response(conv, ws_mode, bound_path, env_pref)
-
 
 async def set_dispatch_mode(
     conversation_id: str, dispatch_mode: str
 ) -> ConversationResponse:
     """Update conversation dispatch_mode (solo | orchestrated)."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv.dispatch_mode = dispatch_mode
         conv.updated_at = now_ms()
@@ -594,7 +830,7 @@ async def toggle_bookmarked_message(
     conversation_id: str, message_id: str
 ) -> dict:
     """UI bookmark toggle (navigation only; not injected into the LLM context)."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         await _require_message_in_conversation(db, conversation_id, message_id)
 
@@ -615,7 +851,7 @@ async def toggle_pinned_message(conversation_id: str, message_id: str) -> dict:
     Differs from bookmarking: capped at PIN_LIMIT_PER_CONVERSATION and does NOT
     bump updated_at (pinning isn't conversation "activity").
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         await _require_message_in_conversation(db, conversation_id, message_id)
 
@@ -635,7 +871,7 @@ async def toggle_pinned_message(conversation_id: str, message_id: str) -> dict:
 async def add_agents_to_conversation(
     conversation_id: str, agent_ids: list[str]
 ) -> ConversationResponse:
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
 
         result = await db.execute(select(Agent.id).where(Agent.id.in_(agent_ids)))
@@ -654,7 +890,7 @@ async def add_agents_to_conversation(
 
 # ─── List messages ──────────────────────────────────────────────────────────
 async def list_messages(conversation_id: str) -> list[MessageRecord]:
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Message)
             .where(Message.conversation_id == conversation_id)
@@ -664,11 +900,13 @@ async def list_messages(conversation_id: str) -> list[MessageRecord]:
 
 
 # ─── Delete ─────────────────────────────────────────────────────────────────
-async def delete_conversation(conversation_id: str) -> None:
-    async with get_db() as db:
+async def _delete_conversation_unlocked(conversation_id: str) -> None:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         if conv.mode == "guide":
             raise ValueError("Guide conversations cannot be deleted")
+
+        is_fork = getattr(conv, "parent_conversation_id", None) is not None
 
         ws_result = await db.execute(
             select(Workspace.root_path).where(
@@ -683,20 +921,36 @@ async def delete_conversation(conversation_id: str) -> None:
         await db.execute(delete(Conversation).where(Conversation.id == conversation_id))
 
     if root_path:
-        try:
-            await _rmdir_with_retry(root_path)
-        except OSError as err:  # noqa: BLE001 - workspace removal is best-effort
-            logger.warning(
-                "[delete_conversation] failed to remove workspace dir %s: %s",
-                root_path,
-                err,
-            )
+        if is_fork:
+            # Forked conversations have a git worktree that needs branch cleanup.
+            try:
+                await cleanup_fork_worktree(root_path, f"fork/{conversation_id}")
+            except Exception as err:  # noqa: BLE001 - worktree cleanup is best-effort
+                logger.warning(
+                    "[delete_conversation] cleanup_fork_worktree failed for %s: %s",
+                    root_path,
+                    err,
+                )
+        else:
+            try:
+                await _rmdir_with_retry(root_path)
+            except OSError as err:  # noqa: BLE001 - workspace removal is best-effort
+                logger.warning(
+                    "[delete_conversation] failed to remove workspace dir %s: %s",
+                    root_path,
+                    err,
+                )
 
     clear_claude_code_session(conversation_id)
     clear_codex_session(conversation_id)
 
     from app.infra.cache_helpers import invalidate_workspace_cache
     await invalidate_workspace_cache(conversation_id)
+
+
+async def delete_conversation(conversation_id: str) -> None:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _delete_conversation_unlocked(conversation_id)
 
 
 async def _rmdir_with_retry(target: str) -> None:
@@ -718,10 +972,10 @@ async def _rmdir_with_retry(target: str) -> None:
 
 
 # ─── Clear history ──────────────────────────────────────────────────────────
-async def clear_conversation_history(
+async def _clear_conversation_history_unlocked(
     conversation_id: str,
 ) -> ClearConversationHistoryResult:
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
 
         active_result = await db.execute(
@@ -772,14 +1026,22 @@ async def clear_conversation_history(
     )
 
 
+async def clear_conversation_history(
+    conversation_id: str,
+) -> ClearConversationHistoryResult:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _clear_conversation_history_unlocked(conversation_id)
+
+
 # ─── Send message ───────────────────────────────────────────────────────────
-async def send_message(
+async def _send_message_unlocked(
     *,
     conversation_id: str,
     content: str,
     mentioned_agent_ids: list[str] | None = None,
     parent_message_id: str | None = None,
     attachment_ids: list[str] | None = None,
+    model_profile_id: str | None = None,
 ) -> SendMessageResult:
     mentioned_agent_ids = mentioned_agent_ids or []
     attachment_ids = attachment_ids or []
@@ -787,7 +1049,7 @@ async def send_message(
     now = now_ms()
     message_id = new_message_id()
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
@@ -873,7 +1135,7 @@ async def send_message(
         )
 
     # Decide responders, then kick off a run per responder.
-    async with get_db() as db:
+    async with get_local_db() as db:
         agents_result = await db.execute(
             select(Agent.id, Agent.is_orchestrator).where(Agent.id.in_(conv_agent_ids))
         )
@@ -894,7 +1156,7 @@ async def send_message(
         ]
         sys_now = now_ms()
 
-        async with get_db() as db:
+        async with get_local_db() as db:
             sys_msg = Message(
                 id=sys_msg_id,
                 conversation_id=conversation_id,
@@ -934,18 +1196,64 @@ async def send_message(
             message_id=message_id, run_ids=[], messages=[sys_record]
         )
 
-    runner = get_agent_runner()
-    run_ids: list[str] = []
-    for agent_id in responders:
-        handle = runner.run(
-            agent_id=agent_id,
-            conversation_id=conversation_id,
-            trigger_message_id=message_id,
-            user_id=conv_user_id,
+    # Check if there are active (running or queued) runs for this conversation.
+    # If so, new runs are queued instead of started immediately — the queue
+    # is drained automatically when each run finishes (see agent_runner.finalize).
+    async with get_local_db() as db:
+        active_result = await db.execute(
+            select(AgentRun.id).where(
+                AgentRun.conversation_id == conversation_id,
+                AgentRun.status.in_(["running", "queued"]),
+                AgentRun.parent_run_id.is_(None),
+            )
         )
-        run_ids.append(handle.run_id)
+        has_active_runs = active_result.first() is not None
+
+    run_ids: list[str] = []
+    if has_active_runs:
+        from app.services.agent_runner import enqueue_run
+        for agent_id in responders:
+            run_id = enqueue_run(
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                trigger_message_id=message_id,
+                user_id=conv_user_id,
+                model_profile_id=model_profile_id,
+            )
+            run_ids.append(run_id)
+    else:
+        runner = get_agent_runner()
+        for agent_id in responders:
+            handle = runner.run(
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+                trigger_message_id=message_id,
+                user_id=conv_user_id,
+                model_profile_id=model_profile_id,
+            )
+            run_ids.append(handle.run_id)
 
     return SendMessageResult(message_id=message_id, run_ids=run_ids)
+
+
+async def send_message(
+    *,
+    conversation_id: str,
+    content: str,
+    mentioned_agent_ids: list[str] | None = None,
+    parent_message_id: str | None = None,
+    attachment_ids: list[str] | None = None,
+    model_profile_id: str | None = None,
+) -> SendMessageResult:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _send_message_unlocked(
+            conversation_id=conversation_id,
+            content=content,
+            mentioned_agent_ids=mentioned_agent_ids,
+            parent_message_id=parent_message_id,
+            attachment_ids=attachment_ids,
+            model_profile_id=model_profile_id,
+        )
 
 
 def _decide_responders(
@@ -966,7 +1274,7 @@ def _decide_responders(
 
 
 # ─── Revise pending dispatch plan ───────────────────────────────────────────
-async def revise_dispatch_plan(
+async def _revise_dispatch_plan_unlocked(
     *, conversation_id: str, plan_id: str, feedback: str
 ) -> dict:
     """Land the user's NL feedback as a user message + broadcast, then re-plan.
@@ -982,7 +1290,7 @@ async def revise_dispatch_plan(
     message_id = new_message_id()
     parts = [{"type": "text", "content": feedback}]
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         msg = Message(
             id=message_id,
             conversation_id=conversation_id,
@@ -1024,13 +1332,22 @@ async def revise_dispatch_plan(
     return {"ok": True} if ok else {"ok": False, "error": "Failed to revise pending dispatch plan"}
 
 
+async def revise_dispatch_plan(
+    *, conversation_id: str, plan_id: str, feedback: str
+) -> dict:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _revise_dispatch_plan_unlocked(
+            conversation_id=conversation_id, plan_id=plan_id, feedback=feedback,
+        )
+
+
 # ─── Abort run ──────────────────────────────────────────────────────────────
 async def abort_run(run_id: str) -> bool:
     return get_agent_runner().abort(run_id)
 
 
 # ─── Withdraw latest user message ───────────────────────────────────────────
-async def withdraw_latest_user_message(
+async def _withdraw_latest_user_message_unlocked(
     conversation_id: str, message_id: str
 ) -> WithdrawResult:
     """Withdraw the latest user message plus everything it triggered downstream.
@@ -1040,7 +1357,7 @@ async def withdraw_latest_user_message(
     3. wait 500 ms so AgentRunner.finalize flushes (catches late msg_err_* rows)
     4. time-window delete messages / artifacts / runs at created_at >= the user msg
     """
-    async with get_db() as db:
+    async with get_local_db() as db:
         msg = await _get_message(db, conversation_id, message_id)
         if msg is None:
             raise ValueError(f"Message not found: {message_id}")
@@ -1059,7 +1376,7 @@ async def withdraw_latest_user_message(
             select(AgentRun.id).where(
                 AgentRun.conversation_id == conversation_id,
                 AgentRun.started_at >= msg_created_at,
-                AgentRun.status == "running",
+                AgentRun.status.in_(["running", "queued"]),
             )
         )
         run_ids_to_abort = [row[0] for row in runs_result.all()]
@@ -1095,10 +1412,17 @@ async def withdraw_latest_user_message(
     )
 
 
+async def withdraw_latest_user_message(
+    conversation_id: str, message_id: str
+) -> WithdrawResult:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _withdraw_latest_user_message_unlocked(conversation_id, message_id)
+
+
 # ─── Regenerate latest response ─────────────────────────────────────────────
-async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
+async def _regenerate_latest_response_unlocked(conversation_id: str) -> RegenerateResult:
     """Delete everything after the latest user message and re-run responders for it."""
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
@@ -1115,7 +1439,7 @@ async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
             select(AgentRun.id).where(
                 AgentRun.conversation_id == conversation_id,
                 AgentRun.started_at > trigger_created_at,
-                AgentRun.status == "running",
+                AgentRun.status.in_(["running", "queued"]),
             )
         )
         run_ids_to_abort = [row[0] for row in runs_result.all()]
@@ -1144,7 +1468,7 @@ async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
         user_id=conv_user_id,
     )
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         agents_result = await db.execute(
             select(Agent.id, Agent.is_orchestrator).where(Agent.id.in_(conv_agent_ids))
         )
@@ -1173,6 +1497,11 @@ async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
     )
 
 
+async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
+    async with _conv_locks.lock_for(conversation_id):
+        return await _regenerate_latest_response_unlocked(conversation_id)
+
+
 # ─── Edit & resend latest user message ──────────────────────────────────────
 async def edit_and_resend_latest_user_message(
     conversation_id: str, message_id: str, new_content: str
@@ -1185,7 +1514,7 @@ async def edit_and_resend_latest_user_message(
     if not trimmed:
         raise ValueError("Content cannot be empty")
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         original = await _get_message(db, conversation_id, message_id)
         if original is None:
             raise ValueError(f"Message not found: {message_id}")
@@ -1199,17 +1528,20 @@ async def edit_and_resend_latest_user_message(
             if p.get("type") in ("image_attachment", "file_attachment")
         ]
 
-    withdrawn = await withdraw_latest_user_message(conversation_id, message_id)
+    # Acquire the conversation lock once for both withdraw + send to avoid
+    # a self-deadlock (asyncio.Lock is non-reentrant) and to ensure atomicity.
+    async with _conv_locks.lock_for(conversation_id):
+        withdrawn = await _withdraw_latest_user_message_unlocked(conversation_id, message_id)
 
-    sent = await send_message(
-        conversation_id=conversation_id,
-        content=trimmed,
-        mentioned_agent_ids=original_mentions,
-        parent_message_id=original_parent,
-        attachment_ids=original_attachment_ids or None,
-    )
+        sent = await _send_message_unlocked(
+            conversation_id=conversation_id,
+            content=trimmed,
+            mentioned_agent_ids=original_mentions,
+            parent_message_id=original_parent,
+            attachment_ids=original_attachment_ids or None,
+        )
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(select(Message).where(Message.id == sent.message_id))
         new_msg = result.scalar_one_or_none()
         if new_msg is None:
@@ -1280,7 +1612,7 @@ async def _delete_from_timewindow(
     """
     from app.db.models import Artifact
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         if inclusive:
             msg_cond = Message.created_at >= boundary_created_at
             run_cond = AgentRun.started_at >= boundary_created_at

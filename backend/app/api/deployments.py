@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Response
 from sqlalchemy import select
 
 from app.auth.dependencies import get_current_user_optional
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Artifact, Conversation, User
 from app.services.deployment_service import read_deployment_asset, read_deployment_manifest
 
@@ -26,7 +26,7 @@ async def _verify_deployment_ownership(deployment_id: str, user: User) -> bool:
     # Workspace deployments use "workspace:<path>" — no artifact to verify.
     if not artifact_id or not artifact_id.startswith("art_"):
         return True
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Conversation.user_id)
             .join(Artifact, Artifact.conversation_id == Conversation.id)

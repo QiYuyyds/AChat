@@ -18,7 +18,7 @@ from typing import Literal, TypedDict
 from sqlalchemy import select
 
 from app.config import get_settings
-from app.db.engine import get_db
+from app.db.engine import get_remote_db
 from app.db.models import AppSettings, UserSettings
 from app.utils.clock import now_ms
 
@@ -102,7 +102,7 @@ _USER_STRING_FIELDS = (
 
 async def update_user_settings(user_id: str, patch: UserSettingsPatch) -> UserSettings:
     """UPSERT per-user settings: keys in patch are written (None clears), absent leaves untouched."""
-    async with get_db() as db:
+    async with get_remote_db() as db:
         result = await db.execute(
             select(UserSettings).where(UserSettings.user_id == user_id)
         )
@@ -178,7 +178,7 @@ async def get_app_settings() -> AppSettings:
 
     Used by code paths that haven't been updated to pass user_id yet.
     """
-    async with get_db() as db:
+    async with get_remote_db() as db:
         # Try the first user_settings row
         result = await db.execute(select(UserSettings).limit(1))
         user_row = result.scalar_one_or_none()
@@ -299,7 +299,7 @@ async def update_app_settings(patch: AppSettingsPatch) -> AppSettings:
     """
     from app.services.global_settings_service import update_global_settings
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         result = await db.execute(select(UserSettings).limit(1))
         row = result.scalar_one_or_none()
         if row is None:
@@ -336,7 +336,7 @@ async def update_app_settings(patch: AppSettingsPatch) -> AppSettings:
 
 async def regenerate_mobile_device_token() -> AppSettings:
     """Legacy: issue a fresh mobile pairing token."""
-    async with get_db() as db:
+    async with get_remote_db() as db:
         result = await db.execute(select(UserSettings).limit(1))
         row = result.scalar_one_or_none()
     user_id = row.user_id if row is not None else "legacy"

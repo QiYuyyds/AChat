@@ -36,6 +36,10 @@ class Item:
     user_id: str | None = None
     # Runtime-only decay checkpoint (not persisted). 0.0 → fall back to created_at.
     last_decay_ts: float = 0.0
+    # Structured fields for dual-path retrieval (summary embedding + keyword Jaccard)
+    summary: str = ""
+    keywords: list[str] = field(default_factory=list)
+    content_scope: str = ""
 
 
 @dataclass
@@ -74,6 +78,11 @@ _DEFAULTS = {
     "decay_rate": 0.995,
     "min_importance": 0.3,
     "trigger_interval": 5,
+    # Case memory lifecycle parameters (longer TTL, slower decay)
+    "case_ttl_days": 90,
+    "case_decay_rate": 0.998,
+    "case_min_importance": 0.4,
+    "case_dedup_threshold": 0.90,
 }
 
 
@@ -87,6 +96,32 @@ class ConsolidationConfig:
     decay_rate: float = _DEFAULTS["decay_rate"]
     min_importance: float = _DEFAULTS["min_importance"]
     trigger_interval: int = _DEFAULTS["trigger_interval"]
+    # Case memory-specific lifecycle parameters
+    case_ttl_days: int = _DEFAULTS["case_ttl_days"]
+    case_decay_rate: float = _DEFAULTS["case_decay_rate"]
+    case_min_importance: float = _DEFAULTS["case_min_importance"]
+    case_dedup_threshold: float = _DEFAULTS["case_dedup_threshold"]
+
+    def get_params_for_category(self, category: str) -> dict[str, Any]:
+        """Return lifecycle parameters appropriate for the given category.
+
+        Case memories (category="case") use longer TTL, slower decay,
+        higher min_importance, and a more lenient dedup threshold.
+        All other categories use the default parameters.
+        """
+        if category == "case":
+            return {
+                "ttl_days": self.case_ttl_days,
+                "decay_rate": self.case_decay_rate,
+                "min_importance": self.case_min_importance,
+                "dedup_threshold": self.case_dedup_threshold,
+            }
+        return {
+            "ttl_days": self.ttl_days,
+            "decay_rate": self.decay_rate,
+            "min_importance": self.min_importance,
+            "dedup_threshold": self.dedup_threshold,
+        }
 
     @classmethod
     def from_settings(cls, settings: Any) -> "ConsolidationConfig":
@@ -186,3 +221,21 @@ def tf_cosine(query_tokens: list[str] | None, content: str) -> float:
     for t, c in Counter(item_tokens).items():
         vb[vocab[t]] = float(c)
     return cosine_similarity(va, vb)
+
+
+def keyword_score(query_tokens: list[str] | None, item_keywords: list[str] | None) -> float:
+    """Jaccard similarity between query tokens and item keywords.
+
+    Both sets are lowercased before comparison. If either set is empty,
+    the score is 0.0. This is a zero-dependency keyword matcher suitable
+    for 3-5 keyword matching scenarios.
+    """
+    if not query_tokens or not item_keywords:
+        return 0.0
+    query_set = {t.lower() for t in query_tokens if t}
+    kw_set = {k.lower() for k in item_keywords if k}
+    if not query_set or not kw_set:
+        return 0.0
+    intersection = query_set & kw_set
+    union = query_set | kw_set
+    return len(intersection) / len(union) if union else 0.0

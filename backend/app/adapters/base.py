@@ -83,6 +83,9 @@ class AdapterInput:
     # AgentRunner at run start after connecting to external MCP servers.
     mcp_tools: list[dict] | None = None
 
+    # multi-user: owning user ID for data isolation in CLI subprocess tools
+    user_id: str | None = None
+
 
 class AgentPlatformAdapter(ABC):
     """Hides per-platform API differences behind a unified event stream."""

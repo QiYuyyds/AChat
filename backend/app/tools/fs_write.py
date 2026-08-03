@@ -16,7 +16,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Conversation
 from app.services.fs_service import (
     get_workspace_for_conversation,
@@ -64,7 +64,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     if workspace is None:
         return err("Workspace not found")
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Conversation).where(Conversation.id == ctx.conversation_id)
         )

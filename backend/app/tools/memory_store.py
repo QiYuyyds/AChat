@@ -10,7 +10,7 @@ layers of protection against abuse:
    Consolidation decay/dedup/expire.
 
 Writes go through ``LongTerm.store_classified()`` so they share the same
-dedup logic as the background ``extract_memory_from_reply`` path.
+dedup logic as the background ``extract_ltm_memories`` path.
 """
 
 from __future__ import annotations
@@ -24,12 +24,13 @@ from app.tools.rate_limiter import _rate_limiter
 
 logger = logging.getLogger(__name__)
 
-_VALID_CATEGORIES = ("fact", "policy", "tool_failure")
+_VALID_CATEGORIES = ("fact", "policy", "tool_failure", "case")
 
 _SLOT_BY_CATEGORY: dict[str, str] = {
     "fact": "recall_memory",
     "policy": "constraints",
     "tool_failure": "tool_state",
+    "case": "recall_memory",
 }
 
 MAX_WRITES_PER_RUN = 3
@@ -48,6 +49,17 @@ async def memory_store_handler(args: Any, ctx: ToolContext) -> ToolResult:
             f"category must be one of: {', '.join(_VALID_CATEGORIES)}"
         )
 
+    # ── Defense 1b: case category requires summary + keywords ─────
+    summary = str(args.get("summary", "")).strip()
+    keywords = args.get("keywords", [])
+    if not isinstance(keywords, list):
+        keywords = []
+    if category == "case":
+        if not summary:
+            return err("summary is required when category is 'case'")
+        if not keywords or not isinstance(keywords, list) or len(keywords) == 0:
+            return err("keywords is required (at least 1) when category is 'case'")
+
     # ── Defense 2: importance floor ────────────────────────────────
     try:
         importance = float(args.get("importance", 0))
@@ -62,6 +74,12 @@ async def memory_store_handler(args: Any, ctx: ToolContext) -> ToolResult:
     content = str(args.get("content", "")).strip()
     if not content or len(content) > MAX_CONTENT_LENGTH:
         return err(f"content must be 1-{MAX_CONTENT_LENGTH} characters")
+
+    # ── Keywords validation (if provided) ──────────────────────────
+    if keywords:
+        keywords = [str(k).strip() for k in keywords if str(k).strip()]
+        if len(keywords) > 10:
+            return err("keywords must have at most 10 entries")
 
     # ── Defense 3: per-run rate limiting ───────────────────────────
     rate_key = f"mem_writes:{ctx.agent_id}:{ctx.run_id}"
@@ -108,6 +126,8 @@ async def memory_store_handler(args: Any, ctx: ToolContext) -> ToolResult:
             slot_hint=slot_hint,
             scope="agent",
             agent_id=ctx.agent_id,
+            summary=summary,
+            keywords=keywords if keywords else None,
         )
     except Exception as e:
         logger.warning("memory_store store_classified failed: %s", e)
@@ -150,11 +170,12 @@ memory_store_tool = ToolDef(
             },
             "category": {
                 "type": "string",
-                "enum": ["fact", "policy", "tool_failure"],
+                "enum": ["fact", "policy", "tool_failure", "case"],
                 "description": (
                     "fact=objective fact about user/project/environment, "
                     "policy=constraint or rule to follow, "
-                    "tool_failure=lesson learned from a tool failure"
+                    "tool_failure=lesson learned from a tool failure, "
+                    "case=reusable task experience or pattern"
                 ),
             },
             "importance": {
@@ -167,6 +188,23 @@ memory_store_tool = ToolDef(
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Optional tags for filtering during recall.",
+            },
+            "summary": {
+                "type": "string",
+                "description": (
+                    "3-10 word self-contained title for the memory. "
+                    "Required when category is 'case'. "
+                    "Example: '认证模块重构策略'"
+                ),
+            },
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "3-5 retrieval keywords (proper nouns, technical terms). "
+                    "Required when category is 'case'. "
+                    "Avoid generic words like 'user', 'project', 'system'."
+                ),
             },
         },
         "required": ["content", "category", "importance"],

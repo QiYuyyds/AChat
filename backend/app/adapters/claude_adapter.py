@@ -11,6 +11,7 @@ Protocol reference: Claude Code ``--output-format stream-json`` manual.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -19,11 +20,15 @@ import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator
+from dataclasses import replace as dc_replace
 from typing import Any
 
 from app.adapters.base import AdapterInput, AdapterName
 from app.adapters.cli_base import BlockedArgMode, CLIAdapterBase, filter_custom_args
+from app.adapters.session_store import clear_claude_code_session
 from app.schemas.events import (
+    BashCommandResolvedEvent,
+    FsWriteResolvedEvent,
     MessageEndEvent,
     MessageStartEvent,
     MessageUsageEventPayload,
@@ -38,22 +43,51 @@ from app.schemas.events import (
 from app.schemas.messages import MessageUsage, RunUsage
 from app.utils.clock import now_ms
 from app.utils.ids import new_message_id
+from app.utils.platform import IS_WINDOWS
 
 logger = logging.getLogger(__name__)
 
-ACHAT_MCP_TOOL_HINT = (
-    "\n\n## AChat MCP Tools\n"
-    "AChat platform tools are available via the \"achat-tools\" MCP server. "
-    "Use the exact MCP-prefixed name:\n\n"
-    "- `write_artifact` → `mcp__achat-tools__write_artifact`\n"
-    "- `read_artifact` → `mcp__achat-tools__read_artifact`\n"
-    "- `ask_user` → `mcp__achat-tools__ask_user`\n"
-    "- `deploy_artifact` → `mcp__achat-tools__deploy_artifact`\n"
-    "- `deploy_workspace` → `mcp__achat-tools__deploy_workspace`\n"
-    "- `code_explore` → `mcp__achat-tools__code_explore`\n"
-    "Use code_explore for structure, call paths, and impact; fall back to file "
-    "search/read tools for exact lines or unavailable results.\n"
-)
+_PLATFORM = "windows" if IS_WINDOWS else "posix"
+
+# ─── timeout watchdog (mirrors Codex adapter) ────────────────────
+
+DEFAULT_SEMANTIC_INACTIVITY_TIMEOUT = 10 * 60  # seconds
+DEFAULT_FIRST_TURN_NO_PROGRESS_TIMEOUT = 30  # seconds
+
+MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+# Default MCP tool names exposed when the agent has no explicit tool_names.
+_DEFAULT_MCP_TOOL_NAMES = [
+    "write_artifact",
+    "read_artifact",
+    "ask_user",
+    "deploy_artifact",
+    "deploy_workspace",
+    "code_explore",
+]
+
+
+def _build_mcp_tool_hint(tool_names: list[str]) -> str:
+    """Generate the MCP tool hint dynamically from the actual tool list."""
+    names = tool_names if tool_names else _DEFAULT_MCP_TOOL_NAMES
+    lines = [
+        f"- `{n}` → `mcp__achat-tools__{n}`"
+        for n in names
+    ]
+    hint = (
+        "\n\n## AChat MCP Tools\n"
+        "AChat platform tools are available via the \"achat-tools\" MCP server. "
+        "Use the exact MCP-prefixed name:\n\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+    if "code_explore" in names:
+        hint += (
+            "Use code_explore for structure, call paths, and impact; fall back to "
+            "file search/read tools for exact lines or unavailable results.\n"
+        )
+    return hint
+
 
 # ─── blocked args (mirrors multica claudeBlockedArgs) ──────────
 
@@ -65,9 +99,11 @@ _claude_blocked_args: dict[str, BlockedArgMode] = {
     "--mcp-config": BlockedArgMode.WITH_VALUE,
     "--effort": BlockedArgMode.WITH_VALUE,
     "--include-partial-messages": BlockedArgMode.STANDALONE,
+    "--disallowedTools": BlockedArgMode.WITH_VALUE,
+    "--model": BlockedArgMode.WITH_VALUE,
 }
 
-DEFAULT_CLAUDE_MODEL = "claude-opus-4-8"
+DEFAULT_CLAUDE_MODEL = "claude-opus-4-7"
 
 
 # ─── stream-json type defs ─────────────────────────────────────
@@ -124,6 +160,32 @@ class ClaudeCLIAdapter(CLIAdapterBase):
     def name(self) -> AdapterName:
         return "claude-code"
 
+    # ── template method override: resume retry ───────────────────
+
+    async def stream(
+        self, input: AdapterInput, cancel_event: asyncio.Event
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream events, retrying without --resume if session resume fails."""
+        if not input.resume_session_id:
+            async for event in super().stream(input, cancel_event):
+                yield event
+            return
+
+        try:
+            async for event in super().stream(input, cancel_event):
+                yield event
+            return
+        except Exception as exc:
+            if cancel_event.is_set():
+                raise
+            logger.warning(
+                "[claude] resume session failed (%s); retrying with fresh session", exc
+            )
+            clear_claude_code_session(input.conversation_id)
+            fresh_input = dc_replace(input, resume_session_id=None)
+            async for event in super().stream(fresh_input, cancel_event):
+                yield event
+
     # ── CLIAdapterBase hooks ─────────────────────────────────────
 
     def _build_args(self, input: AdapterInput) -> list[str]:
@@ -132,7 +194,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
             "--output-format", "stream-json",
             "--input-format", "stream-json",
             "--verbose",
-            "--permission-mode", "bypassPermissions",
+            "--permission-mode", "acceptEdits",
             # Include partial message chunks as the model generates them
             # (token-by-token streaming, like OpenAI's stream=True).
             # Without this flag, Claude CLI accumulates the full response
@@ -149,7 +211,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
         if input.resume_session_id:
             args.extend(("--resume", input.resume_session_id))
         # Claude prefixes tools exposed by the AChat MCP Bridge.
-        _sp_content = (input.system_prompt or "") + ACHAT_MCP_TOOL_HINT
+        _sp_content = (input.system_prompt or "") + _build_mcp_tool_hint(input.tool_names)
         # Windows command-line cannot carry newlines; write to temp file.
         # Both --system-prompt[-file] and --append-system-prompt[-file]
         # variants exist in the Claude Code CLI.
@@ -164,6 +226,8 @@ class ClaudeCLIAdapter(CLIAdapterBase):
             input.run_id,
             input.workspace_path or "",
             input.agent_id,
+            input.user_id,
+            tool_names=input.tool_names,
         )
         if self._mcp_config_file:
             # Use = format to avoid any argument parsing ambiguity on Windows.
@@ -180,11 +244,48 @@ class ClaudeCLIAdapter(CLIAdapterBase):
     ) -> None:
         if not proc.stdin:
             raise RuntimeError("claude stdin pipe not available")
+
+        content: list[dict[str, Any]] = [{"type": "text", "text": input.prompt}]
+        file_notes: list[str] = []
+
+        for att in (input.attachments or []):
+            if att.kind == "image":
+                try:
+                    with open(att.abs_path, "rb") as f:
+                        raw = f.read()
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Failed to read image attachment '{att.file_name}': {exc}"
+                    ) from exc
+                if len(raw) > MAX_IMAGE_SIZE_BYTES:
+                    raise RuntimeError(
+                        f"Image attachment '{att.file_name}' exceeds 10 MB limit "
+                        f"({len(raw)} bytes)"
+                    )
+                b64 = base64.b64encode(raw).decode("ascii")
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": att.mime_type or "image/png",
+                        "data": b64,
+                    },
+                })
+            else:
+                file_notes.append(
+                    f"[Attached file: {att.file_name} ({att.mime_type}) at {att.abs_path}]"
+                )
+
+        prompt_text = input.prompt
+        if file_notes:
+            prompt_text = prompt_text + "\n\n" + "\n".join(file_notes)
+            content[0] = {"type": "text", "text": prompt_text}
+
         payload = json.dumps({
             "type": "user",
             "message": {
                 "role": "user",
-                "content": [{"type": "text", "text": input.prompt}],
+                "content": content,
             },
         })
         proc.stdin.write((payload + "\n").encode())
@@ -229,9 +330,9 @@ class ClaudeCLIAdapter(CLIAdapterBase):
         last_input_tokens = 0
         last_cache_read_tokens = 0
         last_output_tokens = 0
-        output_parts: list[str] = []
         any_event = False  # track whether we received any meaningful output
         result_is_error = False  # track error flag from the result event
+        final_status = "complete"  # timeout / complete / aborted
 
         message_id = ""
         text_part_index = -1
@@ -247,17 +348,51 @@ class ClaudeCLIAdapter(CLIAdapterBase):
         _tool_input_buf: str = ""    # accumulated JSON input deltas
         _streamed: bool = False      # True once we see a stream_event
 
+        # Timeout watchdog tracking (mirrors Codex adapter)
+        last_semantic_activity = time.monotonic()
+        first_turn_started = False
+        first_turn_progress = False
+        timed_out = False
+
         t_spawn = time.monotonic()
         logger.info("[claude] reading events from stdout (t=%.3fs)...", 0.0)
         try:
-            async for line_raw in _read_lines(proc.stdout, cancel_event):
-                if cancel_event.is_set():
-                    break
+            while not cancel_event.is_set():
+                # Read next line with a short timeout so we can check
+                # cancel_event and semantic inactivity periodically.
+                try:
+                    line_raw = await asyncio.wait_for(
+                        proc.stdout.readline(), timeout=5.0
+                    )
+                except TimeoutError:
+                    elapsed = time.monotonic() - last_semantic_activity
+                    if first_turn_started and not first_turn_progress:
+                        if elapsed > DEFAULT_FIRST_TURN_NO_PROGRESS_TIMEOUT:
+                            logger.warning(
+                                "[claude] first turn no progress timeout (%.1fs)",
+                                elapsed,
+                            )
+                            final_status = "timeout"
+                            timed_out = True
+                            break
+                    if elapsed > DEFAULT_SEMANTIC_INACTIVITY_TIMEOUT:
+                        logger.warning(
+                            "[claude] semantic inactivity timeout (%.1fs)",
+                            elapsed,
+                        )
+                        final_status = "timeout"
+                        timed_out = True
+                        break
+                    continue
 
-                t_line = time.monotonic() - t_spawn
-                line = line_raw.strip()
+                if not line_raw:
+                    break  # EOF
+
+                line = line_raw.decode("utf-8", errors="replace").strip()
                 if not line:
                     continue
+
+                t_line = time.monotonic() - t_spawn
 
                 try:
                     raw = json.loads(line)
@@ -273,6 +408,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
                 if not any_event:
                     logger.info("[claude] first event: type=%s (t=%.3fs)", msg.type, t_line)
                 any_event = True
+                last_semantic_activity = time.monotonic()
 
                 # Capture session id from any event that carries it
                 if msg.session_id:
@@ -296,6 +432,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
                     if etype == "message_start":
                         if not in_message:
                             in_message = True
+                            first_turn_started = True
                             message_id = new_message_id()
                             text_part_index = -1
                             thinking_part_index = -1
@@ -352,7 +489,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
                         if dtype == "text_delta":
                             text = delta.get("text", "")
                             if text:
-                                output_parts.append(text)
+                                first_turn_progress = True
                                 yield PartDeltaEvent(
                                     conversation_id=input.conversation_id,
                                     timestamp=now_ms(),
@@ -458,7 +595,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
                                     continue
                                 text = block.get("text", "")
                                 if text:
-                                    output_parts.append(text)
+                                    first_turn_progress = True
                                     if text_part_index < 0:
                                         text_part_index = next_part_index
                                         next_part_index += 1
@@ -578,10 +715,14 @@ class ClaudeCLIAdapter(CLIAdapterBase):
                     break  # result is the terminal event
 
                 elif msg.type == "control_request":
-                    await self._auto_approve(proc, msg)
+                    await self._handle_control_request(proc, msg, input, cancel_event)
 
                 elif msg.type == "log":
                     pass
+
+            # If we broke out due to timeout, close stdin to unblock the CLI.
+            if timed_out and proc.stdin and not proc.stdin.is_closing():
+                proc.stdin.close()
 
         except asyncio.CancelledError:
             cancel_event.set()
@@ -710,6 +851,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
             timestamp=now_ms(),
             run_id=input.run_id,
             usage=run_usage,
+            session_id=session_id or None,
         )
 
         logger.info(
@@ -719,12 +861,180 @@ class ClaudeCLIAdapter(CLIAdapterBase):
             run_output_tokens,
         )
 
-    # ── helpers ───────────────────────────────────────────────────
+    # ── control_request handler (smart approval) ──────────────────
 
-    async def _auto_approve(
+    async def _handle_control_request(
+        self,
+        proc: asyncio.subprocess.Process,
+        msg: _ClaudeSDKMessage,
+        input: AdapterInput,
+        cancel_event: asyncio.Event,
+    ) -> None:
+        """Route a control_request through AChat's security infrastructure.
+
+        Parses the tool name and input from the request, then:
+        - Bash  → find_banned_pattern + classify_bash_approval + wait_for_bash_approval
+        - Write/Edit → resolve_safe_path + pending_writes (review mode)
+        - Malformed (no tool_name) → deny + warning event
+        - Other → allow (read-only tools auto-approved by acceptEdits)
+
+        Emits BashCommandResolvedEvent / FsWriteResolvedEvent for immediate
+        denials so the frontend has visibility into blocked operations.
+        """
+        req = msg.request or {}
+        # Spike logging: record the raw request dict so the exact field
+        # names can be verified at runtime.
+        logger.info(
+            "[claude] control_request raw: request_id=%s request=%s",
+            msg.request_id,
+            json.dumps(req, ensure_ascii=False)[:1000],
+        )
+
+        # Defensive parsing: try multiple possible field names.
+        tool_name = (
+            req.get("tool_name")
+            or req.get("toolName")
+            or req.get("name")
+            or ""
+        )
+        tool_input = req.get("input") or req.get("parameters") or req.get("args") or {}
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+
+        # Malformed control_request: no recognisable tool name.
+        if not tool_name:
+            logger.warning(
+                "[claude] malformed control_request (no tool_name): request_id=%s",
+                msg.request_id,
+            )
+            await self._deny(proc, msg, "Malformed control_request: no tool name found")
+            return
+
+        tool_lower = tool_name.lower()
+
+        # ── Bash command routing ──
+        if tool_lower == "bash":
+            command = str(tool_input.get("command", ""))
+            if command:
+                from app.utils.security import find_banned_pattern
+                banned = find_banned_pattern(command, _PLATFORM)
+                if banned:
+                    logger.warning(
+                        "[claude] denying bash (blacklisted): %s", banned
+                    )
+                    await self._deny(proc, msg, f"Command rejected by safety policy: {banned}")
+                    self._emit_approval_event(
+                        input, msg.request_id, approved=False,
+                        reason=f"Banned: {banned}", tool_name="bash",
+                    )
+                    return
+
+                from app.services.bash_command_approval import (
+                    classify_bash_approval,
+                    wait_for_bash_approval,
+                )
+                approval = classify_bash_approval(command, _PLATFORM)
+                if approval.required:
+                    logger.info("[claude] bash requires approval: %s", approval.reason)
+                    approved = await wait_for_bash_approval(
+                        conversation_id=input.conversation_id,
+                        agent_id=input.agent_id,
+                        run_id=input.run_id,
+                        command=command,
+                        cwd=input.workspace_path or "",
+                        reason=approval.reason,
+                        cancel_event=cancel_event,
+                        user_id=input.user_id,
+                    )
+                    if not approved:
+                        await self._deny(proc, msg, f"User rejected command: {approval.reason}")
+                        self._emit_approval_event(
+                            input, msg.request_id, approved=False,
+                            reason=f"User rejected: {approval.reason}", tool_name="bash",
+                        )
+                        return
+            await self._allow(proc, msg)
+            return
+
+        # ── Write / Edit file routing ──
+        if tool_lower in ("write", "edit", "multiedit"):
+            file_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
+            if file_path:
+                from app.infra.cache_helpers import get_workspace_cached
+                from app.utils.workspace_utils import resolve_safe_path
+                workspace = await get_workspace_cached(input.conversation_id)
+                if workspace is not None:
+                    safe_path = resolve_safe_path(workspace, file_path)
+                    if safe_path is None:
+                        logger.warning(
+                            "[claude] denying write (path outside workspace): %s",
+                            file_path,
+                        )
+                        await self._deny(
+                            proc, msg, f'Path "{file_path}" is outside workspace'
+                        )
+                        self._emit_write_approval_event(
+                            input, msg.request_id, applied=False,
+                            reason=f'Path outside workspace: {file_path}',
+                        )
+                        return
+
+                    # Check conversation's fs_write_approval_mode
+                    from sqlalchemy import select as sa_select
+                    from app.db.engine import get_local_db
+                    from app.db.models import Conversation
+                    try:
+                        async with get_local_db() as db:
+                            conv = (
+                                await db.execute(
+                                    sa_select(Conversation.fs_write_approval_mode).where(
+                                        Conversation.id == input.conversation_id
+                                    )
+                                )
+                            ).scalar_one_or_none()
+                        mode = conv or "review"
+                    except Exception:
+                        mode = "review"
+
+                    if mode == "review":
+                        from app.services.pending_writes import pending_writes
+                        from app.utils.approval import await_pending_decision
+                        new_content = str(tool_input.get("content") or tool_input.get("new_string") or "")
+                        write = pending_writes.register(
+                            conversation_id=input.conversation_id,
+                            agent_id=input.agent_id,
+                            run_id=input.run_id,
+                            path=file_path,
+                            absolute_path=safe_path,
+                            old_content=None,
+                            new_content=new_content,
+                            workspace=workspace,
+                            user_id=input.user_id,
+                        )
+                        decision = await await_pending_decision(
+                            attach_resolver=lambda r: pending_writes.attach_resolver(write.id, r),
+                            cancel=lambda: pending_writes.cancel(write.id),
+                            cancel_event=cancel_event,
+                            cancelled_value={"applied": False},
+                        )
+                        applied = isinstance(decision, dict) and decision.get("applied", False)
+                        if not applied:
+                            await self._deny(proc, msg, "User rejected file write")
+                            self._emit_write_approval_event(
+                                input, msg.request_id, applied=False,
+                                reason="User rejected file write",
+                            )
+                            return
+            await self._allow(proc, msg)
+            return
+
+        # ── Default: allow (read-only tools, MCP tools, etc.) ──
+        await self._allow(proc, msg)
+
+    async def _allow(
         self, proc: asyncio.subprocess.Process, msg: _ClaudeSDKMessage
     ) -> None:
-        """Respond ``allow`` to a ``control_request`` (autonomous mode)."""
+        """Respond ``allow`` to a ``control_request``."""
         if not proc.stdin or proc.stdin.is_closing():
             return
         response = {
@@ -740,6 +1050,79 @@ class ClaudeCLIAdapter(CLIAdapterBase):
             await proc.stdin.drain()
         except Exception:
             pass
+
+    async def _deny(
+        self, proc: asyncio.subprocess.Process, msg: _ClaudeSDKMessage, reason: str
+    ) -> None:
+        """Respond ``deny`` to a ``control_request``."""
+        if not proc.stdin or proc.stdin.is_closing():
+            return
+        response = {
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": msg.request_id,
+                "response": {"behavior": "deny", "message": reason},
+            },
+        }
+        try:
+            proc.stdin.write((json.dumps(response) + "\n").encode())
+            await proc.stdin.drain()
+        except Exception:
+            pass
+
+    def _emit_approval_event(
+        self,
+        input: AdapterInput,
+        request_id: str,
+        *,
+        approved: bool,
+        reason: str,
+        tool_name: str,
+    ) -> None:
+        """Emit a BashCommandResolvedEvent for a control_request denial.
+
+        Uses event_bus so the frontend has visibility into denied bash
+        commands even when no pending approval flow was created (e.g.
+        immediate blacklist denial).
+        """
+        from app.services.event_bus import event_bus
+
+        event_bus.publish(
+            BashCommandResolvedEvent(
+                conversation_id=input.conversation_id,
+                timestamp=now_ms(),
+                pending_id=f"deny_{request_id}",
+                approved=approved,
+            ),
+            user_id=input.user_id,
+        )
+
+    def _emit_write_approval_event(
+        self,
+        input: AdapterInput,
+        request_id: str,
+        *,
+        applied: bool,
+        reason: str,
+    ) -> None:
+        """Emit a FsWriteResolvedEvent for a control_request denial.
+
+        Uses event_bus so the frontend has visibility into denied file
+        writes even when no pending approval flow was created (e.g.
+        immediate path violation).
+        """
+        from app.services.event_bus import event_bus
+
+        event_bus.publish(
+            FsWriteResolvedEvent(
+                conversation_id=input.conversation_id,
+                timestamp=now_ms(),
+                pending_id=f"deny_{request_id}",
+                applied=applied,
+            ),
+            user_id=input.user_id,
+        )
 
     async def _drain_stderr(
         self,
@@ -766,35 +1149,6 @@ class ClaudeCLIAdapter(CLIAdapterBase):
                         chunks.append(text)
         except Exception:
             pass
-
-
-# ─── line reader helper ─────────────────────────────────────────
-
-
-async def _read_lines(
-    stream: asyncio.StreamReader,
-    cancel_event: asyncio.Event,
-) -> AsyncIterator[str]:
-    """Read lines from a StreamReader, yielding each non-empty line.
-
-    Stops when the stream is exhausted or ``cancel_event`` is set.
-    """
-    t0 = time.monotonic()
-    first_line = True
-    while not cancel_event.is_set():
-        try:
-            line = await stream.readline()
-        except asyncio.CancelledError:
-            return
-        if not line:
-            return  # EOF
-        decoded = line.decode("utf-8", errors="replace")
-        if first_line and decoded.strip():
-            t_elapsed = time.monotonic() - t0
-            logger.info("[claude:_read_lines] first line arrived after %.3fs", t_elapsed)
-            first_line = False
-        if decoded.strip():
-            yield decoded
 
 
 # ─── temp file helpers ─────────────────────────────────────────
@@ -825,6 +1179,8 @@ def _write_mcp_config(
     run_id: str,
     workspace_path: str,
     agent_id: str,
+    user_id: str | None = None,
+    tool_names: list[str] | None = None,
 ) -> str | None:
     """Write the Claude CLI MCP config JSON file.
 
@@ -845,22 +1201,30 @@ def _write_mcp_config(
     # For that to work, backend_root must be on PYTHONPATH.
     python_exe = sys.executable
 
+    bridge_args = [
+        "-m", "app.mcp_bridge",
+        "--conversation-id", conversation_id,
+        "--run-id", run_id,
+        "--workspace-path", workspace_path,
+        "--agent-id", agent_id,
+    ]
+    if user_id:
+        bridge_args.extend(["--user-id", user_id])
+    if tool_names:
+        bridge_args.extend(["--tool-names", ",".join(tool_names)])
+
     mcp_config = {
         "mcpServers": {
             "achat-tools": {
                 "type": "stdio",
                 "command": python_exe,
-                "args": [
-                    "-m", "app.mcp_bridge",
-                    "--conversation-id", conversation_id,
-                    "--run-id", run_id,
-                    "--workspace-path", workspace_path,
-                    "--agent-id", agent_id,
-                ],
+                "args": bridge_args,
                 "env": {
                     "PYTHONPATH": backend_root,
                     "PYTHONUNBUFFERED": "1",
                     "DATABASE_URL": os.environ.get("DATABASE_URL", ""),
+                    **({"DATABASE_LOCAL_URL": os.environ["DATABASE_LOCAL_URL"]}
+                       if os.environ.get("DATABASE_LOCAL_URL") else {}),
                 },
             }
         }

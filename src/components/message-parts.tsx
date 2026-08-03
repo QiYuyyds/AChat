@@ -385,12 +385,11 @@ function TextPart({
   if (!content) return null
 
   const bubbleClass = cn(
-    'rounded-lg px-4 py-3 shadow-[var(--shadow-sm)]',
     isUser
-      ? 'bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/25'
-      : 'bg-card border border-border/50',
-    !isUser && messageStatus === 'error' && 'border-destructive/40 bg-destructive/10',
-    !isUser && (messageStatus === 'aborted' || messageStatus === 'interrupted') && 'border-muted-foreground/40 bg-muted/60',
+      ? 'rounded-2xl rounded-br-md bg-primary text-primary-foreground px-3.5 py-1.5 [&_p]:my-0 [&_p]:leading-relaxed'
+      : '',
+    !isUser && messageStatus === 'error' && 'rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3',
+    !isUser && (messageStatus === 'aborted' || messageStatus === 'interrupted') && 'rounded-lg border border-muted-foreground/40 bg-muted/60 px-4 py-3',
   )
 
   // Streaming fallback: plain <pre> to avoid O(N×S) markdown re-parsing per delta.
@@ -398,7 +397,7 @@ function TextPart({
   if (isStreaming) {
     return (
       <div className={bubbleClass}>
-        <div className={cn('text-foreground', isUser ? 'text-sm leading-6' : 'text-[15px] leading-7')}>
+        <div className={cn(isUser ? 'text-primary-foreground text-sm leading-6' : 'text-foreground text-[15px] leading-7')}>
           <pre className="whitespace-pre-wrap break-words font-sans">
             {content}
           </pre>
@@ -414,7 +413,7 @@ function TextPart({
         seg.kind === 'quote' ? (
           <QuotedSelectionCard key={i} {...seg} />
         ) : (
-          <Markdown key={i}>{seg.text}</Markdown>
+          <Markdown key={i} className={isUser ? 'text-primary-foreground' : undefined}>{seg.text}</Markdown>
         ),
       )}
     </div>

@@ -17,6 +17,10 @@ from typing import Literal, TypedDict
 # ModelProvider literals from src/shared/types.ts.
 ModelProvider = str
 
+# Engineering cap on effective context window to avoid quality degradation
+# (Lost in the Middle, Context Rot) at excessive context lengths.
+EFFECTIVE_CONTEXT_CAP = 200_000
+
 
 class ModelPricing(TypedDict):
     """模型定价信息。所有单价均 per 1M tokens。与前端 ModelPricing 接口一致。"""
@@ -42,27 +46,30 @@ KNOWN_MODELS: dict[str, dict[str, object]] = {
     # Source: https://api-docs.deepseek.com/zh-cn/quick_start/pricing (July 2026)
     "deepseek-chat": {
         "context": 1_000_000,
+        "outputReserve": 13_000,
         "maxOutputTokens": 384_000,
         "pricing": {"currency": "CNY", "inputCacheHit": 0.02, "inputCacheMiss": 1, "output": 2},
     },
     "deepseek-v4-flash": {
         "context": 1_000_000,
+        "outputReserve": 13_000,
         "maxOutputTokens": 384_000,
         "pricing": {"currency": "CNY", "inputCacheHit": 0.02, "inputCacheMiss": 1, "output": 2},
     },
-    "deepseek-v4": {"context": 1_000_000, "maxOutputTokens": 384_000},
+    "deepseek-v4": {"context": 1_000_000, "outputReserve": 13_000, "maxOutputTokens": 384_000},
     "deepseek-v4-pro": {
         "context": 1_000_000,
+        "outputReserve": 13_000,
         "maxOutputTokens": 384_000,
         "pricing": {"currency": "CNY", "inputCacheHit": 0.025, "inputCacheMiss": 3, "output": 6},
     },
     "deepseek-reasoner": {
         "context": 1_000_000,
-        "outputReserve": 16_384,
+        "outputReserve": 13_000,
         "maxOutputTokens": 384_000,
         "pricing": {"currency": "CNY", "inputCacheHit": 0.025, "inputCacheMiss": 3, "output": 6},
     },
-    "deepseek-r1": {"context": 1_000_000, "outputReserve": 16_384, "maxOutputTokens": 384_000},
+    "deepseek-r1": {"context": 1_000_000, "outputReserve": 13_000, "maxOutputTokens": 384_000},
     # OpenAI
     "gpt-4o": {"context": 128_000, "maxOutputTokens": 16_384},
     "gpt-4o-mini": {"context": 128_000, "maxOutputTokens": 16_384},
@@ -89,8 +96,9 @@ KNOWN_MODELS: dict[str, dict[str, object]] = {
 
 @dataclass(frozen=True)
 class ModelLimits:
-    context_window: int  # total context window (tokens)
-    output_reserve: int  # tokens reserved for output; input + output <= context_window
+    context_window: int  # physical context window (tokens) — model capability metadata
+    output_reserve: int  # tokens reserved for output; input + output <= effective_context_window
+    effective_context_window: int = 0  # min(context_window, EFFECTIVE_CONTEXT_CAP); 0 = not yet computed
     max_output_tokens: int | None = None  # provider hard cap on output tokens, if known
 
 
@@ -100,20 +108,28 @@ def get_model_limits(
 ) -> ModelLimits:
     if model_id and model_id in KNOWN_MODELS:
         m = KNOWN_MODELS[model_id]
+        ctx = m["context"]
         return ModelLimits(
-            context_window=m["context"],
+            context_window=ctx,
             output_reserve=m.get("outputReserve", DEFAULT_OUTPUT_RESERVE),
+            effective_context_window=min(ctx, EFFECTIVE_CONTEXT_CAP),
             max_output_tokens=m.get("maxOutputTokens"),
         )
     # Provider fallback.
     if provider and provider in PROVIDER_FALLBACK_CONTEXT:
+        ctx = PROVIDER_FALLBACK_CONTEXT[provider]
         return ModelLimits(
-            context_window=PROVIDER_FALLBACK_CONTEXT[provider],
+            context_window=ctx,
             output_reserve=DEFAULT_OUTPUT_RESERVE,
+            effective_context_window=min(ctx, EFFECTIVE_CONTEXT_CAP),
             max_output_tokens=None,
         )
     # Final fallback (also used by ClaudeCode adapter — it has no modelProvider field).
-    return ModelLimits(context_window=200_000, output_reserve=DEFAULT_OUTPUT_RESERVE)
+    return ModelLimits(
+        context_window=200_000,
+        output_reserve=DEFAULT_OUTPUT_RESERVE,
+        effective_context_window=min(200_000, EFFECTIVE_CONTEXT_CAP),
+    )
 
 
 def get_model_pricing(

@@ -20,6 +20,7 @@ from app.services.skill_service import (
     SkillError,
     delete_skill,
     list_skills,
+    read_skill_body,
     save_skill,
 )
 
@@ -86,6 +87,16 @@ async def upload_skill(
         },
         status_code=201,
     )
+
+
+@router.get("/skills/{slug}")
+async def get_skill_route(slug: str, user: User = Depends(get_current_user)) -> JSONResponse:
+    """Get a single skill's content (SKILL.md body without frontmatter)."""
+    try:
+        content = read_skill_body(slug)
+    except SkillError as e:
+        return JSONResponse({"error": str(e)}, status_code=404)
+    return JSONResponse({"slug": slug, "content": content})
 
 
 @router.delete("/skills/{slug}")

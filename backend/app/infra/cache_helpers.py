@@ -1,35 +1,58 @@
-"""Cached entity lookup helpers — read-through Redis cache for low-churn entities.
+"""Cached entity lookup helpers — process-internal dict TTL cache for remote cold data.
 
-Each function checks Redis first; on miss, queries PostgreSQL and backfills
-Redis with TTL. On Redis unavailable, falls through to direct PG query.
-Invalidation is handled by the caller (DEL on write).
+Agent and Workspace are read directly from local SQLite (0.1ms RTT, no cache needed).
+UserSettings and GlobalSettings are read from remote PostgreSQL with a
+process-internal dict TTL cache (5min) to avoid repeated 50ms round-trips.
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
-from app.db.models import Agent, GlobalSettings, UserSettings, Workspace
-from app.infra.cache import get_cache
+from app.db.engine import get_local_db, get_remote_db
+from app.db.models import Agent, GlobalSettings, UserPreference, UserSettings, Workspace
 
 logger = logging.getLogger(__name__)
 
 # TTL constants (seconds)
-AGENT_TTL = 300
-USER_SETTINGS_TTL = 300
-WORKSPACE_TTL = 300
-GLOBAL_SETTINGS_TTL = 300
+_PROCESS_CACHE_TTL = 300  # 5 minutes
 
-# Column names for serialization
+# ─── Process-internal dict cache for remote cold data ─────────────────
+_process_cache: dict[str, tuple[float, Any]] = {}
+
+
+def _cache_get(key: str) -> Any | None:
+    """Return cached value if not expired, else None."""
+    entry = _process_cache.get(key)
+    if entry is None:
+        return None
+    ts, value = entry
+    if time.monotonic() - ts > _PROCESS_CACHE_TTL:
+        _process_cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_set(key: str, value: Any) -> None:
+    """Store value in process cache with TTL."""
+    if value is not None:
+        _process_cache[key] = (time.monotonic(), value)
+
+
+def _cache_del(key: str) -> None:
+    """Remove a key from process cache (write-invalidation)."""
+    _process_cache.pop(key, None)
+
+
+# ─── Column names for serialization ─────────────────────────────────────
 _AGENT_COLUMNS = [
     "id", "user_id", "name", "avatar", "description",
-    "system_prompt", "adapter_name", "model_provider", "model_id",
-    "api_key", "api_base_url", "executable_path", "protocol_family",
-    "is_builtin", "is_orchestrator", "is_guide", "supports_vision", "memory_enabled",
+    "system_prompt", "adapter_name", "executable_path", "protocol_family",
+    "is_builtin", "is_orchestrator", "is_guide", "memory_enabled",
     "created_at",
 ]
 
@@ -56,31 +79,27 @@ def _deserialize_agent(data: dict[str, Any]) -> Agent:
     return agent
 
 
+# ─── Agent: direct local SQLite read (no cache needed, 0.1ms) ──────────
+
+
 async def get_agent_cached(agent_id: str) -> Agent | None:
-    """Return Agent by ID, using Redis cache when available."""
-    cache = get_cache()
-    key = f"agent:{agent_id}"
-
-    async def _load() -> dict[str, Any] | None:
-        async with get_db() as db:
-            result = await db.execute(
-                select(Agent).where(Agent.id == agent_id)
-            )
-            agent = result.scalar_one_or_none()
-            if agent is None:
-                return None
-            return _serialize_agent(agent)
-
-    data = await cache.get_or_load(key, AGENT_TTL, _load)
-    if data is None:
-        return None
-    return _deserialize_agent(data)
+    """Return Agent by ID, reading directly from local SQLite."""
+    async with get_local_db() as db:
+        result = await db.execute(
+            select(Agent).where(Agent.id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            return None
+        return agent
 
 
 async def invalidate_agent_cache(agent_id: str) -> None:
-    cache = get_cache()
-    await cache.delete(f"agent:{agent_id}")
+    """No-op: Agent is read directly from SQLite, no cache to invalidate."""
+    pass
 
+
+# ─── UserSettings: remote PG read + process-internal dict TTL cache ────
 
 _USER_SETTINGS_COLUMNS = [
     "user_id", "anthropic_api_key", "anthropic_base_url",
@@ -98,30 +117,30 @@ def _deserialize_user_settings(data: dict[str, Any]) -> UserSettings:
 
 
 async def get_user_settings_cached(user_id: str) -> UserSettings | None:
-    """Return UserSettings by user_id, using Redis cache when available."""
-    cache = get_cache()
-    key = f"user_settings:{user_id}"
+    """Return UserSettings by user_id, using process-internal dict TTL cache."""
+    cache_key = f"user_settings:{user_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return _deserialize_user_settings(cached)
 
-    async def _load() -> dict[str, Any] | None:
-        async with get_db() as db:
-            result = await db.execute(
-                select(UserSettings).where(UserSettings.user_id == user_id)
-            )
-            row = result.scalar_one_or_none()
-            if row is None:
-                return None
-            return _serialize_user_settings(row)
-
-    data = await cache.get_or_load(key, USER_SETTINGS_TTL, _load)
-    if data is None:
-        return None
-    return _deserialize_user_settings(data)
+    async with get_remote_db() as db:
+        result = await db.execute(
+            select(UserSettings).where(UserSettings.user_id == user_id)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        data = _serialize_user_settings(row)
+        _cache_set(cache_key, data)
+        return row
 
 
 async def invalidate_user_settings_cache(user_id: str) -> None:
-    cache = get_cache()
-    await cache.delete(f"user_settings:{user_id}")
+    """Clear the process-internal cache entry for this user's settings."""
+    _cache_del(f"user_settings:{user_id}")
 
+
+# ─── Workspace: direct local SQLite read (no cache needed, 0.1ms) ──────
 
 _WORKSPACE_COLUMNS = ["id", "conversation_id", "root_path", "mode", "bound_path", "env_preference", "created_at"]
 
@@ -135,30 +154,23 @@ def _deserialize_workspace(data: dict[str, Any]) -> Workspace:
 
 
 async def get_workspace_cached(conversation_id: str) -> Workspace | None:
-    """Return Workspace by conversation_id, using Redis cache when available."""
-    cache = get_cache()
-    key = f"workspace:{conversation_id}"
-
-    async def _load() -> dict[str, Any] | None:
-        async with get_db() as db:
-            result = await db.execute(
-                select(Workspace).where(Workspace.conversation_id == conversation_id)
-            )
-            ws = result.scalar_one_or_none()
-            if ws is None:
-                return None
-            return _serialize_workspace(ws)
-
-    data = await cache.get_or_load(key, WORKSPACE_TTL, _load)
-    if data is None:
-        return None
-    return _deserialize_workspace(data)
+    """Return Workspace by conversation_id, reading directly from local SQLite."""
+    async with get_local_db() as db:
+        result = await db.execute(
+            select(Workspace).where(Workspace.conversation_id == conversation_id)
+        )
+        ws = result.scalar_one_or_none()
+        if ws is None:
+            return None
+        return ws
 
 
 async def invalidate_workspace_cache(conversation_id: str) -> None:
-    cache = get_cache()
-    await cache.delete(f"workspace:{conversation_id}")
+    """No-op: Workspace is read directly from SQLite, no cache to invalidate."""
+    pass
 
+
+# ─── GlobalSettings: remote PG read + process-internal dict TTL cache ──
 
 _GLOBAL_SETTINGS_COLUMNS = [
     "id", "deployment_publish_enabled", "deployment_publish_dir",
@@ -175,26 +187,52 @@ def _deserialize_global_settings(data: dict[str, Any]) -> GlobalSettings:
 
 
 async def get_global_settings_cached() -> GlobalSettings | None:
-    """Return singleton GlobalSettings, using Redis cache when available."""
-    cache = get_cache()
-    key = "global_settings"
+    """Return singleton GlobalSettings, using process-internal dict TTL cache."""
+    cache_key = "global_settings"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return _deserialize_global_settings(cached)
 
-    async def _load() -> dict[str, Any] | None:
-        async with get_db() as db:
-            result = await db.execute(
-                select(GlobalSettings).where(GlobalSettings.id == "singleton")
-            )
-            row = result.scalar_one_or_none()
-            if row is None:
-                return None
-            return _serialize_global_settings(row)
-
-    data = await cache.get_or_load(key, GLOBAL_SETTINGS_TTL, _load)
-    if data is None:
-        return None
-    return _deserialize_global_settings(data)
+    async with get_remote_db() as db:
+        result = await db.execute(
+            select(GlobalSettings).where(GlobalSettings.id == "singleton")
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        data = _serialize_global_settings(row)
+        _cache_set(cache_key, data)
+        return row
 
 
 async def invalidate_global_settings_cache() -> None:
-    cache = get_cache()
-    await cache.delete("global_settings")
+    """Clear the process-internal cache entry for global settings."""
+    _cache_del("global_settings")
+
+
+# ─── UserPreference: remote PG read + process-internal dict TTL cache ──
+
+
+async def get_user_preferences_cached(user_id: str) -> dict[str, str]:
+    """Return all UserPreference key-value pairs for a user, using process-internal dict TTL cache.
+
+    Returns a {key: value} dict. Cache is invalidated on write.
+    """
+    cache_key = f"user_preferences:{user_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    async with get_remote_db() as db:
+        result = await db.execute(
+            select(UserPreference).where(UserPreference.user_id == user_id)
+        )
+        rows = result.scalars().all()
+        prefs = {r.key: r.value for r in rows}
+        _cache_set(cache_key, dict(prefs))
+        return prefs
+
+
+async def invalidate_user_preferences_cache(user_id: str) -> None:
+    """Clear the process-internal cache entry for this user's preferences."""
+    _cache_del(f"user_preferences:{user_id}")

@@ -16,10 +16,6 @@ _AGENT_ROW_KEYS = {
     "capabilities",
     "systemPrompt",
     "adapterName",
-    "modelProvider",
-    "modelId",
-    "apiKey",
-    "apiBaseUrl",
     "toolNames",
     "skillNames",
     "mcpServerIds",
@@ -28,7 +24,7 @@ _AGENT_ROW_KEYS = {
     "customArgs",
     "isBuiltin",
     "isOrchestrator",
-    "supportsVision",
+    "isGuide",
     "memoryEnabled",
     "createdAt",
 }
@@ -67,10 +63,7 @@ async def test_create_custom_agent_happy(api_client, db):
             "capabilities": ["code"],
             "systemPrompt": "you write code",
             "adapterName": "custom",
-            "modelProvider": "deepseek",
-            "modelId": "deepseek-v4-flash",
             "toolNames": ["bash", "fs_read"],
-            "supportsVision": True,
         },
     )
     assert resp.status_code == 201
@@ -79,7 +72,6 @@ async def test_create_custom_agent_happy(api_client, db):
     assert agent["id"].startswith("ag_")
     assert agent["name"] == "Coder"
     assert agent["adapterName"] == "custom"
-    assert agent["modelProvider"] == "deepseek"
     assert agent["toolNames"] == ["bash", "fs_read"]
     assert agent["isBuiltin"] is False
     assert agent["isOrchestrator"] is False
@@ -92,8 +84,6 @@ async def test_create_agent_defaults_adapter_and_avatar(api_client, db):
             "name": "NoAvatar",
             "description": "desc",
             "systemPrompt": "p",
-            "modelProvider": "openai",
-            "modelId": "gpt-4o",
         },
     )
     assert resp.status_code == 201
@@ -102,7 +92,7 @@ async def test_create_agent_defaults_adapter_and_avatar(api_client, db):
     assert agent["avatar"] == "🤖"  # defaulted
 
 
-async def test_create_sdk_adapter_clears_tools_and_provider(api_client, db):
+async def test_create_cli_adapter_clears_tools(api_client, db):
     resp = await api_client.post(
         "/api/agents",
         json={
@@ -116,22 +106,22 @@ async def test_create_sdk_adapter_clears_tools_and_provider(api_client, db):
     assert resp.status_code == 201
     agent = resp.json()["agent"]
     assert agent["adapterName"] == "claude-code"
-    assert agent["modelProvider"] is None
     assert agent["toolNames"] == []
 
 
-async def test_create_custom_requires_model(api_client, db):
+async def test_create_custom_no_longer_requires_model(api_client, db):
     resp = await api_client.post(
         "/api/agents",
         json={
-            "name": "Bad",
+            "name": "NoModel",
             "description": "desc",
             "systemPrompt": "p",
             "adapterName": "custom",
         },
     )
-    assert resp.status_code == 400
-    assert resp.json()["error"] == "Custom adapter requires modelProvider and modelId"
+    assert resp.status_code == 201
+    agent = resp.json()["agent"]
+    assert agent["adapterName"] == "custom"
 
 
 async def test_create_invalid_body(api_client, db):
@@ -154,26 +144,23 @@ async def test_patch_updates_fields(api_client, agents):
     assert agent["description"] == "updated"
 
 
-async def test_patch_clears_api_key_with_null(api_client, db):
-    # Create a custom agent with an api key, then clear it via null.
+async def test_patch_rejects_unknown_model_fields(api_client, db):
+    # Model fields are no longer part of the Agent entity;
+    # PATCH with them should be rejected as unrecognized keys.
     created = await api_client.post(
         "/api/agents",
         json={
-            "name": "Keyed",
+            "name": "Test",
             "description": "d",
             "systemPrompt": "p",
             "adapterName": "custom",
-            "modelProvider": "deepseek",
-            "modelId": "deepseek-v4-flash",
-            "apiKey": "sk-secret",
         },
     )
     aid = created.json()["agent"]["id"]
-    assert created.json()["agent"]["apiKey"] == "sk-secret"
 
-    resp = await api_client.patch(f"/api/agents/{aid}", json={"apiKey": None})
-    assert resp.status_code == 200
-    assert resp.json()["agent"]["apiKey"] is None
+    resp = await api_client.patch(f"/api/agents/{aid}", json={"modelProvider": "deepseek"})
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "Invalid body"
 
 
 async def test_patch_unknown_key_rejected(api_client, agents):
@@ -199,8 +186,6 @@ async def test_delete_custom_agent(api_client, db):
             "description": "d",
             "systemPrompt": "p",
             "adapterName": "custom",
-            "modelProvider": "openai",
-            "modelId": "gpt-4o",
         },
     )
     aid = created.json()["agent"]["id"]
@@ -233,12 +218,9 @@ async def test_draft_artifact_intent(api_client, db):
     assert resp.status_code == 200
     draft = resp.json()["draft"]
     assert draft["adapterName"] == "custom"
-    assert draft["modelProvider"] == "deepseek"
-    assert draft["modelId"] == "deepseek-v4-flash"
-    assert draft["supportsVision"] is True
     assert "write_artifact" in draft["toolNames"]
     assert len(draft["toolPermissionSummaries"]) == len(draft["toolNames"])
-    assert draft["systemPrompt"].startswith(f"你是 {draft['name']}。")
+    assert draft["systemPrompt"].startswith("你是")
 
 
 async def test_draft_local_code_preset(api_client, db):
@@ -248,7 +230,9 @@ async def test_draft_local_code_preset(api_client, db):
     )
     assert resp.status_code == 200
     draft = resp.json()["draft"]
-    assert "bash" in draft["toolNames"]
+    # coder preset returns deploy_workspace + read_artifact (baseline tools like
+    # bash are always-on and not listed in toolNames)
+    assert "deploy_workspace" in draft["toolNames"]
     assert "write_artifact" not in draft["toolNames"]
 
 
@@ -267,8 +251,6 @@ async def test_create_orchestrator_agent(api_client, db):
             "description": "orchestrator agent",
             "systemPrompt": "you plan tasks",
             "adapterName": "custom",
-            "modelProvider": "deepseek",
-            "modelId": "deepseek-v4-flash",
             "toolNames": ["bash", "fs_read"],
             "isOrchestrator": True,
         },
@@ -291,8 +273,6 @@ async def test_create_non_orchestrator_default(api_client, db):
             "description": "normal agent",
             "systemPrompt": "p",
             "adapterName": "custom",
-            "modelProvider": "deepseek",
-            "modelId": "deepseek-v4-flash",
         },
     )
     assert resp.status_code == 201

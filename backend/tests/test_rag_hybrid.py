@@ -11,9 +11,10 @@ from app.infra.hybrid import HybridStore
 def _make_settings(**overrides) -> Settings:
     defaults = {
         "rag_milvus_dim": 1024,
-        "rag_rrf_constant_k": 60,
-        "rag_semantic_weight": 0.7,
-        "kg_weight": 0.3,
+        "rag_rrf_constant_k": 30,
+        "rag_semantic_weight": 0.5,
+        "rag_keyword_weight": 0.5,
+        "kg_weight": 0.0,
         "rag_top_k": 3,
     }
     defaults.update(overrides)

@@ -42,6 +42,15 @@ class UpdateConversationRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ForkConversationRequest(BaseModel):
+    """Request to fork a conversation from a specific message."""
+
+    fork_point_message_id: str = Field(alias="forkPointMessageId")
+    confirm_git_init: bool = Field(default=False, alias="confirmGitInit")
+
+    model_config = {"populate_by_name": True}
+
+
 class ConversationResponse(BaseModel):
     """Response containing a conversation."""
 
@@ -54,9 +63,10 @@ class ConversationResponse(BaseModel):
     archived: bool
     pinned_at: int | None = Field(alias="pinnedAt")
     fs_write_approval_mode: Literal["auto", "review"] = Field(alias="fsWriteApprovalMode")
-    rag_enabled: bool = Field(alias="ragEnabled")
     summary: str | None = None
     dispatch_mode: str = Field(default="solo", alias="dispatchMode")
+    parent_conversation_id: str | None = Field(default=None, alias="parentConversationId")
+    fork_point_message_id: str | None = Field(default=None, alias="forkPointMessageId")
     created_at: int = Field(alias="createdAt")
     updated_at: int = Field(alias="updatedAt")
     workspace_mode: Literal["sandbox", "local"] = Field(alias="workspaceMode")
@@ -76,8 +86,9 @@ class SendMessageRequest(BaseModel):
     mentioned_agent_ids: list[str] | None = Field(default=None, alias="mentionedAgentIds")
     parent_message_id: str | None = Field(default=None, alias="parentMessageId")
     attachment_ids: list[str] | None = Field(default=None, alias="attachmentIds")
+    model_profile_id: str | None = Field(default=None, alias="modelProfileId")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "protected_namespaces": ()}
 
 
 class EditMessageRequest(BaseModel):
@@ -95,14 +106,6 @@ class SendMessageResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class SetRagModeRequest(BaseModel):
-    """Request to set conversation RAG mode."""
-
-    rag_enabled: bool = Field(alias="ragEnabled")
-
-    model_config = {"populate_by_name": True}
-
-
 # ─── Agent Requests ─────────────────────────────────────
 class CreateAgentRequest(BaseModel):
     """Request to create a new agent."""
@@ -114,17 +117,9 @@ class CreateAgentRequest(BaseModel):
     system_prompt: str = Field(alias="systemPrompt")
     adapter_name: Literal["custom", "claude-code", "codex"] = Field(alias="adapterName")
 
-    model_provider: Literal[
-        "anthropic", "openai", "deepseek", "volcano-ark", "openai-compatible"
-    ] | None = Field(default=None, alias="modelProvider")
-    model_id: str | None = Field(default=None, alias="modelId")
-    api_key: str | None = Field(default=None, alias="apiKey")
-    api_base_url: str | None = Field(default=None, alias="apiBaseUrl")
-
     tool_names: list[str] | None = Field(default=None, alias="toolNames")
     skill_names: list[str] | None = Field(default=None, alias="skillNames")
     mcp_server_ids: list[str] | None = Field(default=None, alias="mcpServerIds")
-    supports_vision: bool | None = Field(default=None, alias="supportsVision")
     is_orchestrator: bool | None = Field(default=False, alias="isOrchestrator")
     memory_enabled: bool | None = Field(default=None, alias="memoryEnabled")
 
@@ -145,17 +140,9 @@ class UpdateAgentRequest(BaseModel):
     capabilities: list[str] | None = None
     system_prompt: str | None = Field(default=None, alias="systemPrompt")
 
-    model_provider: Literal[
-        "anthropic", "openai", "deepseek", "volcano-ark", "openai-compatible"
-    ] | None = Field(default=None, alias="modelProvider")
-    model_id: str | None = Field(default=None, alias="modelId")
-    api_key: str | None = Field(default=None, alias="apiKey")
-    api_base_url: str | None = Field(default=None, alias="apiBaseUrl")
-
     tool_names: list[str] | None = Field(default=None, alias="toolNames")
     skill_names: list[str] | None = Field(default=None, alias="skillNames")
     mcp_server_ids: list[str] | None = Field(default=None, alias="mcpServerIds")
-    supports_vision: bool | None = Field(default=None, alias="supportsVision")
     is_orchestrator: bool | None = Field(default=None, alias="isOrchestrator")
     memory_enabled: bool | None = Field(default=None, alias="memoryEnabled")
 
@@ -177,13 +164,9 @@ class AgentResponse(BaseModel):
     capabilities: list[str]
     system_prompt: str = Field(alias="systemPrompt")
     adapter_name: str = Field(alias="adapterName")
-    model_provider: str | None = Field(alias="modelProvider")
-    model_id: str | None = Field(alias="modelId")
-    api_base_url: str | None = Field(alias="apiBaseUrl")
     tool_names: list[str] = Field(alias="toolNames")
     is_builtin: bool = Field(alias="isBuiltin")
     is_orchestrator: bool = Field(alias="isOrchestrator")
-    supports_vision: bool = Field(alias="supportsVision")
     memory_enabled: bool = Field(default=False, alias="memoryEnabled")
     created_at: int = Field(alias="createdAt")
     # CLI fields

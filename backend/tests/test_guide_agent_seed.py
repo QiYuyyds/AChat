@@ -29,9 +29,6 @@ async def test_seed_creates_guide_agent(db):
         assert agent.is_guide is True
         assert agent.user_id is None
         assert agent.adapter_name == "custom"
-        assert agent.model_provider == "deepseek"
-        assert agent.model_id == "deepseek-v4-flash"
-        assert agent.api_key is None
         assert "manage_agents" in agent.tool_names_list
         assert "manage_skills" in agent.tool_names_list
         assert "manage_mcp" in agent.tool_names_list

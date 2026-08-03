@@ -167,6 +167,8 @@ async def spawn_subagent_loop(
 
 系统提示词明确指导何时使用每个工具。无验证 gate、无重试 harness、无自动重规划——LLM 可根据返回结果自行决定是否重新派发失败的任务。
 
+> **ReAct loop 内压缩工具覆盖**：`compact_pipeline.py` 的 `_SUMMARIZERS` 分发表覆盖所有 baseline 工具（`fs_list` / `fs_read` / `fs_write` / `fs_edit` / `fs_grep` / `fs_glob` / `bash` / `read_attachment` / `ask_user`）和常见可选工具（`write_artifact` / `read_artifact` / `update_artifact` / `deploy_artifact` / `deploy_workspace` / `web_search` / `load_skill` / `task_dispatch` / `dispatch_plan` / `create_plan` / `plan_step` / `add_plan_steps` / `manage_*`）。未注册的工具回退到通用截断策略并记录 warning。详见 `openspec/specs/run-internal-compaction/spec.md`。
+
 ## 4. Conversation.dispatch_mode
 
 - **字段**: `dispatch_mode VARCHAR NOT NULL DEFAULT 'solo'`

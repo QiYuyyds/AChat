@@ -39,7 +39,7 @@ HybridStore MUST combine results from Milvus ANN (semantic), Elasticsearch BM25/
 
 #### Scenario: All three paths return results
 - **WHEN** Milvus, ES, and Neo4j all return ranked results
-- **THEN** RRF fusion combines them with `semantic_weight=0.7`, `keyword_weight=0.3`, and `kg_weight=0.3`
+- **THEN** RRF fusion combines them with `semantic_weight=0.5`, `keyword_weight=0.5`, and `kg_weight=0.0`
 - **AND** the top-k results are returned with full content fetched from PostgreSQL
 
 #### Scenario: One retrieval path fails

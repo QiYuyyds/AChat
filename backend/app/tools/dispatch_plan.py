@@ -17,7 +17,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.db.engine import get_db
+from app.db.engine import get_local_db
 from app.db.models import Agent, AgentRun, AppSettings, Conversation
 from app.schemas.dispatch import DispatchPlanItem
 from app.schemas.events import DispatchPlanEvent
@@ -97,16 +97,22 @@ _PARAMETERS: dict[str, Any] = {
 async def _is_plan_approval_enabled() -> bool:
     """Check if plan approval is enabled (default: False).
 
-    Reads from ``AppSettings.settings`` JSONB column.
+    Reads from ``AppSettings.settings`` JSONB column on the remote DB.
+    Returns False on any DB error so dispatch_plan never crashes.
     """
-    async with get_db() as db:
-        row = (
-            await db.execute(
-                select(AppSettings).where(AppSettings.id == "singleton")
-            )
-        ).scalar_one_or_none()
-        if row and row.settings:
-            return bool(row.settings.get("plan_approval_enabled", False))
+    from app.db.engine import get_remote_db
+
+    try:
+        async with get_remote_db() as db:
+            row = (
+                await db.execute(
+                    select(AppSettings).where(AppSettings.id == "singleton")
+                )
+            ).scalar_one_or_none()
+            if row and row.settings:
+                return bool(row.settings.get("plan_approval_enabled", False))
+    except Exception as exc:  # noqa: BLE001 - degrade gracefully
+        logger.warning("[dispatch_plan] _is_plan_approval_enabled failed: %s", exc)
     return False
 
 
@@ -148,7 +154,7 @@ async def _verify_agents_in_conversation(
     if not agent_ids:
         return None
 
-    async with get_db() as db:
+    async with get_local_db() as db:
         conv = (
             await db.execute(
                 select(Conversation).where(Conversation.id == conversation_id)
@@ -254,6 +260,11 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
             "cannot dispatch further subagents"
         )
 
+    logger.info(
+        "[dispatch_plan] handler invoked run=%s depth=%d mode=%s tasks=%d",
+        ctx.run_id, ctx.dispatch_depth, ctx.dispatch_mode, len(items),
+    )
+
     # Anti-loop: non-coordinated mode can only clone itself
     has_group_dispatch = any(
         item.agent_id is not None and item.agent_id != ctx.agent_id
@@ -277,7 +288,9 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         return err(agent_err)
 
     # Optional plan approval flow
-    if await _is_plan_approval_enabled():
+    approval_enabled = await _is_plan_approval_enabled()
+    if approval_enabled:
+        logger.info("[dispatch_plan] plan approval enabled, awaiting user decision run=%s", ctx.run_id)
         outcome = await _await_plan_approval(items, ctx)
         if outcome is None:
             return ok({"status": "aborted"})
@@ -290,9 +303,10 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         # approve — use the (possibly re-validated) plan
         if outcome.plan is not None:
             items = outcome.plan
+        logger.info("[dispatch_plan] plan approved, proceeding run=%s", ctx.run_id)
 
     # Get trigger_message_id from the parent run
-    async with get_db() as db:
+    async with get_local_db() as db:
         parent_run = (
             await db.execute(
                 select(AgentRun).where(AgentRun.id == ctx.run_id)
@@ -342,6 +356,7 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         dispatch_depth=ctx.dispatch_depth + 1,
         dispatch_visibility=visibility,
         user_id=ctx.user_id,
+        workspace_path=ctx.workspace_path,
     )
 
     logger.info(
@@ -354,6 +369,12 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     )
 
     results = await execute_dag(items, dag_ctx)
+
+    logger.info(
+        "[dispatch_plan] DAG execution complete run=%s results=%d",
+        ctx.run_id,
+        len(results),
+    )
 
     return ok(
         {

@@ -1,6 +1,6 @@
 'use client'
 
-import { Brain, Loader2, Pencil, Trash2, X } from 'lucide-react'
+import { Brain, Folder, Loader2, Pencil, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -16,22 +16,26 @@ import { cn } from '@/lib/utils'
 
 const PAGE_SIZE = 10
 
-const CATEGORIES = ['general', 'fact', 'preference', 'skill', 'project'] as const
+const CATEGORIES = ['fact', 'preference', 'policy', 'tool_failure', 'identity', 'case'] as const
 
 const CATEGORY_STYLES: Record<string, string> = {
-  general: 'bg-muted text-muted-foreground',
+  '': 'bg-muted text-muted-foreground',
   fact: 'bg-primary/10 text-primary',
   preference: 'bg-warning/10 text-warning',
-  skill: 'bg-success/10 text-success',
-  project: 'bg-destructive/10 text-destructive',
+  policy: 'bg-success/10 text-success',
+  tool_failure: 'bg-destructive/10 text-destructive',
+  identity: 'bg-secondary text-secondary-foreground',
+  case: 'bg-secondary/60 text-secondary-foreground',
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  general: '通用',
+  '': '通用',
   fact: '事实',
   preference: '偏好',
-  skill: '技能',
-  project: '项目',
+  policy: '策略',
+  tool_failure: '工具失败',
+  identity: '身份',
+  case: '任务经验',
 }
 
 export function LongTermMemoryPanel() {
@@ -47,6 +51,9 @@ export function LongTermMemoryPanel() {
   const [editImportance, setEditImportance] = useState('')
   const [editCategory, setEditCategory] = useState('')
   const [editTags, setEditTags] = useState('')
+  const [editSummary, setEditSummary] = useState('')
+  const [editKeywords, setEditKeywords] = useState('')
+  const [editContentScope, setEditContentScope] = useState('')
   const [saving, setSaving] = useState(false)
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null)
 
@@ -81,6 +88,9 @@ export function LongTermMemoryPanel() {
     setEditImportance(String(item.importance))
     setEditCategory(item.category)
     setEditTags(item.tags.join(', '))
+    setEditSummary(item.summary)
+    setEditKeywords(item.keywords.join(', '))
+    setEditContentScope(item.contentScope)
   }
 
   const cancelEdit = () => {
@@ -89,6 +99,9 @@ export function LongTermMemoryPanel() {
     setEditImportance('')
     setEditCategory('')
     setEditTags('')
+    setEditSummary('')
+    setEditKeywords('')
+    setEditContentScope('')
   }
 
   const handleSave = async () => {
@@ -103,6 +116,12 @@ export function LongTermMemoryPanel() {
           .split(',')
           .map((t) => t.trim())
           .filter(Boolean),
+        summary: editSummary,
+        keywords: editKeywords
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean),
+        contentScope: editContentScope,
       })
       cancelEdit()
       await load()
@@ -177,6 +196,12 @@ export function LongTermMemoryPanel() {
           >
             {editingId === item.id ? (
               <div className="flex flex-col gap-2.5">
+                <Input
+                  value={editSummary}
+                  onChange={(e) => setEditSummary(e.target.value)}
+                  className="h-7 text-xs"
+                  placeholder="摘要标题"
+                />
                 <textarea
                   value={editContent}
                   onChange={(e) => setEditContent(e.target.value)}
@@ -203,8 +228,22 @@ export function LongTermMemoryPanel() {
                   <Input
                     value={editTags}
                     onChange={(e) => setEditTags(e.target.value)}
-                    placeholder="逗号分隔"
+                    placeholder="标签（逗号分隔）"
                     className="h-7 w-32 text-xs"
+                  />
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Input
+                    value={editKeywords}
+                    onChange={(e) => setEditKeywords(e.target.value)}
+                    placeholder="关键词（逗号分隔）"
+                    className="h-7 w-32 text-xs"
+                  />
+                  <Input
+                    value={editContentScope}
+                    onChange={(e) => setEditContentScope(e.target.value)}
+                    placeholder="内容范围路径"
+                    className="h-7 w-40 text-xs"
                   />
                 </div>
                 <div className="flex items-center justify-end gap-1">
@@ -229,12 +268,15 @@ export function LongTermMemoryPanel() {
             ) : (
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
+                  {item.summary && (
+                    <p className="mb-1 text-sm font-medium leading-5 text-foreground">{item.summary}</p>
+                  )}
                   <p className="text-sm leading-5 text-foreground">{item.content}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
                     <span
                       className={cn(
                         'rounded px-1.5 py-0.5 text-[10px] font-medium',
-                        CATEGORY_STYLES[item.category] ?? CATEGORY_STYLES.general,
+                        CATEGORY_STYLES[item.category] ?? CATEGORY_STYLES[''],
                       )}
                     >
                       {CATEGORY_LABELS[item.category] ?? item.category}
@@ -249,6 +291,14 @@ export function LongTermMemoryPanel() {
                       </span>
                       <span className="font-mono">{item.importance.toFixed(2)}</span>
                     </span>
+                    {item.keywords.map((kw) => (
+                      <span
+                        key={kw}
+                        className="rounded bg-primary/5 px-1.5 py-0.5 text-[10px] text-primary/70"
+                      >
+                        #{kw}
+                      </span>
+                    ))}
                     {item.tags.map((tag) => (
                       <span
                         key={tag}
@@ -266,6 +316,15 @@ export function LongTermMemoryPanel() {
                       </>
                     )}
                     <span>{new Date(item.createdAt * 1000).toLocaleDateString()}</span>
+                    {item.contentScope && (
+                      <>
+                        <span>·</span>
+                        <span className="flex items-center gap-0.5 font-mono">
+                          <Folder className="size-2.5" />
+                          {item.contentScope}
+                        </span>
+                      </>
+                    )}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">

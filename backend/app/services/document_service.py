@@ -13,7 +13,7 @@ from typing import Any
 
 from sqlalchemy import desc, func, select, update
 
-from app.db.engine import get_db
+from app.db.engine import get_remote_db
 from app.db.models import Document, DocumentVersion, RagChunk
 from app.rag.parser import parse_bytes
 from app.utils.ids import new_document_id, new_document_version_id
@@ -36,7 +36,7 @@ class DocumentService:
 
     def __init__(self, db=None, rag=None):
         # db is the get_db context manager; rag is the RAGService instance
-        self._get_db = db or get_db
+        self._get_db = db or get_remote_db
         self._rag = rag
 
     # ─── List ──────────────────────────────────────────────────────────────

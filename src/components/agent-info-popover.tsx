@@ -1,6 +1,6 @@
 'use client'
 
-import { Eye, Pencil, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
+import { Pencil, ShieldCheck, Sparkles, Wrench } from 'lucide-react'
 import { useState } from 'react'
 
 import { AgentAvatar } from '@/components/agent-avatar'
@@ -34,8 +34,6 @@ export function AgentInfoPopover({
 }) {
   const [editOpen, setEditOpen] = useState(false)
 
-  const providerLabel = providerName(agent.modelProvider)
-
   return (
     <>
       <Popover>
@@ -62,12 +60,6 @@ export function AgentInfoPopover({
                   <Badge tone="primary">
                     <Sparkles className="size-2.5" />
                     Orchestrator
-                  </Badge>
-                )}
-                {agent.supportsVision && (
-                  <Badge tone="emerald">
-                    <Eye className="size-2.5" />
-                    视觉
                   </Badge>
                 )}
               </div>
@@ -98,7 +90,6 @@ export function AgentInfoPopover({
               <ShieldCheck className="size-3" />
               <span className="font-mono">
                 {agent.adapterName}
-                {agent.modelId ? ` · ${providerLabel ?? agent.modelProvider} / ${agent.modelId}` : ''}
               </span>
             </div>
             {agent.toolNames.length > 0 && (
@@ -157,14 +148,4 @@ function Badge({
       {children}
     </span>
   )
-}
-
-function providerName(provider: string | null): string | null {
-  if (!provider) return null
-  if (provider === 'volcano-ark') return '火山方舟'
-  if (provider === 'deepseek') return 'DeepSeek'
-  if (provider === 'anthropic') return 'Anthropic'
-  if (provider === 'openai') return 'OpenAI'
-  if (provider === 'openai-compatible') return 'OpenAI-compatible'
-  return provider
 }

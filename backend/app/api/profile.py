@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app.auth.dependencies import get_current_user
 from app.config import get_settings
-from app.db.engine import get_db
+from app.db.engine import get_remote_db
 from app.db.models import User, UserPreference
 from app.memory.preference import Preference
 
@@ -69,6 +69,8 @@ async def update_profile(
             await pref.set(canonical_key, str(value), source="manual")
         updates[field] = value
 
+    from app.infra.cache_helpers import invalidate_user_preferences_cache
+    await invalidate_user_preferences_cache(user.id)
     prefs = await _read_profile_prefs(user.id)
     return JSONResponse({
         "name": prefs.get("姓名"),
@@ -111,7 +113,7 @@ async def upload_avatar(
     filepath = avatar_dir / filename
     filepath.write_bytes(data)
 
-    async with get_db() as session:
+    async with get_remote_db() as session:
         result = await session.execute(select(User).where(User.id == user.id))
         db_user = result.scalar_one()
         db_user.avatar_url = "/api/profile/avatar"
@@ -152,7 +154,7 @@ async def serve_avatar(user: User = Depends(get_current_user)) -> FileResponse:
 
 async def _read_profile_prefs(user_id: str) -> dict[str, str]:
     """Read the 5 canonical profile keys from UserPreference."""
-    async with get_db() as session:
+    async with get_remote_db() as session:
         stmt = select(UserPreference).where(UserPreference.user_id == user_id)
         result = await session.execute(stmt)
         rows = result.scalars().all()

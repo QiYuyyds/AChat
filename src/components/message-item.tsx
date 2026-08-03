@@ -1,6 +1,6 @@
 'use client'
 
-import { AtSign, CornerUpLeft, Loader2, Pencil, Pin, RotateCcw, Star, Trash2 } from 'lucide-react'
+import { AtSign, CornerUpLeft, GitBranch, Loader2, Pencil, Pin, RotateCcw, Star, Trash2 } from 'lucide-react'
 import { memo, useState } from 'react'
 
 import { AgentAvatar } from '@/components/agent-avatar'
@@ -20,7 +20,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { editAndResendMessage, regenerateLastResponse, toggleMessagePin, withdrawMessage } from '@/lib/api'
+import {
+  editAndResendMessage,
+  fetchMessages,
+  forkConversation,
+  regenerateLastResponse,
+  toggleMessagePin,
+  withdrawMessage,
+} from '@/lib/api'
+import type { ForkGitInitError } from '@/lib/api'
 import { API_BASE_URL } from '@/lib/config'
 import { formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -78,6 +86,12 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [confirmWithdraw, setConfirmWithdraw] = useState(false)
+  const [forkBusy, setForkBusy] = useState(false)
+  const [gitInitPath, setGitInitPath] = useState<string | null>(null)
+
+  const upsertConversation = useAppStore((s) => s.upsertConversation)
+  const setActiveConversation = useAppStore((s) => s.setActiveConversation)
+  const setMessagesForConversation = useAppStore((s) => s.setMessagesForConversation)
 
   // 原 message.parts 中的 text 部分（用于 inline edit 的初始值）
   const initialText = isUser
@@ -168,6 +182,32 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
     }
   }
 
+  const handleFork = async (confirmGitInit = false) => {
+    if (forkBusy) return
+    setForkBusy(true)
+    try {
+      const newConv = await forkConversation(
+        message.conversationId,
+        message.id,
+        confirmGitInit,
+      )
+      upsertConversation(newConv)
+      setActiveConversation(newConv.id)
+      const msgs = await fetchMessages(newConv.id)
+      setMessagesForConversation(newConv.id, msgs)
+      setGitInitPath(null)
+    } catch (err) {
+      if (err && typeof err === 'object' && 'requiresGitInit' in err) {
+        const forkErr = err as ForkGitInitError
+        setGitInitPath(forkErr.sourcePath)
+      } else {
+        console.error('[MessageItem] fork failed', err)
+      }
+    } finally {
+      setForkBusy(false)
+    }
+  }
+
   return (
     <div
       id={`message-${message.id}`}
@@ -238,7 +278,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
                   message.usage.inputTokens,
                   message.usage.outputTokens,
                   message.usage.cacheReadTokens,
-                  agent?.modelProvider,
+                  undefined,
                 ),
               )}{' '}
               tok
@@ -397,6 +437,21 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
                 </button>
               </>
             )}
+            {!isUser && message.status !== 'streaming' && (
+              <button
+                type="button"
+                onClick={() => void handleFork()}
+                disabled={forkBusy}
+                className="transition hover:text-foreground disabled:opacity-30"
+                title="从这条消息分支出新对话"
+              >
+                {forkBusy ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <GitBranch className="size-3.5" />
+                )}
+              </button>
+            )}
             {isLatestAgent && message.status !== 'streaming' && (
               <button
                 type="button"
@@ -434,6 +489,32 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
               disabled={busy}
             >
               {busy ? '撤回中…' : '撤回'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={gitInitPath !== null}
+        onOpenChange={(open) => !forkBusy && !open && setGitInitPath(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>初始化 Git 仓库</DialogTitle>
+            <DialogDescription>
+              将在 {gitInitPath} 初始化 Git 仓库以支持分支功能。这会在该目录下创建 .git 文件夹和 .gitignore 文件。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setGitInitPath(null)} disabled={forkBusy}>
+              取消
+            </Button>
+            <Button
+              variant="default"
+              onClick={() => void handleFork(true)}
+              disabled={forkBusy}
+            >
+              {forkBusy ? '初始化中…' : '确认初始化并分支'}
             </Button>
           </DialogFooter>
         </DialogContent>

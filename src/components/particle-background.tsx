@@ -47,7 +47,7 @@ export function ParticleBackground({
       document.body.appendChild(tmp)
       const resolved = getComputedStyle(tmp).color
       document.body.removeChild(tmp)
-      color = resolved || 'rgb(165,89,53)'
+      color = resolved || 'rgb(0,122,255)'
     }
 
     function resize() {

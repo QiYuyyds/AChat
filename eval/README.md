@@ -66,7 +66,7 @@ LLM_MODEL=qwen-turbo
 # RAG 权重（影响 hybrid RRF 融合）
 RAG_SEMANTIC_WEIGHT=0.5    # 语义检索权重
 KG_WEIGHT=0.0              # 知识图谱权重（0 = 禁用）
-RAG_RRF_CONSTANT_K=60      # RRF 常数
+RAG_RRF_CONSTANT_K=30      # RRF 常数（推荐范围 10-60）
 
 # RAG 检索配置
 RAG_TOP_K=5                # 返回的 chunk 数量（需与评测 TOP_K 一致）
@@ -76,8 +76,9 @@ RAG_CHUNK_OVERLAP=50       # chunk 重叠（字符）
 RAG_REWRITE_ENABLED=True   # 是否启用 Query Rewrite
 ```
 
-> **权重关系**：`kw_w = 1.0 - RAG_SEMANTIC_WEIGHT - KG_WEIGHT`
-> 若 `RAG_SEMANTIC_WEIGHT + KG_WEIGHT = 1.0`，则 BM25 权重为 0，hybrid 退化为纯语义检索。
+> **权重关系**：三个显式参数 `RAG_SEMANTIC_WEIGHT`、`RAG_KEYWORD_WEIGHT`、`KG_WEIGHT`。
+> 可用路径的权重会归一化到 1.0，无需手动物理和为 1。
+> 默认配置 `RAG_SEMANTIC_WEIGHT=0.5, RAG_KEYWORD_WEIGHT=0.5, KG_WEIGHT=0.0` 使 BM25 有非零权重。
 
 ### 3. Python 环境
 

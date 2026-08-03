@@ -22,7 +22,7 @@ class Infrastructure:
         self.milvus_client = None
         self.es_client = None
         self.kafka_producer = None
-        self.redis_client = None
+        self.redis_client = None  # Removed in dual-DB migration; kept for backward-compat
 
 
 _infra_instance: Infrastructure | None = None
@@ -127,27 +127,12 @@ async def build_infrastructure(settings: Settings) -> Infrastructure:
     else:
         logger.info("Kafka not configured (kafka_brokers is empty)")
 
-    # ─── Redis (optional) ───
-    if settings.redis_url:
-        try:
-            import redis.asyncio as aioredis
-
-            redis_client = aioredis.from_url(
-                settings.redis_url,
-                decode_responses=True,
-                socket_connect_timeout=3,
-                socket_timeout=3,
-            )
-            # Verify connectivity with a lightweight call
-            await redis_client.ping()
-            infra.redis_client = redis_client
-            infra.status.redis = "connected"
-            logger.info("Redis connected: %s", settings.redis_url)
-        except Exception as e:
-            infra.status.redis = "disconnected"
-            logger.warning("Redis unavailable: %s", e)
-    else:
-        logger.info("Redis not configured (REDIS_URL is empty)")
+    # ─── Redis (removed in dual-DB migration) ───
+    # Redis KV cache and Stream write-behind have been removed.
+    # The redis_client field is kept as None for backward-compat.
+    infra.redis_client = None
+    infra.status.redis = "removed"
+    logger.info("Redis: removed (replaced by local SQLite + process-internal cache)")
 
     # Log dashboard
     for line in infra.status.dashboard_lines():

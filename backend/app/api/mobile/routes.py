@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.auth.dependencies import get_current_user
-from app.db.engine import get_db
+from app.db.engine import get_local_db, get_remote_db
 from app.db.models import Agent, AgentRun, Artifact, User
 from app.schemas.dispatch import AskUserAnswer, PendingQuestion, PendingWrite
 from app.services import conversation_service
@@ -118,7 +118,7 @@ async def _try_legacy_mobile_auth(req: Request) -> User | None:
         "Legacy AGENTHUB_MOBILE_TOKEN auth used — deprecated, migrate to JWT. "
     )
     # Return the first user as a fallback (legacy single-user compat)
-    async with get_db() as db:
+    async with get_remote_db() as db:
         result = await db.execute(select(User).order_by(User.created_at.asc()).limit(1))
         return result.scalar_one_or_none()
 
@@ -265,7 +265,7 @@ def _companion_mode() -> str:
 async def _list_active_runs(conversation_ids: list[str]) -> list[AgentRun]:
     if not conversation_ids:
         return []
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(AgentRun)
             .where(
@@ -278,7 +278,7 @@ async def _list_active_runs(conversation_ids: list[str]) -> list[AgentRun]:
 
 
 async def _list_agents_ordered(user_id: str | None = None) -> list[Agent]:
-    async with get_db() as db:
+    async with get_local_db() as db:
         query = select(Agent).order_by(Agent.created_at.asc())
         if user_id:
             query = query.where(
@@ -344,7 +344,7 @@ def _extract_artifact_ids(messages: list[Any]) -> list[str]:
 async def _list_artifact_summaries(artifact_ids: list[str]) -> list[dict[str, Any]]:
     if not artifact_ids:
         return []
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(
             select(Artifact).where(Artifact.id.in_(artifact_ids))
         )
@@ -405,7 +405,7 @@ async def _build_conversation_detail(conversation_id: str, user_id: str | None =
 
 
 async def _get_mobile_artifact(artifact_id: str) -> dict[str, Any]:
-    async with get_db() as db:
+    async with get_local_db() as db:
         result = await db.execute(select(Artifact).where(Artifact.id == artifact_id))
         art = result.scalar_one_or_none()
     if art is None:

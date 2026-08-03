@@ -155,7 +155,7 @@ class TestMergeWorktreeBack:
         # file merged back to main workspace
         assert os.path.isfile(os.path.join(ws, "new.txt"))
 
-    async def test_merge_conflict_returns_conflict_files(self, worktree_env):
+    async def test_merge_conflict_returns_conflict_files(self, worktree_env, monkeypatch):
         ws = str(worktree_env / "conflict_ws")
         await _init_repo(ws)
         # create two worktrees that both modify the same file differently
@@ -171,8 +171,26 @@ class TestMergeWorktreeBack:
         # ref2: modify same file differently -> conflict
         with open(os.path.join(ref2.path, "README.md"), "w") as f:
             f.write("from t2\n")
+
+        # Mock Layer 2 (LLM) to fail and Layer 3 (human) to abandon immediately
+        async def _mock_llm_fail(*args, **kwargs):
+            return False, []
+
+        async def _mock_human_abandon(wt_ref, conflict_files):
+            await wt._run_git(wt_ref.main_workspace_path, "merge", "--abort")
+            return wt.MergeResult(
+                success=False,
+                conflict_files=conflict_files,
+                error="User abandoned",
+                resolution_strategy="abandoned",
+            )
+
+        monkeypatch.setattr(wt, "_llm_resolve_conflicts", _mock_llm_fail)
+        monkeypatch.setattr(wt, "_human_resolve_conflicts", _mock_human_abandon)
+
         r2 = await wt.merge_worktree_back(ref2)
         assert r2.success is False
+        assert r2.resolution_strategy == "abandoned"
         assert any("README.md" in f for f in r2.conflict_files)
 
     async def test_non_git_merge_copies_back(self, worktree_env):

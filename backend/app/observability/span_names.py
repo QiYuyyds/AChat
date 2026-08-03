@@ -25,6 +25,9 @@ SPAN_NAMES: dict[str, str] = {
     "tool.dispatch": "tool.dispatch · 任务派发",
     "eval.score": "eval.score · 评测打分",
     "eval.judge": "eval.judge · LLM评判",
+    "dag.execute": "dag.execute · DAG执行",
+    "dag.wave": "dag.wave · 波次调度",
+    "dag.node": "dag.node · 节点执行",
 }
 
 

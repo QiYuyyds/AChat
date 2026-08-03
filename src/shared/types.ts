@@ -220,6 +220,40 @@ export type ModelProvider =
   | 'volcano-ark'
   | 'openai-compatible'
 
+// ─── ModelProfile ────────────────────────────────────────────
+export interface ModelProfile {
+  id: string
+  name: string
+  provider: ModelProvider
+  modelId: string
+  apiKeyLast4: string | null
+  apiBaseUrl: string | null
+  isDefault: boolean
+  supportsVision: boolean
+  lastTestStatus: 'untested' | 'ok' | 'fail'
+  lastTestedAt: number | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CreateModelProfileBody {
+  name: string
+  provider: ModelProvider
+  modelId: string
+  apiKey?: string | null
+  apiBaseUrl?: string | null
+  isDefault?: boolean
+  supportsVision?: boolean
+}
+
+export type UpdateModelProfileBody = Partial<CreateModelProfileBody>
+
+export interface ModelProfileTestResult {
+  status: 'ok' | 'fail'
+  latencyMs: number
+  error?: string
+}
+
 // ─── 调度 plan ────────────────────────────────────────────
 export interface DispatchPlanItem {
   id: string
@@ -431,6 +465,7 @@ interface BaseEvent {
 
 export type StreamEvent = BaseEvent &
   (
+    | { type: 'run.queued'; runId: string; agentId: string; triggerMessageId: string }
     | { type: 'run.start'; runId: string; agentId: string; triggerMessageId: string; parentRunId?: string }
     | {
         type: 'run.end'
@@ -507,6 +542,21 @@ export type StreamEvent = BaseEvent &
         branchName?: string
         path?: string
         mergeStatus?: 'success' | 'conflict'
+        conflictFiles?: string[]
+        resolutionStatus?: 'success' | 'llm_resolved' | 'manual_resolved' | 'abandoned' | 'conflict'
+      }
+    | {
+        type: 'merge_conflict.pending'
+        pendingId: string
+        taskId: string
+        conflictFiles: string[]
+        workspacePath: string
+      }
+    | {
+        type: 'merge_conflict.resolved'
+        pendingId: string
+        resolutionStrategy: string
+        resolvedFiles: string[]
       }
     | { type: 'summary.updated'; summary: string | null }
     | {

@@ -70,10 +70,19 @@ AGENTHUB_CHILD_AGENT_ID = "agenthub.child_agent_id"
 AGENTHUB_TOTAL_TURNS = "agenthub.total_turns"
 AGENTHUB_TOTAL_TOKENS = "agenthub.total_tokens"
 AGENTHUB_DURATION_MS = "agenthub.duration_ms"
+AGENTHUB_STOP_REASON = "agenthub.stop_reason"
 AGENTHUB_EVAL_TYPE = "agenthub.eval_type"
 AGENTHUB_EVAL_MODE = "agenthub.eval_mode"
 AGENTHUB_ERROR = "agenthub.error"
 AGENTHUB_RESULT_SUMMARY = "agenthub.result_summary"
+AGENTHUB_TASK_COUNT = "agenthub.task_count"
+AGENTHUB_WAVE_COUNT = "agenthub.wave_count"
+AGENTHUB_WAVE_INDEX = "agenthub.wave_index"
+AGENTHUB_WAVE_TASK_COUNT = "agenthub.wave_task_count"
+AGENTHUB_READY_COUNT = "agenthub.ready_count"
+AGENTHUB_SKIPPED_COUNT = "agenthub.skipped_count"
+AGENTHUB_NODE_STATUS = "agenthub.node_status"
+AGENTHUB_DEPENDS_ON = "agenthub.depends_on"
 
 
 def _set_attrs(span, attrs: dict[str, Any]) -> None:
@@ -162,6 +171,35 @@ def traced_async(
     return decorator
 
 
+class _NoOpSpan:
+    """Drop-in span stub used when tracing is disabled.
+
+    Mirrors the OTel ``Span`` interface so callers can use
+    ``span.is_recording()`` / ``span.set_attribute(...)`` without NoneType
+    crashes.
+    """
+
+    __slots__ = ()
+
+    def is_recording(self) -> bool:
+        return False
+
+    def set_attribute(self, key: str, value: Any) -> None:  # noqa: ARG002
+        pass
+
+    def record_exception(self, exception: BaseException) -> None:  # noqa: ARG002
+        pass
+
+    def set_status(self, status: Any) -> None:  # noqa: ARG002
+        pass
+
+    def add_event(self, name: str, attributes: Any = None) -> None:  # noqa: ARG002
+        pass
+
+
+_NOOP_SPAN = _NoOpSpan()
+
+
 def start_span(span_key: str, *, suffix: str | None = None, **attrs: Any):
     """Context manager that starts a span with dynamic attributes.
 
@@ -170,10 +208,11 @@ def start_span(span_key: str, *, suffix: str | None = None, **attrs: Any):
         with start_span("agent.run", agent_id="x", run_id="y") as span:
             ...
 
-    When tracing is disabled, returns a no-op context manager.
+    When tracing is disabled, returns a no-op context manager that yields a
+    ``_NoOpSpan`` so callers can safely call ``span.is_recording()`` etc.
     """
     if not is_trace_enabled():
-        return contextlib.nullcontext()
+        return contextlib.nullcontext(_NOOP_SPAN)
 
     span_name = resolve_span_name(span_key, suffix)
     tracer = get_tracer("achat")

@@ -87,19 +87,6 @@ services:
     volumes: ["neo4jdata:/data"]
     restart: unless-stopped
 
-  redis:
-    image: redis:7-alpine
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-    ports:
-      - "6379:6379"
-    volumes: ["redisdata:/data"]
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
   phoenix:
     image: arizephoenix/phoenix:latest
     ports:
@@ -119,4 +106,3 @@ volumes:
   milvusdata:
   esdata:
   neo4jdata:
-  redisdata:

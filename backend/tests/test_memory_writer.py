@@ -1,5 +1,8 @@
-"""Unit tests for memory_writer double-write, importance grading, prefix dedup,
-and the LLM preference extraction overlay (Tasks 4.4, 5.3, 6.2, 7.4, 8.2)."""
+"""Unit tests for memory_writer — LTM extraction, preference extraction,
+importance grading, and end-to-end conversation verification.
+
+Updated for the V3-based LTM extraction pipeline (extract_ltm_memories).
+"""
 
 import asyncio
 import json
@@ -10,7 +13,7 @@ import pytest
 from app.memory.memory_writer import (
     _IMPORTANCE_BY_CATEGORY,
     _extract_rule_based,
-    extract_memory_from_reply,
+    extract_ltm_memories,
     extract_preferences,
 )
 from app.memory.preference import Preference
@@ -28,79 +31,98 @@ class _MockLTM:
     def __init__(self):
         self.stored = []
 
-    async def store_classified(self, content, importance, emb, category, tags, slot_hint, scope="global", agent_id=""):
+    async def store_classified(
+        self, content, importance, emb, category, tags, slot_hint,
+        scope="global", agent_id="", user_id=None,
+        summary="", keywords=None, content_scope="",
+    ):
         self.stored.append({
             "content": content,
             "importance": importance,
             "category": category,
             "tags": tags,
             "slot_hint": slot_hint,
+            "scope": scope,
+            "agent_id": agent_id,
+            "summary": summary,
+            "keywords": keywords or [],
+            "content_scope": content_scope,
         })
         return True
 
 
-class _MockPreference:
-    """Minimal preference stub recording set() calls."""
-
-    def __init__(self):
-        self.set_calls = []
-
-    async def set(self, key, value):
-        self.set_calls.append((key, value))
+# ─── V3 LTM extraction: natural language memories, no routing ────────────────
 
 
-# ─── Category routing: single-store ownership, no double-write ────────────────
-
-
-def test_identity_class_routes_to_preference_only():
-    """An identity/preference-class fact goes to the preference store only, not LTM."""
+def test_ltm_extracts_natural_language_from_full_conversation():
+    """V3 extraction produces self-contained natural language memories."""
     def mock_generate(sys_prompt, user_msg):
-        return json.dumps({"姓名": "涵涵"})
+        return json.dumps({
+            "memory": [
+                {"id": "0", "text": "User's name is Zhang San", "attributed_to": "user"},
+                {"id": "1", "text": "User's project uses React 19", "attributed_to": "user"},
+                {"id": "2", "text": "User plans to refactor the auth module next week", "attributed_to": "user"},
+            ]
+        })
 
     ltm = _MockLTM()
-    pref = _MockPreference()
-    asyncio.run(extract_memory_from_reply(
-        mock_generate, None, ltm, "用户叫涵涵", preference=pref,
+    asyncio.run(extract_ltm_memories(
+        mock_generate, None, ltm,
+        "我叫张三，我们项目用 React 19，打算下周重构认证模块",
+        "好的，记住了",
     ))
-    # Routed to preference…
-    assert ("姓名", "涵涵") in pref.set_calls
-    # …and NOT to LTM (no double-write).
+    assert len(ltm.stored) == 3
+    for item in ltm.stored:
+        assert item["category"] == ""
+        assert item["importance"] == 0.5
+        assert "user" in item["tags"]
+
+
+def test_ltm_trivial_conversation_produces_no_memories():
+    """Trivial conversation → empty memory list → no LTM items."""
+    def mock_generate(sys_prompt, user_msg):
+        return json.dumps({"memory": []})
+
+    ltm = _MockLTM()
+    asyncio.run(extract_ltm_memories(
+        mock_generate, None, ltm,
+        "你好", "你好！有什么可以帮你的？",
+    ))
     assert ltm.stored == []
 
 
-def test_fact_class_routes_to_ltm_only():
-    """A fact/tool_failure/policy-class fact goes to LTM only, not the preference store."""
+def test_ltm_identity_memory_enters_ltm_not_redirected():
+    """Identity-type memory goes directly to LTM, not redirected to Preference."""
     def mock_generate(sys_prompt, user_msg):
-        return json.dumps({"报错": "请求超时"})
+        return json.dumps({
+            "memory": [
+                {"id": "0", "text": "User's name is Zhang San", "attributed_to": "user"},
+            ]
+        })
 
     ltm = _MockLTM()
-    pref = _MockPreference()
-    asyncio.run(extract_memory_from_reply(
-        mock_generate, None, ltm, "工具报错请求超时", preference=pref,
+    asyncio.run(extract_ltm_memories(
+        mock_generate, None, ltm, "我叫张三", "好的",
     ))
-    # "报错" matches the tool_failure rule → LTM only.
     assert len(ltm.stored) == 1
-    assert ltm.stored[0]["category"] == "tool_failure"
-    assert pref.set_calls == []
+    assert ltm.stored[0]["content"] == "User's name is Zhang San"
 
 
-def test_general_class_is_dropped():
-    """A 'general'-classified fact is dropped from both stores."""
-    calls = {"n": 0}
+def test_ltm_existing_keys_included_in_prompt():
+    """existing_keys are passed to the LLM via the modified system prompt."""
+    captured = {}
 
     def mock_generate(sys_prompt, user_msg):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return json.dumps({"天气": "今天晴天"})
-        return json.dumps({"category": "general", "tags": [], "slot_hint": ""})
+        captured["sys_prompt"] = sys_prompt
+        return json.dumps({"memory": []})
 
     ltm = _MockLTM()
-    pref = _MockPreference()
-    asyncio.run(extract_memory_from_reply(
-        mock_generate, None, ltm, "今天晴天", preference=pref,
+    asyncio.run(extract_ltm_memories(
+        mock_generate, None, ltm, "msg", "reply",
+        existing_keys=["姓名", "职业"],
     ))
-    assert ltm.stored == []
-    assert pref.set_calls == []
+    assert "姓名" in captured["sys_prompt"]
+    assert "职业" in captured["sys_prompt"]
 
 
 # ─── Task 5.3: importance grading by category ────────────────────────────────
@@ -115,70 +137,6 @@ def test_importance_table_values():
     assert _IMPORTANCE_BY_CATEGORY["episodic"] == 0.4
     assert _IMPORTANCE_BY_CATEGORY["tool_failure"] == 0.3
     assert _IMPORTANCE_BY_CATEGORY["general"] == 0.3
-
-
-def test_importance_policy_via_rule():
-    """A policy-classified fact (rule match on 必须) gets importance 0.8 in LTM."""
-    def mock_generate(sys_prompt, user_msg):
-        return json.dumps({"规则": "必须用中文回复"})
-
-    ltm = _MockLTM()
-    asyncio.run(extract_memory_from_reply(mock_generate, None, ltm, "必须用中文回复"))
-    assert ltm.stored[0]["category"] == "policy"
-    assert ltm.stored[0]["importance"] == _IMPORTANCE_BY_CATEGORY["policy"]
-
-
-def test_importance_fact_via_llm_fallback():
-    """A fact classified as 'fact' by LLM fallback gets importance 0.5 in LTM."""
-    call_count = {"n": 0}
-
-    def mock_generate(sys_prompt, user_msg):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return json.dumps({"项目数据库": "PostgreSQL"})
-        return json.dumps({"category": "fact", "tags": [], "slot_hint": ""})
-
-    ltm = _MockLTM()
-    asyncio.run(extract_memory_from_reply(mock_generate, None, ltm, "项目用PostgreSQL"))
-    assert ltm.stored[0]["category"] == "fact"
-    assert ltm.stored[0]["importance"] == _IMPORTANCE_BY_CATEGORY["fact"]
-
-
-# ─── fact_content 格式：LTM 事实不加"用户"前缀 ───────────────────────────────
-
-
-def test_fact_content_has_no_user_prefix():
-    """LTM fact content is a plain 'key: value' — no misleading '用户' prefix.
-
-    Weather/tool/world facts are not user attributes, so the content must read
-    naturally (e.g. '气温: 15°C'), not '用户气温: ...'.
-    """
-    calls = {"n": 0}
-
-    def mock_generate(sys_prompt, user_msg):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return json.dumps({"气温": "15°C ~ 27°C"})
-        return json.dumps({"category": "fact", "tags": [], "slot_hint": ""})
-
-    ltm = _MockLTM()
-    asyncio.run(extract_memory_from_reply(mock_generate, None, ltm, "今天天气"))
-    assert ltm.stored[0]["content"] == "气温: 15°C ~ 27°C"
-
-
-def test_fact_content_strips_leading_user_in_key():
-    """A leading '用户' the LLM put in the key is stripped, not doubled."""
-    calls = {"n": 0}
-
-    def mock_generate(sys_prompt, user_msg):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return json.dumps({"用户数据库": "PostgreSQL"})
-        return json.dumps({"category": "fact", "tags": [], "slot_hint": ""})
-
-    ltm = _MockLTM()
-    asyncio.run(extract_memory_from_reply(mock_generate, None, ltm, "数据库选型"))
-    assert ltm.stored[0]["content"] == "数据库: PostgreSQL"
 
 
 # ─── Task 7.4: extract_preferences LLM overlay ────────────────────────────────
@@ -232,15 +190,15 @@ def test_extract_rule_based_no_match():
     assert _extract_rule_based("今天天气不错") == {}
 
 
-# ─── Task 8.2: end-to-end conversation verification ───────────────────────────
+# ─── End-to-end conversation verification ─────────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_e2e_conversation_memory_quality():
-    """Simulate one conversation turn and assert the three quality invariants:
+    """Simulate one conversation turn and assert quality invariants:
 
     1. Preference table has no oversized garbage (length cap holds).
-    2. LTM importance is graded by category, not hardcoded 0.7.
+    2. LTM memories are natural language with default importance 0.5.
     3. The static profile prompt is byte-identical across two assembly runs.
     """
     pref = Preference(user_id="default_user")
@@ -250,30 +208,29 @@ async def test_e2e_conversation_memory_quality():
         mock_db.side_effect = Exception("no db")
 
         # Step 1: user message → LLM preference overlay → save_batch.
-        # The LLM returns a clean, precise value for 喜好 even though the raw
-        # message contained a long conversation fragment.
         long_fragment = "唱跳rap" + "而且" * 400  # well over the 200 cap
         user_msg = f"我叫涵涵，我喜欢{long_fragment}"
 
         def overlay_generate(sys_prompt, user_msg_inner):
-            # LLM提炼出精准值，覆盖规则提取的粗糙长串
             return json.dumps({"姓名": "涵涵", "喜好": "唱跳rap"})
 
         prefs = await extract_preferences(overlay_generate, user_msg)
         await pref.save_batch(prefs)
 
-        # Step 2: assistant reply → memory extraction with category routing.
-        # "姓名" (identity rule) → preference only; "项目数据库" (llm→fact) → LTM only.
+        # Step 2: full conversation → LTM extraction (V3 natural language).
         ltm = _MockLTM()
 
         def extract_generate(sys_prompt, user_msg_inner):
-            if "分类" in sys_prompt:
-                # classify call for the non-rule key → fact
-                return json.dumps({"category": "fact", "tags": [], "slot_hint": ""})
-            return json.dumps({"姓名": "涵涵", "项目数据库": "PostgreSQL"})
+            return json.dumps({
+                "memory": [
+                    {"id": "0", "text": "User's name is Hanhan", "attributed_to": "user"},
+                    {"id": "1", "text": "User's project uses PostgreSQL", "attributed_to": "user"},
+                ]
+            })
 
-        await extract_memory_from_reply(
-            extract_generate, None, ltm, "好的，记住了", preference=pref,
+        await extract_ltm_memories(
+            extract_generate, None, ltm,
+            user_msg, "好的，记住了",
         )
 
     # Invariant 1: no preference value exceeds the 200-char cap.
@@ -285,18 +242,14 @@ async def test_e2e_conversation_memory_quality():
     assert pref.get("喜好") == "唱跳rap"
     assert pref.get("姓名") == "涵涵"
 
-    # Invariant 2: category routing — identity went to preference (not LTM),
-    # the fact went to LTM with category-graded importance.
-    assert pref.get("姓名") == "涵涵"
-    assert all(row["category"] != "identity" for row in ltm.stored)
-    by_cat = {row["category"]: row for row in ltm.stored}
-    assert by_cat["fact"]["importance"] == _IMPORTANCE_BY_CATEGORY["fact"]
-    assert by_cat["fact"]["importance"] != 0.7
-    # fact_content is a plain "key: value" with no misleading 用户 prefix.
-    assert by_cat["fact"]["content"] == "项目数据库: PostgreSQL"
+    # Invariant 2: LTM has natural language memories with default importance.
+    assert len(ltm.stored) == 2
+    for item in ltm.stored:
+        assert item["importance"] == 0.5
+        assert item["category"] == ""
+        assert "user" in item["tags"]
 
     # Invariant 3: dynamic profile prompt is byte-stable across two runs.
-    # Profile is now static=False, so content is in render_dynamic(), not render_static().
     registry = SourceRegistry()
     registry.register(ProfileSource(preference_provider=pref))
     assembler = ContextAssembler(registry=registry)
@@ -328,7 +281,6 @@ def test_7_7_extract_preferences_with_existing_keys():
     # The prompt must include the existing keys
     assert "喜好" in captured["sys_prompt"]
     assert "姓名" in captured["sys_prompt"]
-    assert "已有的偏好 key" in captured["sys_prompt"]
 
 
 def test_7_7_extract_preferences_without_existing_keys():
@@ -343,7 +295,7 @@ def test_7_7_extract_preferences_without_existing_keys():
         extract_preferences(mock_generate, "我偏爱函数式编程")
     )
     assert result == {"喜好": "函数式编程"}
-    assert "已有的偏好 key" not in captured["sys_prompt"]
+    assert "Existing Keys" not in captured["sys_prompt"]
 
 
 # ─── optimize-preference-system: Task 7.8 (_consolidate_preferences) ────────
@@ -438,7 +390,7 @@ async def test_7_9_post_run_memory_hook_appends_tool_error():
     ]
 
     with patch("app.services.agent_runner._get_memory_service", return_value=ms), \
-         patch("app.services.agent_runner.get_db") as mock_get_db:
+         patch("app.services.agent_runner.get_local_db") as mock_get_db:
         mock_ctx = AsyncMock()
         mock_ctx.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_msg)))
         mock_get_db.return_value.__aenter__ = AsyncMock(return_value=mock_ctx)
@@ -479,7 +431,7 @@ async def test_7_10_post_run_memory_hook_no_error_block_when_no_tool_errors():
     ]
 
     with patch("app.services.agent_runner._get_memory_service", return_value=ms), \
-         patch("app.services.agent_runner.get_db") as mock_get_db:
+         patch("app.services.agent_runner.get_local_db") as mock_get_db:
         mock_ctx = AsyncMock()
         mock_ctx.execute = AsyncMock(return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=mock_msg)))
         mock_get_db.return_value.__aenter__ = AsyncMock(return_value=mock_ctx)
@@ -494,4 +446,3 @@ async def test_7_10_post_run_memory_hook_no_error_block_when_no_tool_errors():
     assistant_text = assistant_call.args[1]
     assert "[工具执行错误]" not in assistant_text
     assert assistant_text == "Done!"
-

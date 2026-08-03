@@ -13,7 +13,7 @@ New agents MUST default to `adapterName='custom'` unless the user selects Claude
 #### Scenario: User opens create dialog
 - **WHEN** no existing agent is being edited
 - **THEN** adapter kind defaults to Custom
-- **AND** provider defaults to DeepSeek.
+- **AND** model configuration is deferred to the Model tab (ModelProfile).
 
 ### Requirement: New custom agents SHALL start with an editable harness prompt
 
@@ -24,13 +24,14 @@ The create dialog MUST prefill `systemPrompt` with the coder role template that 
 - **THEN** the System Prompt field contains the coder role template
 - **AND** the user can edit or replace it before saving.
 
-### Requirement: Custom agents SHALL require provider and model
+### Requirement: Agent entity SHALL NOT store model configuration
 
-Custom agents MUST have `modelProvider` and a non-empty `modelId`; SDK agents SHALL ignore `modelProvider`.
+The Agent entity SHALL NOT store `modelProvider`, `modelId`, `apiKey`, `apiBaseUrl`, or `supportsVision`. Model configuration is resolved at runtime via ModelProfile (see `model-profiles` capability). Custom agents no longer require model fields at creation time.
 
-#### Scenario: User clears custom model id
-- **WHEN** adapter kind is Custom
-- **THEN** form submission is rejected.
+#### Scenario: User creates a custom agent without model fields
+- **WHEN** adapter kind is Custom and no model fields are provided
+- **THEN** the agent is created successfully
+- **AND** model resolution happens at run time via ModelProfile.
 
 ### Requirement: SDK agents SHALL use built-in tool sets
 

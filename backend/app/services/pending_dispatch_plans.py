@@ -117,14 +117,25 @@ class PendingDispatchPlansStore:
         plans.sort(key=lambda p: p.created_at)
         return plans
 
-    def approve(self, pending_id: str) -> PendingDispatchPlanResult:
-        """Approve: run the registered (read-only) plan through the validator first."""
+    def approve(
+        self,
+        pending_id: str,
+        modified_plan: list[DispatchPlanItem] | None = None,
+    ) -> PendingDispatchPlanResult:
+        """Approve: run the plan through the validator first.
+
+        When ``modified_plan`` is provided, it replaces the stored plan before
+        validation, allowing the user to edit the DAG in the frontend and
+        submit the edited version.
+        """
         entry = self._map.get(pending_id)
         if entry is None:
             return PendingDispatchPlanResult(ok=False, error="Pending dispatch plan not found")
 
+        plan = modified_plan if modified_plan is not None else entry.pending_plan.plan
+
         try:
-            compiled_plan = entry.validator(entry.pending_plan.plan)
+            compiled_plan = entry.validator(plan)
         except Exception as err:  # noqa: BLE001 - surface validator message to caller
             return PendingDispatchPlanResult(ok=False, error=str(err))
 

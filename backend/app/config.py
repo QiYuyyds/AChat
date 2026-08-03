@@ -17,8 +17,11 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Database
+    # Database (remote PostgreSQL — always required)
     database_url: str = "postgresql+asyncpg://agenthub:agenthub@localhost:5432/agenthub"
+
+    # Database (local SQLite — dual-DB mode; None = single-PG server mode)
+    database_local_url: str | None = None
 
     # API Keys
     anthropic_api_key: str | None = None
@@ -55,12 +58,12 @@ class Settings(BaseSettings):
     neo4j_password: str = ""
     enable_graph: bool = False
     kg_max_hops: int = 2
-    kg_weight: float = 0.3
+    kg_weight: float = 0.0
 
     # ─── Kafka (optional) ───
     kafka_brokers: str = ""
 
-    # ─── Redis (optional, for metadata cache + async DB writes) ───
+    # ─── Redis (removed in dual-DB migration; kept for backward-compat no-op) ───
     redis_url: str = ""
 
     # ─── Embedding ───
@@ -77,8 +80,9 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 200
     rag_chunk_overlap: int = 50
     rag_top_k: int = 3
-    rag_rrf_constant_k: int = 60
-    rag_semantic_weight: float = 0.7
+    rag_rrf_constant_k: int = 30
+    rag_semantic_weight: float = 0.5
+    rag_keyword_weight: float = 0.5
     rag_milvus_dim: int = 1024
     rag_rewrite_enabled: bool = True
     rag_rewrite_num_queries: int = 3
@@ -100,10 +104,13 @@ class Settings(BaseSettings):
     memory_consolidation_min_importance: float = 0.3
     memory_consolidation_trigger: int = 5
 
+    # ─── Case Memory ───
+    case_extraction_enabled: bool = True
+
     # ─── Auth ───
     jwt_secret: str = ""
-    jwt_access_token_expiry: int = 3600  # seconds (1 hour)
-    jwt_refresh_token_expiry: int = 604800  # seconds (7 days)
+    jwt_access_token_expiry: int = 315360000  # seconds (10 years — effectively non-expiring)
+    jwt_refresh_token_expiry: int = 315360000  # seconds (10 years — effectively non-expiring)
     allow_registration: bool = True
     vip_login_enabled: bool = False
     default_user_email: str = "admin@local"

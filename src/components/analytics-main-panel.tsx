@@ -46,7 +46,7 @@ function formatDateShort(dateStr: string): string {
   return `${mm}/${dd}`
 }
 
-export function AnalyticsMainPanel() {
+export function AnalyticsMainPanel({ hideHeader }: { hideHeader?: boolean } = {}) {
   const [summary, setSummary] = useState<UsageSummary | null>(null)
   const [timeseries, setTimeseries] = useState<UsageTimeseriesPoint[]>([])
   const [days, setDays] = useState(14)
@@ -104,6 +104,7 @@ export function AnalyticsMainPanel() {
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background/85 backdrop-blur-2xl">
       {/* ─── Cinematic header — glass pill with ambient gradient ─── */}
+      {!hideHeader && (
       <header className="analytics-fade-up relative shrink-0 overflow-hidden border-b border-border/40 px-8 py-4">
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-primary/[0.03] via-transparent to-primary/[0.03]" />
         <div className="relative flex items-center gap-3">
@@ -131,9 +132,29 @@ export function AnalyticsMainPanel() {
           </button>
         </div>
       </header>
+      )}
 
       <ScrollArea className="min-h-0 flex-1">
         <div className="space-y-6 p-8">
+          {/* ─── Embedded refresh bar (when header hidden) ─── */}
+          {hideHeader && (
+            <div className="flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => void refresh()}
+                disabled={summaryLoading || timeseriesLoading}
+                className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:opacity-50"
+              >
+                <RefreshCw
+                  className={cn(
+                    'size-3.5',
+                    (summaryLoading || timeseriesLoading) && 'animate-spin',
+                  )}
+                />
+                刷新
+              </button>
+            </div>
+          )}
           {/* ─── Hero stat cards — gapless bento, 3 cols ─── */}
           {summaryError ? (
             <div className="analytics-fade-up flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-xs text-destructive">

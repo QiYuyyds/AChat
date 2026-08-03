@@ -2,7 +2,6 @@
 
 import {
   BookOpen,
-  ChevronDown,
   ChevronRight,
   Database,
   File,
@@ -21,7 +20,6 @@ import {
   FileVideo,
   Folder,
   FolderOpen,
-  Loader2,
   Package,
   Palette,
   RefreshCw,
@@ -34,7 +32,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { workspaceListDir } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import { useActiveConversation, useAppStore } from '@/stores/app-store'
+import { useActiveConversation, useActiveTab, useAppStore } from '@/stores/app-store'
 
 interface DirEntry {
   name: string
@@ -50,6 +48,23 @@ interface DirNode {
   error?: string
 }
 
+/** 格式化文件大小为人类可读字符串 */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/** 目录优先 + 同类内自然字母序排序 */
+function sortEntries(entries: DirEntry[]): DirEntry[] {
+  return [...entries].sort((a, b) => {
+    if (a.isDirectory !== b.isDirectory) {
+      return a.isDirectory ? -1 : 1
+    }
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+  })
+}
+
 /**
  * 右侧文件浏览器面板。
  *
@@ -62,6 +77,7 @@ export function FileExplorerPanel() {
   const open = useAppStore((s) => s.fileExplorerOpen)
   const setFileExplorerOpen = useAppStore((s) => s.setFileExplorerOpen)
   const openFile = useAppStore((s) => s.openFile)
+  const activeTab = useActiveTab(conv?.id ?? '')
 
   // 树状态：以 relPath 为 key 记录该节点是否展开 + 已加载条目
   const [nodes, setNodes] = useState<Record<string, DirNode>>({})
@@ -108,7 +124,6 @@ export function FileExplorerPanel() {
   const toggleDir = (relPath: string) => {
     const cur = nodes[relPath]
     if (cur?.expanded) {
-      // 已展开 → 收起（三种情况互斥，否则收起会被下面重新展开覆盖）
       setNodes((prev) => ({ ...prev, [relPath]: { ...prev[relPath], expanded: false } }))
     } else if (!cur || !cur.loaded) {
       void loadDir(relPath)
@@ -144,32 +159,36 @@ export function FileExplorerPanel() {
 
   if (!open || !conv) return null
 
+  const workspaceName =
+    conv.workspaceMode === 'local'
+      ? (conv.workspaceBoundPath ?? '').split(/[\\/]/).pop()
+      : '沙箱'
+
   return (
-    <>
-      {/* 桌面端遮罩：点击关闭。移动端面板全屏覆盖，无需遮罩 */}
-      <div
-        className="fixed inset-0 z-30 hidden bg-foreground/10 animate-in fade-in md:block"
-        onClick={() => setFileExplorerOpen(false)}
-      />
-      <aside className="fixed inset-y-0 right-0 z-40 flex w-80 flex-col border-l bg-card shadow-xl animate-in slide-in-from-right duration-200 max-md:inset-0 max-md:w-full">
-      <header className="flex shrink-0 items-center justify-between border-b px-3 py-2">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <Folder className="size-4 shrink-0 text-muted-foreground" />
-          <span className="truncate text-sm font-medium">文件</span>
-          <span className="truncate font-mono text-[10px] text-muted-foreground" title={conv.workspaceBoundPath ?? ''}>
-            {conv.workspaceMode === 'local'
-              ? (conv.workspaceBoundPath ?? '').split(/[\\/]/).pop()
-              : '沙箱'}
-          </span>
+    <aside className="flex w-80 shrink-0 flex-col border-l bg-card max-md:fixed max-md:inset-0 max-md:z-40 max-md:w-full max-md:animate-in max-md:slide-in-from-right max-md:duration-200">
+      <header className="shrink-0 border-b px-3 py-2">
+        <div className="flex items-center justify-between">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <Folder className="size-4 shrink-0 text-muted-foreground" />
+            <span className="text-sm font-medium">文件</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <Button size="icon" variant="ghost" onClick={refresh} title="刷新" aria-label="刷新" disabled={loadingRoot}>
+              <RefreshCw className={cn('size-4', loadingRoot && 'animate-spin')} />
+            </Button>
+            <Button size="icon" variant="ghost" onClick={() => setFileExplorerOpen(false)} title="关闭" aria-label="关闭">
+              <X className="size-4" />
+            </Button>
+          </div>
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
-          <Button size="icon" variant="ghost" onClick={refresh} title="刷新" aria-label="刷新" disabled={loadingRoot}>
-            <RefreshCw className={cn('size-4', loadingRoot && 'animate-spin')} />
-          </Button>
-          <Button size="icon" variant="ghost" onClick={() => setFileExplorerOpen(false)} title="关闭" aria-label="关闭">
-            <X className="size-4" />
-          </Button>
-        </div>
+        {workspaceName && (
+          <div
+            className="mt-0.5 truncate text-[11px] text-muted-foreground/70"
+            title={conv.workspaceBoundPath ?? ''}
+          >
+            {workspaceName}
+          </div>
+        )}
       </header>
 
       <ScrollArea className="min-h-0 flex-1">
@@ -178,12 +197,47 @@ export function FileExplorerPanel() {
             relPath=""
             indent={0}
             nodes={nodes}
+            activeFile={activeTab}
             onToggleDir={toggleDir}
             onOpenFile={(p) => openFile(conv.id, p)}
           />
         </div>
       </ScrollArea>
-      </aside>
+    </aside>
+  )
+}
+
+function IndentGuides({ indent }: { indent: number }) {
+  if (indent <= 0) return null
+  return (
+    <>
+      {Array.from({ length: indent }).map((_, i) => (
+        <span
+          key={i}
+          className="pointer-events-none absolute inset-y-0 w-px bg-border/30"
+          style={{ left: 20 + i * 16 }}
+        />
+      ))}
+    </>
+  )
+}
+
+function SkeletonRows({ indent }: { indent: number }) {
+  return (
+    <>
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div
+          key={i}
+          className="flex items-center gap-1.5 py-[5px]"
+          style={{ paddingLeft: 12 + indent * 16 }}
+        >
+          <div className="size-3.5 shrink-0 animate-pulse rounded-sm bg-muted" />
+          <div
+            className="h-3 animate-pulse rounded-sm bg-muted"
+            style={{ width: `${45 + i * 12}%` }}
+          />
+        </div>
+      ))}
     </>
   )
 }
@@ -192,12 +246,14 @@ function DirTreeNode({
   relPath,
   indent,
   nodes,
+  activeFile,
   onToggleDir,
   onOpenFile,
 }: {
   relPath: string
   indent: number
   nodes: Record<string, DirNode>
+  activeFile: string
   onToggleDir: (path: string) => void
   onOpenFile: (path: string) => void
 }) {
@@ -209,82 +265,96 @@ function DirTreeNode({
       {/* root 自身不渲染行，从子条目开始 */}
       {node.expanded && (
         <>
-          {!node.loaded && (
-            <div
-              className="flex items-center gap-1.5 px-3 py-1 text-xs text-muted-foreground"
-              style={{ paddingLeft: 12 + indent * 14 }}
-            >
-              <Loader2 className="size-3 animate-spin" />
-              加载中...
-            </div>
-          )}
+          {!node.loaded && <SkeletonRows indent={indent} />}
           {node.error && (
             <div
               className="px-3 py-1 text-xs text-red-600"
-              style={{ paddingLeft: 12 + indent * 14 }}
+              style={{ paddingLeft: 12 + indent * 16 }}
             >
               {node.error}
             </div>
           )}
           {node.entries?.length === 0 && (
             <div
-              className="px-3 py-1 text-xs text-muted-foreground"
-              style={{ paddingLeft: 12 + indent * 14 }}
+              className="flex flex-col items-center gap-1.5 py-6"
+              style={{ paddingLeft: 12 + indent * 16 }}
             >
-              (空)
+              <FolderOpen className="size-6 text-muted-foreground/30" />
+              <span className="text-[11px] text-muted-foreground/60">空文件夹</span>
             </div>
           )}
-          {node.entries?.map((e) => {
-            const childPath = relPath === '' ? e.name : `${relPath}/${e.name}`
-            const childNode = nodes[childPath]
-            if (e.isDirectory) {
-              const expanded = !!childNode?.expanded
+          {node.entries &&
+            sortEntries(node.entries).map((e) => {
+              const childPath = relPath === '' ? e.name : `${relPath}/${e.name}`
+              const childNode = nodes[childPath]
+              if (e.isDirectory) {
+                const expanded = !!childNode?.expanded
+                return (
+                  <div key={childPath}>
+                    <button
+                      type="button"
+                      onClick={() => onToggleDir(childPath)}
+                      className="group relative flex w-full items-center gap-1 py-[5px] pr-2 text-left text-xs font-medium transition-colors duration-100 hover:bg-accent/50"
+                      style={{ paddingLeft: 12 + indent * 16 }}
+                    >
+                      <IndentGuides indent={indent} />
+                      <ChevronRight
+                        className={cn(
+                          'size-3 shrink-0 text-muted-foreground transition-transform duration-150',
+                          expanded && 'rotate-90',
+                        )}
+                      />
+                      {expanded ? (
+                        <FolderOpen className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />
+                      ) : (
+                        <Folder className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />
+                      )}
+                      <span className="truncate">{e.name}</span>
+                    </button>
+                    {expanded && (
+                      <div className="animate-in fade-in-0 slide-in-from-top-1 duration-150">
+                        <DirTreeNode
+                          relPath={childPath}
+                          indent={indent + 1}
+                          nodes={nodes}
+                          activeFile={activeFile}
+                          onToggleDir={onToggleDir}
+                          onOpenFile={onOpenFile}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )
+              }
+              const { Icon: FileIcon, cls } = getFileIcon(e.name)
+              const isActive = childPath === activeFile
               return (
-                <div key={childPath}>
-                  <button
-                    type="button"
-                    onClick={() => onToggleDir(childPath)}
-                    className="flex w-full items-center gap-1 px-3 py-1 text-left text-xs hover:bg-accent"
-                    style={{ paddingLeft: 12 + indent * 14 }}
-                  >
-                    {expanded ? (
-                      <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
-                    ) : (
-                      <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
-                    )}
-                    {expanded ? (
-                      <FolderOpen className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />
-                    ) : (
-                      <Folder className="size-3.5 shrink-0 text-amber-600 dark:text-amber-500" />
-                    )}
-                    <span className="truncate">{e.name}</span>
-                  </button>
-                  {expanded && (
-                    <DirTreeNode
-                      relPath={childPath}
-                      indent={indent + 1}
-                      nodes={nodes}
-                      onToggleDir={onToggleDir}
-                      onOpenFile={onOpenFile}
-                    />
+                <button
+                  key={childPath}
+                  type="button"
+                  onClick={() => onOpenFile(childPath)}
+                  className={cn(
+                    'group relative flex w-full items-center gap-1 py-[5px] pr-2 text-left text-xs transition-colors duration-100',
+                    isActive
+                      ? 'bg-accent text-accent-foreground'
+                      : 'hover:bg-accent/50',
                   )}
-                </div>
+                  style={{ paddingLeft: 12 + indent * 16 + 16 }}
+                >
+                  {isActive && (
+                    <span className="pointer-events-none absolute inset-y-0 left-0 w-0.5 bg-primary" />
+                  )}
+                  <IndentGuides indent={indent} />
+                  <FileIcon className={cn('size-3.5 shrink-0', cls)} />
+                  <span className="truncate">{e.name}</span>
+                  {typeof e.size === 'number' && (
+                    <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground/40 opacity-0 transition-opacity duration-100 group-hover:opacity-100">
+                      {formatFileSize(e.size)}
+                    </span>
+                  )}
+                </button>
               )
-            }
-            const { Icon: FileIcon, cls } = getFileIcon(e.name)
-            return (
-              <button
-                key={childPath}
-                type="button"
-                onClick={() => onOpenFile(childPath)}
-                className="flex w-full items-center gap-1 px-3 py-1 text-left text-xs hover:bg-accent"
-                style={{ paddingLeft: 12 + indent * 14 + 14 }}
-              >
-                <FileIcon className={cn('size-3.5 shrink-0', cls)} />
-                <span className="truncate">{e.name}</span>
-              </button>
-            )
-          })}
+            })}
         </>
       )}
     </>

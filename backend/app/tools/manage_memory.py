@@ -48,14 +48,14 @@ async def _list_memories(args: dict[str, Any], user_id: str, memory_type: str) -
 async def _list_ltm(args: dict[str, Any], user_id: str) -> ToolResult:
     from sqlalchemy import select
 
-    from app.db.engine import get_db
+    from app.db.engine import get_remote_db
     from app.db.models import LongTermMemory
 
     limit = min(args.get("limit", 20), 100)
     category = args.get("category")
     agent_id = args.get("agent_id")
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         stmt = select(LongTermMemory).where(LongTermMemory.user_id == user_id)
         if category:
             stmt = stmt.where(LongTermMemory.category == category)
@@ -85,10 +85,10 @@ async def _list_ltm(args: dict[str, Any], user_id: str) -> ToolResult:
 async def _list_preferences(user_id: str) -> ToolResult:
     from sqlalchemy import select
 
-    from app.db.engine import get_db
+    from app.db.engine import get_remote_db
     from app.db.models import UserPreference
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         result = await db.execute(
             select(UserPreference).where(UserPreference.user_id == user_id)
         )
@@ -120,11 +120,11 @@ async def _delete_memories(
 
 
 async def _delete_ltm(memory_ids: list[str], user_id: str, ctx: ToolContext) -> ToolResult:
-    from app.db.engine import get_db
+    from app.db.engine import get_remote_db
     from app.db.models import LongTermMemory
 
     deleted_count = 0
-    async with get_db() as db:
+    async with get_remote_db() as db:
         for mid_str in memory_ids:
             try:
                 mid = int(mid_str)
@@ -142,10 +142,10 @@ async def _delete_ltm(memory_ids: list[str], user_id: str, ctx: ToolContext) -> 
 async def _delete_preferences(keys: list[str], user_id: str, ctx: ToolContext) -> ToolResult:
     from sqlalchemy import delete as sql_delete
 
-    from app.db.engine import get_db
+    from app.db.engine import get_remote_db
     from app.db.models import UserPreference
 
-    async with get_db() as db:
+    async with get_remote_db() as db:
         result = await db.execute(
             sql_delete(UserPreference)
             .where(UserPreference.user_id == user_id)
@@ -153,6 +153,8 @@ async def _delete_preferences(keys: list[str], user_id: str, ctx: ToolContext) -
         )
         deleted_count = result.rowcount or 0
 
+    from app.infra.cache_helpers import invalidate_user_preferences_cache
+    await invalidate_user_preferences_cache(user_id)
     emit_guide_side_effect(ctx=ctx, target="memory", action="delete")
     return ok({"deleted": deleted_count, "message": f"已删除 {deleted_count} 条偏好"})
 
@@ -188,7 +190,7 @@ async def _optimize_memories(args: dict[str, Any], user_id: str, ctx: ToolContex
     merge_groups: list = plan.get("merge_groups", [])
     update_ids: list = plan.get("update_ids", [])
 
-    from app.db.engine import get_db
+    from app.db.engine import get_remote_db
     from app.db.models import LongTermMemory
 
     deleted_count = 0
@@ -210,7 +212,7 @@ async def _optimize_memories(args: dict[str, Any], user_id: str, ctx: ToolContex
                 continue
 
     if all_delete_ids:
-        async with get_db() as db:
+        async with get_remote_db() as db:
             for mid in all_delete_ids:
                 row = await db.get(LongTermMemory, mid)
                 if row is not None and row.user_id == user_id:
@@ -250,7 +252,7 @@ async def _optimize_memories(args: dict[str, Any], user_id: str, ctx: ToolContex
         except (ValueError, TypeError):
             continue
 
-        async with get_db() as db:
+        async with get_remote_db() as db:
             row = await db.get(LongTermMemory, mid)
             if row is None or row.user_id != user_id:
                 continue
@@ -278,7 +280,7 @@ async def _optimize_memories(args: dict[str, Any], user_id: str, ctx: ToolContex
 
 async def _create_ltm_fallback(group: dict[str, Any], user_id: str) -> None:
     """Create a LongTermMemory row without embedding (fallback)."""
-    from app.db.engine import get_db
+    from app.db.engine import get_remote_db
     from app.db.models import LongTermMemory
 
     merged_content = group.get("merged_content", "")
@@ -294,7 +296,7 @@ async def _create_ltm_fallback(group: dict[str, Any], user_id: str) -> None:
         scope="global",
         user_id=user_id,
     )
-    async with get_db() as db:
+    async with get_remote_db() as db:
         db.add(new_mem)
 
 

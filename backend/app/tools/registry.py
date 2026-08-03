@@ -89,26 +89,42 @@ class ToolRegistry:
 
     async def execute(self, tool_name: str, args: Any, ctx: ToolContext) -> ToolResult:
         from app.observability import start_span
+        from app.observability.instrumentation import (
+            AGENTHUB_ARGS_SUMMARY,
+            AGENTHUB_SUCCESS,
+            AGENTHUB_TOOL_NAME,
+        )
+        from app.observability.run_collector import run_span_collector
         args_summary = str(args)[:200] if args else ""
-        with start_span("tool.call", tool_name=tool_name, args_summary=args_summary) as span:
+        span_attrs = {AGENTHUB_TOOL_NAME: tool_name, AGENTHUB_ARGS_SUMMARY: args_summary}
+        with start_span("tool.call", **span_attrs) as span:
             tool = self._tools.get(tool_name)
             if tool is None:
                 msg = f"Unknown tool: {tool_name}"
                 if span.is_recording():
-                    span.set_attribute("agenthub.success", False)
+                    span.set_attribute(AGENTHUB_SUCCESS, False)
                     span.set_attribute("agenthub.error", msg)
+                run_span_collector.record(
+                    ctx.run_id, "tool.call", **span_attrs, **{AGENTHUB_SUCCESS: False},
+                )
                 return err(msg)
             try:
                 result = await tool.handler(args, ctx)
                 if span.is_recording():
-                    span.set_attribute("agenthub.success", result.ok)
+                    span.set_attribute(AGENTHUB_SUCCESS, result.ok)
                     if not result.ok and result.error:
                         span.set_attribute("agenthub.error", str(result.error)[:500])
+                run_span_collector.record(
+                    ctx.run_id, "tool.call", **span_attrs, **{AGENTHUB_SUCCESS: result.ok},
+                )
                 return result
             except Exception as e:  # noqa: BLE001 - tool failures surface to the LLM
                 if span.is_recording():
-                    span.set_attribute("agenthub.success", False)
+                    span.set_attribute(AGENTHUB_SUCCESS, False)
                     span.set_attribute("agenthub.error", str(e)[:500])
+                run_span_collector.record(
+                    ctx.run_id, "tool.call", **span_attrs, **{AGENTHUB_SUCCESS: False},
+                )
                 return err(str(e))
 
     async def execute_with_hooks(

@@ -21,7 +21,7 @@ export function MessageList({ conversationId }: { conversationId: string }) {
   const childRunWaveMap = useChildRunWaveMap(conversationId)
   const runningRuns = useTopLevelRunningRuns(conversationId)
   const segments = useMemo(
-    () => buildSegments(messages, childRunWaveMap),
+    () => buildSegments(messages.filter((m) => !m.hidden), childRunWaveMap),
     [messages, childRunWaveMap],
   )
   const setMessagesForConversation = useAppStore((s) => s.setMessagesForConversation)
@@ -163,7 +163,7 @@ export function MessageList({ conversationId }: { conversationId: string }) {
 
   return (
     <ScrollArea className="min-h-0 flex-1" viewportRef={viewportRef}>
-      <div className="px-4 py-6 md:px-6 md:py-8">
+      <div className="mx-auto max-w-3xl px-4 py-6 md:px-6 md:py-8">
         {segments.map((seg, si) => {
           const segMargin = si === 0 ? '' : 'mt-4'
 
