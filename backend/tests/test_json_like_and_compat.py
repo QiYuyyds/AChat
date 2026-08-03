@@ -50,7 +50,7 @@ async def test_json_like_search_local(dual_db):
             agent = Agent(
                 id=f"ag_json_{i}", name=f"Agent{i}", avatar="A",
                 description="d", system_prompt="p", adapter_name="mock",
-                is_builtin=False, is_orchestrator=False, supports_vision=False,
+                is_builtin=False, is_orchestrator=False,
                 created_at=now, user_id="u1",
             )
             agent.capabilities_list = []
@@ -88,7 +88,7 @@ async def test_json_like_no_match(dual_db):
         agent = Agent(
             id="ag_nomatch", name="NoMatch", avatar="A",
             description="d", system_prompt="p", adapter_name="mock",
-            is_builtin=False, is_orchestrator=False, supports_vision=False,
+            is_builtin=False, is_orchestrator=False,
             created_at=now, user_id="u1",
         )
         agent.capabilities_list = []
@@ -189,7 +189,7 @@ async def test_single_db_get_local_falls_back(single_db):
         agent = Agent(
             id="ag_single", name="Single", avatar="S",
             description="d", system_prompt="p", adapter_name="mock",
-            is_builtin=False, is_orchestrator=False, supports_vision=False,
+            is_builtin=False, is_orchestrator=False,
             created_at=now,
         )
         agent.capabilities_list = []

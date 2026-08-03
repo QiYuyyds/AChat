@@ -30,7 +30,7 @@ from app.adapters.base import AdapterAttachment, AdapterInput, CustomConfig
 from app.adapters.registry import agent_registry
 from app.config import get_settings
 from app.db.engine import get_local_db
-from app.db.models import Agent, AgentRun, Artifact, Conversation, Message, Workspace
+from app.db.models import Agent, AgentRun, Artifact, Conversation, Message, ModelProfile, Workspace
 from app.schemas.artifacts import ArtifactRecord
 from app.schemas.events import (
     ArtifactCreateEvent,
@@ -63,7 +63,6 @@ from app.services.conversation_context import BuildHistoryOptions, build_history
 from app.services.event_bus import event_bus
 from app.services.project_artifact import build_project_files
 from app.services.runner_registry import RunHandle
-from app.services.settings_service import get_app_settings, get_user_settings
 from app.tools.base import ToolContext
 from app.tools.registry import (
     tool_registry,  # noqa: F401 - parity import (tool resolution lives in adapters)
@@ -384,15 +383,38 @@ async def _maybe_auto_compact_hook(
 
 
 async def _get_agent_model_limit(agent_id: str) -> int | None:
-    """Look up the context window for the agent's configured model."""
+    """Look up the context window for the agent's resolved model.
+
+    Resolves from the user's default ModelProfile (SDK agents) or returns
+    None (CLI agents — auto-compact skips model-limit check).
+    """
     try:
         from app.infra.cache_helpers import get_agent_cached
 
         agent = await get_agent_cached(agent_id)
         if agent is None:
             return None
-        limits = get_model_limits(agent.model_provider, agent.model_id)
-        return limits.effective_context_window
+        # CLI agents: no model limit (CLI manages its own context)
+        if agent.adapter_name in ("claude-code", "codex"):
+            return None
+        # SDK agents: resolve from user's default ModelProfile
+        if agent.user_id:
+            async with get_local_db() as db:
+                profile = (
+                    await db.execute(
+                        select(ModelProfile)
+                        .where(
+                            ModelProfile.user_id == agent.user_id,
+                            ModelProfile.is_default == True,  # noqa: E712
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if profile is None:
+                    return None
+                limits = get_model_limits(profile.provider, profile.model_id)
+                return limits.effective_context_window
+        return None
     except Exception as e:
         logger.warning("[auto-compact] failed to get model limit for agent %s: %s", agent_id, e)
         return None
@@ -494,6 +516,8 @@ class RunArgs:
     dispatch_mode: str = "solo"
     # multi-user: owning user for SSE event filtering and data isolation
     user_id: str | None = None
+    # ModelProfile id selected per-message (plan B); None → use user's default profile
+    model_profile_id: str | None = None
 
 
 @dataclass
@@ -1545,6 +1569,7 @@ class _QueuedRunSpec:
     conversation_id: str
     trigger_message_id: str
     user_id: str | None
+    model_profile_id: str | None = None
 
 
 _queued_runs: dict[str, list[_QueuedRunSpec]] = {}
@@ -1556,6 +1581,7 @@ def enqueue_run(
     conversation_id: str,
     trigger_message_id: str,
     user_id: str | None = None,
+    model_profile_id: str | None = None,
 ) -> str:
     """Create a queued run: AgentRun row with status='queued' + RunQueuedEvent.
 
@@ -1599,6 +1625,7 @@ def enqueue_run(
             conversation_id=conversation_id,
             trigger_message_id=trigger_message_id,
             user_id=user_id,
+            model_profile_id=model_profile_id,
         )
     )
     return run_id
@@ -1660,6 +1687,7 @@ def _start_queued_run(spec: _QueuedRunSpec) -> None:
         conversation_id=spec.conversation_id,
         trigger_message_id=spec.trigger_message_id,
         user_id=spec.user_id,
+        model_profile_id=spec.model_profile_id,
     )
     task = asyncio.create_task(execute_run(run_id, cancel_event, args))
     _active_runs[run_id] = (task, cancel_event)
@@ -1690,6 +1718,7 @@ class AgentRunnerImpl:
         trigger_message_id: str,
         parent_run_id: str | None = None,
         user_id: str | None = None,
+        model_profile_id: str | None = None,
     ) -> RunHandle:
         run_id = new_run_id()
         cancel_event = asyncio.Event()
@@ -1710,6 +1739,7 @@ class AgentRunnerImpl:
             parent_run_id=parent_run_id,
             parent_cancel_event=parent_cancel_event,
             user_id=user_id,
+            model_profile_id=model_profile_id,
         )
         task = asyncio.create_task(execute_run(run_id, cancel_event, args))
         _active_runs[run_id] = (task, cancel_event)
@@ -2157,8 +2187,8 @@ async def execute_simple_run(
         try:
             stream = _run_react_loop(
                 adapter, adapter_input, cancel_event,
-                run_id, args.agent_id, args.conversation_id, agent.model_id,
-                model_provider=agent.model_provider,
+                run_id, args.agent_id, args.conversation_id, adapter_input.model_id,
+                model_provider=adapter_input.custom_config.model_provider if adapter_input.custom_config else None,
                 resume_from_turn=resume_from_turn,
                 mcp_manager=mcp_manager,
                 dispatch_depth=args.dispatch_depth,
@@ -2494,10 +2524,15 @@ async def consume_stream(
 
             # Run-end cleanup: finalize all execution_plan parts + write stats + clear registries
             if event.type == "run.end":
-                # Finalize execution_plan step statuses in parts_buffer
-                if current_message_id:
-                    run_status = event.status
-                    parts = parts_buffer.get(current_message_id, [])
+                # Finalize execution_plan step statuses in parts_buffer.
+                # current_message_id is already None here (cleared by message.end
+                # which always arrives before run.end), so we iterate all messages
+                # in parts_buffer for this run instead.
+                run_status = event.status
+                for msg_id, parts in parts_buffer.items():
+                    has_plan = any(p.get("type") == "execution_plan" for p in parts)
+                    if not has_plan:
+                        continue
                     plan_changed = False
                     for p in parts:
                         if p.get("type") != "execution_plan":
@@ -2509,8 +2544,8 @@ async def consume_stream(
                             elif step.get("status") == "pending":
                                 step["status"] = "skipped"
                                 plan_changed = True
+                    parts_buffer[msg_id] = parts
                     if plan_changed:
-                        parts_buffer[current_message_id] = parts
                         from app.schemas.plan import PlanStep as PlanStepModel
                         for p in parts:
                             if p.get("type") == "execution_plan":
@@ -2524,16 +2559,16 @@ async def consume_stream(
                                         ),
                                         user_id=user_id,
                                     )
-                        await _persist_or_stream(None, run_id, event, parts, False, message_id=current_message_id)
+                        await _persist_or_stream(None, run_id, event, parts, False, message_id=msg_id)
 
-            # Run-end cleanup (DB write deferred to finalize to avoid connection pool errors)
+                # Run-end cleanup (DB write deferred to finalize to avoid connection pool errors)
                 from app.services.plan_registry import plan_registry as _plan_registry_stats
                 _all_plans = list(_plan_registry_stats._plans.values())
                 if _all_plans:
                     plan = _all_plans[-1]
                     # Mirror the finalized statuses from parts_buffer into the registry
-                    if current_message_id:
-                        for p in parts_buffer.get(current_message_id, []):
+                    for _msg_id, parts in parts_buffer.items():
+                        for p in parts:
                             if p.get("type") != "execution_plan":
                                 continue
                             finalized_by_id = {s["id"]: s["status"] for s in p.get("steps", [])}
@@ -2667,7 +2702,14 @@ async def persist_event(
     etype = event.type
 
     if etype == "run.usage":
-        asyncio.create_task(_update_run_usage(event.run_id, event.usage.model_dump(by_alias=True)))
+        session_id = getattr(event, "session_id", None)
+        asyncio.create_task(_update_run_usage(
+            event.run_id,
+            event.usage.model_dump(by_alias=True),
+            session_id=session_id,
+            conversation_id=event.conversation_id,
+            agent_id=agent_id,
+        ))
         return
     if etype == "message.usage":
         asyncio.create_task(_update_message_usage(event.message_id, event.usage.model_dump(by_alias=True)))
@@ -2797,13 +2839,26 @@ async def _update_message_parts(message_id: str, parts: list[dict]) -> None:
         )
 
 
-async def _update_run_usage(run_id: str, usage: dict) -> None:
-    """Fire-and-forget: update agent_runs.usage (latest wins, failures logged)."""
+async def _update_run_usage(
+    run_id: str,
+    usage: dict,
+    *,
+    session_id: str | None = None,
+    conversation_id: str | None = None,
+    agent_id: str | None = None,
+) -> None:
+    """Fire-and-forget: update agent_runs.usage + cli_session_id (latest wins)."""
     try:
+        values: dict = {"usage": usage}
+        if session_id:
+            values["cli_session_id"] = session_id
         async with get_local_db() as db:
             await db.execute(
-                update(AgentRun).where(AgentRun.id == run_id).values(usage=usage)
+                update(AgentRun).where(AgentRun.id == run_id).values(**values)
             )
+        if session_id and conversation_id and agent_id:
+            from app.adapters.session_store import set_claude_code_session
+            set_claude_code_session(conversation_id, agent_id, session_id)
     except Exception as e:
         logger.warning("[persist_event] fire-and-forget run.usage update failed for run %s: %s", run_id, e)
 
@@ -3242,6 +3297,24 @@ async def build_adapter_input(
     is_cli = agent.adapter_name in CLI_ADAPTERS
     is_sdk = agent.adapter_name in SDK_ADAPTERS
 
+    # ── ModelProfile resolution (SDK only; CLI agents skip) ──────────
+    model_profile: ModelProfile | None = None
+    is_guide = getattr(agent, "is_guide", False)
+    if is_sdk:
+        if is_guide:
+            # Guide agent resolves model from GUIDE_AGENT_* env vars
+            model_profile = _build_guide_model_profile()
+        else:
+            model_profile = await _resolve_model_profile(
+                args.model_profile_id, args.user_id
+            )
+            if model_profile is None:
+                raise ValueError(
+                    "No model profile configured. Please create one in the "
+                    "「模型」(Model Profiles) tab before sending messages to "
+                    "SDK (Custom) agents."
+                )
+
     # ── system prompt (shared by both paths) ──────────────────────────
     base_system_prompt = system_prompt_override or agent.system_prompt
     system_prompt_with_workspace = (
@@ -3264,7 +3337,7 @@ async def build_adapter_input(
     # ── API key ─────────────────────────────────────────────────────
     if is_cli:
         # CLI agents use their own authentication (claude login / codex login).
-        # Only inject per-agent API key override via extra_env when explicitly set.
+        # Agent entity no longer stores api_key / api_base_url.
         effective_api_key: str | None = None
         effective_api_base_url: str | None = None
         cli_extra_env: dict[str, str] = {}
@@ -3281,29 +3354,16 @@ async def build_adapter_input(
                 cli_extra_env["USERPROFILE"] = user_home
             else:
                 cli_extra_env["HOME"] = user_home
-        if agent.api_key:
-            if agent.adapter_name == "claude-code":
-                cli_extra_env["ANTHROPIC_API_KEY"] = agent.api_key
-            elif agent.adapter_name == "codex":
-                cli_extra_env["OPENAI_API_KEY"] = agent.api_key
-        if agent.api_base_url:
-            if agent.adapter_name == "claude-code":
-                cli_extra_env["ANTHROPIC_BASE_URL"] = agent.api_base_url
-            elif agent.adapter_name == "codex":
-                cli_extra_env["OPENAI_BASE_URL"] = agent.api_base_url
-    else:
-        # SDK path: full four-layer key chain (agent > app_settings > env > OAuth).
-        effective_api_key = agent.api_key
-        effective_api_base_url = agent.api_base_url
+    elif is_sdk:
+        # SDK path: resolve model/key from ModelProfile.
+        effective_api_key = model_profile.api_key if model_profile else None
+        effective_api_base_url = model_profile.api_base_url if model_profile else None
         cli_extra_env = {}
-        if not effective_api_key or (
-            not effective_api_base_url and agent.adapter_name == "claude-code"
-        ):
-            settings = await get_user_settings(args.user_id) if args.user_id else await get_app_settings()
-            if not effective_api_key:
-                effective_api_key = _pick_settings_key(settings, agent)
-            if not effective_api_base_url and agent.adapter_name == "claude-code":
-                effective_api_base_url = settings.anthropic_base_url
+    else:
+        # Mock / test adapters: no model profile, no API key.
+        effective_api_key = None
+        effective_api_base_url = None
+        cli_extra_env = {}
 
     # ── cross-run history: SDK only (CLI agents use session resume) ──
     history: list[dict] = []
@@ -3318,7 +3378,10 @@ async def build_adapter_input(
         if agent_count > 1:
             system_prompt_with_workspace += "\n\n" + GROUP_CHAT_SYSTEM_NOTE
 
-        limits = get_model_limits(agent.model_provider, agent.model_id)
+        limits = get_model_limits(
+            model_profile.provider if model_profile else None,
+            model_profile.model_id if model_profile else None,
+        )
         prompt_estimate = (
             estimate_tokens(system_prompt_with_workspace) + estimate_tokens(prompt) + 512
         )
@@ -3346,7 +3409,6 @@ async def build_adapter_input(
     #     guide agents skip — they use management tools for explicit queries,
     #     so ProfileSource/ToolStateSource DB lookups are pure overhead) ─
     dynamic_prefix = ""
-    is_guide = getattr(agent, "is_guide", False)
     if is_sdk and not is_guide:
         assembler = _get_prompt_assembler()
         if assembler and not args.override_prompt:
@@ -3433,18 +3495,30 @@ async def build_adapter_input(
     # ── custom_config: SDK only ──────────────────────────────────────
     custom_config = (
         CustomConfig(
-            model_provider=agent.model_provider,
-            supports_vision=agent.supports_vision,
+            model_provider=model_profile.provider,
+            supports_vision=model_profile.supports_vision,
         )
-        if is_sdk and agent.model_provider and agent.model_id
+        if is_sdk and model_profile
         else None
     )
 
     # ── CLI-specific fields ──────────────────────────────────────────
     cli_exec_path = agent.executable_path if is_cli else None
     cli_custom_args = agent.custom_args_list if is_cli else None
-    # Session resume: deferred until AgentRun gets a session_id column.
+    # Session resume: query the latest CLI session ID from the in-memory cache
+    # (hot path) or DB (cache miss after backend restart).
     cli_resume_session_id: str | None = None
+    if is_cli:
+        from app.adapters.session_store import get_claude_code_session
+        try:
+            cli_resume_session_id = await get_claude_code_session(
+                args.conversation_id, agent.id
+            )
+        except Exception:
+            logger.debug(
+                "[agent-runner] get_claude_code_session failed; continuing without resume",
+                exc_info=True,
+            )
 
     return AdapterInput(
         agent_id=agent.id,
@@ -3455,7 +3529,7 @@ async def build_adapter_input(
         system_prompt=system_prompt_with_workspace,
         api_key=effective_api_key,
         api_base_url=effective_api_base_url,
-        model_id=agent.model_id,
+        model_id=model_profile.model_id if is_sdk and model_profile else None,
         tool_names=tool_names,
         attachments=attachments if len(attachments) > 0 else None,
         history=history if len(history) > 0 else None,
@@ -3466,11 +3540,82 @@ async def build_adapter_input(
         custom_args=cli_custom_args,
         resume_session_id=cli_resume_session_id,
         mcp_config=None,  # MCP bridge deferred
+        user_id=args.user_id,
     )
 
 
+def _build_guide_model_profile() -> ModelProfile:
+    """Build an in-memory ModelProfile from GUIDE_AGENT_* env vars.
+
+    The guide agent (小A) uses env-driven model config instead of a user-scoped
+    ModelProfile. This avoids requiring users to configure a profile before
+    using the guide. The env vars fall back to DEEPSEEK_API_KEY.
+    """
+    import os
+
+    provider = os.environ.get("GUIDE_AGENT_MODEL_PROVIDER", "deepseek")
+    model_id = os.environ.get("GUIDE_AGENT_MODEL_ID", "deepseek-v4-flash")
+    api_key = (
+        os.environ.get("GUIDE_AGENT_API_KEY")
+        or os.environ.get("DEEPSEEK_API_KEY")
+        or None
+    )
+    api_base_url = os.environ.get("GUIDE_AGENT_API_BASE_URL") or None
+
+    return ModelProfile(
+        id="mp_guide_builtin",
+        user_id="",  # not persisted; guide agent has no user
+        name="Guide Agent (env)",
+        provider=provider,
+        model_id=model_id,
+        api_key=api_key,
+        api_base_url=api_base_url,
+        is_default=False,
+        supports_vision=False,
+        last_test_status="untested",
+        last_tested_at=None,
+        created_at=now_ms(),
+        updated_at=now_ms(),
+    )
+
+
+async def _resolve_model_profile(
+    profile_id: str | None, user_id: str | None
+) -> ModelProfile | None:
+    """Resolve ModelProfile: explicit profile_id → user default → None.
+
+    If profile_id is provided but not found (or not owned), falls back to
+    the user's default profile and logs a warning.
+    """
+    if not user_id:
+        return None
+    async with get_local_db() as db:
+        if profile_id:
+            profile = await db.get(ModelProfile, profile_id)
+            if profile and profile.user_id == user_id:
+                return profile
+            logger.warning(
+                "[agent-runner] model profile %s not found or not owned; "
+                "falling back to default",
+                profile_id,
+            )
+        result = await db.execute(
+            select(ModelProfile)
+            .where(
+                ModelProfile.user_id == user_id,
+                ModelProfile.is_default == True,  # noqa: E712
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+
 def _pick_settings_key(settings: Any, agent: Agent) -> str | None:
-    """Pick the global settings key matching the agent's adapter / provider."""
+    """Pick the global settings key matching the CLI adapter (CLI agents only).
+
+    SDK agents resolve keys from ModelProfile; this function is retained for
+    CLI agents that may still need a settings-based key fallback.
+    """
     import os
 
     if agent.adapter_name == "claude-code":
@@ -3485,15 +3630,6 @@ def _pick_settings_key(settings: Any, agent: Agent) -> str | None:
             or os.environ.get("CODEX_API_KEY")
             or os.environ.get("OPENAI_API_KEY")
         )
-    provider = agent.model_provider
-    if provider == "anthropic":
-        return settings.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
-    if provider == "openai":
-        return settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
-    if provider == "deepseek":
-        return settings.deepseek_api_key or os.environ.get("DEEPSEEK_API_KEY")
-    if provider == "volcano-ark":
-        return settings.ark_api_key or os.environ.get("ARK_API_KEY")
     return None
 
 
@@ -3532,9 +3668,9 @@ def _build_agent_hub_tool_guidance(
 ) -> str:
     """Build the per-tool usage guidance appended to the system prompt."""
     tools = set(tool_names)
-    is_sdk_agent = agent.adapter_name in ("claude-code", "codex")
-    if is_sdk_agent:
-        sdk_agent_hub_tools = [
+    is_cli_agent = agent.adapter_name in ("claude-code", "codex")
+    if is_cli_agent:
+        cli_agent_hub_tools = [
             "write_artifact",
             "read_artifact",
             "update_artifact",
@@ -3542,7 +3678,7 @@ def _build_agent_hub_tool_guidance(
             "deploy_workspace",
             ASK_USER_TOOL_NAME,
         ]
-        tools.update(sdk_agent_hub_tools)
+        tools.update(cli_agent_hub_tools)
 
     sections: list[str] = []
 
@@ -3552,7 +3688,7 @@ def _build_agent_hub_tool_guidance(
     has_workspace_file_tools = (
         "fs_read" in tools or "fs_write" in tools or "bash" in tools
         or "fs_list" in tools or "fs_glob" in tools or "fs_grep" in tools
-        or "code_explore" in tools or is_sdk_agent
+        or "code_explore" in tools or is_cli_agent
     )
 
     if len(tools) > 0:
@@ -3573,8 +3709,8 @@ def _build_agent_hub_tool_guidance(
                 "## 本地项目模式",
                 "当前 workspace 是用户绑定的真实本地文件夹。用户要求创建、修改、初始化、调试、构建前后端项目或源码文件时，必须优先直接操作 workspace 文件。",
                 (
-                    "- 使用 SDK 自带的 Read / Write / Edit / Bash / shell 工具读写文件、安装依赖、运行构建与测试。"
-                    if is_sdk_agent
+                    "- 使用 CLI 自带的 Read / Write / Edit / Bash / shell 工具读写文件、安装依赖、运行构建与测试。"
+                    if is_cli_agent
                     else "- 使用 fs_read / fs_write / bash 读写文件、安装依赖、运行构建与测试。"
                 ),
                 "- 不要用 write_artifact 保存应该落盘到本地项目的源码、package.json、tsconfig、server/client 文件或构建配置。",

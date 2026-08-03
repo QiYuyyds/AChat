@@ -69,7 +69,7 @@ async def _seed(dual_db, conv_id="conv1", agent_id="ag1", run_id="run1"):
         agent = Agent(
             id=agent_id, name="A", avatar="A", description="d",
             system_prompt="p", adapter_name="mock", is_builtin=False,
-            is_orchestrator=False, supports_vision=False,
+            is_orchestrator=False,
             created_at=now, user_id="u1",
         )
         agent.capabilities_list = []

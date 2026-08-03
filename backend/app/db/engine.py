@@ -173,6 +173,17 @@ _PG_MIGRATION_STATEMENTS = [
     # ─── Conversation fork columns ───
     "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS parent_conversation_id TEXT",
     "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS fork_point_message_id TEXT",
+    # ─── CLI agent session resume ───
+    "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS cli_session_id VARCHAR",
+    # ─── ModelProfile table ───
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_model_profiles_default_per_user "
+    "ON model_profiles (user_id) WHERE is_default = true",
+    # ─── Drop model columns from agents (migrated to model_profiles) ───
+    "ALTER TABLE agents DROP COLUMN IF EXISTS model_provider",
+    "ALTER TABLE agents DROP COLUMN IF EXISTS model_id",
+    "ALTER TABLE agents DROP COLUMN IF EXISTS api_key",
+    "ALTER TABLE agents DROP COLUMN IF EXISTS api_base_url",
+    "ALTER TABLE agents DROP COLUMN IF EXISTS supports_vision",
 ]
 
 # ── SQLite-compatible migration statements ────────────────────────────
@@ -212,6 +223,21 @@ _SQLITE_MIGRATION_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_agents_user ON agents (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_mcp_user ON mcp_servers (user_id)",
+    # ─── agent_runs: CLI session resume ───
+    "ALTER TABLE agent_runs ADD COLUMN cli_session_id VARCHAR",
+    # ─── model_profiles: unique default per user ───
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_model_profiles_default_per_user "
+    "ON model_profiles (user_id) WHERE is_default = 1",
+    # ─── Drop model columns from agents (migrated to model_profiles) ───
+    # SQLite 3.35.0+ supports ALTER TABLE DROP COLUMN; wrapped in
+    # suppress(Exception) so older SQLite or missing columns are silently
+    # skipped. Without this, INSERT fails with "NOT NULL constraint failed:
+    # agents.supports_vision" because SQLAlchemy no longer maps these columns.
+    "ALTER TABLE agents DROP COLUMN model_provider",
+    "ALTER TABLE agents DROP COLUMN model_id",
+    "ALTER TABLE agents DROP COLUMN api_key",
+    "ALTER TABLE agents DROP COLUMN api_base_url",
+    "ALTER TABLE agents DROP COLUMN supports_vision",
 ]
 
 

@@ -41,7 +41,6 @@ async def _seed_setup(db) -> tuple[str, str]:
             model_id="gpt-4o-mini",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now,
         )
         agent.capabilities_list = []

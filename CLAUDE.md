@@ -179,6 +179,18 @@ OpenTelemetry 全链路追踪和评测系统通过 `@traced` 装饰器包裹关�
 - **小A 边界**：不写代码、不编辑文件、不跑命令、不产产物、不派发子任务；不能修改/删除 builtin Agent，不能改自己；创建 Agent 只支持 Custom Agent（SDK 路线）
 - 详见 `openspec/specs/guide-agent/spec.md`（已 archive，原 change 在 `openspec/changes/archive/2026-07-21-add-guide-agent/`）
 
+### 3.11 ModelProfile 是用户级模型配置，独立于 Agent 实体
+
+ModelProfile 是 user-scoped 的可复用模型配置（provider / model_id / api_key / api_base_url / supports_vision），独立于 Agent 实体存储。Agent 不再存储模型相关字段。
+
+- **运行时解析**：SDK (Custom) agent 运行时，`build_adapter_input` 按优先级解析模型：显式 `modelProfileId` → 用户默认 ModelProfile → 拒绝运行（零 profile）
+- **CLI agent 跳过**：CLI agent (Claude Code / Codex) 的 `AdapterInput.model_id` 恒为 `None`，不传 `--model`，使用 CLI 自带模型配置
+- **引用已删 profile**：回退到用户默认 ModelProfile + 警告
+- **默认 profile 自动转交**：删除默认 profile 时，最早的剩余 profile 自动成为新默认
+- **连通性测试**：`POST /api/model-profiles/{id}/test` 发送 `max_tokens=1` 的最小 Chat Completions 请求，返回 ok/fail + 延迟，限流 3s/次
+- **迁移**：`_migrate_agent_model_profiles` 将旧 Agent 的 baked-in model config 迁移到 ModelProfile，按 `(user_id, provider, model_id)` 去重
+- 详见 `openspec/specs/model-profiles/spec.md`
+
 ---
 
 ## 4. 代码风格
@@ -258,10 +270,10 @@ OpenTelemetry 全链路追踪和评测系统通过 `@traced` 装饰器包裹关�
 
 ### 5.4 API Key 管理
 
-Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `backend/app/services/agent_runner.py:buildAdapter_input`）：
+Key 来源按优先级（详见 `backend/app/services/agent_runner.py:build_adapter_input`）：
 
-1. **`agents.api_key`** — per-agent override（最高优先级；agent 库里单独填）
-2. **`user_settings.<provider>_api_key`** — 用户在「设置」面板全局自填，存 `user_settings` 表（按 `user_id` 分行）
+1. **`ModelProfile.api_key`** — SDK (Custom) agent 的 API key 从 ModelProfile 解析（显式选中的 profile 或用户默认 profile）
+2. **`user_settings.<provider>_api_key`** — 用户在「设置」面板全局自填，存 `user_settings` 表（按 `user_id` 分行）；用于 RAG / 记忆等非 agent 子系统
 3. **`backend/.env`** — 环境变量兜底（dev / CI 友好；`config.py` 的 `apply_env_overrides()` 桥接到 `os.environ`）
 
 约束：
@@ -401,6 +413,7 @@ Key 来源按优先级（详见 `backend/app/services/settings_service.py` 与 `
 - `specs/user-auth/spec.md` — 用户认证与多用户隔离
 - `specs/run-internal-compaction/spec.md` — ReAct loop 内压缩（五阶段 pipeline）
 - `specs/guide-agent/spec.md` — ★ 小A Guide Agent（全局悬浮助手 + 7 个管理工具 + 双活跃会话模型）
+- `specs/model-profiles/spec.md` — ★ ModelProfile 用户级模型配置（独立于 Agent 实体 + 运行时解析 + 连通性测试 + 迁移）
 - `specs/worktree-conflict-resolution/spec.md` — Worktree 三层递进冲突解决（Auto → LLM → Human）
 
 > ⚠️ 可观测性与评测代码已在 `backend/app/observability/` 落地，但 OpenSpec 主 spec 尚未建立（见 `openspec/changes/add-agent-observability/` 与 `add-rag-evaluation/`）。用户资料管理（profile）代码在 `backend/app/api/profile.py`，但未单独建立 OpenSpec capability。

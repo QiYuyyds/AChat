@@ -24,6 +24,7 @@ LOCAL_TABLES: frozenset[str] = frozenset({
     "conversation_context_summaries",
     "agents",
     "mcp_servers",
+    "model_profiles",
 })
 
 # ─── Remote PostgreSQL tables (12) — user system + knowledge/RAG ───

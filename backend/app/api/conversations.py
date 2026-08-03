@@ -229,6 +229,7 @@ async def send_message(conversation_id: str, req: Request, user: User = Depends(
             mentioned_agent_ids=body.mentioned_agent_ids,
             parent_message_id=body.parent_message_id,
             attachment_ids=body.attachment_ids,
+            model_profile_id=body.model_profile_id,
         )
     except ValueError as err:
         return _err(str(err), 400)

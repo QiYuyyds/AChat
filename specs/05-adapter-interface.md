@@ -421,26 +421,31 @@ class MockAdapter implements AgentPlatformAdapter {
 
 源文件：Python `backend/app/adapters/claude_adapter.py`
 
-CLI 子进程路线：spawn `claude` CLI，通过 stream-json 协议（stdin/stdout）通信。CLI 内部管理自己的工具执行、沙箱、权限审批。Adapter 只负责翻译 CLI 事件流。
+CLI 子进程路线：spawn `claude` CLI，通过 stream-json 协议（stdin/stdout）通信。CLI 内部管理工具执行、沙箱，但权限审批通过 `acceptEdits` 模式将写类操作路由到 AChat 安全基础设施（黑名单、Bash 审批、文件写入审计、路径沙箱）。
 
 ```python
 class ClaudeCLIAdapter(CLIAdapterBase):
     name = "claude-code"  # AdapterName
 
     async def stream(self, input, cancel_event) -> AsyncIterator[StreamEvent]:
+        # retry without --resume if session resume fails
         proc = await asyncio.create_subprocess_exec(
             "claude", "-p",
             "--output-format", "stream-json",
             "--input-format", "stream-json",
             "--verbose",
-            "--permission-mode", "bypassPermissions",
+            "--permission-mode", "acceptEdits",
+            "--include-partial-messages",
+            "--disallowedTools", "AskUserQuestion",
             stdin=PIPE, stdout=PIPE, stderr=PIPE,
             cwd=input.workspace_path,
             env=build_child_env(input.extra_env),
         )
-        # write prompt as JSON to stdin
+        # write prompt as JSON to stdin (text + image content blocks)
         # read JSONL from stdout, translate each line to StreamEvent
+        # control_request → route through AChat security (bash blacklist / write approval)
         # on cancel_event: graceful shutdown (close stdin → wait → terminate → kill)
+        # timeout watchdog: 30s first-turn no-progress / 10min semantic inactivity
 ```
 
 ### CLI 参数
@@ -450,32 +455,72 @@ class ClaudeCLIAdapter(CLIAdapterBase):
 | `-p` | 硬编码 | 非交互模式 |
 | `--output-format stream-json` | 硬编码 | 协议契约 |
 | `--input-format stream-json` | 硬编码 | 协议契约 |
-| `--permission-mode bypassPermissions` | 硬编码 | CLI 自主审批（daemon 模式） |
+| `--permission-mode acceptEdits` | 硬编码 | 写类操作触发 `control_request`，路由到 AChat 安全基础设施 |
 | `--verbose` | 硬编码 | 开启详细日志 |
+| `--include-partial-messages` | 硬编码 | token 级流式输出 |
+| `--disallowedTools AskUserQuestion` | 硬编码 | 阻止 CLI 调用交互式 AskUserQuestion 工具 |
 | `--model <id>` | `AdapterInput.model_id` | 可空，CLI 用默认模型 |
-| `--resume <id>` | `AdapterInput.resume_session_id` | 可空，恢复历史会话 |
-| `--mcp-config <path>` | `AdapterInput.mcp_config` | 写入临时文件后传路径 |
+| `--resume <id>` | `AdapterInput.resume_session_id` | 可空，恢复历史会话（DB 持久化 `cli_session_id`） |
+| `--append-system-prompt-file <path>` | 动态生成 | 系统提示词 + 动态 MCP 工具提示（写入临时文件） |
+| `--mcp-config=<path>` | 动态生成 | MCP Bridge 配置（含 `--tool-names` 参数） |
 | `custom_args` | `Agent.custom_args`（过滤后） | 用户自定义参数 |
 
-Blocked args（用户 custom_args 中被过滤的）：`-p`, `--output-format`, `--input-format`, `--permission-mode`, `--mcp-config`, `--effort`
+Blocked args（用户 custom_args 中被过滤的）：`-p`, `--output-format`, `--input-format`, `--permission-mode`, `--mcp-config`, `--effort`, `--include-partial-messages`, `--disallowedTools`
 
 ### 事件翻译
 
 | CLI 事件 | 对应 StreamEvent |
 |---|---|
-| `system` / 首条消息 | `message.start` |
-| `assistant` → content block `text` | `part.start({type:'text'})` + `part.delta({type:'text.append'})` |
-| `assistant` → content block `thinking` | `part.start({type:'thinking'})` + `part.delta({type:'thinking.append'})` |
+| `stream_event` → `message_start` | `message.start` |
+| `stream_event` → `content_block_start` (text) | `part.start({type:'text'})` |
+| `stream_event` → `content_block_delta` (text_delta) | `part.delta({type:'text.append'})` |
+| `stream_event` → `content_block_stop` | `part.end` |
+| `stream_event` → `message_stop` | （内部标记，不直接发事件） |
+| `assistant` → content block `text` | `part.start` + `part.delta`（非流式时） |
+| `assistant` → content block `thinking` | `part.start` + `part.delta`（非流式时） |
 | `assistant` → content block `tool_use` | `tool.call({callId, toolName, args})` |
 | `user` → content block `tool_result` | `tool.result({callId, result, isError})` |
-| `result` | 记录 usage + output，跳出循环 |
-| `control_request` | 自动 respond `{behavior: "allow"}` |
-| `log` | 忽略（MVP） |
+| `result` | 捕获 `session_id` + usage，跳出循环 |
+| `control_request` | 路由到 AChat 安全审批（见下） |
+| `log` | 忽略 |
+
+### control_request 智能审批
+
+`acceptEdits` 模式下，CLI 对写类操作（Bash、Write、Edit、MultiEdit）发送 `control_request`，adapter 解析后路由到 AChat 安全基础设施：
+
+- **Bash** → `find_banned_pattern()` 命中黑名单则 deny；否则 `classify_bash_approval()` → 需要审批则 `wait_for_bash_approval()`；通过则 allow
+- **Write/Edit/MultiEdit** → `resolve_safe_path()` 路径越界则 deny；否则按 `fs_write_approval_mode`：review 模式走 `pending_writes.register()` + `await_pending_decision()`，trust 模式直接 allow
+- **其他**（Read、Glob、Grep 等）→ allow（`acceptEdits` 已自动放行）
+
+### 会话恢复（Session Resume）
+
+- `AgentRun` 模型新增 `cli_session_id` 列（nullable）
+- `result` 事件中的 `session_id` 通过 `RunUsageEvent.session_id` 传出
+- `AgentRunner.consume_stream` 持久化到 DB + 内存缓存（`session_store.claude_code_sessions`，key 为 `conversation_id:agent_id`）
+- `build_adapter_input` 查询最新 `AgentRun.cli_session_id` 传入 `--resume`
+- 失败降级：`--resume` 失败时清除缓存，自动重试不带 session ID
+
+### 附件支持
+
+- `kind="image"` → base64 编码为 `{"type":"image","source":{"type":"base64","media_type":"<mime>","data":"<base64>"}}` content block
+- `kind="file"` → 在 prompt 文本末尾追加 `"[Attached file: <fileName> (<mimeType>) at <absPath>]"`
+- 图片大小上限 10 MB
+
+### 动态 MCP 工具
+
+- Agent 配置的 `tool_names` 通过 `--tool-names` 参数传给 MCP Bridge
+- MCP Bridge 按参数过滤暴露的工具集；空时回退到默认 `CLI_MCP_TOOL_NAMES`
+- `ACHAT_MCP_TOOL_HINT` 系统提示词由 `_build_mcp_tool_hint(tool_names)` 动态生成
+
+### 超时看门狗
+
+- `DEFAULT_FIRST_TURN_NO_PROGRESS_TIMEOUT = 30s`：首轮无进展超时
+- `DEFAULT_SEMANTIC_INACTIVITY_TIMEOUT = 10min`：语义不活动超时
+- 超时后标记 `final_status = "timeout"`，关闭 stdin，进入正常结束流程
 
 ### 不做 / 推迟
 
 - MCP server 配置 UI
-- 审批桥（CLI 在 `bypassPermissions` 下自主审批）
 - Subagent 独立 child run
 
 ---

@@ -120,7 +120,7 @@ export function NewConversationDialog({
           {agents.length === 0 ? (
             <div className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
               暂无可用 Agent
-              <div className="mt-1 text-xs">点 Sidebar 里的「Agents」入口创建一个，或重启应用</div>
+              <div className="mt-1 text-xs">点 Sidebar 里的「联系人」入口创建一个，或重启应用</div>
             </div>
           ) : (
             agents.map((a) => {

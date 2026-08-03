@@ -30,25 +30,16 @@ import {
 import { cn } from '@/lib/utils'
 import { pickRandomAgentIcon } from '@/shared/agent-icons'
 import {
-  AGENT_BUILDER_PROVIDER_DEFAULTS as PROVIDER_DEFAULTS,
   AGENT_TOOL_META as TOOL_META,
   AGENT_TOOL_PRESETS as TOOL_PRESETS,
   AVAILABLE_AGENT_TOOLS,
   BASELINE_AGENT_TOOLS as BASELINE_TOOLS,
-  CLAUDE_CODE_DEFAULT_MODEL,
-  CODEX_DEFAULT_MODEL,
   DEFAULT_CUSTOM_AGENT_TOOLS,
   type AgentBuilderAdapter as AdapterKind,
-  type AgentBuilderProvider as Provider,
   type AgentConfigDraft,
   type AgentToolName as ToolName,
   type AgentToolPresetId,
 } from '@/shared/agent-builder-config'
-import { validateCodexBaseUrl } from '@/shared/codex-compat'
-import {
-  validateOpenAICompatibleApiKey,
-  validateOpenAICompatibleBaseUrl,
-} from '@/shared/openai-compatible'
 import { useAppStore } from '@/stores/app-store'
 
 type AgentTab = 'basic' | 'model' | 'toolsPrompt' | 'skills' | 'mcp'
@@ -97,17 +88,11 @@ export function CreateAgentDialog({
   const [capabilitiesText, setCapabilitiesText] = useState('')
   const [systemPrompt, setSystemPrompt] = useState('')
   const [adapterKind, setAdapterKind] = useState<AdapterKind>('custom')
-  const [provider, setProvider] = useState<Provider>('deepseek')
-  const [modelId, setModelId] = useState(PROVIDER_DEFAULTS.deepseek.defaultModel)
   const [toolNames, setToolNames] = useState<Set<string>>(new Set(DEFAULT_CUSTOM_AGENT_TOOLS))
   const [skillNames, setSkillNames] = useState<Set<string>>(new Set())
   const [availableSkills, setAvailableSkills] = useState<SkillSummary[]>([])
   const [mcpServerIds, setMcpServerIds] = useState<Set<string>>(new Set())
   const [availableMcpServers, setAvailableMcpServers] = useState<McpServerResponse[]>([])
-  const [supportsVision, setSupportsVision] = useState(true)
-  const [apiKey, setApiKey] = useState('')
-  const [apiBaseUrl, setApiBaseUrl] = useState('')
-  const [showApiKey, setShowApiKey] = useState(false)
   const [isOrchestrator, setIsOrchestrator] = useState(false)
   const [executablePath, setExecutablePath] = useState('')
   const [customArgsText, setCustomArgsText] = useState('')
@@ -133,16 +118,6 @@ export function CreateAgentDialog({
       setDescription(agent.description)
       setCapabilitiesText(agent.capabilities.join(', '))
       setSystemPrompt(agent.systemPrompt)
-      const p = (agent.modelProvider ?? 'deepseek') as Provider
-      setProvider(p)
-      setModelId(
-        agent.modelId ??
-          (kind === 'claude-code'
-            ? CLAUDE_CODE_DEFAULT_MODEL
-            : kind === 'codex'
-              ? CODEX_DEFAULT_MODEL
-              : PROVIDER_DEFAULTS[p].defaultModel),
-      )
       setToolNames(new Set(agent.toolNames))
       // Infer activePresetId from persisted toolNames by matching only the
       // 5 UI-selectable tools (baseline tools are filtered out before match).
@@ -150,10 +125,7 @@ export function CreateAgentDialog({
       setActivePresetId(inferPresetFromToolNames(agent.toolNames))
       setSkillNames(new Set(agent.skillNames))
       setMcpServerIds(new Set(agent.mcpServerIds ?? []))
-      setSupportsVision(agent.supportsVision)
       setIsOrchestrator(agent.isOrchestrator)
-      setApiKey(agent.apiKey ?? '')
-      setApiBaseUrl(agent.apiBaseUrl ?? '')
       setExecutablePath(agent.executablePath ?? '')
       setCustomArgsText((agent.customArgs ?? []).join('\n'))
     } else {
@@ -162,22 +134,16 @@ export function CreateAgentDialog({
       setDescription(TOOL_PRESETS[0].defaultDescription)
       setCapabilitiesText(TOOL_PRESETS[0].defaultCapabilities.join('、'))
       setSystemPrompt(DEFAULT_CUSTOM_SYSTEM_PROMPT)
-      setProvider('deepseek')
-      setModelId(PROVIDER_DEFAULTS.deepseek.defaultModel)
       setToolNames(new Set(DEFAULT_CUSTOM_AGENT_TOOLS))
       setActivePresetId('coder')
       setSkillNames(new Set())
       setMcpServerIds(new Set())
-      setSupportsVision(true)
       setIsOrchestrator(false)
-      setApiKey('')
-      setApiBaseUrl('')
       setExecutablePath('')
       setCustomArgsText('')
       setCreateStep('choose')
     }
     if (agent) setCreateStep('detail')
-    setShowApiKey(false)
     setShowAdvanced(false)
     setError(null)
     setActiveTab('basic')
@@ -202,12 +168,7 @@ export function CreateAgentDialog({
 
   const handleAdapterKindChange = (kind: AdapterKind) => {
     setAdapterKind(kind)
-    if (kind === 'claude-code') {
-      setModelId(CLAUDE_CODE_DEFAULT_MODEL)
-    } else if (kind === 'codex') {
-      setModelId(CODEX_DEFAULT_MODEL)
-    } else {
-      setModelId(PROVIDER_DEFAULTS[provider].defaultModel)
+    if (kind === 'custom') {
       if (toolNames.size === 0) {
         setToolNames(new Set(DEFAULT_CUSTOM_AGENT_TOOLS))
         setActivePresetId('coder')
@@ -216,12 +177,6 @@ export function CreateAgentDialog({
       }
       setSystemPrompt((prev) => (prev.trim() ? prev : DEFAULT_CUSTOM_SYSTEM_PROMPT))
     }
-  }
-
-  const handleProviderChange = (p: Provider) => {
-    setProvider(p)
-    // 切换 provider 时把 modelId 自动重置到该 provider 的默认（避免跨家串）
-    setModelId(PROVIDER_DEFAULTS[p].defaultModel)
   }
 
   const toggleTool = (t: string) => {
@@ -271,30 +226,16 @@ setIsOrchestrator(preset.id === 'orchestrator')
 
   const applyDraftToForm = (draft: AgentConfigDraft) => {
     const kind = draft.adapterName
-    const p = draft.modelProvider ?? 'deepseek'
     setAdapterKind(kind)
     setName(draft.name)
     setDescription(draft.description)
     setCapabilitiesText(draft.capabilities.join(', '))
     setSystemPrompt(draft.systemPrompt)
-    setProvider(p)
-    setModelId(
-      draft.modelId ??
-        (kind === 'claude-code'
-          ? CLAUDE_CODE_DEFAULT_MODEL
-          : kind === 'codex'
-            ? CODEX_DEFAULT_MODEL
-            : PROVIDER_DEFAULTS[p].defaultModel),
-    )
     setToolNames(new Set(draft.toolNames))
     setActivePresetId(inferPresetFromToolNames(draft.toolNames))
     setSkillNames(new Set())
     setMcpServerIds(new Set())
-    setSupportsVision(draft.supportsVision)
     setIsOrchestrator(false)
-    setApiKey('')
-    setApiBaseUrl('')
-    setShowApiKey(false)
     setShowAdvanced(false)
     setError(null)
     setActiveTab('basic')
@@ -318,12 +259,9 @@ setIsOrchestrator(preset.id === 'orchestrator')
         capabilities: draft.capabilities,
         systemPrompt: draft.systemPrompt.trim(),
         adapterName: draft.adapterName,
-        modelProvider: isSdkAgent ? undefined : draft.modelProvider,
-        modelId: draft.modelId?.trim() || undefined,
         toolNames: isSdkAgent ? [] : draft.toolNames,
         skillNames: [],
         mcpServerIds: isSdkAgent ? [] : Array.from(mcpServerIds),
-        supportsVision: draft.supportsVision,
         isOrchestrator: isOrchestrator || undefined,
         executablePath: undefined,
         protocolFamily: isSdkAgent ? draft.adapterName : undefined,
@@ -353,19 +291,6 @@ setIsOrchestrator(preset.id === 'orchestrator')
     if (!trimmed) return fail('basic', '名称不能为空')
     if (!description.trim()) return fail('basic', '描述不能为空')
     if (!systemPrompt.trim()) return fail('toolsPrompt', 'System Prompt 不能为空')
-    if (adapterKind === 'custom' && !modelId.trim()) return fail('model', 'Custom adapter 必须填写 Model ID')
-    const trimmedApiBaseUrl = apiBaseUrl.trim()
-    const trimmedApiKey = apiKey.trim()
-    if (adapterKind === 'codex') {
-      const baseUrlError = validateCodexBaseUrl(trimmedApiBaseUrl || null)
-      if (baseUrlError) return fail('model', baseUrlError)
-    }
-    if (adapterKind === 'custom') {
-      const baseUrlError = validateOpenAICompatibleBaseUrl(provider, trimmedApiBaseUrl || null)
-      if (baseUrlError) return fail('model', baseUrlError)
-      const apiKeyError = validateOpenAICompatibleApiKey(provider, trimmedApiKey || null)
-      if (apiKeyError) return fail('model', apiKeyError)
-    }
 
     const capabilities = capabilitiesText
       .split(/[,，\s]+/)
@@ -384,15 +309,10 @@ setIsOrchestrator(preset.id === 'orchestrator')
           capabilities,
           systemPrompt: systemPrompt.trim(),
           adapterName: adapterKind,
-          modelProvider: isSdkAgent ? undefined : provider,
-          modelId: isSdkAgent ? modelId.trim() || null : modelId.trim(),
           toolNames: isSdkAgent ? [] : Array.from(toolNames),
           skillNames: isSdkAgent ? [] : Array.from(skillNames),
           mcpServerIds: isSdkAgent ? [] : Array.from(mcpServerIds),
-          supportsVision,
           isOrchestrator,
-          apiKey: trimmedApiKey || null,
-          apiBaseUrl: trimmedApiBaseUrl || null,
           executablePath: isSdkAgent ? (executablePath.trim() || null) : null,
           protocolFamily: isSdkAgent ? adapterKind : null,
           customArgs: isSdkAgent ? (customArgsText.trim() ? customArgsText.split('\n').map(s => s.trim()).filter(Boolean) : []) : [],
@@ -407,15 +327,10 @@ setIsOrchestrator(preset.id === 'orchestrator')
           capabilities,
           systemPrompt: systemPrompt.trim(),
           adapterName: adapterKind,
-          modelProvider: isSdkAgent ? undefined : provider,
-          modelId: modelId.trim() || undefined,
           toolNames: isSdkAgent ? [] : Array.from(toolNames),
           skillNames: isSdkAgent ? [] : Array.from(skillNames),
           mcpServerIds: isSdkAgent ? [] : Array.from(mcpServerIds),
-          supportsVision,
           isOrchestrator: isOrchestrator || undefined,
-          apiKey: trimmedApiKey || undefined,
-          apiBaseUrl: trimmedApiBaseUrl || undefined,
           executablePath: isSdkAgent ? (executablePath.trim() || undefined) : undefined,
           protocolFamily: isSdkAgent ? adapterKind : undefined,
           customArgs: isSdkAgent ? (customArgsText.trim() ? customArgsText.split('\n').map(s => s.trim()).filter(Boolean) : []) : undefined,
@@ -598,30 +513,11 @@ setIsOrchestrator(preset.id === 'orchestrator')
                   </div>
                 </div>
 
-                {adapterKind === 'custom' ? (
-                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                    <Label>底层模型</Label>
-                    <div className="flex gap-2">
-                      <select
-                        value={provider}
-                        onChange={(e) => handleProviderChange(e.target.value as Provider)}
-                        className="rounded-md border bg-background px-2 py-1.5 text-sm"
-                      >
-                        {(Object.keys(PROVIDER_DEFAULTS) as Provider[]).map((p) => (
-                          <option key={p} value={p}>
-                            {PROVIDER_DEFAULTS[p].label}
-                          </option>
-                        ))}
-                      </select>
-                      <Input
-                        value={modelId}
-                        onChange={(e) => setModelId(e.target.value)}
-                        placeholder="model id"
-                        className="flex-1 font-mono text-xs"
-                      />
-                    </div>
+                {adapterKind === 'custom' && (
+                  <div className="rounded-md border border-dashed bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                    模型配置已移至侧栏「模型」面板。请在发送消息时从输入栏选择模型档。
                   </div>
-                ) : null}
+                )}
 
                 {(adapterKind === 'claude-code' || adapterKind === 'codex') && (
                   <div className="rounded-md border border-dashed bg-muted/20">
@@ -641,32 +537,6 @@ setIsOrchestrator(preset.id === 'orchestrator')
                     {showAdvanced && (
                       <div className="space-y-3 border-t px-3 py-2">
                         <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                          <Label>Model ID</Label>
-                          <div>
-                            <Input
-                              value={modelId}
-                              onChange={(e) => setModelId(e.target.value)}
-                              placeholder={
-                                adapterKind === 'claude-code' ? CLAUDE_CODE_DEFAULT_MODEL : CODEX_DEFAULT_MODEL
-                              }
-                              className="font-mono text-xs"
-                            />
-                            <div className="mt-1 text-[10px] text-muted-foreground">
-                              {adapterKind === 'claude-code' ? (
-                                <>
-                                  Claude 模型 id，例 <code className="font-mono">claude-opus-4-7</code> /{' '}
-                                  <code className="font-mono">claude-sonnet-4-6</code>。留空走 CLI 默认。
-                                </>
-                              ) : (
-                                <>
-                                  Codex 模型 id，例 <code className="font-mono">gpt-5-codex</code>。留空走 CLI 默认。
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-[80px_1fr] items-start gap-3">
                           <Label>CLI 路径</Label>
                           <div>
                             <Input
@@ -676,7 +546,7 @@ setIsOrchestrator(preset.id === 'orchestrator')
                               className="font-mono text-xs"
                             />
                             <div className="mt-1 text-[10px] text-muted-foreground">
-                              本机 {adapterKind === 'claude-code' ? 'Claude Code' : 'Codex'} CLI 的路径。留空则自动 PATH 查找。仅在非标准安装时需要填写。
+                              本机 {adapterKind === 'claude-code' ? 'Claude Code' : 'Codex'} CLI 的路径。留空则自动 PATH 查找。
                             </div>
                           </div>
                         </div>
@@ -691,86 +561,7 @@ setIsOrchestrator(preset.id === 'orchestrator')
                               className="min-h-[60px] font-mono text-xs"
                             />
                             <div className="mt-1 text-[10px] text-muted-foreground">
-                              传给 {adapterKind === 'claude-code' ? 'claude' : 'codex'} CLI 的额外参数，每行一个。协议关键 flag（如 --output-format）会被自动过滤。
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                          <Label>Base URL</Label>
-                          <div>
-                            <Input
-                              value={apiBaseUrl}
-                              onChange={(e) => setApiBaseUrl(e.target.value)}
-                              placeholder={
-                                adapterKind === 'claude-code'
-                                  ? 'https://api.anthropic.com（默认）'
-                                  : 'https://api.openai.com/v1（默认，需支持 /responses）'
-                              }
-                              className="font-mono text-xs"
-                            />
-                            <div className="mt-1 text-[10px] text-muted-foreground">
-                              {adapterKind === 'claude-code' ? (
-                                <>
-                                  指向第三方 Claude API 兼容网关；留空走 Anthropic 官方 endpoint。配此项时下方 API Key 会作为 <code className="font-mono">ANTHROPIC_API_KEY</code> 环境变量传给 CLI 子进程。
-                                </>
-                              ) : (
-                                <>
-                                  必须指向 Codex/Responses 兼容 endpoint；DeepSeek / 火山方舟等 Chat Completions 兼容接口请用 Custom adapter。留空走 Codex CLI 默认 endpoint。
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                          <Label>API Key</Label>
-                          <div>
-                            <div className="flex gap-2">
-                              <Input
-                                type={showApiKey ? 'text' : 'password'}
-                                value={apiKey}
-                                onChange={(e) => setApiKey(e.target.value)}
-                                placeholder={
-                                  apiBaseUrl.trim()
-                                    ? adapterKind === 'claude-code'
-                                      ? '第三方网关的 token'
-                                      : 'Codex/Responses endpoint token'
-                                    : '留空则使用 claude login 登录态 / 环境变量'
-                                }
-                                className="flex-1 font-mono text-xs"
-                                autoComplete="off"
-                              />
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setShowApiKey((v) => !v)}
-                              >
-                                {showApiKey ? '隐藏' : '显示'}
-                              </Button>
-                            </div>
-                            <div className="mt-1 text-[10px] text-muted-foreground">
-                              {apiBaseUrl.trim() ? (
-                                adapterKind === 'claude-code' ? (
-                                  <>填写后作为 <code className="font-mono">ANTHROPIC_API_KEY</code> 环境变量传给 CLI 子进程，路由到自定义 Base URL；留空则透传空 token（第三方网关可能拒绝）</>
-                                ) : (
-                                  <>填写后作为 <code className="font-mono">OPENAI_API_KEY</code> 环境变量传给 CLI 子进程，路由到自定义 Codex/Responses Base URL；留空则走环境变量</>
-                                )
-                              ) : (
-                                <>
-                                  填写后作为{' '}
-                                  <code className="font-mono">
-                                    {adapterKind === 'claude-code' ? 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY'}
-                                  </code>{' '}
-                                  环境变量传给 CLI 子进程；留空则 fallback 到{' '}
-                                  <code className="font-mono">
-                                    {adapterKind === 'claude-code'
-                                      ? '环境变量 / 本机 ~/.claude OAuth 登录态'
-                                      : '环境变量 / 本机 codex login 登录态'}
-                                  </code>
-                                </>
-                              )}
+                              传给 {adapterKind === 'claude-code' ? 'claude' : 'codex'} CLI 的额外参数，每行一个。
                             </div>
                           </div>
                         </div>
@@ -778,99 +569,6 @@ setIsOrchestrator(preset.id === 'orchestrator')
                     )}
                   </div>
                 )}
-
-                {adapterKind === 'custom' && provider === 'openai-compatible' && (
-                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                    <Label required>Base URL</Label>
-                    <div>
-                      <Input
-                        value={apiBaseUrl}
-                        onChange={(e) => setApiBaseUrl(e.target.value)}
-                        placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-                        className="font-mono text-xs"
-                      />
-                      <div className="mt-1 text-[10px] text-muted-foreground">
-                        必须指向 OpenAI Chat Completions 兼容 endpoint，例如通义千问 compatible-mode、智谱 / MiniMax / OpenRouter / SiliconFlow 的 OpenAI 兼容地址。
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {adapterKind === 'custom' && (
-                  <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                    <Label>API Key</Label>
-                    <div>
-                      <div className="flex gap-2">
-                        <Input
-                          type={showApiKey ? 'text' : 'password'}
-                          value={apiKey}
-                          onChange={(e) => setApiKey(e.target.value)}
-                          placeholder={
-                            provider === 'openai-compatible'
-                              ? 'OpenAI-compatible endpoint token'
-                              : '留空则使用环境变量'
-                          }
-                          className="flex-1 font-mono text-xs"
-                          autoComplete="off"
-                        />
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setShowApiKey((v) => !v)}
-                        >
-                          {showApiKey ? '隐藏' : '显示'}
-                        </Button>
-                      </div>
-                      <div className="mt-1 text-[10px] text-muted-foreground">
-                        {provider === 'openai-compatible' ? (
-                          <>OpenAI-compatible provider 需要为该 agent 单独填写 API Key；不会使用全局 OpenAI / DeepSeek / 火山方舟 key。</>
-                        ) : (
-                          <>
-                            填写后该 agent 优先用此 key；留空则 fallback 到{' '}
-                            <code className="font-mono">
-                              {provider === 'deepseek'
-                                ? 'DEEPSEEK_API_KEY'
-                                : provider === 'volcano-ark'
-                                  ? 'ARK_API_KEY'
-                                  : provider === 'openai'
-                                    ? 'OPENAI_API_KEY'
-                                    : provider === 'anthropic'
-                                      ? 'ANTHROPIC_API_KEY'
-                                      : '该 agent 的 API Key'}
-                            </code>{' '}
-                            环境变量
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-[80px_1fr] items-start gap-3">
-                  <Label>视觉</Label>
-                  <label
-                    className={cn(
-                      'flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 transition-all duration-300 hover:border-primary/30 hover:shadow-[var(--shadow-sm)]',
-                      supportsVision && 'border-primary/40 bg-primary/[0.04] shadow-[var(--shadow-sm)]',
-                    )}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={supportsVision}
-                      onChange={(e) => setSupportsVision(e.target.checked)}
-                      className="mt-0.5 accent-primary"
-                    />
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium">该模型支持视觉（多模态）</div>
-                      <div className="mt-0.5 text-[10px] text-muted-foreground">
-                        {adapterKind === 'codex'
-                          ? '勾选后，发图片时会以本地图片输入传给 Codex CLI。模型不支持会被拒绝，请确认 modelId 支持视觉。'
-                          : '勾选后，发图片时会以 base64 注入 messages.content。模型不支持会被 API 拒绝 (400)，请确认你填的 modelId 真的支持视觉。'}
-                      </div>
-                    </div>
-                  </label>
-                </div>
               </TabsContent>
 
               <TabsContent value="toolsPrompt" className="mt-0 space-y-3 py-1">

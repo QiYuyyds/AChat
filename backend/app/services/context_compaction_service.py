@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from sqlalchemy import and_, asc, desc, select
 
 from app.db.engine import get_local_db
-from app.db.models import Agent, AgentRun, Attachment, ContextSummary, Conversation, Message
+from app.db.models import Agent, AgentRun, Attachment, ContextSummary, Conversation, Message, ModelProfile
 from app.schemas.events import MessageAddedEvent, MessageRecord
 from app.schemas.messages import ContextSummaryRecord
 from app.services.event_bus import event_bus
@@ -491,7 +491,7 @@ async def compact_conversation(
 async def _pick_summary_model(
     agent_ids: list[str],
 ) -> tuple[str, str, str | None, str | None, str]:
-    """First Custom agent (adapter_name='custom') with a full model config.
+    """First Custom agent (adapter_name='custom') with a user-scoped ModelProfile.
 
     Returns (model_provider, model_id, api_key, api_base_url, agent_id).
     Raises ValueError when no model-backed agent exists (e.g. CLI-only chat).
@@ -505,16 +505,24 @@ async def _pick_summary_model(
             .all()
         )
     by_id = {a.id: a for a in agents}
-    # preserve conversation agent order
     for aid in agent_ids:
         agent = by_id.get(aid)
-        if (
-            agent is not None
-            and agent.adapter_name == "custom"
-            and agent.model_provider
-            and agent.model_id
-        ):
-            return (agent.model_provider, agent.model_id, agent.api_key, agent.api_base_url, aid)
+        if agent is None or agent.adapter_name != "custom":
+            continue
+        if not agent.user_id:
+            continue
+        async with get_local_db() as db:
+            profile = (
+                await db.execute(
+                    select(ModelProfile).where(
+                        ModelProfile.user_id == agent.user_id,
+                        ModelProfile.is_default == True,  # noqa: E712
+                    ).limit(1)
+                )
+            ).scalar_one_or_none()
+        if profile is None:
+            continue
+        return (profile.provider, profile.model_id, profile.api_key, profile.api_base_url, aid)
     raise ValueError("当前会话没有配置模型的 agent，无法生成摘要")
 
 

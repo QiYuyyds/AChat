@@ -26,6 +26,12 @@ from app.schemas.dispatch import (
     PendingQuestion,
     PendingWrite,
 )
+from app.schemas.model_profile import (
+    CreateModelProfileRequest,
+    ModelProfileOut,
+    ModelProfileTestResult,
+    UpdateModelProfileRequest,
+)
 from app.schemas.document import (
     DeleteDocumentResponse,
     DocumentDetailResponse,
@@ -227,6 +233,11 @@ __all__ = [
     "VipLoginRequest",
     "RefreshRequest",
     "ChangePasswordRequest",
+    # Model Profiles
+    "CreateModelProfileRequest",
+    "UpdateModelProfileRequest",
+    "ModelProfileOut",
+    "ModelProfileTestResult",
     # Documents
     "WriteDocumentRequest",
     "IngestVersionRequest",

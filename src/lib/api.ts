@@ -10,16 +10,20 @@ import type {
 import type {
   AskUserAnswer,
   CreateDocumentRequest,
+  CreateModelProfileBody,
   DeployCandidateRecord,
   DeployStatusRecord,
   DispatchPlanItem,
   DocumentRow,
   IngestResult,
+  ModelProfile,
+  ModelProfileTestResult,
   PendingBashCommand,
   PendingDispatchPlan,
   PendingMcpCall,
   PendingQuestion,
   PendingWrite,
+  UpdateModelProfileBody,
   UploadResult,
   VersionRow,
   WriteDocumentResponse,
@@ -147,19 +151,11 @@ export interface CreateAgentBody {
   systemPrompt: string
   /** 默认 'custom'。SDK adapter 使用各自内置工具集 */
   adapterName?: 'custom' | 'claude-code' | 'codex'
-  /** custom: required；SDK adapter: 忽略 */
-  modelProvider?: 'anthropic' | 'openai' | 'deepseek' | 'volcano-ark' | 'openai-compatible'
-  /** custom: required；SDK adapter: 可选，默认 SDK 默认模型 */
-  modelId?: string
   toolNames: string[]
   /** custom: 启用的 skill slug 列表；SDK adapter: 必须为空 */
   skillNames: string[]
   /** custom: 启用的 MCP server ID 列表；SDK adapter: 必须为空 */
   mcpServerIds?: string[]
-  supportsVision?: boolean
-  apiKey?: string
-  /** 自定义 API base URL。Claude/Codex 对 endpoint 协议兼容性要求不同；空走默认 */
-  apiBaseUrl?: string
   /** 设为协调者（Orchestrator） */
   isOrchestrator?: boolean
   // ── CLI agent fields ──────────────────────────────────────
@@ -194,14 +190,8 @@ export async function createAgentDraft(body: AgentDraftRequest): Promise<AgentCo
 }
 
 export type UpdateAgentBody = Partial<
-  Omit<CreateAgentBody, 'avatar' | 'apiKey' | 'apiBaseUrl' | 'modelId'>
+  Omit<CreateAgentBody, 'avatar'>
 > & {
-  // SDK adapter 可用 null 清空，表示走 SDK 默认模型；custom 仍必须有非空 modelId
-  modelId?: string | null
-  // 显式 null 表示清除自定义 key；undefined 表示不改
-  apiKey?: string | null
-  // 同上
-  apiBaseUrl?: string | null
   /** 设为协调者（Orchestrator） */
   isOrchestrator?: boolean
 }
@@ -219,6 +209,52 @@ export async function updateAgent(agentId: string, patch: UpdateAgentBody): Prom
 
 export async function deleteAgent(agentId: string): Promise<void> {
   await json<{ ok: true }>(authFetch(`${API_BASE_URL}/api/agents/${agentId}`, { method: 'DELETE' }))
+}
+
+// ─── Model Profiles ─────────────────────────────────────────
+export async function fetchModelProfiles(): Promise<ModelProfile[]> {
+  const { profiles } = await json<{ profiles: ModelProfile[] }>(
+    authFetch(API_BASE_URL + '/api/model-profiles'),
+  )
+  return profiles
+}
+
+export async function createModelProfile(body: CreateModelProfileBody): Promise<ModelProfile> {
+  const { profile } = await json<{ profile: ModelProfile }>(
+    authFetch(API_BASE_URL + '/api/model-profiles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
+  return profile
+}
+
+export async function updateModelProfile(
+  profileId: string,
+  body: UpdateModelProfileBody,
+): Promise<ModelProfile> {
+  const { profile } = await json<{ profile: ModelProfile }>(
+    authFetch(`${API_BASE_URL}/api/model-profiles/${profileId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
+  return profile
+}
+
+export async function deleteModelProfile(profileId: string): Promise<void> {
+  await json<{ ok: true }>(
+    authFetch(`${API_BASE_URL}/api/model-profiles/${profileId}`, { method: 'DELETE' }),
+  )
+}
+
+export async function testModelProfile(profileId: string): Promise<ModelProfileTestResult> {
+  const { result } = await json<{ result: ModelProfileTestResult }>(
+    authFetch(`${API_BASE_URL}/api/model-profiles/${profileId}/test`, { method: 'POST' }),
+  )
+  return result
 }
 
 // ─── Conversations ──────────────────────────────
@@ -274,7 +310,7 @@ export async function forkConversation(
     const body = await res.text()
     throw new Error(`HTTP ${res.status}: ${body || res.statusText}`)
   }
-  const { conversation } = await res.json<{ conversation: ConversationWithMeta }>()
+  const { conversation } = (await res.json()) as { conversation: ConversationWithMeta }
   return conversation
 }
 
@@ -678,6 +714,7 @@ export interface SendMessageBody {
   mentionedAgentIds?: string[]
   parentMessageId?: string
   attachmentIds?: string[]
+  modelProfileId?: string | null
 }
 
 export interface SendMessageResult {

@@ -117,19 +117,6 @@ class Agent(Base):
         String, name="adapter_name", nullable=False
     )
 
-    model_provider: Mapped[str | None] = mapped_column(
-        String, name="model_provider", nullable=True
-    )
-    model_id: Mapped[str | None] = mapped_column(
-        String, name="model_id", nullable=True
-    )
-    api_key: Mapped[str | None] = mapped_column(
-        String, name="api_key", nullable=True
-    )
-    api_base_url: Mapped[str | None] = mapped_column(
-        String, name="api_base_url", nullable=True
-    )
-
     tool_names: Mapped[list] = mapped_column(JSONB, name="tool_names", nullable=False, default=list)
 
     # ── CLI agent fields ──────────────────────────────────────
@@ -165,9 +152,6 @@ class Agent(Base):
     )
     is_guide: Mapped[bool] = mapped_column(
         Boolean, name="is_guide", nullable=False, default=False
-    )
-    supports_vision: Mapped[bool] = mapped_column(
-        Boolean, name="supports_vision", nullable=False, default=False
     )
     memory_enabled: Mapped[bool] = mapped_column(
         Boolean, name="memory_enabled", nullable=False, default=False
@@ -569,6 +553,12 @@ class AgentRun(Base):
         BigInteger, name="finished_at", nullable=True
     )
 
+    # CLI agent session ID for cross-run resume (e.g. claude --resume <session_id>).
+    # NULL for SDK agent runs or CLI runs that failed before capturing a session ID.
+    cli_session_id: Mapped[str | None] = mapped_column(
+        String, name="cli_session_id", nullable=True
+    )
+
     # Relationships
     conversation: Mapped["Conversation"] = relationship(back_populates="runs")
     agent: Mapped["Agent"] = relationship(back_populates="runs")
@@ -753,6 +743,53 @@ class UserSettings(Base):
     )
     settings: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+
+
+class ModelProfile(Base):
+    """User-scoped reusable model configuration (provider + model_id + key + url).
+
+    Replaces the per-Agent model fields (model_provider / model_id / api_key /
+    api_base_url / supports_vision) that were removed. Each profile is a named,
+    testable model configuration that can be selected per-message in the input bar.
+    """
+
+    __tablename__ = "model_profiles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, name="user_id", nullable=False
+    )
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    model_id: Mapped[str] = mapped_column(String, name="model_id", nullable=False)
+    api_key: Mapped[str | None] = mapped_column(
+        String, name="api_key", nullable=True
+    )
+    api_base_url: Mapped[str | None] = mapped_column(
+        String, name="api_base_url", nullable=True
+    )
+    is_default: Mapped[bool] = mapped_column(
+        Boolean, name="is_default", nullable=False, default=False
+    )
+    supports_vision: Mapped[bool] = mapped_column(
+        Boolean, name="supports_vision", nullable=False, default=False
+    )
+    # 'untested' | 'ok' | 'fail'
+    last_test_status: Mapped[str] = mapped_column(
+        String(16), name="last_test_status", nullable=False, default="untested"
+    )
+    last_tested_at: Mapped[int | None] = mapped_column(
+        BigInteger, name="last_tested_at", nullable=True
+    )
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+
+    __table_args__ = (
+        Index("idx_model_profiles_user", "user_id"),
+        # Partial unique index: at most one is_default=true per user.
+        # On SQLite this is handled at application level; on PG the index is
+        # created via the migration statements in engine.py.
+    )
 
 
 class McpServer(Base):

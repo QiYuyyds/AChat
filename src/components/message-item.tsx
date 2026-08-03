@@ -278,7 +278,7 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
                   message.usage.inputTokens,
                   message.usage.outputTokens,
                   message.usage.cacheReadTokens,
-                  agent?.modelProvider,
+                  undefined,
                 ),
               )}{' '}
               tok

@@ -12,8 +12,7 @@ heuristic (``src/server/agent-draft-service.ts`` + ``agent-builder-config.ts``)
 is likewise ported inline — it is purely deterministic (no LLM call). Errors are
 translated to the same HTTP status codes the TS routes return.
 
-Wire contract (byte-for-byte with the unchanged React frontend, which types
-agent responses as Drizzle ``AgentRow`` — the FULL row, **including** ``apiKey``):
+Wire contract (byte-for-byte with the React frontend):
 - ``GET    /api/agents``        → 200 ``{ "agents": [<full row>...] }``
 - ``POST   /api/agents``        → 201 ``{ "agent": <full row> }``;
                                   400 ``{ "error": "Invalid body", "issues": [...] }``
@@ -35,10 +34,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import or_, select
 
-from app.adapters.custom_provider_client import (
-    validate_openai_compatible_api_key,
-    validate_openai_compatible_base_url,
-)
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_local_db
 from app.db.models import Agent, User
@@ -51,10 +46,10 @@ router = APIRouter()
 
 # ─── Serialization ──────────────────────────────────────────────────
 def _serialize(row: Agent) -> dict[str, Any]:
-    """Full AgentRow wire shape (camelCase), matching the Drizzle select row.
+    """Full AgentRow wire shape (camelCase).
 
-    Includes ``apiKey`` — the frontend types this as ``AgentRow`` and the TS
-    routes return the row verbatim (no redaction).
+    Model configuration (provider/model/key/url) is resolved at runtime via
+    ModelProfile — the Agent entity no longer stores these fields.
     """
     return {
         "id": row.id,
@@ -64,17 +59,12 @@ def _serialize(row: Agent) -> dict[str, Any]:
         "capabilities": row.capabilities_list,
         "systemPrompt": row.system_prompt,
         "adapterName": row.adapter_name,
-        "modelProvider": row.model_provider,
-        "modelId": row.model_id,
-        "apiKey": row.api_key,
-        "apiBaseUrl": row.api_base_url,
         "toolNames": row.tool_names_list,
         "skillNames": row.skill_names_list,
         "mcpServerIds": row.mcp_server_ids_list,
         "isBuiltin": row.is_builtin,
         "isOrchestrator": row.is_orchestrator,
         "isGuide": row.is_guide,
-        "supportsVision": row.supports_vision,
         "memoryEnabled": row.memory_enabled,
         "createdAt": row.created_at,
         # CLI fields
@@ -130,12 +120,7 @@ async def create_agent(request: Request, user: User = Depends(get_current_user))
     except ValidationError as exc:
         return _invalid_body(exc)
 
-    # zod .refine: custom adapter requires modelProvider + modelId.
-    if body.adapter_name == "custom" and not (body.model_provider and body.model_id):
-        return JSONResponse(
-            {"error": "Custom adapter requires modelProvider and modelId"},
-            status_code=400,
-        )
+    # zod .refine: custom adapter no longer requires model fields (resolved at runtime via ModelProfile).
 
     try:
         row = await _create_custom_agent(body, user.id)
@@ -148,23 +133,7 @@ async def create_agent(request: Request, user: User = Depends(get_current_user))
 async def _create_custom_agent(body: CreateAgentRequest, user_id: str) -> dict[str, Any]:
     adapter_name = body.adapter_name
 
-    if adapter_name == "custom":
-        if not body.model_provider or not body.model_id:
-            raise ValueError("Custom adapter requires modelProvider and modelId")
-        base_url_error = validate_openai_compatible_base_url(
-            body.model_provider, body.api_base_url
-        )
-        if base_url_error:
-            raise ValueError(base_url_error)
-        api_key_error = validate_openai_compatible_api_key(
-            body.model_provider, body.api_key
-        )
-        if api_key_error:
-            raise ValueError(api_key_error)
-
     avatar = (body.avatar or "").strip() or "🤖"
-    api_key = (body.api_key.strip() if body.api_key else "") or None
-    api_base_url = (body.api_base_url.strip() if body.api_base_url else "") or None
 
     agent = Agent(
         id=new_agent_id(),
@@ -174,13 +143,8 @@ async def _create_custom_agent(body: CreateAgentRequest, user_id: str) -> dict[s
         description=body.description.strip(),
         system_prompt=body.system_prompt,
         adapter_name=adapter_name,
-        model_provider=(body.model_provider if adapter_name == "custom" else None),
-        model_id=body.model_id,
-        api_key=api_key,
-        api_base_url=api_base_url,
         is_builtin=False,
         is_orchestrator=body.is_orchestrator or False,
-        supports_vision=body.supports_vision or False,
         memory_enabled=body.memory_enabled or False,
         created_at=now_ms(),
     )
@@ -225,16 +189,11 @@ _PATCH_ALIASES: set[str] = {
     "capabilities",
     "systemPrompt",
     "adapterName",
-    "modelProvider",
-    "modelId",
     "toolNames",
     "skillNames",
     "mcpServerIds",
-    "supportsVision",
     "isOrchestrator",
     "memoryEnabled",
-    "apiKey",
-    "apiBaseUrl",
     # CLI fields
     "executablePath",
     "protocolFamily",
@@ -308,10 +267,6 @@ async def _update_custom_agent(
     user_id: str,
 ) -> dict[str, Any]:
     provided = body.model_fields_set
-    has_api_key = "api_key" in provided
-    has_api_base_url = "api_base_url" in provided
-    has_model_id = "model_id" in provided
-    has_model_provider = "model_provider" in provided
     has_tool_names = "tool_names" in provided
     has_skill_names = "skill_names" in provided
     has_mcp_server_ids = "mcp_server_ids" in provided
@@ -331,28 +286,6 @@ async def _update_custom_agent(
         next_adapter_name = (
             adapter_name_patch if has_adapter_name else agent.adapter_name
         )
-        next_model_provider = (
-            body.model_provider if has_model_provider else agent.model_provider
-        )
-        next_model_id = body.model_id if has_model_id else agent.model_id
-        next_api_base_url = (
-            _trim_or_none(body.api_base_url) if has_api_base_url else agent.api_base_url
-        )
-        next_api_key = _trim_or_none(body.api_key) if has_api_key else agent.api_key
-
-        if next_adapter_name == "custom" and not (next_model_provider and next_model_id):
-            raise ValueError("Custom adapter requires modelProvider and modelId")
-        if next_adapter_name == "custom":
-            base_url_error = validate_openai_compatible_base_url(
-                next_model_provider, next_api_base_url
-            )
-            if base_url_error:
-                raise ValueError(base_url_error)
-            api_key_error = validate_openai_compatible_api_key(
-                next_model_provider, next_api_key
-            )
-            if api_key_error:
-                raise ValueError(api_key_error)
 
         updated = False
 
@@ -371,23 +304,11 @@ async def _update_custom_agent(
         if has_adapter_name:
             agent.adapter_name = adapter_name_patch  # type: ignore[assignment]
             updated = True
-        if has_model_id:
-            agent.model_id = _trim_or_none(body.model_id)
-            updated = True
-        if "supports_vision" in provided and body.supports_vision is not None:
-            agent.supports_vision = body.supports_vision
-            updated = True
         if has_is_orchestrator and body.is_orchestrator is not None:
             agent.is_orchestrator = body.is_orchestrator
             updated = True
         if "memory_enabled" in provided and body.memory_enabled is not None:
             agent.memory_enabled = body.memory_enabled
-            updated = True
-        if has_api_key:
-            agent.api_key = _trim_or_none(body.api_key)
-            updated = True
-        if has_api_base_url:
-            agent.api_base_url = _trim_or_none(body.api_base_url)
             updated = True
         # CLI fields
         is_cli = next_adapter_name in ("claude-code", "codex")
@@ -402,9 +323,6 @@ async def _update_custom_agent(
             updated = True
 
         if next_adapter_name == "custom":
-            if has_model_provider:
-                agent.model_provider = body.model_provider
-                updated = True
             if has_tool_names and body.tool_names is not None:
                 agent.tool_names_list = body.tool_names
                 updated = True
@@ -415,10 +333,8 @@ async def _update_custom_agent(
                 agent.mcp_server_ids_list = body.mcp_server_ids
                 updated = True
         else:
-            # Non-custom (CLI) adapter: drop modelProvider/toolNames/skillNames.
-            # modelId is still relevant (CLI agents pass --model <id>).
-            if has_adapter_name or has_model_provider or has_tool_names or has_skill_names or has_mcp_server_ids:
-                agent.model_provider = None
+            # Non-custom (CLI) adapter: drop toolNames/skillNames.
+            if has_adapter_name or has_tool_names or has_skill_names or has_mcp_server_ids:
                 agent.tool_names_list = []
                 agent.skill_names_list = []
                 agent.mcp_server_ids_list = []
@@ -466,16 +382,6 @@ async def _delete_custom_agent(agent_id: str, user_id: str) -> None:
 # ─── POST /api/agents/draft ─────────────────────────────────────────
 # Ports src/server/agent-draft-service.ts + the heuristics in
 # src/shared/agent-builder-config.ts. Deterministic — no LLM call.
-
-_DEFAULT_PROVIDER = "deepseek"
-
-_PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
-    "deepseek": {"label": "DeepSeek", "defaultModel": "deepseek-v4-flash"},
-    "anthropic": {"label": "Anthropic", "defaultModel": "claude-opus-4-7"},
-    "openai": {"label": "OpenAI", "defaultModel": "gpt-4o"},
-    "volcano-ark": {"label": "火山方舟 (豆包)", "defaultModel": "doubao-seed-2-0-lite-260428"},
-    "openai-compatible": {"label": "OpenAI-compatible", "defaultModel": ""},
-}
 
 # Baseline tools always enabled for every Custom adapter agent at runtime.
 # These are NOT shown as UI checkboxes — they are implicitly always-on.
@@ -833,9 +739,6 @@ def build_heuristic_agent_config_draft(
     capabilities = _infer_capabilities(combined, preset_id)
     permission_summaries = _build_tool_permission_summaries(preset["tools"])
 
-    provider_label = _PROVIDER_DEFAULTS[_DEFAULT_PROVIDER]["label"]
-    provider_model = _PROVIDER_DEFAULTS[_DEFAULT_PROVIDER]["defaultModel"]
-
     return {
         "name": name,
         "avatar": "🤖",
@@ -843,10 +746,7 @@ def build_heuristic_agent_config_draft(
         "capabilities": capabilities,
         "systemPrompt": preset["systemPromptTemplate"],
         "adapterName": "custom",
-        "modelProvider": _DEFAULT_PROVIDER,
-        "modelId": provider_model,
         "toolNames": [s["toolName"] for s in permission_summaries],
-        "supportsVision": True,
         "rationale": [
             f"根据描述匹配到「{preset['label']}」工具预设。",
             "按普通自建 Agent 生成，不包含 Orchestrator 专用工具。",
@@ -856,15 +756,8 @@ def build_heuristic_agent_config_draft(
             {
                 "label": "模型",
                 "detail": (
-                    f"默认使用 {provider_label} / {provider_model}，"
-                    "可在详细配置中改成其他 provider。"
-                ),
-            },
-            {
-                "label": "视觉",
-                "detail": (
-                    "默认开启视觉能力，方便处理截图、设计稿、图示和图片附件；"
-                    "如果模型不支持可在详细配置中关闭。"
+                    "模型配置已移至「模型」Tab 管理，创建 Agent 后请在"
+                    "输入栏选择已配置的模型档。"
                 ),
             },
             {

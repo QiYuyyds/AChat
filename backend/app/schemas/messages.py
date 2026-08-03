@@ -239,4 +239,4 @@ class ContextSummaryRecord(BaseModel):
     model_id: str | None = Field(default=None, alias="modelId")
     created_at: int = Field(alias="createdAt")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "protected_namespaces": ()}

@@ -62,7 +62,6 @@ async def test_conversation_isolation(db):
             adapter_name="mock",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now,
             user_id="user_a",
         )
@@ -115,7 +114,6 @@ async def test_agent_isolation(db):
             adapter_name="mock",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now,
             user_id="user_a2",
         )
@@ -132,7 +130,6 @@ async def test_agent_isolation(db):
             adapter_name="mock",
             is_builtin=True,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now,
             user_id=None,
         )

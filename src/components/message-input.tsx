@@ -6,6 +6,7 @@ import {
   ArrowUp,
   Bot,
   CircleHelp,
+  Cpu,
   Download,
   Plus,
   Rocket,
@@ -36,6 +37,7 @@ import {
 } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import type { AgentRow, ConversationWithMeta, MessageRow } from '@/db/schema'
+import type { ModelProfile } from '@/shared/types'
 import {
   abortRun,
   clearConversationHistory as clearConversationHistoryAPI,
@@ -108,8 +110,8 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
   {
     id: 'agents',
     command: '/agents',
-    label: 'Agents',
-    description: '打开 Agent 管理',
+    label: '联系人',
+    description: '打开联系人管理',
     icon: Bot,
   },
 ]
@@ -272,6 +274,9 @@ export function MessageInput({
   const conversation = useAppStore((s) => s.conversations[conversationId])
   const upsertConversation = useAppStore((s) => s.upsertConversation)
   const agents = useAppStore((s) => s.agents)
+  const modelProfiles = useAppStore((s) => s.modelProfiles)
+  const selectedProfileId = useAppStore((s) => s.selectedProfileIdByConv[conversationId] ?? null)
+  const setSelectedProfileId = useAppStore((s) => s.setSelectedProfileId)
   const runningRuns = useTopLevelRunningRuns(conversationId)
   const isRunning = runningRuns.length > 0
   // 计划待审批时，输入框改作「对计划提修改意见」用——即使 orchestrator run 仍在 running 也放开
@@ -295,6 +300,15 @@ export function MessageInput({
   }, [pendingQuote])
 
   const isGroup = conversation?.mode === 'group'
+
+  // Check if conversation has any SDK (Custom) agents → show model selector
+  const hasSdkAgent = useMemo(() => {
+    if (!conversation) return false
+    return conversation.agentIds.some((id) => agents[id]?.adapterName === 'custom')
+  }, [conversation, agents])
+
+  const profileList = useMemo(() => Object.values(modelProfiles).sort((a, b) => b.createdAt - a.createdAt), [modelProfiles])
+  const selectedProfile = selectedProfileId ? modelProfiles[selectedProfileId] : null
 
   // 可被 @ 的 agent：群聊里所有成员，包含 Orchestrator
   // (@ Orchestrator 是合法语义：用户明确请求 Orchestrator 接手)
@@ -808,6 +822,7 @@ export function MessageInput({
         mentionedAgentIds: mentionedIds,
         parentMessageId: parentId,
         attachmentIds,
+        modelProfileId: hasSdkAgent ? (selectedProfileId ?? undefined) : undefined,
       })
       replaceLocalMessageId(tempId, result.messageId)
       upsertReturnedMessages(result.messages)
@@ -1059,6 +1074,15 @@ export function MessageInput({
           <Plus className="size-3.5" />
         </button>
 
+        {/* 模型选择器：仅 SDK 会话显示 */}
+        {hasSdkAgent && (
+          <ModelSelector
+            profiles={profileList}
+            selectedProfile={selectedProfile}
+            onSelect={(id) => setSelectedProfileId(conversationId, id)}
+          />
+        )}
+
         {/* 输入框 */}
         <Textarea
           ref={textareaRef}
@@ -1126,6 +1150,92 @@ export function MessageInput({
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function ModelSelector({
+  profiles,
+  selectedProfile,
+  onSelect,
+}: {
+  profiles: ModelProfile[]
+  selectedProfile: ModelProfile | null
+  onSelect: (id: string | null) => void
+}) {
+  const setSidebarMode = useAppStore((s) => s.setSidebarMode)
+  const [open, setOpen] = useState(false)
+
+  // Zero profiles: show prompt to configure
+  if (profiles.length === 0) {
+    return (
+      <button
+        type="button"
+        onClick={() => setSidebarMode('resources')}
+        className="flex shrink-0 items-center gap-1 rounded-full border border-destructive/30 bg-destructive/5 px-2 py-0.5 text-[10px] text-destructive transition hover:bg-destructive/10"
+        title="未配置模型档，点击去配置"
+      >
+        <Cpu className="size-3" />
+        <span>配置模型</span>
+      </button>
+    )
+  }
+
+  return (
+    <div className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition hover:bg-accent hover:text-foreground"
+        title="选择模型档"
+      >
+        <Cpu className="size-3" />
+        <span className="max-w-[80px] truncate">
+          {selectedProfile?.name ?? '默认'}
+        </span>
+      </button>
+      {open && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute bottom-full left-0 z-50 mb-2 max-h-60 min-w-[180px] overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+            <div className="px-2 py-1 text-[10px] text-muted-foreground">
+              选择模型档
+            </div>
+            {profiles.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => {
+                  onSelect(p.id)
+                  setOpen(false)
+                }}
+                className={cn(
+                  'flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition',
+                  selectedProfile?.id === p.id && 'bg-accent',
+                )}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-medium">
+                    {p.name}
+                    {p.isDefault && (
+                      <span className="ml-1 text-[9px] text-warning">★</span>
+                    )}
+                  </div>
+                  <div className="truncate text-[10px] text-muted-foreground">
+                    {p.provider} / {p.modelId}
+                  </div>
+                </div>
+                {selectedProfile?.id === p.id && (
+                  <span className="shrink-0 text-[10px] text-primary">✓</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }

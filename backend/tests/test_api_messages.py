@@ -151,7 +151,6 @@ async def test_group_chat_no_orchestrator_system_message(db, agents):
             adapter_name="mock",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now_ms(),
         )
         bob.capabilities_list = []
@@ -204,7 +203,6 @@ async def test_group_chat_no_orchestrator_with_mention(db, agents):
             adapter_name="mock",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now_ms(),
         )
         bob.capabilities_list = []

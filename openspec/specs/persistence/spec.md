@@ -57,25 +57,24 @@ AChat MUST persist a `global_settings` single-row table (PK = `'singleton'`) for
 
 ### Requirement: API keys SHALL follow defined precedence
 
-Runtime keys MUST resolve in this order: per-agent key, per-user settings key, environment key, and provider-specific SDK fallback where documented.
+Runtime keys for SDK (Custom) agents MUST resolve from ModelProfile: the `modelProfileId` attached to the message is checked first, then the user's default ModelProfile. If no ModelProfile exists, the run is refused. CLI agents (Claude Code, Codex) use CLI-built-in authentication and do not use ModelProfile keys. Per-user settings keys (`user_settings`) remain for RAG, memory, and other non-agent subsystems.
 
-#### Scenario: Agent has a custom key
-- **WHEN** `agents.api_key` is non-empty
-- **THEN** AgentRunner uses it instead of user settings or environment variables.
+#### Scenario: SDK agent run with explicit ModelProfile
+- **WHEN** a Custom adapter agent runs with a `modelProfileId`
+- **THEN** AgentRunner resolves `api_key` from that ModelProfile
+- **AND** uses it for the Chat Completions request.
 
-#### Scenario: User has a key in settings
-- **WHEN** `agents.api_key` is empty
-- **AND** `user_settings.openai_api_key` is non-empty for the authenticated user
-- **THEN** AgentRunner uses the user's settings key.
+#### Scenario: SDK agent run with default ModelProfile
+- **WHEN** a Custom adapter agent runs without `modelProfileId`
+- **THEN** AgentRunner resolves `api_key` from the user's default ModelProfile.
 
 ### Requirement: Base URLs SHALL be adapter-specific
 
-`agents.api_base_url` MUST be interpreted according to adapter protocol: Anthropic-compatible for Claude Code and Codex/Responses-compatible for Codex.
+ModelProfile `api_base_url` MUST be interpreted according to adapter protocol: Chat Completions-compatible for Custom adapter. CLI agents (Claude Code, Codex) use their own CLI defaults and do not use ModelProfile base URLs.
 
-#### Scenario: Codex base URL is set
-- **WHEN** a Codex agent has `api_base_url`
-- **THEN** it is passed to Codex SDK as `baseUrl`
-- **AND** it must not be sourced from global CC Switch config.
+#### Scenario: Custom agent base URL is set
+- **WHEN** a Custom adapter agent runs with a ModelProfile that has `api_base_url`
+- **THEN** it is passed to the Chat Completions SDK as `base_url`.
 
 ### Requirement: App settings SHALL be per-user storage
 
@@ -164,3 +163,19 @@ Redis KV cache and Stream write-behind MUST be fully removed. Caching for remote
 - **WHEN** `get_agent_cached` is called
 - **THEN** the local SQLite is read directly (0.1ms)
 - **AND** no Redis or external cache is involved
+
+### Requirement: ModelProfile SHALL be a user-scoped persistent entity
+
+A `model_profiles` table MUST persist ModelProfile records with columns: `id` (PK), `user_id` (FK to users, CASCADE), `name`, `provider`, `model_id`, `api_key`, `api_base_url`, `is_default`, `supports_vision`, `last_test_status`, `last_tested_at`, `created_at`, `updated_at`. The table is a local table (SQLite in dual-DB mode). A one-time migration (`_migrate_agent_model_profiles`) SHALL copy baked-in model config from pre-migration `agents` rows into `model_profiles`, deduplicating by `(user_id, provider, model_id)`.
+
+#### Scenario: ModelProfile is created
+- **WHEN** a user creates a ModelProfile via the API
+- **THEN** a row is inserted into `model_profiles` with the user's `user_id`
+- **AND** `is_default` is set to true if it is the user's first profile.
+
+#### Scenario: Old agent model config is migrated
+- **WHEN** the backend starts and `agents.model_provider` column still exists
+- **THEN** the migration scans agents with non-null model config
+- **AND** creates deduplicated ModelProfile records per user
+- **AND** marks the earliest-created profile as default
+- **AND** skips builtin agents (user_id IS NULL).

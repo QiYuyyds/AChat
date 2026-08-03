@@ -126,7 +126,6 @@ async def custom_agent_setup(db, tmp_path):
             adapter_name="custom",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             model_provider="openai",
             model_id="gpt-4",
             created_at=now,
@@ -190,7 +189,6 @@ async def cli_agent_setup(db, tmp_path):
             adapter_name="claude-code",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now,
         )
         agent.capabilities_list = []

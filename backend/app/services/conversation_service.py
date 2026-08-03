@@ -44,6 +44,7 @@ from app.db.models import (
     ContextSummary,
     Conversation,
     Message,
+    ModelProfile,
     Workspace,
 )
 from app.schemas.events import (
@@ -452,19 +453,33 @@ async def maybe_generate_summary(
     if agent is None:
         logger.info("[maybe_generate_summary] Skipped: agent not found")
         return
-    if not agent.model_provider or not agent.model_id:
+    if agent.adapter_name != "custom" or not agent.user_id:
         logger.info(
-            "[maybe_generate_summary] Skipped: agent missing model config provider=%s model=%s",
-            agent.model_provider,
-            agent.model_id,
+            "[maybe_generate_summary] Skipped: agent is not SDK or has no user_id"
+        )
+        return
+
+    async with get_local_db() as db:
+        profile = (
+            await db.execute(
+                select(ModelProfile).where(
+                    ModelProfile.user_id == agent.user_id,
+                    ModelProfile.is_default == True,  # noqa: E712
+                ).limit(1)
+            )
+        ).scalar_one_or_none()
+    if profile is None:
+        logger.info(
+            "[maybe_generate_summary] Skipped: no default ModelProfile for user %s",
+            agent.user_id,
         )
         return
 
     agent_name = agent.name
-    model_provider = agent.model_provider
-    model_id = agent.model_id
-    api_key = agent.api_key
-    api_base_url = agent.api_base_url
+    model_provider = profile.provider
+    model_id = profile.model_id
+    api_key = profile.api_key
+    api_base_url = profile.api_base_url
 
     logger.info(
         "[maybe_generate_summary] Calling LLM provider=%s model=%s",
@@ -1026,6 +1041,7 @@ async def _send_message_unlocked(
     mentioned_agent_ids: list[str] | None = None,
     parent_message_id: str | None = None,
     attachment_ids: list[str] | None = None,
+    model_profile_id: str | None = None,
 ) -> SendMessageResult:
     mentioned_agent_ids = mentioned_agent_ids or []
     attachment_ids = attachment_ids or []
@@ -1202,6 +1218,7 @@ async def _send_message_unlocked(
                 conversation_id=conversation_id,
                 trigger_message_id=message_id,
                 user_id=conv_user_id,
+                model_profile_id=model_profile_id,
             )
             run_ids.append(run_id)
     else:
@@ -1212,6 +1229,7 @@ async def _send_message_unlocked(
                 conversation_id=conversation_id,
                 trigger_message_id=message_id,
                 user_id=conv_user_id,
+                model_profile_id=model_profile_id,
             )
             run_ids.append(handle.run_id)
 
@@ -1225,6 +1243,7 @@ async def send_message(
     mentioned_agent_ids: list[str] | None = None,
     parent_message_id: str | None = None,
     attachment_ids: list[str] | None = None,
+    model_profile_id: str | None = None,
 ) -> SendMessageResult:
     async with _conv_locks.lock_for(conversation_id):
         return await _send_message_unlocked(
@@ -1233,6 +1252,7 @@ async def send_message(
             mentioned_agent_ids=mentioned_agent_ids,
             parent_message_id=parent_message_id,
             attachment_ids=attachment_ids,
+            model_profile_id=model_profile_id,
         )
 
 

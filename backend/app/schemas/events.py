@@ -83,6 +83,9 @@ class RunUsageEvent(BaseEvent):
     # can attach it to RunEndEvent (CLI paths leave these None).
     stop_reason: str | None = Field(default=None, alias="stopReason")
     stop_reason_label: str | None = Field(default=None, alias="stopReasonLabel")
+    # CLI agent session ID (claude --resume / codex thread). Consumed by
+    # consume_stream to persist into AgentRun.cli_session_id for cross-run resume.
+    session_id: str | None = Field(default=None, alias="sessionId")
 
     model_config = {"populate_by_name": True}
 

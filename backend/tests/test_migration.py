@@ -31,7 +31,6 @@ async def test_migration_creates_default_user(db, monkeypatch):
             adapter_name="mock",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now,
             user_id=None,
         )

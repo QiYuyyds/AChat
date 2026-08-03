@@ -563,6 +563,21 @@ function DAGGraphInner({
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null)
   const [expanded, setExpanded] = useState(false)
 
+  // Escape key + body scroll lock when fullscreen
+  useEffect(() => {
+    if (!expanded) return
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExpanded(false)
+    }
+    document.addEventListener('keydown', handleKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', handleKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [expanded])
+
   // Compute initial nodes/edges from plan
   const initialNodes = useMemo(() => {
     const raw = planToNodes(dispatch.plan, dispatch, agents, editable, selectedTaskId)
@@ -821,7 +836,7 @@ function DAGGraphInner({
   )
 
   useEffect(() => {
-    const timer = setTimeout(() => fitView({ padding: 0.1, duration: 200 }), 200)
+    const timer = setTimeout(() => fitView({ padding: 0.15, duration: 300 }), 250)
     return () => clearTimeout(timer)
   }, [expanded, fitView])
 
@@ -829,20 +844,23 @@ function DAGGraphInner({
     <>
       {expanded && (
         <div
-          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
+          className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm animate-in fade-in duration-200"
           onClick={() => setExpanded(false)}
         />
       )}
       <div
         className={cn(
-          'relative w-full overflow-hidden rounded-lg border bg-muted/20 transition-all duration-200',
+          'relative w-full overflow-hidden rounded-lg border bg-muted/20',
           expanded
-            ? 'fixed inset-6 z-50 h-[85vh] shadow-2xl'
-            : editable
-              ? 'h-[480px]'
-              : dispatch.plan.length <= 3
-                ? 'h-[400px]'
-                : 'h-[520px]',
+            ? 'fixed inset-4 z-50 shadow-2xl animate-in zoom-in-95 fade-in duration-200'
+            : cn(
+                'transition-all duration-200',
+                editable
+                  ? 'h-[480px]'
+                  : dispatch.plan.length <= 3
+                    ? 'h-[400px]'
+                    : 'h-[520px]',
+              ),
         )}
       >
         <ReactFlow
@@ -869,6 +887,13 @@ function DAGGraphInner({
         <Background variant={BackgroundVariant.Dots} gap={16} className="!bg-muted/30" />
         <Controls className="!bg-background !border !shadow-sm" showInteractive={editable} />
       </ReactFlow>
+
+      {expanded && (
+        <div className="pointer-events-none absolute left-4 top-3 z-10 flex items-center gap-2">
+          <span className="text-sm font-medium text-foreground">DAG 编排图</span>
+          <span className="text-xs text-muted-foreground">{dispatch.plan.length} 个任务</span>
+        </div>
+      )}
 
       {showAddForm && (
         <Panel position="top-center" className="!pointer-events-auto">
@@ -935,6 +960,7 @@ function DAGGraphInner({
             type="button"
             onClick={() => setExpanded((v) => !v)}
             className="flex items-center gap-1 rounded-md border bg-background px-2 py-1 text-[10px] text-muted-foreground shadow-sm transition-colors hover:bg-accent"
+            title={expanded ? '收起 (Esc)' : '全屏展开'}
           >
             {expanded ? <Minimize2 className="size-3" /> : <Maximize2 className="size-3" />}
             {expanded ? '收起' : '展开'}

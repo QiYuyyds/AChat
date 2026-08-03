@@ -37,7 +37,6 @@ async def guide_agent(db):
             is_builtin=True,
             is_orchestrator=False,
             is_guide=True,
-            supports_vision=False,
             created_at=now,
             user_id=None,
         )

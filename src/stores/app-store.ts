@@ -10,6 +10,7 @@ import type {
   DispatchPlanItem,
   DispatchTaskStatus,
   MessagePart,
+  ModelProfile,
   PendingBashCommand,
   PendingDispatchPlan,
   PendingMcpCall,
@@ -28,13 +29,15 @@ export type SidebarMode =
   | 'conversations'
   | 'artifacts'
   | 'agents'
-  | 'analytics'
-  | 'knowledge'
-  | 'skills'
-  | 'mcp'
-  | 'memory'
+  | 'resources'
+  | 'cognition'
+  | 'extensions'
 
 export type MemoryTab = 'long-term' | 'preferences' | 'session'
+
+export type CognitionTab = 'knowledge' | 'memory'
+
+export type ResourcesTab = 'models' | 'analytics'
 
 /** Workspace env hint card state (per conversation). */
 export interface WorkspaceEnvState {
@@ -79,6 +82,9 @@ interface AppState {
   // ─── 实体 ──────────────────────────────────────────
   conversations: Record<string, ConversationWithMeta>
   agents: Record<string, AgentRow>
+  modelProfiles: Record<string, ModelProfile>
+  /** Per-conversation selected model profile id (plan B: per-message model selection). */
+  selectedProfileIdByConv: Record<string, string | null>
   messages: Record<string, MessageRow>
   artifacts: Record<string, ArtifactRow>
 
@@ -159,6 +165,14 @@ interface AppState {
   memoryTab: MemoryTab
   setMemoryTab(tab: MemoryTab): void
 
+  // ─── 沉淀主 Tab（knowledge / memory）──
+  cognitionTab: CognitionTab
+  setCognitionTab(tab: CognitionTab): void
+
+  // ─── 配额子 Tab（models / analytics）──
+  resourcesTab: ResourcesTab
+  setResourcesTab(tab: ResourcesTab): void
+
   // ─── 知识库当前选中的文档 ID（主视图展示详情）──
   selectedKnowledgeDocId: string | null
   setSelectedKnowledgeDocId(id: string | null): void
@@ -192,6 +206,11 @@ interface AppState {
   setAgents(list: AgentRow[]): void
   upsertAgent(agent: AgentRow): void
   removeAgent(agentId: string): void
+
+  setModelProfiles(list: ModelProfile[]): void
+  upsertModelProfile(profile: ModelProfile): void
+  removeModelProfile(profileId: string): void
+  setSelectedProfileId(conversationId: string, profileId: string | null): void
 
   setMessagesForConversation(conversationId: string, list: MessageRow[]): void
   /** 单条 message upsert（编辑后重发场景：服务端写完 user message，前端要自己塞进 store）。 */
@@ -273,6 +292,8 @@ export const useAppStore = create<AppState>()(
   immer((set) => ({
     conversations: {},
     agents: {},
+    modelProfiles: {},
+    selectedProfileIdByConv: {},
     messages: {},
     artifacts: {},
     messageIdsByConv: {},
@@ -297,6 +318,8 @@ export const useAppStore = create<AppState>()(
     mobileSidebarOpen: false,
     sidebarMode: 'conversations',
     memoryTab: 'long-term',
+    cognitionTab: 'knowledge',
+    resourcesTab: 'models',
     selectedKnowledgeDocId: null,
     pendingQuoteForInput: null,
     highlightedMessageId: null,
@@ -378,6 +401,31 @@ export const useAppStore = create<AppState>()(
         delete s.agents[agentId]
       }),
 
+    setModelProfiles: (list) =>
+      set((s) => {
+        s.modelProfiles = {}
+        for (const p of list) s.modelProfiles[p.id] = p
+      }),
+
+    upsertModelProfile: (profile) =>
+      set((s) => {
+        s.modelProfiles[profile.id] = profile
+      }),
+
+    removeModelProfile: (profileId) =>
+      set((s) => {
+        delete s.modelProfiles[profileId]
+        // Clear any per-conversation selection pointing to the deleted profile
+        for (const [convId, pid] of Object.entries(s.selectedProfileIdByConv)) {
+          if (pid === profileId) s.selectedProfileIdByConv[convId] = null
+        }
+      }),
+
+    setSelectedProfileId: (conversationId, profileId) =>
+      set((s) => {
+        s.selectedProfileIdByConv[conversationId] = profileId
+      }),
+
     setMessagesForConversation: (conversationId, list) =>
       set((s) => {
         const nextIds = list.map((m) => m.id)
@@ -423,6 +471,16 @@ export const useAppStore = create<AppState>()(
     setMemoryTab: (tab) =>
       set((s) => {
         s.memoryTab = tab
+      }),
+
+    setCognitionTab: (tab) =>
+      set((s) => {
+        s.cognitionTab = tab
+      }),
+
+    setResourcesTab: (tab) =>
+      set((s) => {
+        s.resourcesTab = tab
       }),
 
     setSelectedKnowledgeDocId: (id) =>
@@ -1907,7 +1965,9 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
     let lastInputTs = -1
 
     // Phase 1: 从有 run.usage 的 run 累加，记录这些 runId 以避免 Phase 2 重复计数
-    // Subagent runs (parentRunId set) roll up to the top-level parent agent.
+    // Subagent runs (parentRunId set) with the SAME agent as the parent roll up
+    // to the parent's subagent fields (clone-self dispatch). Subagent runs with
+    // a DIFFERENT agent (DAG cross-agent dispatch) are counted independently.
     const runsWithUsage = new Set<string>()
     if (runs) {
       // Build run map for parent chain walking
@@ -1923,18 +1983,43 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           topRun = runMap.get(topRun.parentRunId)!
         }
         const isSubagent = topRun.id !== run.id
-        const targetAgentId = topRun.agentId
+        const isCloneSelf = isSubagent && run.agentId === topRun.agentId
         const sub = u.inputTokens + u.outputTokens
 
-        if (isSubagent) {
-          // Roll up: don't count in top-level totals, attribute to parent's subagent fields
-          const d = detail[targetAgentId] ??= {
+        if (isCloneSelf) {
+          // Clone-self: roll up to parent agent's subagent fields
+          const d = detail[topRun.agentId] ??= {
             inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
             cacheReadTokens: 0, totalTokens: 0, runCount: 0,
             subagentTokens: 0, subagentRunCount: 0,
           }
           d.subagentTokens += sub
           d.subagentRunCount++
+          if (u.model) d.model = u.model
+        } else if (isSubagent) {
+          // Cross-agent dispatch (DAG): count independently under child agent
+          const runTotal = computeTotalTokens(
+            u.inputTokens, u.outputTokens, u.cacheCreationTokens, u.cacheReadTokens,
+          )
+          result.inputTokens += u.inputTokens
+          result.outputTokens += u.outputTokens
+          result.cacheCreationTokens += u.cacheCreationTokens
+          result.cacheReadTokens += u.cacheReadTokens
+          result.totalTokens += runTotal
+          result.runCount++
+          result.byAgent[run.agentId] = (result.byAgent[run.agentId] ?? 0) + runTotal
+          if (u.model) result.byModel[u.model] = (result.byModel[u.model] ?? 0) + runTotal
+          const d = detail[run.agentId] ??= {
+            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
+            cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+            subagentTokens: 0, subagentRunCount: 0,
+          }
+          d.inputTokens += u.inputTokens
+          d.outputTokens += u.outputTokens
+          d.cacheCreationTokens += u.cacheCreationTokens
+          d.cacheReadTokens += u.cacheReadTokens
+          d.totalTokens += runTotal
+          d.runCount++
           if (u.model) d.model = u.model
         } else {
           // Top-level run: count normally
@@ -1982,7 +2067,7 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
         if (m.runId && runsWithUsage.has(m.runId)) continue
 
         const u = m.usage
-        const provider = m.agentId ? agents[m.agentId]?.modelProvider : undefined
+        const provider = undefined
         const msgTotal = computeMessageTotalTokens(
           u.inputTokens, u.outputTokens, u.cacheReadTokens, provider,
         )
@@ -1996,8 +2081,7 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
         }
         if (m.agentId) {
           result.byAgent[m.agentId] = (result.byAgent[m.agentId] ?? 0) + msgTotal
-          const modelId = agents[m.agentId]?.modelId
-          if (modelId) result.byModel[modelId] = (result.byModel[modelId] ?? 0) + msgTotal
+          // modelId no longer available on agent; skip byModel aggregation
           const d = detail[m.agentId] ??= {
             inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
             cacheReadTokens: 0, totalTokens: 0, runCount: 0,
@@ -2008,7 +2092,6 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           d.cacheReadTokens += u.cacheReadTokens
           d.totalTokens += msgTotal
           if (m.runId && !seenRunIds.has(m.runId)) d.runCount++
-          if (modelId) d.model = modelId
         }
         if (m.createdAt > lastInputTs) {
           lastInputTs = m.createdAt

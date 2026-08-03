@@ -116,7 +116,7 @@ async def test_cross_db_read(dual_db):
             id="ag1", name="TestAgent", avatar="T",
             description="test", system_prompt="prompt",
             adapter_name="mock", is_builtin=False,
-            is_orchestrator=False, supports_vision=False,
+            is_orchestrator=False,
             created_at=now, user_id="u1",
         )
         agent.capabilities_list = []
@@ -249,7 +249,7 @@ async def test_get_local_db_fallback_single_mode(tmp_path, monkeypatch):
                 id="ag_single", name="Single", avatar="S",
                 description="test", system_prompt="prompt",
                 adapter_name="mock", is_builtin=False,
-                is_orchestrator=False, supports_vision=False,
+                is_orchestrator=False,
                 created_at=now,
             )
             agent.capabilities_list = []

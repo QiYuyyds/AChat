@@ -40,7 +40,7 @@ async def _seed_dual(dual_db):
         agent = Agent(
             id="ag_e2e", name="E2E Agent", avatar="E", description="e2e",
             system_prompt="test", adapter_name="mock", is_builtin=False,
-            is_orchestrator=False, supports_vision=False,
+            is_orchestrator=False,
             created_at=now, user_id="u1",
         )
         agent.capabilities_list = []
@@ -69,7 +69,7 @@ async def _seed_single(single_db):
         agent = Agent(
             id="ag_e2e", name="E2E Agent", avatar="E", description="e2e",
             system_prompt="test", adapter_name="mock", is_builtin=False,
-            is_orchestrator=False, supports_vision=False,
+            is_orchestrator=False,
             created_at=now, user_id="u1",
         )
         agent.capabilities_list = []

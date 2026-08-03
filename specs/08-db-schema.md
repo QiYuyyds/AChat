@@ -239,6 +239,7 @@ agent_runs {
   error               text              // failed 时存错误概要
   parent_run_id       text              // Orchestrator 派出的子 run 指向父 run
   usage               text JSON         // RunUsage：{ inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, lastInputTokens?, model? }；null = 该 run 未上报（mock / 中途失败）
+  cli_session_id      text              // CLI agent 会话恢复 ID（claude --resume / codex thread resume）；SDK agent 或失败 run 为 NULL
   started_at          int  NOT NULL
   finished_at         int               // null = 仍在 running
 }

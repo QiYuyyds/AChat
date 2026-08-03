@@ -112,6 +112,9 @@ async def _resolve_user(db: AsyncSession, user_id: str, token_ver: int) -> User:
         if user.token_version != token_ver:
             raise credentials_exc
 
+        # Detach from session before caching so the subsequent
+        # session.commit() doesn't expire attributes (DetachedInstanceError).
+        db.expunge(user)
         _user_cache[user_id] = (user, time.time() + _USER_CACHE_TTL)
         return user
 

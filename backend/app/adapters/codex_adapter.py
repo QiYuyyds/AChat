@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 import time as _time
 from pathlib import Path
@@ -93,14 +94,29 @@ def _build_achat_mcp_overrides(input: AdapterInput) -> list[str]:
         "--agent-id",
         input.agent_id,
     ]
-    return [
+    if input.user_id:
+        bridge_args.extend(["--user-id", input.user_id])
+
+    env_overrides: dict[str, str] = {
+        "PYTHONPATH": str(backend_dir),
+        "PYTHONUNBUFFERED": "1",
+        "DATABASE_URL": os.environ.get("DATABASE_URL", ""),
+    }
+    if os.environ.get("DATABASE_LOCAL_URL"):
+        env_overrides["DATABASE_LOCAL_URL"] = os.environ["DATABASE_LOCAL_URL"]
+
+    overrides = [
         "-c",
         f"mcp_servers.achat-tools.command={json.dumps(sys.executable)}",
         "-c",
         f"mcp_servers.achat-tools.args={json.dumps(bridge_args)}",
-        "-c",
-        f"mcp_servers.achat-tools.env.PYTHONPATH={json.dumps(str(backend_dir))}",
     ]
+    for key, value in env_overrides.items():
+        overrides.extend([
+            "-c",
+            f"mcp_servers.achat-tools.env.{key}={json.dumps(value)}",
+        ])
+    return overrides
 
 
 # ─── adapter ─────────────────────────────────────────────────────

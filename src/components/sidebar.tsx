@@ -1,21 +1,19 @@
 'use client'
 
-import { Archive, ArchiveRestore, Cable, ChevronDown, ChevronRight, Database, Ellipsis, Gauge, GitBranch, Library, LogOut, MessagesSquare, Moon, Package, Pencil, Pin, PinOff, Plus, Search, Settings as SettingsIcon, Sun, Trash2, User, Users, Wrench, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Brain, ChevronDown, ChevronRight, Cpu, Ellipsis, GitBranch, LogOut, MessagesSquare, Moon, Package, Pencil, Pin, PinOff, Plus, Puzzle, Search, Settings as SettingsIcon, Sun, Trash2, User, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
 
-import { AgentLibrary } from '@/components/agent-library'
+import { AgentSidebarNav } from '@/components/agent-sidebar-nav'
 import { ConversationAvatar } from '@/components/agent-avatar'
 import { GlobalSearchTrigger } from '@/components/global-search-trigger'
-import { ArtifactLibrary } from '@/components/artifact-library'
-import { KnowledgeSidebarNav } from '@/components/knowledge-library'
-import { MemorySidebarNav } from '@/components/memory-library'
-import { McpServerLibrary } from '@/components/mcp-server-library'
-import { SkillLibrary } from '@/components/skill-library'
+import { ArtifactSidebarNav } from '@/components/artifact-sidebar-nav'
+import { CognitionSidebarNav } from '@/components/cognition-sidebar-nav'
+import { ExtensionSidebarNav } from '@/components/extension-sidebar-nav'
+import { ResourcesSidebarNav } from '@/components/resources-sidebar-nav'
 import { NewConversationDialog } from '@/components/new-conversation-dialog'
 import { ProfileDialog } from '@/components/profile-dialog'
 import { SettingsDialog } from '@/components/settings-dialog'
-import { UsageDashboard } from '@/components/usage-dashboard'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import {
@@ -38,6 +36,7 @@ import {
   deleteConversation as deleteConversationAPI,
   fetchAgents,
   fetchConversations,
+  fetchModelProfiles,
   fetchProfile,
   renameConversation as renameConversationAPI,
   toggleArchiveConversation as toggleArchiveConversationAPI,
@@ -62,6 +61,7 @@ export function Sidebar() {
   const setConversations = useAppStore((s) => s.setConversations)
   const setAgents = useAppStore((s) => s.setAgents)
   const agents = useAppStore((s) => s.agents)
+  const setModelProfiles = useAppStore((s) => s.setModelProfiles)
   const removeConversation = useAppStore((s) => s.removeConversation)
   const upsertConversation = useAppStore((s) => s.upsertConversation)
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -142,7 +142,8 @@ export function Sidebar() {
     if (!hasToken()) return
     fetchConversations().then(setConversations).catch(console.error)
     fetchAgents().then(setAgents).catch(console.error)
-  }, [setConversations, setAgents])
+    fetchModelProfiles().then(setModelProfiles).catch(console.error)
+  }, [setConversations, setAgents, setModelProfiles])
 
   // Guide agent side-effect: refresh agents/conversations when guide does management ops
   useGuideSideEffectRefresh('agents', () => { fetchAgents().then(setAgents).catch(console.error) })
@@ -214,13 +215,11 @@ export function Sidebar() {
         <nav className={cn('flex shrink-0 flex-col gap-0 px-1 py-1', !isAuthenticated && 'opacity-50 pointer-events-none')}>
           <RailButton mode={mode} self="conversations" onClick={() => pickMode('conversations')} icon={<MessagesSquare className="size-5" />} label="对话" />
           <RailButton mode={mode} self="artifacts" onClick={() => pickMode('artifacts')} icon={<Package className="size-5" />} label="产物库" />
-          <RailButton mode={mode} self="agents" onClick={() => pickMode('agents')} icon={<Users className="size-5" />} label="Agents" />
+          <RailButton mode={mode} self="agents" onClick={() => pickMode('agents')} icon={<Users className="size-5" />} label="联系人" />
           <span className="my-0.5 h-px w-8 shrink-0 self-center bg-border" aria-hidden="true" />
-          <RailButton mode={mode} self="analytics" onClick={() => pickMode('analytics')} icon={<Gauge className="size-5" />} label="分析" />
-          <RailButton mode={mode} self="knowledge" onClick={() => pickMode('knowledge')} icon={<Library className="size-5" />} label="知识库" />
-          <RailButton mode={mode} self="skills" onClick={() => pickMode('skills')} icon={<Wrench className="size-5" />} label="技能" />
-          <RailButton mode={mode} self="mcp" onClick={() => pickMode('mcp')} icon={<Cable className="size-5" />} label="MCP" />
-          <RailButton mode={mode} self="memory" onClick={() => pickMode('memory')} icon={<Database className="size-5" />} label="记忆管理" />
+          <RailButton mode={mode} self="resources" onClick={() => pickMode('resources')} icon={<Cpu className="size-5" />} label="配额" />
+          <RailButton mode={mode} self="cognition" onClick={() => pickMode('cognition')} icon={<Brain className="size-5" />} label="沉淀" />
+          <RailButton mode={mode} self="extensions" onClick={() => pickMode('extensions')} icon={<Puzzle className="size-5" />} label="扩展" />
         </nav>
 
         <div className="h-px shrink-0 bg-border/50" aria-hidden="true" />
@@ -356,20 +355,14 @@ export function Sidebar() {
               </ScrollArea>
             </>
           ) : mode === 'artifacts' ? (
-            <ArtifactLibrary />
+            <ArtifactSidebarNav />
           ) : mode === 'agents' ? (
-            <AgentLibrary />
-          ) : mode === 'knowledge' ? (
-            <KnowledgeSidebarNav />
-          ) : mode === 'skills' ? (
-            <SkillLibrary />
-          ) : mode === 'mcp' ? (
-            <McpServerLibrary />
-          ) : mode === 'memory' ? (
-            <MemorySidebarNav />
-          ) : (
-            <UsageDashboard />
-          )}
+            <AgentSidebarNav />
+          ) : mode === 'cognition' ? (
+            <CognitionSidebarNav />
+          ) : mode === 'resources' ? (
+            <ResourcesSidebarNav />
+          ) : null}
         </div>
 
         {/* 底部操作栏：avatar + username + gear dropdown */}

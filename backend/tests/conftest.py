@@ -141,7 +141,6 @@ async def agents(db, test_user):
             adapter_name="mock",
             is_builtin=False,
             is_orchestrator=False,
-            supports_vision=False,
             created_at=now,
             user_id=test_user["id"],
         )
@@ -157,7 +156,6 @@ async def agents(db, test_user):
             adapter_name="mock",
             is_builtin=True,
             is_orchestrator=True,
-            supports_vision=False,
             created_at=now,
             user_id=None,
         )
