@@ -27,7 +27,7 @@ LOCAL_TABLES: frozenset[str] = frozenset({
     "model_profiles",
 })
 
-# ─── Remote PostgreSQL tables (12) — user system + knowledge/RAG ───
+# ─── Remote PostgreSQL tables (9) — user system + knowledge/RAG ───
 REMOTE_TABLES: frozenset[str] = frozenset({
     "users",
     "user_settings",
@@ -35,10 +35,7 @@ REMOTE_TABLES: frozenset[str] = frozenset({
     "global_settings",
     "app_settings",
     "rag_chunks",
-    "long_term_memory",
     "chat_history",
-    "memory_nodes",
-    "memory_edges",
     "documents",
     "document_versions",
 })

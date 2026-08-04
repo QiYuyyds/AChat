@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.memory.memory_writer import _IMPORTANCE_BY_CATEGORY, classify_memory_content
+from app.memory.memory_writer_compat import _IMPORTANCE_BY_CATEGORY, classify_memory_content
 
 logger = logging.getLogger(__name__)
 
@@ -535,18 +535,20 @@ class RecallSource(ContextSource):
         if self._memory is None or not q.text:
             return []
         try:
-            items = await self._memory.recall(
+            results = await self._memory.recall(
                 q.text, top_k=slot.filter.top_k or 3, agent_id=q.agent_id,
-                user_id=q.user_id or None,
             )
             return [
                 ContextItem(
                     text=item.content,
                     score=item.score,
                     source="recall",
-                    meta={"importance": str(item.importance)},
+                    meta={
+                        "importance": str(item.frontmatter.get("importance", 0.5)),
+                        "name": item.name,
+                    },
                 )
-                for item in items
+                for item in results
             ]
         except Exception as e:
             logger.warning("RecallSource fetch failed: %s", e)

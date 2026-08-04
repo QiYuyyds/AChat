@@ -94,18 +94,21 @@ class Settings(BaseSettings):
     default_timezone: str = "GMT+8"
     default_location: str = "auto"  # 'auto' → IP geolocation; or set to e.g. 'Chongqing'
 
-    # ─── Memory ───
-    memory_short_term_max_turns: int = 10
-    memory_long_term_top_k: int = 3
-    memory_consolidation_similarity: float = 0.80
-    memory_consolidation_dedup: float = 0.95
-    memory_consolidation_ttl_days: int = 30
-    memory_consolidation_decay_rate: float = 0.995
-    memory_consolidation_min_importance: float = 0.3
-    memory_consolidation_trigger: int = 5
+    # ─── Memory (file-native) ───
+    memory_workspace_dir: str = ""  # empty → defaults to <data_dir>/memory
+    memory_auto_dream_threshold: int = 5
+    memory_auto_dream_cron: str = "23:00"
+    memory_auto_dream_max_units: int = 5
+    memory_search_top_k: int = 10
+    memory_bm25_weight: float = 0.7
+    memory_wikilink_weight: float = 0.3
+    memory_rrf_k: int = 60
 
-    # ─── Case Memory ───
-    case_extraction_enabled: bool = True
+    @property
+    def memory_workspace_path(self) -> Path:
+        """Get memory workspace root as resolved Path."""
+        p = self.memory_workspace_dir or str(self.data_path / "memory")
+        return Path(p).resolve()
 
     # ─── Auth ───
     jwt_secret: str = ""

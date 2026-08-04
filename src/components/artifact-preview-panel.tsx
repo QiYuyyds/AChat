@@ -16,6 +16,7 @@ import { createArtifactVersion, fetchArtifactVersions, workspaceReadFile, worksp
 import { artifactPreviewPath } from '@/lib/artifact-preview'
 import { normalizeLang } from '@/lib/highlighter'
 import { cn } from '@/lib/utils'
+import { getAccessToken } from '@/stores/auth-store'
 import { buildArtifactVersionDiff } from '@/shared/artifact-version-diff'
 import { formatMermaidError } from '@/shared/mermaid-normalize'
 import { normalizePptDeck, toEditablePptContent } from '@/shared/ppt-normalize'
@@ -405,7 +406,7 @@ function WebAppView({
         {view === 'render' && (
           <iframe
             key={artifactId}
-            src={artifactPreviewPath(artifactId)}
+            src={artifactPreviewPath(artifactId, getAccessToken() ?? undefined)}
             sandbox="allow-scripts"
             className="size-full border-0 bg-white"
             title="Artifact preview"
@@ -1833,11 +1834,11 @@ function formatBytes(bytes: number): string {
 }
 
 function openPreviewInNewTab(artifactId: string): void {
-  window.open(artifactPreviewPath(artifactId), '_blank', 'noopener,noreferrer')
+  window.open(artifactPreviewPath(artifactId, getAccessToken() ?? undefined), '_blank', 'noopener,noreferrer')
 }
 
 function copyPreviewUrl(artifactId: string): void {
-  const url = new URL(artifactPreviewPath(artifactId), window.location.origin).toString()
+  const url = new URL(artifactPreviewPath(artifactId, getAccessToken() ?? undefined), window.location.origin).toString()
   navigator.clipboard?.writeText(url).catch(() => {})
 }
 

@@ -1,8 +1,7 @@
 """SQLAlchemy ORM models matching TypeScript Drizzle schema.
 
 Corresponds to src/db/schema.ts in the original TypeScript codebase.
-Extended with AGI-memory tables (LongTermMemory, UserPreference, RagChunk,
-ChatHistory, MemoryNode, MemoryEdge).
+Extended with UserPreference, RagChunk, ChatHistory (file-native memory migration).
 """
 
 import json
@@ -808,42 +807,8 @@ class McpServer(Base):
 
 
 # ---------------------------------------------------------------------------
-# AGI-memory new models (6 new tables)
+# Memory models (UserPreference only — LongTermMemory/MemoryNode/MemoryEdge removed in file-native migration)
 # ---------------------------------------------------------------------------
-
-
-class LongTermMemory(Base):
-    """Long-term memory items with embedding vectors for semantic recall."""
-
-    __tablename__ = "long_term_memory"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
-    embedding: Mapped[Any] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[float] = mapped_column(Float, nullable=False)
-    last_accessed: Mapped[float] = mapped_column(Float, nullable=False)
-    category: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    slot_hint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="global")
-    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    user_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("users.id"), name="user_id", nullable=True
-    )
-    # Structured fields for dual-path retrieval (summary embedding + keyword Jaccard)
-    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    keywords: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    content_scope: Mapped[str] = mapped_column(Text, nullable=False, default="")
-
-    __table_args__ = (
-        Index("idx_ltm_category", "category"),
-        Index("idx_ltm_created", "created_at"),
-        Index("idx_ltm_scope_agent", "scope", "agent_id"),
-        Index("idx_ltm_user", "user_id"),
-        Index("idx_ltm_content_scope", "content_scope"),
-    )
 
 
 class UserPreference(Base):
@@ -899,7 +864,7 @@ class RagChunk(Base):
 
 
 class ChatHistory(Base):
-    """Chat history rows for ShortTerm Memory persistence."""
+    """Chat history rows for memory pipeline dual-write (PG + session/ jsonl)."""
 
     __tablename__ = "chat_history"
 
@@ -909,42 +874,6 @@ class ChatHistory(Base):
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
     user_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("users.id"), name="user_id", nullable=True
-    )
-
-
-class MemoryNode(Base):
-    """Memory graph nodes (Neo4j mirror table in PG)."""
-
-    __tablename__ = "memory_nodes"
-
-    mem_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
-    user_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("users.id"), name="user_id", nullable=True
-    )
-
-
-class MemoryEdge(Base):
-    """Memory graph edges (Neo4j mirror table in PG)."""
-
-    __tablename__ = "memory_edges"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    from_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("memory_nodes.mem_id"), nullable=False
-    )
-    to_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("memory_nodes.mem_id"), nullable=False
-    )
-    rel_type: Mapped[str] = mapped_column(
-        String(32), nullable=False
-    )  # FOLLOWS / SIMILAR_TO / CAUSES / BELONGS_TO
-    weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
-
-    __table_args__ = (
-        Index("idx_memory_edges_from", "from_id"),
-        Index("idx_memory_edges_to", "to_id"),
     )
 
 

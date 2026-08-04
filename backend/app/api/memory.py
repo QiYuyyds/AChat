@@ -1,33 +1,28 @@
-"""Memory management API — user-facing CRUD for LTM, Preferences, and Session Memory.
+"""Memory management API — file-native memory + PG-backed preferences + session memory.
 
-Provides transparency: users can view, edit, and delete the memories that
-agents have stored. All endpoints are read/write to PostgreSQL and sync the
-in-memory caches. Embeddings are never exposed in API responses.
+Memory files (daily/ and digest/) are managed via file operations.
+Preferences (PG KV table) and session memory (context summaries) are preserved.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import String, cast, select
+from sqlalchemy import and_, desc, select
 
 from app.auth.dependencies import get_current_user
 from app.auth.ownership import verify_conversation_ownership
 from app.db.engine import get_local_db, get_remote_db
-from app.db.models import ContextSummary, Conversation, LongTermMemory, User, UserPreference
-from app.memory.consolidation import Item
+from app.db.models import ContextSummary, Conversation, User, UserPreference
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-# ─── Helpers ───────────────────────────────────────────────────────────────
 
 
 def _get_memory_service():
@@ -36,225 +31,244 @@ def _get_memory_service():
     return _memory_service
 
 
-def _ltm_row_to_dict(row: LongTermMemory) -> dict[str, Any]:
-    """Serialize a LongTermMemory row to a dict, excluding embedding."""
-    return {
-        "id": row.id,
-        "content": row.content,
-        "importance": row.importance,
-        "category": row.category or "",
-        "tags": list(row.tags) if row.tags else [],
-        "scope": getattr(row, "scope", None) or "global",
-        "agentId": row.agent_id or "",
-        "createdAt": row.created_at,
-        "lastAccessed": row.last_accessed,
-        "summary": getattr(row, "summary", "") or "",
-        "keywords": list(row.keywords) if getattr(row, "keywords", None) else [],
-        "contentScope": getattr(row, "content_scope", "") or "",
-    }
-
-
-def _ltm_item_to_dict(item: Item) -> dict[str, Any]:
-    """Serialize an in-memory Item to a dict, excluding embedding."""
-    return {
-        "id": item.id,
-        "content": item.content,
-        "importance": item.importance,
-        "category": item.category or "",
-        "tags": list(item.tags) if item.tags else [],
-        "scope": item.scope,
-        "agentId": item.agent_id or "",
-        "createdAt": item.created_at,
-        "lastAccessed": item.last_accessed,
-        "summary": item.summary,
-        "keywords": list(item.keywords) if item.keywords else [],
-        "contentScope": item.content_scope,
-    }
-
-
 # ─── Pydantic request models ───────────────────────────────────────────────
 
 
-class LTMUpdateRequest(BaseModel):
-    content: str | None = None
-    importance: float | None = None
-    category: str | None = None
-    tags: list[str] | None = None
-    summary: str | None = None
-    keywords: list[str] | None = None
-    contentScope: str | None = None
+class MemoryFileWriteRequest(BaseModel):
+    name: str
+    body: str = ""
+    description: str = ""
+    agent_id: str | None = None
+    tags: list[str] = []
+    importance: float = 0.5
+    bucket: str = "wiki"
 
 
 class PreferenceUpdateRequest(BaseModel):
     value: str
 
 
-# ─── LTM endpoints ─────────────────────────────────────────────────────────
+# ─── Memory file endpoints ─────────────────────────────────────────────────
 
 
-@router.get("/api/memory/long-term")
-async def list_ltm_memories(
+@router.get("/api/memory/files")
+async def list_memory_files(
+    bucket: str | None = None,
     agent_id: str | None = None,
-    category: str | None = None,
-    tag: str | None = None,
-    page: int = 1,
-    size: int = 20,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    """List long-term memory entries with optional filtering and pagination.
-
-    Embeddings are never included in the response.
-    Tries the in-memory LongTerm cache first (via MemoryService);
-    falls back to direct PG query when MemoryService is not initialized.
-    """
-    page = max(1, page)
-    size = max(1, min(100, size))
-
-    # Try MemoryService (in-memory cache) first
+    """List memory files (daily + digest), optionally filtered by bucket/agent."""
     svc = _get_memory_service()
-    if svc is not None and svc.ltm is not None:
-        items, total = await svc.ltm.list_items(
-            agent_id=agent_id,
-            category=category,
-            tag=tag,
-            page=page,
-            size=size,
-            user_id=user.id,
+    if svc is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "MemoryService not initialized"},
         )
-        return JSONResponse({
-            "items": [_ltm_item_to_dict(it) for it in items],
-            "total": total,
-            "page": page,
-            "size": size,
-        })
 
-    # Fallback: direct PG query (MemoryService not initialized)
-    async with get_remote_db() as session:
-        stmt = select(LongTermMemory).where(
-            LongTermMemory.user_id == user.id
-        ).order_by(LongTermMemory.id)
+    files: list[dict[str, Any]] = []
 
-        if agent_id:
-            stmt = stmt.where(
-                LongTermMemory.scope == "agent",
-                LongTermMemory.agent_id == agent_id,
-            )
+    # List digest files
+    from app.memory.file_store.markdown_io import read_markdown
+    for f in svc.workspace.list_digest_files(bucket=bucket, agent_id=agent_id):
+        mem = read_markdown(f)
+        if mem:
+            files.append({
+                "path": str(f.relative_to(svc.workspace.root)),
+                "name": mem.frontmatter.name,
+                "description": mem.frontmatter.description,
+                "bucket": mem.frontmatter.bucket,
+                "agentId": mem.frontmatter.agent_id,
+                "tags": mem.frontmatter.tags,
+                "importance": mem.frontmatter.importance,
+                "createdAt": mem.frontmatter.created_at,
+                "updatedAt": mem.frontmatter.updated_at,
+                "source": mem.frontmatter.source,
+                "bodyPreview": mem.body[:200],
+            })
 
-        if category:
-            stmt = stmt.where(LongTermMemory.category == category)
+    # Also list daily files
+    for f in svc.workspace.list_daily_files():
+        mem = read_markdown(f)
+        if mem:
+            files.append({
+                "path": str(f.relative_to(svc.workspace.root)),
+                "name": mem.frontmatter.name,
+                "description": mem.frontmatter.description,
+                "bucket": "daily",
+                "agentId": mem.frontmatter.agent_id,
+                "tags": mem.frontmatter.tags,
+                "importance": mem.frontmatter.importance,
+                "createdAt": mem.frontmatter.created_at,
+                "updatedAt": mem.frontmatter.updated_at,
+                "source": mem.frontmatter.source,
+                "bodyPreview": mem.body[:200],
+            })
 
-        # tag filter: cast JSON to text and LIKE-match (works with both PG JSONB and SQLite JSON)
-        if tag:
-            stmt = stmt.where(cast(LongTermMemory.tags, String).like(f'%"{tag}"%'))
+    return JSONResponse({"items": files, "total": len(files)})
 
-        # count total
-        from sqlalchemy import func
 
-        count_stmt = select(func.count()).select_from(stmt.subquery())
-        total_result = await session.execute(count_stmt)
-        total = total_result.scalar() or 0
+@router.get("/api/memory/files/{path:path}")
+async def read_memory_file(
+    path: str,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """Read a memory file by its relative path."""
+    svc = _get_memory_service()
+    if svc is None:
+        return JSONResponse(status_code=503, content={"error": "MemoryService not initialized"})
 
-        # paginate
-        stmt = stmt.offset((page - 1) * size).limit(size)
-        result = await session.execute(stmt)
-        rows = result.scalars().all()
+    from app.memory.file_store.markdown_io import read_markdown
 
-    items = [_ltm_row_to_dict(r) for r in rows]
+    filepath = svc.workspace.root / path
+    # Security: ensure path is within workspace
+    try:
+        filepath.resolve().relative_to(svc.workspace.root.resolve())
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+
+    mem = read_markdown(filepath)
+    if mem is None:
+        return JSONResponse(status_code=404, content={"error": f"File not found: {path}"})
+
     return JSONResponse({
-        "items": items,
-        "total": total,
-        "page": page,
-        "size": size,
+        "path": path,
+        "name": mem.frontmatter.name,
+        "description": mem.frontmatter.description,
+        "agentId": mem.frontmatter.agent_id,
+        "tags": mem.frontmatter.tags,
+        "importance": mem.frontmatter.importance,
+        "bucket": mem.frontmatter.bucket,
+        "createdAt": mem.frontmatter.created_at,
+        "updatedAt": mem.frontmatter.updated_at,
+        "source": mem.frontmatter.source,
+        "body": mem.body,
     })
 
 
-@router.put("/api/memory/long-term/{memory_id}")
-async def update_ltm_memory(
-    memory_id: int,
-    body: LTMUpdateRequest,
+@router.put("/api/memory/files/{path:path}")
+async def write_memory_file(
+    path: str,
+    body: MemoryFileWriteRequest,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    """Edit a single LTM item's content/importance/category/tags.
-
-    When content changes, an async task is triggered to recompute the embedding.
-    """
+    """Create or update a memory file."""
     svc = _get_memory_service()
-    if svc is None or svc.ltm is None:
-        return JSONResponse(
-            status_code=503,
-            content={"error": "MemoryService not initialized"},
-        )
+    if svc is None:
+        return JSONResponse(status_code=503, content={"error": "MemoryService not initialized"})
 
-    old_content: str | None = None
-    old_summary: str | None = None
-    async with get_remote_db() as session:
-        row = await session.get(LongTermMemory, memory_id)
-        if row is None or row.user_id != user.id:
-            return JSONResponse(
-                status_code=404,
-                content={"error": f"Memory {memory_id} not found"},
-            )
-        old_content = row.content
-        old_summary = getattr(row, "summary", "") or ""
+    from app.memory.file_store.frontmatter import MemoryFrontmatter
+    from app.memory.file_store.markdown_io import write_markdown
 
-    updated = await svc.ltm.update_item(
-        memory_id=memory_id,
-        content=body.content,
-        importance=body.importance,
-        category=body.category,
+    filepath = svc.workspace.root / path
+    try:
+        filepath.resolve().relative_to(svc.workspace.root.resolve())
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+
+    fm = MemoryFrontmatter(
+        name=body.name,
+        description=body.description,
+        agent_id=body.agent_id,
         tags=body.tags,
-        summary=body.summary,
-        keywords=body.keywords,
-        content_scope=body.contentScope,
+        importance=body.importance,
+        bucket=body.bucket,
     )
-    if updated is None:
-        return JSONResponse(
-            status_code=404,
-            content={"error": f"Memory {memory_id} not found in memory"},
-        )
+    write_markdown(filepath, fm, body.body)
 
-    # summary changed → recompute embedding using new summary (embedding is
-    # summary-based per the dual-path retrieval policy); otherwise content
-    # changed → recompute using content (backward compat).
-    if body.summary is not None and body.summary != old_summary:
-        asyncio.create_task(_recompute_embedding(svc, memory_id, body.summary))
-    elif body.content is not None and body.content != old_content:
-        asyncio.create_task(_recompute_embedding(svc, memory_id, body.content))
+    # Reindex the file
+    svc.auto_index.index_file(filepath)
 
-    # sync graph memory node content (if Neo4j available)
-    if svc.graph_memory is not None:
-        try:
-            await svc.graph_memory.update_node(updated)
-        except Exception as e:
-            logger.warning("GraphMemory node update failed (id=%s): %s", memory_id, e)
-
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "path": path})
 
 
-@router.delete("/api/memory/long-term/{memory_id}")
-async def delete_ltm_memory(
-    memory_id: int,
+@router.delete("/api/memory/files/{path:path}")
+async def delete_memory_file(
+    path: str,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    """Delete a single LTM item from PG, in-memory, and GraphMemory."""
+    """Delete a memory file."""
     svc = _get_memory_service()
-    if svc is None or svc.ltm is None:
-        return JSONResponse(
-            status_code=503,
-            content={"error": "MemoryService not initialized"},
-        )
+    if svc is None:
+        return JSONResponse(status_code=503, content={"error": "MemoryService not initialized"})
 
-    deleted = await svc.ltm.delete_item(memory_id)
+    from app.memory.file_store.markdown_io import delete_markdown
+
+    filepath = svc.workspace.root / path
+    try:
+        filepath.resolve().relative_to(svc.workspace.root.resolve())
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+
+    deleted = delete_markdown(filepath)
     if not deleted:
-        return JSONResponse(
-            status_code=404,
-            content={"error": f"Memory {memory_id} not found"},
-        )
+        return JSONResponse(status_code=404, content={"error": f"File not found: {path}"})
+
+    # Remove from index
+    svc.auto_index.remove_file(filepath)
 
     return JSONResponse({"ok": True})
 
 
-# ─── Preference endpoints ──────────────────────────────────────────────────
+@router.get("/api/memory/search")
+async def search_memory(
+    query: str,
+    top_k: int = 10,
+    agent_id: str | None = None,
+    bucket: str | None = None,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """Search memory files using hybrid BM25 + wikilink search."""
+    svc = _get_memory_service()
+    if svc is None:
+        return JSONResponse(status_code=503, content={"error": "MemoryService not initialized"})
+
+    results = await svc.recall(query, top_k=top_k, agent_id=agent_id or "")
+    return JSONResponse({
+        "items": [
+            {
+                "path": r.path,
+                "name": r.name,
+                "content": r.content[:500],
+                "score": r.score,
+                "source": r.source,
+                "frontmatter": r.frontmatter,
+            }
+            for r in results
+        ],
+        "total": len(results),
+    })
+
+
+# ─── Proactive & auto_dream endpoints ──────────────────────────────────────
+
+
+@router.get("/api/memory/proactive")
+async def get_proactive_topics(
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """Get today's proactive interest topics."""
+    svc = _get_memory_service()
+    if svc is None:
+        return JSONResponse(status_code=503, content={"error": "MemoryService not initialized"})
+
+    topics = svc.proactive.get_topics()
+    return JSONResponse({"topics": topics, "total": len(topics)})
+
+
+@router.post("/api/memory/auto-dream")
+async def trigger_auto_dream(
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """Manually trigger the auto_dream refinement pipeline."""
+    svc = _get_memory_service()
+    if svc is None:
+        return JSONResponse(status_code=503, content={"error": "MemoryService not initialized"})
+
+    result = await svc.trigger_auto_dream()
+    return JSONResponse({"ok": True, "result": result})
+
+
+# ─── Preference endpoints (preserved unchanged) ────────────────────────────
 
 
 @router.get("/api/memory/preferences")
@@ -330,7 +344,7 @@ async def delete_preference(
     return JSONResponse({"ok": True})
 
 
-# ─── Session Memory endpoints ──────────────────────────────────────────────
+# ─── Session Memory endpoints (preserved unchanged) ────────────────────────
 
 
 @router.get("/api/memory/session/{conversation_id}")
@@ -354,7 +368,6 @@ async def get_session_memory(
             content={"error": f"No session memory for conversation {conversation_id}"},
         )
 
-    # Fetch conversation title for display
     title = ""
     async with get_local_db() as session:
         conv = await session.get(Conversation, conversation_id)
@@ -388,7 +401,6 @@ async def list_session_memories(
         result = await session.execute(stmt)
         rows = result.all()
 
-    # Batch fetch conversation titles
     conv_ids = [r[0] for r in rows]
     titles: dict[str, str] = {}
     if conv_ids:
@@ -411,25 +423,3 @@ async def list_session_memories(
         for r in rows
     ]
     return JSONResponse({"items": items, "total": len(items)})
-
-
-# ─── Embedding recomputation (async background) ────────────────────────────
-
-
-async def _recompute_embedding(svc, memory_id: int, content: str) -> None:
-    """Recompute embedding for a memory item and persist it.
-
-    Runs as a fire-and-forget background task. Uses the MemoryService's
-    embed_fn if available. Also syncs the updated content to GraphMemory.
-    """
-    embed_fn = getattr(svc, "_embed_fn", None)
-    if embed_fn is None:
-        logger.debug("Skipping embedding recompute: no embed_fn available")
-        return
-
-    try:
-        embedding = await asyncio.to_thread(embed_fn, content)
-        await svc.ltm.update_embedding(memory_id, embedding)
-        logger.info("Embedding recomputed for memory %d", memory_id)
-    except Exception as e:
-        logger.warning("Embedding recompute failed (id=%s): %s", memory_id, e)

@@ -103,8 +103,6 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     try:
         from app.memory.memory_service import MemoryService
         _memory_service = MemoryService(settings)
-        if _infrastructure and _infrastructure.neo4j_driver:
-            _memory_service.set_neo4j_driver(_infrastructure.neo4j_driver)
         await _memory_service.initialize()
     except Exception as e:
         logger.warning("MemoryService init failed: %s", e)
@@ -134,15 +132,12 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         else:
             logger.warning("RAG: generate_fn not available (no LLM API key)")
 
-        # Inject embed_fn and generate_fn into MemoryService for LTM semantic recall
-        if embed_fn and _memory_service:
-            _memory_service.set_embed_fn(embed_fn)
-            logger.info("Memory: embed_fn injected")
+        # Inject generate_fn into MemoryService for auto_memory + auto_dream
         if generate_fn and _memory_service:
             _memory_service.set_generate_fn(generate_fn)
             logger.info("Memory: generate_fn injected")
 
-        # Wire KG backend if Neo4j driver and LLM are both available
+        # Wire KG backend if Neo4j driver and LLM are both available (KGStore belongs to RAG, independent of memory system)
         if _infrastructure and _infrastructure.neo4j_driver and generate_fn:
             _wire_kg_to_rag(_rag_service, _infrastructure.neo4j_driver, settings, generate_fn)
             _kg_wired = True
@@ -528,14 +523,9 @@ def _log_startup_dashboard(settings) -> None:
     mem_status = []
     if _memory_service:
         mem_status.append("✓ MemoryService")
-        if _memory_service.stm:
-            mem_status.append("STM")
-        if _memory_service.ltm:
-            mem_status.append("LTM")
         if _memory_service.preference:
             mem_status.append("Preference")
-        if _memory_service.graph_memory:
-            mem_status.append("Graph")
+        mem_status.append(f"Indexed({ _memory_service.bm25.count() })")
     else:
         mem_status.append("✗ MemoryService not initialized")
     

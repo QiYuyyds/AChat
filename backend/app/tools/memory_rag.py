@@ -1,6 +1,6 @@
-"""Memory and RAG tools — rag_search, rag_ingest, rag_list_documents, rag_delete_document, memory_recall.
+"""Memory and RAG tools — rag_search, rag_ingest, rag_list_documents, rag_delete_document.
 
-Tools registered for the AGI-memory capability enhancement.
+memory_recall and memory_proactive tools are now in memory_store.py.
 rag_ingest supports managed document lifecycle (title → DocumentService).
 """
 
@@ -127,37 +127,6 @@ async def rag_delete_document_handler(args: Any, ctx: ToolContext) -> ToolResult
         return err(f"Delete document failed: {e}")
 
 
-async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
-    """Recall relevant memories from long-term memory."""
-    query = args.get("query", "").strip() if isinstance(args, dict) else str(args)
-    if not query:
-        return err("query is required for memory_recall")
-
-    top_k = args.get("top_k", 3) if isinstance(args, dict) else 3
-
-    try:
-        from app.main import _memory_service  # type: ignore[attr-defined]
-        if _memory_service is None:
-            return err("Memory service not initialized")
-        items = await _memory_service.recall(query, top_k=top_k, agent_id=ctx.agent_id, user_id=ctx.user_id)
-        memories = [
-            {
-                "content": item.content,
-                "importance": item.importance,
-                "score": item.score,
-                "category": item.category,
-                "summary": getattr(item, 'summary', '') or '',
-                "keywords": list(item.keywords) if getattr(item, 'keywords', None) else [],
-            }
-            for item in items
-        ]
-        # Also get preference context
-        pref_context = _memory_service.get_preference_context(user_id=ctx.user_id)
-        return ok({"memories": memories, "preferences": pref_context})
-    except Exception as e:
-        return err(f"Memory recall failed: {e}")
-
-
 rag_search_tool = ToolDef(
     name="rag_search",
     description="Search the knowledge base using hybrid retrieval (semantic + keyword + graph). "
@@ -237,30 +206,4 @@ rag_delete_document_tool = ToolDef(
         "required": ["document_id"],
     },
     handler=rag_delete_document_handler,
-)
-
-
-memory_recall_tool = ToolDef(
-    name="memory_recall",
-    description=(
-        "Recall relevant long-term memories and user preferences by semantic search. "
-        "Use this at the start of a task to check for past context, "
-        "or when the user references prior work. "
-        "Query with natural-language questions or specific keywords."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "The query to search for in long-term memory.",
-            },
-            "top_k": {
-                "type": "integer",
-                "description": "Maximum number of memories to return (default: 3).",
-            },
-        },
-        "required": ["query"],
-    },
-    handler=memory_recall_handler,
 )

@@ -10,39 +10,78 @@ async function json<T>(req: Promise<Response>): Promise<T> {
   return res.json() as Promise<T>
 }
 
-// ─── Types ─────────────────────────────────────────────────────────────────
+// ─── Types: Memory Files (file-native) ─────────────────────────────────────
 
-export interface LongTermMemoryItem {
-  id: number
-  content: string
-  importance: number
-  category: string
+export interface MemoryFileItem {
+  path: string
+  name: string
+  description: string
+  bucket: string
+  agentId: string | null
   tags: string[]
-  scope: string
-  agentId: string
-  createdAt: number
-  lastAccessed: number
-  summary: string
-  keywords: string[]
-  contentScope: string
+  importance: number
+  createdAt: string
+  updatedAt: string
+  source: string
+  bodyPreview: string
 }
 
-export interface LongTermMemoryListResponse {
-  items: LongTermMemoryItem[]
+export interface MemoryFileListResponse {
+  items: MemoryFileItem[]
   total: number
-  page: number
-  size: number
 }
 
-export interface LTMUpdateBody {
-  content?: string
-  importance?: number
-  category?: string
-  tags?: string[]
-  summary?: string
-  keywords?: string[]
-  contentScope?: string
+export interface MemoryFileDetail {
+  path: string
+  name: string
+  description: string
+  agentId: string | null
+  tags: string[]
+  importance: number
+  bucket: string
+  createdAt: string
+  updatedAt: string
+  source: string
+  body: string
 }
+
+export interface MemoryFileWriteBody {
+  name: string
+  body: string
+  description?: string
+  agentId?: string | null
+  tags?: string[]
+  importance?: number
+  bucket?: string
+}
+
+export interface MemorySearchResult {
+  path: string
+  name: string
+  content: string
+  score: number
+  source: string
+  frontmatter: Record<string, unknown>
+}
+
+export interface MemorySearchResponse {
+  items: MemorySearchResult[]
+  total: number
+}
+
+// ─── Types: Proactive ──────────────────────────────────────────────────────
+
+export interface ProactiveTopic {
+  topic: string
+  reason: string
+}
+
+export interface ProactiveResponse {
+  topics: ProactiveTopic[]
+  total: number
+}
+
+// ─── Types: Preferences (preserved) ────────────────────────────────────────
 
 export interface PreferenceItem {
   key: string
@@ -53,6 +92,8 @@ export interface PreferenceListResponse {
   items: PreferenceItem[]
   total: number
 }
+
+// ─── Types: Session Memory (preserved) ─────────────────────────────────────
 
 export interface SessionMemoryItem {
   conversationId: string
@@ -74,33 +115,33 @@ export interface SessionMemoryDetail {
   coversUpTo: number | null
 }
 
-// ─── LTM API ───────────────────────────────────────────────────────────────
+// ─── Memory File API ───────────────────────────────────────────────────────
 
-export async function fetchLongTermMemories(params: {
+export async function fetchMemoryFiles(params: {
+  bucket?: string
   agentId?: string
-  category?: string
-  tag?: string
-  page?: number
-  size?: number
-}): Promise<LongTermMemoryListResponse> {
+}): Promise<MemoryFileListResponse> {
   const search = new URLSearchParams()
+  if (params.bucket) search.set('bucket', params.bucket)
   if (params.agentId) search.set('agent_id', params.agentId)
-  if (params.category) search.set('category', params.category)
-  if (params.tag) search.set('tag', params.tag)
-  if (params.page) search.set('page', String(params.page))
-  if (params.size) search.set('size', String(params.size))
   const qs = search.toString()
-  return json<LongTermMemoryListResponse>(
-    authFetch(`${API_BASE_URL}/api/memory/long-term${qs ? '?' + qs : ''}`),
+  return json<MemoryFileListResponse>(
+    authFetch(`${API_BASE_URL}/api/memory/files${qs ? '?' + qs : ''}`),
   )
 }
 
-export async function updateLongTermMemory(
-  id: number,
-  body: LTMUpdateBody,
-): Promise<{ ok: boolean }> {
-  return json<{ ok: boolean }>(
-    authFetch(`${API_BASE_URL}/api/memory/long-term/${id}`, {
+export async function readMemoryFile(path: string): Promise<MemoryFileDetail> {
+  return json<MemoryFileDetail>(
+    authFetch(`${API_BASE_URL}/api/memory/files/${encodeURIComponent(path)}`),
+  )
+}
+
+export async function writeMemoryFile(
+  path: string,
+  body: MemoryFileWriteBody,
+): Promise<{ ok: boolean; path: string }> {
+  return json<{ ok: boolean; path: string }>(
+    authFetch(`${API_BASE_URL}/api/memory/files/${encodeURIComponent(path)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -108,15 +149,47 @@ export async function updateLongTermMemory(
   )
 }
 
-export async function deleteLongTermMemory(id: number): Promise<{ ok: boolean }> {
+export async function deleteMemoryFile(path: string): Promise<{ ok: boolean }> {
   return json<{ ok: boolean }>(
-    authFetch(`${API_BASE_URL}/api/memory/long-term/${id}`, {
+    authFetch(`${API_BASE_URL}/api/memory/files/${encodeURIComponent(path)}`, {
       method: 'DELETE',
     }),
   )
 }
 
-// ─── Preference API ────────────────────────────────────────────────────────
+export async function searchMemoryFiles(params: {
+  query: string
+  topK?: number
+  agentId?: string
+  bucket?: string
+}): Promise<MemorySearchResponse> {
+  const search = new URLSearchParams()
+  search.set('query', params.query)
+  if (params.topK) search.set('top_k', String(params.topK))
+  if (params.agentId) search.set('agent_id', params.agentId)
+  if (params.bucket) search.set('bucket', params.bucket)
+  return json<MemorySearchResponse>(
+    authFetch(`${API_BASE_URL}/api/memory/search?${search.toString()}`),
+  )
+}
+
+// ─── Proactive API ─────────────────────────────────────────────────────────
+
+export async function fetchProactiveTopics(): Promise<ProactiveResponse> {
+  return json<ProactiveResponse>(
+    authFetch(`${API_BASE_URL}/api/memory/proactive`),
+  )
+}
+
+export async function triggerAutoDream(): Promise<{ ok: boolean; result: unknown }> {
+  return json<{ ok: boolean; result: unknown }>(
+    authFetch(`${API_BASE_URL}/api/memory/auto-dream`, {
+      method: 'POST',
+    }),
+  )
+}
+
+// ─── Preference API (preserved) ────────────────────────────────────────────
 
 export async function fetchPreferences(): Promise<PreferenceListResponse> {
   return json<PreferenceListResponse>(
@@ -145,7 +218,7 @@ export async function deletePreference(key: string): Promise<{ ok: boolean }> {
   )
 }
 
-// ─── Session Memory API ───────────────────────────────────────────────────
+// ─── Session Memory API (preserved) ────────────────────────────────────────
 
 export async function fetchSessionMemories(): Promise<SessionMemoryListResponse> {
   return json<SessionMemoryListResponse>(

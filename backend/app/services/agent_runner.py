@@ -247,14 +247,6 @@ async def _post_run_memory_hook(
 
                         if agent_text:
                             await ms.on_message_end("assistant", agent_text, agent_id, conversation_id=conversation_id, user_id=user_id)
-
-        # Case memory extraction at task completion
-        try:
-            asyncio.create_task(ms._safe_extract_case_memories(
-                conversation_id, agent_id, user_id=user_id,
-            ))
-        except Exception:
-            pass
     except Exception as e:
         logger.warning("_post_run_memory_hook error: %s", e)
 

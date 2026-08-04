@@ -44,13 +44,16 @@ from app.tools.manage_memory import manage_memory_tool
 from app.tools.manage_profile import manage_profile_tool
 from app.tools.manage_skills import manage_skills_tool
 from app.tools.memory_rag import (
-    memory_recall_tool,
     rag_delete_document_tool,
     rag_ingest_tool,
     rag_list_documents_tool,
     rag_search_tool,
 )
-from app.tools.memory_store import memory_store_tool
+from app.tools.memory_store import (
+    memory_proactive_tool,
+    memory_recall_tool,
+    memory_store_tool,
+)
 from app.tools.read_artifact import read_artifact_tool
 from app.tools.read_attachment import read_attachment_tool
 from app.tools.skills import load_skill_tool, write_skill_tool
@@ -221,6 +224,7 @@ def _build_registry() -> ToolRegistry:
     reg.register(rag_delete_document_tool)
     reg.register(memory_recall_tool)
     reg.register(memory_store_tool)
+    reg.register(memory_proactive_tool)
     reg.register(web_search_tool)
     # load_skill is auto-injected per equipped skill; write_skill is opt-in (tool_names).
     reg.register(load_skill_tool)

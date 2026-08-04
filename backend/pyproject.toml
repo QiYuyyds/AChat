@@ -39,6 +39,9 @@ dependencies = [
 
     # MCP client (external MCP server support for Custom adapter)
     "mcp>=1.0.0",
+
+    # Memory file-native (frontmatter parsing)
+    "python-frontmatter>=1.1.0",
 ]
 
 [project.optional-dependencies]

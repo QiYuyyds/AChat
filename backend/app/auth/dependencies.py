@@ -46,12 +46,11 @@ def _invalidate_user_cache(user_id: str) -> None:
 
 
 def _extract_token(request: Request) -> str | None:
-    """Read JWT from HttpOnly cookie (production) or Authorization header (dev).
+    """Read JWT from HttpOnly cookie, Authorization header, or ?token= query param.
 
-    The Authorization header fallback exists so that cross-origin dev setups
-    (frontend :3000 → backend :8000) and API testing tools can authenticate
-    without cookies. SSE connections use the ``?token=`` query param which is
-    handled separately in the stream endpoint.
+    Priority: cookie → Authorization header → query param. The query param
+    fallback exists for cross-origin sandbox iframe previews and SSE
+    EventSource connections that cannot set headers or send cookies.
     """
     # 1. Cookie (same-origin / production)
     token = request.cookies.get(COOKIE_NAME)
@@ -62,6 +61,11 @@ def _extract_token(request: Request) -> str | None:
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[7:]
+
+    # 3. Query param ?token= (cross-origin sandbox iframe / EventSource)
+    token = request.query_params.get("token")
+    if token:
+        return token
 
     return None
 

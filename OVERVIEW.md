@@ -14,7 +14,7 @@
 
 > 把多 Agent 协作做成 IM 群聊体验 —— Agent 是「联系人」，对话是「工作空间」，Orchestrator 是「群里的项目经理」。
 
-前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus + ES + Neo4j）、**分层记忆系统**、**Document + Version 知识库**、**代码图谱智能**、**执行计划工具**、**Obsidian 知识同步**、**外部 MCP 接入**、**Run 内压缩**，并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
+前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus + ES + Neo4j）、**文件原生记忆系统**（auto_memory / auto_dream pipeline + SQLite FTS5 混合检索）、**Document + Version 知识库**、**代码图谱智能**、**执行计划工具**、**Obsidian 知识同步**、**外部 MCP 接入**、**Run 内压缩**，并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
 
 ### 2. 五层架构 + 数据流
 
@@ -90,7 +90,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **执行计划工具** | ✅ | create_plan / plan_step / add_plan_steps · 结构化计划卡片 UI · 步骤状态实时更新 |
 | **代码图谱智能** | ✅ | CodeGraph 本地运行时 · code_explore 工具 · 索引管理 · 后台同步 · 状态机 |
 | **RAG 混合检索** | ✅ | Milvus(向量) + ES(全文) + Neo4j(KGStore) + RRF 融合 + Query Rewrite + Rerank |
-| **分层记忆系统** | ✅ | STM(短期) + LTM(长期, embedding 召回) + SessionMemory(会话) + Preference(偏好) + GraphMemory(图谱) + 自动固化/衰减 |
+| **文件原生记忆系统** | ✅ | auto_memory（对话→daily 卡片）+ auto_dream（daily→digest 精炼）+ SQLite FTS5 BM25 + wikilink 扩展 + RRF 融合检索 + Preference（PG KV）+ SessionMemory（会话压缩） |
 | **Document + Version 知识库** | ✅ | 全局文档版本化 · 解析入库(pdfplumber→PyPDF2→pdftotext) · 按需召回 · 版本刷新 |
 | **Obsidian 知识同步** | ✅ | vault 同步 · obsidian_preprocessor 预处理 · RAG 入库 |
 | **外部 MCP 接入** | ✅ | MCP Server 配置管理 · client_manager · 调用审批 · mcp_bridge 暴露平台工具给 CLI agent |
@@ -286,15 +286,13 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 ### 记忆系统（`backend/app/memory/`）
 | 文件 | 职责 |
 |---|---|
-| `memory_service.py` | ★ 门面：STM + LTM + SessionMemory + Preference + GraphMemory |
-| `short_term.py` | 短期记忆（chat_history 表，滑动窗口） |
-| `long_term.py` | 长期记忆（long_term_memory 表，embedding 语义召回） |
-| `session_memory.py` | ★ 会话记忆（跨 run 会话级上下文） |
-| `preference.py` | 用户偏好（user_preferences 表，KV） |
-| `graph_memory.py` | 图谱记忆（Neo4j + memory_nodes/edges 镜像表） |
-| `memory_writer.py` | 记忆写入门面 |
-| `consolidation.py` | 记忆固化 / 去重 / 衰减 / TTL |
-
+| `memory_service.py` | ★ 门面：file-native pipeline (auto_memory + auto_index + auto_dream + proactive) + Preference + SessionMemory |
+| `file_store/` | Markdown 文件读写 + frontmatter + wikilinks + workspace 目录管理 |
+| `search/` | SQLite FTS5 BM25 + wikilink 图扩展 + RRF 融合检索 |
+| `pipeline/` | auto_memory + auto_index + auto_dream + proactive |
+| `preference.py` | 用户偏好（PG KV 表，保留不动） |
+| `session_memory.py` | 会话摘要（上下文压缩，保留不动） |
+| `memory_writer_compat.py` | Preference 提取工具（从旧 memory_writer 保留） |
 ### 知识图谱（`backend/app/graph/`）
 | 文件 | 职责 |
 |---|---|
@@ -325,7 +323,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 ### L1 持久化（`backend/app/db/`）
 | 文件 | 说明 |
 |---|---|
-| `models.py` | **22 张表**：14 核心（users/agents/conversations/messages/artifacts/workspaces/attachments/agent_runs/agent_run_checkpoints/context_summaries/app_settings/global_settings/user_settings/mcp_servers）+ 6 AGI-memory（long_term_memory/user_preferences/rag_chunks/chat_history/memory_nodes/memory_edges）+ 2 Document（documents/document_versions） |
+| `models.py` | **19 张表**：14 核心（users/agents/conversations/messages/artifacts/workspaces/attachments/agent_runs/agent_run_checkpoints/context_summaries/app_settings/global_settings/user_settings/mcp_servers）+ 3 AGI-memory（user_preferences/rag_chunks/chat_history）+ 2 Document（documents/document_versions）。记忆系统已迁移到文件原生（Markdown + SQLite FTS5），不再使用 long_term_memory/memory_nodes/memory_edges 表 |
 | `table_routing.py` | ★ 双 DB 表路由（10 张本地 SQLite + 12 张远端 PG） |
 | `engine.py` | ★ 双引擎：本地 SQLite[WAL] + 远端 PostgreSQL（连接池） |
 | `__init__.py` | 模块导出 |
@@ -373,7 +371,7 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 - **生命周期 Hooks 系统**：7 个内置 Hook · 10 个生命周期事件 · Agent 按 `hook_names` 启用
 - **Checkpoint 检查点**：SDK Agent turn 级检查点保存与恢复
 - **RAG 混合检索系统**：Milvus(向量) + Elasticsearch(全文) + Neo4j(KGStore) 三路召回 + RRF 融合 + Query Rewrite + Rerank
-- **分层记忆系统**：STM + LTM(embedding 召回) + SessionMemory + Preference + GraphMemory + 自动固化/去重/衰减
+- **文件原生记忆系统**：auto_memory + auto_dream pipeline + SQLite FTS5 BM25 + wikilink 扩展 + RRF 融合 + Preference(PG KV) + SessionMemory
 - **Document + Version 知识库**：全局文档版本化 · 解析入库 · 按需召回 · 版本刷新三能力
 - **PromptAssembler**：Profile + Recall + Constraints 上下文组装
 - **PostgreSQL 迁移**：从 SQLite 迁移到 PostgreSQL 16（asyncpg），22 张表

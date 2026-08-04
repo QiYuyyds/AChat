@@ -22,7 +22,7 @@
 - **Worktree 隔离**（DAG 波调度并行任务用 git worktree 隔离）
 - **用户认证与多用户隔离**（JWT + bcrypt · CSRF 防护 · 所有用户数据 `user_id` 隔离）
 - **RAG 混合检索**（Milvus 向量 + Elasticsearch 全文 + Neo4j 知识图谱，RRF 融合）
-- **分层记忆系统**（短期 / 会话 / 长期 / 偏好 / 图谱记忆 + 自动固化与衰减）
+- **文件原生记忆系统**（Markdown 文件 + frontmatter + wikilinks + auto_memory/auto_dream pipeline + SQLite FTS5 混合检索）
 - **Document + Version 知识库**（全局文档版本化、解析入库、按需召回）
 - **Obsidian 知识同步**（vault 同步 + 预处理 + RAG 入库）
 - **代码图谱智能**（CodeGraph 本地运行时 + code_explore 工具 + 索引管理）
@@ -71,13 +71,13 @@
 |---|---|---|
 | PostgreSQL | `postgres:16-alpine` | 关系型主库（业务库 `agenthub` 22 张表 + Phoenix 专用库 `achat_observability`） |
 | Phoenix | `arizephoenix/phoenix:latest` | ★ Agent 可观测性后端（Trace 瀑布流 + Eval 评分 · :6006 Web UI · :4317 OTLP gRPC） |
-| Milvus | `milvusdb/milvus:v2.4.17` | 向量检索（RAG 语义 + LTM recall） |
+| Milvus | `milvusdb/milvus:v2.4.17` | 向量检索（RAG 语义） |
 | Elasticsearch | `elasticsearch:8.14.0` | 全文检索（RAG BM25） |
-| Neo4j | `neo4j:5-community` | 知识图谱（KGStore + GraphMemory） |
+| Neo4j | `neo4j:5-community` | 知识图谱（RAG KGStore） |
 | Kafka | 可选 | 事件总线增强（默认 in-process） |
 | Redis | ~~`redis:7-alpine`~~ | ~~元数据缓存 + 异步 DB 写入~~ — **已移除**，双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代 |
 
-> **降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op；Kafka 不配 → 用 in-process EventBus；Phoenix 不可达 → OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路。启动时打印状态面板。
+> **降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → KGStore no-op；Kafka 不配 → 用 in-process EventBus；Phoenix 不可达 → OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路。启动时打印状态面板。
 
 ---
 
@@ -104,7 +104,7 @@
 │  Infrastructure Layer (可选, 独立降级)          backend/app/infra/   │
 │  Milvus(向量) · Elasticsearch(全文) · Neo4j(图谱) · Kafka(事件)     │
 │  └─ RAG 混合检索 (backend/app/rag/)  HybridStore + RRF              │
-│  └─ 记忆系统 (backend/app/memory/)  STM/LTM/Session/Preference/Graph │
+│  └─ 记忆系统 (backend/app/memory/)  file-native + SessionMemory/Preference │
 │  └─ 知识图谱 (backend/app/graph/)   KGStore + Extractor             │
 │  └─ 代码图谱智能 (backend/app/code_intelligence/)  CodeGraph 运行时  │
 └──────────────────────────────────────────────────────────────────┘
@@ -296,15 +296,14 @@ backend/
 │   │   ├── reranker.py      Reranking (LLM 打分重排)
 │   │   └── obsidian_preprocessor.py ★ Obsidian vault 预处理 (wikilink 解析 · frontmatter 提取)
 │   │
-│   ├── memory/ (8)         【分层记忆系统】
-│   │   ├── memory_service.py  ★ 门面: STM + LTM + SessionMemory + Preference + GraphMemory
-│   │   ├── short_term.py      短期记忆 (chat_history 表, 滑动窗口)
-│   │   ├── long_term.py       ★ 长期记忆 (long_term_memory 表, embedding 语义召回 + 结构化字段 summary/keywords/content_scope + 双路检索)
-│   │   ├── session_memory.py  ★ 会话记忆 (跨 run 会话级上下文)
-│   │   ├── preference.py      用户偏好 (user_preferences 表, KV)
-│   │   ├── graph_memory.py    图谱记忆 (Neo4j + memory_nodes/edges 镜像表)
-│   │   ├── memory_writer.py   记忆写入门面
-│   │   └── consolidation.py   记忆固化 / 去重 / 衰减 / TTL (支持结构化字段同步 + case 类型专用参数)
+│   ├── memory/             【文件原生记忆系统】
+│   │   ├── memory_service.py  ★ 门面: file-native pipeline + Preference + SessionMemory
+│   │   ├── file_store/        Markdown 文件读写 + frontmatter + wikilinks + workspace
+│   │   ├── search/            SQLite FTS5 BM25 + wikilink 图扩展 + RRF 融合
+│   │   ├── pipeline/          auto_memory + auto_index + auto_dream + proactive
+│   │   ├── preference.py      用户偏好 (user_preferences 表, KV) — 保留不动
+│   │   ├── session_memory.py  会话摘要 (跨 run 上下文压缩) — 保留不动
+│   │   └── memory_writer_compat.py  Preference 提取工具 (从旧 memory_writer 保留)
 │   │
 │   ├── graph/ (4)          【知识图谱】
 │   │   ├── kgstore.py       KGStore: 文档 → 实体/关系抽取 → Neo4j 入图 → 子图检索
@@ -394,12 +393,9 @@ backend/
 
 | 表 | 说明 | 路由 |
 |---|---|---|
-| `long_term_memory` | 长期记忆（content / importance / embedding / category / tags / score / **summary** / **keywords** / **content_scope** / **user_id**）★ 结构化字段 + 双路检索 | 远端 PG |
 | `user_preferences` | 用户偏好 KV（**user_id** / key / value / source） | 远端 PG |
 | `rag_chunks` | RAG 文档分块（doc_hash / chunk_idx / content / embedding / document_id / version_id / content_hash / **user_id**） | 远端 PG |
-| `chat_history` | 短期记忆持久化（role / content） | 远端 PG |
-| `memory_nodes` | 记忆图谱节点（Neo4j 镜像表） | 远端 PG |
-| `memory_edges` | 记忆图谱边（from_id / to_id / rel_type / weight） | 远端 PG |
+| `chat_history` | 对话历史持久化（role / content） | 远端 PG |
 
 ### Document + Version 知识库（2 张）
 
@@ -553,12 +549,12 @@ Agent 启动 (ON_RUN_START)
         └─ ConsolidationService:
            ├─ 去重 (cosine 相似度 > dedup 阈值 → 合并)
            ├─ 衰减 (importance *= decay_rate, 低于 min → 清理)
-           └─ 写入 LongTermMemory (long_term_memory 表, embedding 向量)
-              └─ GraphMemory 抽取实体/关系 → Neo4j + memory_nodes/edges 镜像表
+└─ 写入 daily/ Markdown 卡片 (auto_memory pipeline)
+└─ auto_dream 精炼: daily → digest/{procedure,wiki} Markdown 文件
 
 Agent 运行时注入 (PromptAssembler):
   ProfileSource (UserPreference)  → 用户偏好
-  RecallSource (LTM + GraphMemory) → 语义召回相关记忆
+  RecallSource (file-native hybrid search) → BM25 + wikilink 召回相关记忆
   ConstraintsSource               → 约束规则
   → 组装为 system prompt 补充段
 ```
@@ -663,7 +659,7 @@ OPENAI_API_KEY=...
 DEEPSEEK_API_KEY=...
 ARK_API_KEY=...
 TAVILY_API_KEY=...           # web_search 工具
-EMBEDDING_API_KEY=...        # RAG / LTM 语义检索
+EMBEDDING_API_KEY=...        # RAG 语义检索
 EMBEDDING_API_URL=...
 EMBEDDING_MODEL=...
 MILVUS_HOST=localhost        # 留空 = 禁用 Milvus
@@ -685,17 +681,17 @@ EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge (默认关闭)
 | 服务 | 配置为空时 | 影响 |
 |---|---|---|
 | PostgreSQL | — (必需) | 后端无法启动 |
-| Milvus | `MILVUS_HOST` 空 | RAG 向量检索退化；LTM 退化为 TF cosine |
+| Milvus | `MILVUS_HOST` 空 | RAG 向量检索退化 |
 | Elasticsearch | `ES_ADDRESSES` 空 | RAG 无全文检索 |
-| Neo4j | `NEO4J_URI` 空 或 `ENABLE_GRAPH=false` | GraphMemory no-op；RAG 无图谱检索 |
+| Neo4j | `NEO4J_URI` 空 或 `ENABLE_GRAPH=false` | KGStore no-op；RAG 无图谱检索 |
 | Kafka | `KAFKA_BROKERS` 空 | 用 in-process EventBus（默认） |
 | ~~Redis~~ | ~~`REDIS_URL` 空~~ | ~~**已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代~~ |
 | Phoenix | `TRACE_ENABLED=false` 或 Phoenix 不可达 | OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路 |
-| Embedding API | `EMBEDDING_API_KEY` 空 | RAG / LTM 无语义检索能力 |
+| Embedding API | `EMBEDDING_API_KEY` 空 | RAG 无语义检索能力 |
 | LLM API (RAG 用) | 无任何 LLM key | RAG 无 rewrite / rerank；KG 无实体抽取 |
 
 > 启动时后端打印状态面板，一目了然哪些服务已连接、哪些降级。
 
 ---
 
-*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-30 · 同步双 DB 架构（本地 SQLite[WAL] + 远端 PostgreSQL）、Redis 移除、Worktree 三层冲突解决、结构化记忆（LTM summary/keywords/content_scope + 双路检索）、rag_search 迁移为 Agent 级工具等近期变更。*
+*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-08-04 · 文件原生记忆系统迁移（Markdown + SQLite FTS5 + auto_memory/auto_dream pipeline）、移除 long_term_memory/memory_nodes/memory_edges 表、Neo4j 仅保留 RAG KGStore。*

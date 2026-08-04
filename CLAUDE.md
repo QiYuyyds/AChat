@@ -24,7 +24,7 @@
 - **代码图谱智能**（CodeGraph 本地运行时 + `code_explore` 工具）
 - **执行计划工具**（`create_plan` / `plan_step` / `add_plan_steps` 结构化计划卡片）
 - **RAG 混合检索**（Milvus 向量 + Elasticsearch 全文 + Neo4j 知识图谱）
-- **分层记忆系统**（短期 / 会话 / 长期 / 偏好 / 图谱记忆 + 自动固化与衰减）
+- **文件原生记忆系统**（Markdown 文件 + frontmatter + wikilinks + auto_memory/auto_dream pipeline + 混合检索）
 - **Document + Version 知识库**（全局文档版本化、解析入库、按需召回）
 - **Obsidian 知识同步**（vault 同步 + 预处理 + RAG 入库）
 - **外部 MCP 接入**（MCP Server 配置管理 + client_manager + 调用审批）
@@ -71,9 +71,9 @@
 | 服务 | 用途 | 不配时 |
 |---|---|---|
 | PostgreSQL 16 | 关系型主库 | **必需**，后端无法启动 |
-| Milvus v2.4.17 | 向量检索（RAG / LTM） | 退化为 TF cosine |
+| Milvus v2.4.17 | 向量检索（RAG） | 退化为 TF cosine |
 | Elasticsearch 8.14 | 全文检索（RAG BM25） | 无全文检索 |
-| Neo4j 5 | 知识图谱（KGStore / GraphMemory） | GraphMemory no-op |
+| Neo4j 5 | 知识图谱（RAG KGStore） | KGStore no-op，RAG 退化为向量+全文 |
 | Kafka | 事件总线增强（可选） | 用 in-process EventBus |
 | ~~Redis 7~~ | ~~元数据缓存 + 异步 DB 写入~~ | **已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代 |
 | Phoenix | Agent 可观测性后端（OTel Trace + Eval 评分 · :6006 Web UI · :4317 OTLP gRPC） | OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路 |
@@ -158,9 +158,17 @@ Custom agent（SDK 路线）的工具分两层：
 - CLI agent（Claude Code / Codex）**不参与** baseline 合并，使用各自 CLI 内置工具集
 - 前端 `src/shared/agent-builder-config.ts` 与后端 `backend/app/api/agents.py` 的 `_BASELINE_AGENT_TOOLS` 必须保持一致
 
-### 3.8 RAG / 记忆是可选增强，不是硬依赖
+### 3.8 RAG 是可选增强；记忆是文件原生
 
-RAG 混合检索和分层记忆系统通过 `PromptAssembler` 注入 Agent 上下文，但它们**降级时不应阻断核心对话流**。基础设施不可用时，Agent 仍能正常对话（只是没有知识增强）。
+RAG 混合检索通过 `PromptAssembler` 注入 Agent 上下文，**降级时不应阻断核心对话流**。基础设施不可用时，Agent 仍能正常对话（只是没有知识增强）。
+
+记忆系统是 **file-native** 架构：
+- 记忆内容以 Markdown 文件 + frontmatter + wikilinks 存储（`<DATA_DIR>/memory/`），用户可直接查看/编辑/版本化
+- 三级生命周期：`session/`（原始对话 jsonl）→ `daily/`（每日卡片）→ `digest/`（精炼长期记忆）
+- pipeline：`auto_memory`（对话结束 → LLM 提取事实 → daily 卡片）→ `auto_index`（文件变更 → SQLite FTS5 + wikilink 索引更新）→ `auto_dream`（阈值触发 → daily 精炼到 digest）→ `proactive`（interests.yaml → Agent 主动拉取）
+- 检索：SQLite FTS5 BM25 + wikilink 图扩展 + RRF 融合（`HybridSearch`）
+- **Preference 系统**保留 PG KV 表不动（`user_preferences` 表 + `Preference` 类 + `ProfileSource` 注入）
+- 代码在 `backend/app/memory/`（`file_store/` + `search/` + `pipeline/` + `memory_service.py`）
 
 ### 3.9 可观测性是可选增强，不是硬依赖
 
@@ -418,7 +426,7 @@ Key 来源按优先级（详见 `backend/app/services/agent_runner.py:build_adap
 
 > ⚠️ 可观测性与评测代码已在 `backend/app/observability/` 落地，但 OpenSpec 主 spec 尚未建立（见 `openspec/changes/add-agent-observability/` 与 `add-rag-evaluation/`）。用户资料管理（profile）代码在 `backend/app/api/profile.py`，但未单独建立 OpenSpec capability。
 >
-> ⚠️ 结构化记忆增强（LTM `summary` / `keywords` / `content_scope` 字段 + 双路检索）和 `rag_search` 迁移为 Agent 级工具的 OpenSpec change 尚在 `openspec/changes/` 未 archive（见 `add-structured-memory-items/` 与 `move-rag-to-agent-tool/`）。
+> ⚠️ `rag_search` 迁移为 Agent 级工具的 OpenSpec change 尚在 `openspec/changes/` 未 archive（见 `move-rag-to-agent-tool/`）。
 
 ### `specs/`（编号版详细规格）
 
