@@ -100,9 +100,6 @@ class Agent(Base):
     __tablename__ = "agents"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str | None] = mapped_column(
-        String, name="user_id", nullable=True
-    )
     name: Mapped[str] = mapped_column(String, nullable=False)
     avatar: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=False)
@@ -230,9 +227,6 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str] = mapped_column(
-        String, name="user_id", nullable=False
-    )
     title: Mapped[str] = mapped_column(String, nullable=False)
     mode: Mapped[str] = mapped_column(String, nullable=False)  # 'single' | 'group'
 
@@ -746,19 +740,17 @@ class UserSettings(Base):
 
 
 class ModelProfile(Base):
-    """User-scoped reusable model configuration (provider + model_id + key + url).
+    """Reusable model configuration (provider + model_id + key + url).
 
     Replaces the per-Agent model fields (model_provider / model_id / api_key /
     api_base_url / supports_vision) that were removed. Each profile is a named,
     testable model configuration that can be selected per-message in the input bar.
+    Single-user local table — no user_id column.
     """
 
     __tablename__ = "model_profiles"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str] = mapped_column(
-        String, name="user_id", nullable=False
-    )
     name: Mapped[str] = mapped_column(String, nullable=False)
     provider: Mapped[str] = mapped_column(String, nullable=False)
     model_id: Mapped[str] = mapped_column(String, name="model_id", nullable=False)
@@ -781,12 +773,17 @@ class ModelProfile(Base):
     last_tested_at: Mapped[int | None] = mapped_column(
         BigInteger, name="last_tested_at", nullable=True
     )
+    cache_style: Mapped[str | None] = mapped_column(
+        String(16), name="cache_style", nullable=True
+    )
+    detected_cache_style: Mapped[str | None] = mapped_column(
+        String(16), name="detected_cache_style", nullable=True
+    )
     created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
 
     __table_args__ = (
-        Index("idx_model_profiles_user", "user_id"),
-        # Partial unique index: at most one is_default=true per user.
+        # Partial unique index: at most one is_default=true.
         # On SQLite this is handled at application level; on PG the index is
         # created via the migration statements in engine.py.
     )
@@ -798,9 +795,6 @@ class McpServer(Base):
     __tablename__ = "mcp_servers"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str] = mapped_column(
-        String, name="user_id", nullable=False
-    )
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     transport: Mapped[str] = mapped_column(String, nullable=False)  # 'stdio' | 'sse' | 'streamable_http'
     command: Mapped[str | None] = mapped_column(String, nullable=True)

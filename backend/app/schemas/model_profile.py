@@ -8,6 +8,9 @@ from pydantic import BaseModel, Field
 
 ModelProvider = Literal["anthropic", "openai", "deepseek", "volcano-ark", "openai-compatible"]
 TestStatus = Literal["untested", "ok", "fail"]
+CacheStyle = Literal['deepseek', 'anthropic', 'none']
+
+_KNOWN_PROVIDERS = {'anthropic', 'openai', 'deepseek', 'volcano-ark'}
 
 
 def _mask_key(key: str | None) -> str:
@@ -27,6 +30,7 @@ class CreateModelProfileRequest(BaseModel):
     api_base_url: str | None = Field(default=None, alias="apiBaseUrl")
     is_default: bool | None = Field(default=None, alias="isDefault")
     supports_vision: bool | None = Field(default=False, alias="supportsVision")
+    cache_style: CacheStyle | None = Field(default=None, alias="cacheStyle")
 
     model_config = {"populate_by_name": True, "protected_namespaces": ()}
 
@@ -39,6 +43,7 @@ class UpdateModelProfileRequest(BaseModel):
     api_base_url: str | None = Field(default=None, alias="apiBaseUrl")
     is_default: bool | None = Field(default=None, alias="isDefault")
     supports_vision: bool | None = Field(default=None, alias="supportsVision")
+    cache_style: CacheStyle | None = Field(default=None, alias="cacheStyle")
 
     model_config = {"populate_by_name": True, "protected_namespaces": ()}
 
@@ -56,6 +61,8 @@ class ModelProfileOut(BaseModel):
     supports_vision: bool = Field(alias="supportsVision")
     last_test_status: str = Field(alias="lastTestStatus")
     last_tested_at: int | None = Field(default=None, alias="lastTestedAt")
+    cache_style: CacheStyle | None = Field(default=None, alias="cacheStyle")
+    detected_cache_style: CacheStyle | None = Field(default=None, alias="detectedCacheStyle")
     created_at: int = Field(alias="createdAt")
     updated_at: int = Field(alias="updatedAt")
 

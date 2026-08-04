@@ -21,10 +21,9 @@ from app.utils.clock import now_ms
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _make_agent(adapter_name: str = "custom", user_id: str = "test_user_1") -> Agent:
+def _make_agent(adapter_name: str = "custom") -> Agent:
     agent = Agent(
         id="ag_test",
-        user_id=user_id,
         name="Test",
         avatar="T",
         description="test agent",
@@ -45,7 +44,6 @@ def _make_agent(adapter_name: str = "custom", user_id: str = "test_user_1") -> A
 
 def _make_profile(
     pid: str = "mp_test",
-    user_id: str = "test_user_1",
     is_default: bool = True,
     provider: str = "deepseek",
     model_id: str = "deepseek-chat",
@@ -54,7 +52,6 @@ def _make_profile(
 ) -> ModelProfile:
     return ModelProfile(
         id=pid,
-        user_id=user_id,
         name=f"{provider}/{model_id}",
         provider=provider,
         model_id=model_id,

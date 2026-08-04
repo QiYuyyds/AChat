@@ -15,10 +15,9 @@ subscriber:
   - :meth:`EventBus.subscribe` is an async context manager yielding the queue;
     the SSE layer drains it and serializes events to the wire.
 
-Multi-user isolation: each subscriber is tagged with a ``user_id``. Events
-published with a ``user_id`` are only delivered to the matching subscriber.
-Events published with ``user_id=None`` are broadcast to all subscribers
-(system events like heartbeats).
+Single-user mode: all events are delivered to all subscribers.
+The ``user_id`` parameter on ``publish`` and ``subscribe`` is retained for
+API compatibility but ignored — local data is single-user.
 
 Single-process and local-first, so at most a handful of concurrent subscribers
 (a desktop tab plus an occasional phone). Queues are bounded; on overflow we
@@ -62,14 +61,13 @@ class EventBus:
         self._subscribers: set[_Subscriber] = set()
 
     def publish(self, event: StreamEvent, user_id: str | None = None) -> None:
-        """Broadcast an event to matching subscribers (non-blocking).
+        """Broadcast an event to all subscribers (non-blocking).
 
-        ``user_id=None`` means broadcast to every subscriber (system events).
-        A non-None ``user_id`` delivers only to subscribers with the same id.
+        In single-user mode, all events are delivered to all subscribers.
+        The ``user_id`` parameter is retained for API compatibility but ignored.
         """
         for sub in list(self._subscribers):
-            if user_id is None or sub.user_id == user_id:
-                _offer(sub.queue, event)
+            _offer(sub.queue, event)
 
     @asynccontextmanager
     async def subscribe(
@@ -77,8 +75,8 @@ class EventBus:
     ) -> AsyncIterator[asyncio.Queue[StreamEvent]]:
         """Register a subscriber queue for the duration of the context.
 
-        ``user_id`` tags this subscriber so only events belonging to that user
-        (or broadcast events with ``user_id=None``) are delivered.
+        ``user_id`` is retained for API compatibility but ignored in
+        single-user mode — all events are delivered to all subscribers.
 
         Usage (SSE layer)::
 

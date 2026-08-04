@@ -237,7 +237,7 @@ async def compact_conversation(
         if conv is None:
             raise ValueError("会话不存在")
         agent_ids = conv.agent_ids_list
-        conv_user_id = conv.user_id
+        conv_user_id = None
 
     # b) incremental cut-off: only compact messages after the last summary
     latest = await get_latest_context_summary(conversation_id)
@@ -509,13 +509,10 @@ async def _pick_summary_model(
         agent = by_id.get(aid)
         if agent is None or agent.adapter_name != "custom":
             continue
-        if not agent.user_id:
-            continue
         async with get_local_db() as db:
             profile = (
                 await db.execute(
                     select(ModelProfile).where(
-                        ModelProfile.user_id == agent.user_id,
                         ModelProfile.is_default == True,  # noqa: E712
                     ).limit(1)
                 )

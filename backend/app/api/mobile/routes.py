@@ -277,20 +277,16 @@ async def _list_active_runs(conversation_ids: list[str]) -> list[AgentRun]:
         return list(result.scalars().all())
 
 
-async def _list_agents_ordered(user_id: str | None = None) -> list[Agent]:
+async def _list_agents_ordered() -> list[Agent]:
     async with get_local_db() as db:
         query = select(Agent).order_by(Agent.created_at.asc())
-        if user_id:
-            query = query.where(
-                (Agent.user_id == user_id) | (Agent.user_id.is_(None))
-            )
         result = await db.execute(query)
         return list(result.scalars().all())
 
 
-async def _build_snapshot(user_id: str | None = None) -> dict[str, Any]:
-    conversations = await conversation_service.list_conversations(user_id=user_id)
-    agents = await _list_agents_ordered(user_id=user_id)
+async def _build_snapshot() -> dict[str, Any]:
+    conversations = await conversation_service.list_conversations()
+    agents = await _list_agents_ordered()
     conv_ids = [c.id for c in conversations]
     running_runs = await _list_active_runs(conv_ids)
 
@@ -366,8 +362,8 @@ async def _list_artifact_summaries(artifact_ids: list[str]) -> list[dict[str, An
     return summaries
 
 
-async def _build_conversation_detail(conversation_id: str, user_id: str | None = None) -> dict[str, Any]:
-    conversations = await conversation_service.list_conversations(user_id=user_id)
+async def _build_conversation_detail(conversation_id: str) -> dict[str, Any]:
+    conversations = await conversation_service.list_conversations()
     conversation = next((c for c in conversations if c.id == conversation_id), None)
     if conversation is None:
         raise ValueError(f"Conversation not found: {conversation_id}")
@@ -439,7 +435,7 @@ async def mobile_options(req: Request, rest: str) -> Response:
 # ─── GET /api/mobile/snapshot ───────────────────────────────────────────────
 @router.get("/mobile/snapshot")
 async def mobile_snapshot(req: Request, user: User = Depends(mobile_auth)) -> Response:
-    snapshot = await _build_snapshot(user_id=user.id)
+    snapshot = await _build_snapshot()
     return _mobile_json(req, snapshot)
 
 
@@ -447,7 +443,7 @@ async def mobile_snapshot(req: Request, user: User = Depends(mobile_auth)) -> Re
 @router.get("/mobile/conversations/{conversation_id}")
 async def mobile_conversation_detail(req: Request, conversation_id: str, user: User = Depends(mobile_auth)) -> Response:
     try:
-        detail = await _build_conversation_detail(conversation_id, user_id=user.id)
+        detail = await _build_conversation_detail(conversation_id)
     except Exception as err:  # noqa: BLE001
         return _mobile_json(req, {"error": str(err)}, status=404)
     return _mobile_json(req, detail)

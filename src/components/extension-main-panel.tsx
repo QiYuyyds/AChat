@@ -1,6 +1,19 @@
 'use client'
 
-import { Cable, ChevronDown, Plug, Puzzle, Search, Sparkles, Trash2, Upload, Wrench } from 'lucide-react'
+import {
+  Cable,
+  ChevronDown,
+  Globe,
+  Plug,
+  Puzzle,
+  Search,
+  Sparkles,
+  Terminal,
+  Trash2,
+  Upload,
+  Wrench,
+  Zap,
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -12,7 +25,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   deleteMcpServer,
   deleteSkill,
@@ -25,14 +37,65 @@ import {
   type McpTestResult,
   type SkillSummary,
 } from '@/lib/api'
+import { cn } from '@/lib/utils'
 import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 
 import { McpDetailDialog } from '@/components/mcp-detail-dialog'
 import { McpServerEditDialog } from '@/components/mcp-server-edit-dialog'
 import { SkillDetailDialog } from '@/components/skill-detail-dialog'
 
+// ─── Tab Config ──────────────────────────────────────────────────
+
+type ExtensionTab = 'extensions' | 'skills'
+
+const TABS: { value: ExtensionTab; label: string; icon: typeof Plug }[] = [
+  { value: 'extensions', label: '扩展', icon: Plug },
+  { value: 'skills', label: '技能', icon: Wrench },
+]
+
+// ─── Transport Meta ──────────────────────────────────────────────
+
+interface TransportMeta {
+  label: string
+  icon: typeof Terminal
+  iconBg: string
+  iconText: string
+}
+
+const TRANSPORT_META: Record<string, TransportMeta> = {
+  stdio: {
+    label: 'stdio',
+    icon: Terminal,
+    iconBg: 'bg-violet-500/10',
+    iconText: 'text-violet-500',
+  },
+  sse: {
+    label: 'SSE',
+    icon: Globe,
+    iconBg: 'bg-cyan-500/10',
+    iconText: 'text-cyan-500',
+  },
+  streamable_http: {
+    label: 'HTTP',
+    icon: Globe,
+    iconBg: 'bg-cyan-500/10',
+    iconText: 'text-cyan-500',
+  },
+}
+
+function getTransportMeta(transport: string): TransportMeta {
+  return TRANSPORT_META[transport] ?? {
+    label: transport,
+    icon: Cable,
+    iconBg: 'bg-blue-500/10',
+    iconText: 'text-blue-500',
+  }
+}
+
+// ─── Main Component ──────────────────────────────────────────────
+
 export function ExtensionMainPanel() {
-  const [activeTab, setActiveTab] = useState<'extensions' | 'skills'>('extensions')
+  const [activeTab, setActiveTab] = useState<ExtensionTab>('extensions')
 
   // Data states
   const [skills, setSkills] = useState<SkillSummary[]>([])
@@ -218,38 +281,75 @@ export function ExtensionMainPanel() {
     }
   }
 
-  return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background/85 backdrop-blur-2xl">
-      {/* Header with Tabs and Create Button */}
-      <div className="flex shrink-0 items-center justify-between border-b px-6 py-4">
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'extensions' | 'skills')}>
-          <TabsList className="h-9">
-            <TabsTrigger value="extensions" className="gap-1.5 text-xs">
-              <Plug className="size-3.5" />
-              扩展
-            </TabsTrigger>
-            <TabsTrigger value="skills" className="gap-1.5 text-xs">
-              <Wrench className="size-3.5" />
-              技能
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
+  const activeIndex = TABS.findIndex((t) => t.value === activeTab)
+  const totalCount = activeTab === 'extensions' ? filteredMcpServers.length : filteredSkills.length
 
-        <DropdownMenu>
-          <DropdownMenuTrigger render={<Button size="sm" className="gap-1.5 text-xs" />}>
-            {activeTab === 'extensions' ? <Cable className="size-3.5" /> : <Upload className="size-3.5" />}
-            {activeTab === 'extensions' ? '添加' : '上传'}
-            <ChevronDown className="size-3" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            {activeTab === 'extensions' ? (
-              <DropdownMenuItem onClick={openCreateMcp}>添加 MCP Server</DropdownMenuItem>
-            ) : (
-              <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>上传 SKILL.md</DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+  return (
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background/85 backdrop-blur-2xl">
+      {/* Ambient glow */}
+      <div className="pointer-events-none absolute -top-20 right-0 size-64 rounded-full bg-primary/5 blur-3xl extension-ambient" />
+
+      {/* Header with segmented tabs and action button */}
+      <header className="extension-fade-up relative shrink-0 border-b border-border px-6 py-4">
+        <div className="flex items-center justify-between">
+          {/* Segmented tab switcher */}
+          <div className="relative flex w-fit items-center rounded-lg bg-muted p-0.5">
+            {/* Sliding indicator */}
+            <span
+              className="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-2px)] rounded-md bg-background shadow-[var(--shadow-sm),var(--inset-hi)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
+              style={{ transform: `translateX(${activeIndex * 100}%)` }}
+            />
+            {TABS.map((t) => {
+              const Icon = t.icon
+              const isActive = t.value === activeTab
+              return (
+                <button
+                  key={t.value}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  onClick={() => setActiveTab(t.value)}
+                  className={cn(
+                    'relative z-10 inline-flex h-8 w-[6.5rem] items-center justify-center gap-1.5 rounded-md text-xs font-medium transition-colors duration-200',
+                    isActive
+                      ? 'text-foreground'
+                      : 'text-muted-foreground hover:text-foreground/70',
+                  )}
+                >
+                  <Icon
+                    className={cn(
+                      'size-3.5 transition-transform duration-300',
+                      isActive && 'scale-110',
+                    )}
+                  />
+                  {t.label}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Count + Action */}
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">
+              {loading ? '加载中…' : `${totalCount} 项`}
+            </span>
+            <DropdownMenu>
+              <DropdownMenuTrigger render={<Button size="sm" className="gap-1.5 text-xs" />}>
+                {activeTab === 'extensions' ? <Cable className="size-3.5" /> : <Upload className="size-3.5" />}
+                {activeTab === 'extensions' ? '添加' : '上传'}
+                <ChevronDown className="size-3" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {activeTab === 'extensions' ? (
+                  <DropdownMenuItem onClick={openCreateMcp}>添加 MCP Server</DropdownMenuItem>
+                ) : (
+                  <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>上传 SKILL.md</DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </header>
 
       {/* Content */}
       <ScrollArea className="min-h-0 flex-1">
@@ -325,7 +425,8 @@ export function ExtensionMainPanel() {
   )
 }
 
-// Extensions Tab Content
+// ─── Extensions Tab Content ──────────────────────────────────────
+
 function ExtensionsTabContent({
   searchQuery,
   setSearchQuery,
@@ -351,65 +452,78 @@ function ExtensionsTabContent({
   testResults: Record<string, McpTestResult | undefined>
   testingIds: Set<string>
 }) {
+  const enabledCount = servers.filter((s) => s.enabled).length
+
   return (
-    <div className="space-y-6">
-      {/* Title and Description */}
-      <div>
-        <h2 className="text-xl font-semibold">扩展</h2>
-        <p className="mt-1 text-sm text-muted-foreground">管理外部工具连接，为 Agent 提供可调用能力</p>
+    <div className="space-y-5">
+      {/* Title row */}
+      <div className="extension-fade-up flex items-end justify-between">
+        <div>
+          <h2 className="text-xl font-semibold tracking-tight">MCP Server</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            管理外部工具连接，为 Agent 提供可调用能力
+          </p>
+        </div>
+        {servers.length > 0 && (
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1">
+              <span className="size-1.5 rounded-full bg-success" />
+              {enabledCount} 启用
+            </span>
+            <span className="text-border">/</span>
+            <span>{servers.length} 总计</span>
+          </div>
+        )}
       </div>
 
       {/* Search */}
-      <div className="relative max-w-md">
+      <div className="extension-fade-up extension-fade-up-delay-1 relative max-w-md">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="搜索扩展..."
-          className="pl-10"
+          placeholder="搜索名称、传输方式或命令…"
+          className="h-9 pl-10 transition-shadow focus-visible:ring-primary/20"
         />
-      </div>
-
-      {/* Section Header */}
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-muted-foreground">
-          已安装 <span className="ml-1 text-xs">({servers.length})</span>
-        </h3>
       </div>
 
       {/* Grid */}
       {loading && servers.length === 0 ? (
-        <div className="flex items-center justify-center py-12 text-muted-foreground">
-          <div className="size-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <span className="ml-2 text-sm">加载中...</span>
-        </div>
+        <LoadingState />
       ) : servers.length === 0 ? (
-        <EmptyState icon={Plug} title="还没有 MCP Server" description="点击右上角「添加」连接外部工具" />
+        <EmptyState
+          icon={Plug}
+          title="还没有 MCP Server"
+          description="点击右上角「添加」连接外部工具"
+        />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {servers.map((server) => (
-            <ExtensionCard
-              key={server.id}
-              type="mcp"
-              title={server.name}
-              subtitle={`${server.transport} · ${server.enabled ? '已启用' : '已禁用'}`}
-              icon={Cable}
-              status={server.enabled ? 'active' : 'inactive'}
-              onClick={() => onSelect(server)}
-              onEdit={() => onEdit(server)}
-              onDelete={() => onDelete(server.id)}
-              onTest={() => onTest(server)}
-              testing={testingIds.has(server.id)}
-              testResult={testResults[server.id]}
-            />
-          ))}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {servers.map((server, idx) => {
+            const animDelay = Math.min(idx, 7)
+            const animClass = `extension-fade-up${animDelay > 0 ? `-delay-${animDelay}` : ''}`
+            return (
+              <McpServerCard
+                key={server.id}
+                server={server}
+                animClass={animClass}
+                onClick={() => onSelect(server)}
+                onEdit={() => onEdit(server)}
+                onDelete={() => onDelete(server.id)}
+                onTest={() => onTest(server)}
+                onToggleEnabled={() => onToggleEnabled(server)}
+                testing={testingIds.has(server.id)}
+                testResult={testResults[server.id]}
+              />
+            )
+          })}
         </div>
       )}
     </div>
   )
 }
 
-// Skills Tab Content
+// ─── Skills Tab Content ──────────────────────────────────────────
+
 function SkillsTabContent({
   searchQuery,
   setSearchQuery,
@@ -434,21 +548,23 @@ function SkillsTabContent({
   uploading: boolean
 }) {
   return (
-    <div className="space-y-6">
-      {/* Title and Description */}
-      <div>
-        <h2 className="text-xl font-semibold">技能</h2>
-        <p className="mt-1 text-sm text-muted-foreground">给 Agent 的指令增强和能力说明</p>
+    <div className="space-y-5">
+      {/* Title row */}
+      <div className="extension-fade-up">
+        <h2 className="text-xl font-semibold tracking-tight">技能</h2>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          给 Agent 的指令增强和能力说明
+        </p>
       </div>
 
       {/* Search */}
-      <div className="relative max-w-md">
+      <div className="extension-fade-up extension-fade-up-delay-1 relative max-w-md">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="搜索技能..."
-          className="pl-10"
+          placeholder="搜索名称、标识或描述…"
+          className="h-9 pl-10 transition-shadow focus-visible:ring-primary/20"
         />
       </div>
 
@@ -461,183 +577,355 @@ function SkillsTabContent({
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
         className={cn(
-          'rounded-lg border-2 border-dashed px-6 py-8 text-center transition-colors',
+          'extension-fade-up extension-fade-up-delay-2 relative overflow-hidden rounded-xl border-2 border-dashed px-6 py-6 text-center transition-all duration-300',
           dragOver
-            ? 'border-primary bg-primary/5'
-            : 'border-border/50 hover:border-border',
-          uploading && 'opacity-50 pointer-events-none',
+            ? 'border-primary bg-primary/5 scale-[1.01]'
+            : 'border-border/50 hover:border-border hover:bg-muted/30',
+          uploading && 'pointer-events-none opacity-50',
         )}
       >
-        {uploading ? (
-          <div className="flex items-center justify-center gap-2 text-muted-foreground">
-            <div className="size-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-            <span className="text-sm">上传中...</span>
-          </div>
-        ) : (
-          <>
-            <Upload className="mx-auto size-8 text-muted-foreground opacity-50" />
-            <p className="mt-2 text-sm text-muted-foreground">拖放 SKILL.md 文件或文件夹到此处</p>
-            <p className="mt-1 text-xs text-muted-foreground">支持单个文件、多个文件或整个文件夹</p>
-          </>
+        {/* Decorative gradient on drag */}
+        {dragOver && (
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-primary/5" />
         )}
-      </div>
-
-      {/* Section Header */}
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-muted-foreground">
-          已安装 <span className="ml-1 text-xs">({skills.length})</span>
-        </h3>
+        <div className="relative">
+          {uploading ? (
+            <div className="flex items-center justify-center gap-2 text-muted-foreground">
+              <div className="size-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+              <span className="text-sm">上传中…</span>
+            </div>
+          ) : (
+            <>
+              <div
+                className={cn(
+                  'mx-auto flex size-10 items-center justify-center rounded-xl transition-colors',
+                  dragOver ? 'bg-primary/10 text-primary' : 'bg-muted/60 text-muted-foreground',
+                )}
+              >
+                <Upload className="size-5" />
+              </div>
+              <p className="mt-2 text-sm font-medium text-foreground">
+                拖放 SKILL.md 文件或文件夹到此处
+              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                支持单个文件、多个文件或整个文件夹
+              </p>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Grid */}
       {loading && skills.length === 0 ? (
-        <div className="flex items-center justify-center py-12 text-muted-foreground">
-          <div className="size-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          <span className="ml-2 text-sm">加载中...</span>
-        </div>
+        <LoadingState />
       ) : skills.length === 0 ? (
-        <EmptyState icon={Sparkles} title="还没有技能" description="拖放 SKILL.md 文件或点击右上角「上传」添加" />
+        <EmptyState
+          icon={Sparkles}
+          title="还没有技能"
+          description="拖放 SKILL.md 文件或点击右上角「上传」添加"
+        />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {skills.map((skill) => (
-            <ExtensionCard
-              key={skill.slug}
-              type="skill"
-              title={skill.name}
-              subtitle={skill.slug}
-              description={skill.description}
-              icon={Sparkles}
-              onClick={() => onSelect(skill)}
-              onDelete={() => onDelete(skill.slug)}
-            />
-          ))}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {skills.map((skill, idx) => {
+            const animDelay = Math.min(idx, 7)
+            const animClass = `extension-fade-up${animDelay > 0 ? `-delay-${animDelay}` : ''}`
+            return (
+              <SkillCard
+                key={skill.slug}
+                skill={skill}
+                animClass={animClass}
+                onClick={() => onSelect(skill)}
+                onDelete={() => onDelete(skill.slug)}
+              />
+            )
+          })}
         </div>
       )}
     </div>
   )
 }
 
-// Extension Card Component
-function ExtensionCard({
-  type,
-  title,
-  subtitle,
-  description,
-  icon: Icon,
-  status,
+// ─── MCP Server Card ─────────────────────────────────────────────
+
+function McpServerCard({
+  server,
+  animClass,
   onClick,
   onEdit,
   onDelete,
   onTest,
+  onToggleEnabled,
   testing,
   testResult,
 }: {
-  type: 'mcp' | 'skill'
-  title: string
-  subtitle: string
-  description?: string
-  icon: React.ComponentType<{ className?: string }>
-  status?: 'active' | 'inactive'
+  server: McpServerResponse
+  animClass: string
   onClick: () => void
-  onEdit?: () => void
-  onDelete?: () => void
-  onTest?: () => void
-  testing?: boolean
+  onEdit: () => void
+  onDelete: () => void
+  onTest: () => void
+  onToggleEnabled: () => void
+  testing: boolean
   testResult?: McpTestResult
 }) {
+  const transportMeta = getTransportMeta(server.transport)
+  const TransportIcon = transportMeta.icon
+
   return (
     <div
       onClick={onClick}
       className={cn(
-        'group relative flex cursor-pointer flex-col rounded-xl border bg-card p-3 sm:p-4 transition-all',
-        'hover:border-primary/50 hover:shadow-sm',
-        status === 'active' && 'border-l-4 border-l-success',
+        'group relative flex cursor-pointer flex-col rounded-xl border bg-card p-4 transition-all duration-300',
+        'hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md',
+        animClass,
       )}
     >
+      {/* Status indicator bar */}
+      <div
+        className={cn(
+          'absolute left-0 top-4 bottom-4 w-0.5 rounded-r-full transition-colors',
+          server.enabled ? 'bg-success' : 'bg-transparent',
+        )}
+      />
+
       {/* Header */}
-      <div className="flex items-start gap-2 sm:gap-3">
+      <div className="flex items-start gap-3 pl-1.5">
         <div
           className={cn(
-            'flex size-8 sm:size-10 shrink-0 items-center justify-center rounded-lg',
-            type === 'mcp' ? 'bg-blue-500/10 text-blue-500' : 'bg-amber-500/10 text-amber-500',
+            'flex size-9 shrink-0 items-center justify-center rounded-lg transition-transform duration-300 group-hover:scale-110',
+            transportMeta.iconBg,
           )}
         >
-          <Icon className="size-4 sm:size-5" />
+          <TransportIcon className={cn('size-4.5', transportMeta.iconText)} />
         </div>
         <div className="min-w-0 flex-1">
-          <h4 className="truncate text-xs sm:text-sm font-medium">{title}</h4>
-          <p className="truncate text-[10px] sm:text-xs text-muted-foreground">{subtitle}</p>
+          <div className="flex items-center gap-1.5">
+            <h4 className="truncate text-sm font-medium" title={server.name}>
+              {server.name}
+            </h4>
+          </div>
+          <div className="mt-1 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+            <span
+              className={cn(
+                'inline-flex items-center gap-0.5 rounded px-1 py-0.5 font-medium',
+                transportMeta.iconBg,
+                transportMeta.iconText,
+              )}
+            >
+              {transportMeta.label}
+            </span>
+            <span className="text-border">·</span>
+            <span className={cn('inline-flex items-center gap-0.5', server.enabled ? 'text-success' : 'text-muted-foreground')}>
+              <span className={cn('size-1.5 rounded-full', server.enabled ? 'bg-success' : 'bg-muted-foreground/40')} />
+              {server.enabled ? '已启用' : '已禁用'}
+            </span>
+            {server.trust === 'always' && (
+              <>
+                <span className="text-border">·</span>
+                <span className="inline-flex items-center gap-0.5 text-warning">
+                  <Zap className="size-2.5" />
+                  始终信任
+                </span>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Description */}
-      {description && (
-        <p className="mt-2 sm:mt-3 line-clamp-2 text-[10px] sm:text-xs text-muted-foreground">{description}</p>
-      )}
+      {/* Connection info */}
+      <div className="mt-2.5 pl-1.5">
+        <code className="block truncate font-mono text-[10px] text-muted-foreground">
+          {server.transport === 'stdio'
+            ? `${server.command ?? ''} ${(server.args ?? []).join(' ')}`
+            : server.url ?? ''}
+        </code>
+      </div>
 
-      {/* Test result preview for MCP */}
-      {type === 'mcp' && testResult && (
+      {/* Test result preview */}
+      {testResult && (
         <div
           className={cn(
-            'mt-2 sm:mt-3 rounded-md border px-2 py-1 text-[9px] sm:text-[10px]',
+            'mt-2.5 ml-1.5 rounded-md border px-2 py-1 text-[10px] font-medium',
             testResult.ok
               ? 'border-success/30 bg-success/5 text-success'
               : 'border-destructive/30 bg-destructive/5 text-destructive',
           )}
         >
-          {testResult.ok ? `✓ ${testResult.tools.length} 个工具` : '✗ 连接失败'}
+          {testResult.ok ? `${testResult.tools.length} 个工具可用` : '连接失败'}
         </div>
       )}
 
-      {/* Hover actions - always visible on mobile, hover on desktop */}
-      <div className="absolute right-1.5 sm:right-2 top-1.5 sm:top-2 flex gap-0.5 sm:gap-1 opacity-100 sm:opacity-0 transition-opacity group-hover:opacity-100">
-        {onTest && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              onTest()
-            }}
-            disabled={testing}
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            title="测试连接"
-          >
-            {testing ? (
-              <div className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
-            ) : (
-              <Plug className="size-3.5" />
+      {/* Hover actions */}
+      <div className="absolute right-2 top-2 z-10 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleEnabled()
+          }}
+          className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          title={server.enabled ? '禁用' : '启用'}
+        >
+          <span
+            className={cn(
+              'relative inline-flex h-3.5 w-6 items-center rounded-full transition-colors',
+              server.enabled ? 'bg-primary' : 'bg-muted-foreground/30',
             )}
-          </button>
-        )}
-        {onEdit && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              onEdit()
-            }}
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            title="编辑"
           >
-            <Puzzle className="size-3.5" />
-          </button>
-        )}
-        {onDelete && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation()
-              onDelete()
-            }}
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-destructive"
-            title="删除"
-          >
-            <Trash2 className="size-3.5" />
-          </button>
-        )}
+            <span
+              className={cn(
+                'inline-block size-3 rounded-full bg-white transition-transform',
+                server.enabled ? 'translate-x-3' : 'translate-x-0.5',
+              )}
+            />
+          </span>
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onTest()
+          }}
+          disabled={testing}
+          className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          title="测试连接"
+        >
+          {testing ? (
+            <div className="size-3.5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+          ) : (
+            <Plug className="size-3.5" />
+          )}
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onEdit()
+          }}
+          className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+          title="编辑"
+        >
+          <Puzzle className="size-3.5" />
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+          className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-destructive"
+          title="删除"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
       </div>
     </div>
   )
 }
 
-// Empty State Component
+// ─── Skill Card ──────────────────────────────────────────────────
+
+function SkillCard({
+  skill,
+  animClass,
+  onClick,
+  onDelete,
+}: {
+  skill: SkillSummary
+  animClass: string
+  onClick: () => void
+  onDelete: () => void
+}) {
+  return (
+    <div
+      onClick={onClick}
+      className={cn(
+        'group relative flex cursor-pointer flex-col rounded-xl border bg-card p-4 transition-all duration-300',
+        'hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md',
+        animClass,
+      )}
+    >
+      {/* Header */}
+      <div className="flex items-start gap-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-500 transition-transform duration-300 group-hover:scale-110">
+          <Sparkles className="size-4.5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h4 className="truncate text-sm font-medium" title={skill.name}>
+            {skill.name}
+          </h4>
+          <code className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
+            {skill.slug}
+          </code>
+        </div>
+      </div>
+
+      {/* Description */}
+      {skill.description && (
+        <p className="mt-2.5 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+          {skill.description}
+        </p>
+      )}
+
+      {/* Trigger keywords */}
+      {skill.triggerKeywords && skill.triggerKeywords.length > 0 && (
+        <div className="mt-2.5 flex flex-wrap gap-1">
+          {skill.triggerKeywords.slice(0, 3).map((kw) => (
+            <span
+              key={kw}
+              className="inline-flex items-center rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium text-amber-600 dark:text-amber-400"
+            >
+              {kw}
+            </span>
+          ))}
+          {skill.triggerKeywords.length > 3 && (
+            <span className="text-[9px] text-muted-foreground">
+              +{skill.triggerKeywords.length - 3}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Hover actions */}
+      <div className="absolute right-2 top-2 z-10 flex gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <button
+          onClick={(e) => {
+            e.stopPropagation()
+            onDelete()
+          }}
+          className="rounded p-1 text-muted-foreground transition hover:bg-accent hover:text-destructive"
+          title="删除"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Loading State ───────────────────────────────────────────────
+
+function LoadingState() {
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <div
+          key={i}
+          className="flex flex-col rounded-xl border bg-card p-4"
+          style={{ animationDelay: `${i * 60}ms` }}
+        >
+          <div className="flex items-start gap-3">
+            <div className="size-9 shrink-0 animate-pulse rounded-lg bg-muted" />
+            <div className="flex-1 space-y-1.5">
+              <div className="h-3.5 w-2/3 animate-pulse rounded bg-muted" />
+              <div className="h-2.5 w-1/2 animate-pulse rounded bg-muted" />
+            </div>
+          </div>
+          <div className="mt-3 h-2.5 w-full animate-pulse rounded bg-muted" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ─── Empty State ─────────────────────────────────────────────────
+
 function EmptyState({
   icon: Icon,
   title,
@@ -648,8 +936,8 @@ function EmptyState({
   description: string
 }) {
   return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="flex size-16 items-center justify-center rounded-2xl bg-muted">
+    <div className="flex flex-col items-center justify-center py-20 text-center">
+      <div className="extension-empty-float flex size-16 items-center justify-center rounded-2xl bg-muted/60">
         <Icon className="size-8 text-muted-foreground opacity-50" />
       </div>
       <h3 className="mt-4 text-sm font-medium">{title}</h3>
@@ -658,10 +946,7 @@ function EmptyState({
   )
 }
 
-// Utility
-function cn(...classes: (string | boolean | undefined)[]) {
-  return classes.filter(Boolean).join(' ')
-}
+// ─── Utility ─────────────────────────────────────────────────────
 
 /** Recursively collect files from a dropped FileSystemEntry, preserving relative paths. */
 async function collectEntry(

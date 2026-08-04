@@ -89,6 +89,54 @@ _EMPTY_ARGS_ERROR_MSG = (
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
 
 
+# ─── cacheStyle resolution ───────────────────────────────────
+
+_KNOWN_PROVIDER_CACHE_STYLE: dict[str, str] = {
+    'anthropic': 'anthropic',
+    'deepseek': 'deepseek',
+    'openai': 'deepseek',
+    'volcano-ark': 'deepseek',
+}
+
+
+def resolve_cache_style(provider: str, cache_style: str | None, detected_cache_style: str | None) -> str:
+    """Resolve cacheStyle for a run via priority chain.
+
+    1. Known provider hardcode → return.
+    2. openai-compatible → user-declared cache_style → return.
+    3. openai-compatible → detected_cache_style → return.
+    4. Fallback → 'deepseek' (conservative default; auto-detect from first response).
+    """
+    known = _KNOWN_PROVIDER_CACHE_STYLE.get(provider)
+    if known:
+        return known
+    if cache_style:
+        return cache_style
+    if detected_cache_style:
+        return detected_cache_style
+    return 'deepseek'
+
+
+def detect_cache_style_from_usage(usage: object | None) -> str | None:
+    """Auto-detect cacheStyle from LLM response usage fields.
+
+    Returns 'anthropic' / 'deepseek' / 'none' / None (when usage is null).
+    """
+    if usage is None:
+        return None
+    cache_creation = _usage_field(usage, 'cache_creation_input_tokens') or _usage_field(
+        usage, 'cache_creation_tokens'
+    )
+    if cache_creation > 0:
+        return 'anthropic'
+    cached = _usage_field(usage, 'prompt_cache_hit_tokens') or _usage_field(
+        usage, 'cached_tokens'
+    )
+    if cached > 0:
+        return 'deepseek'
+    return 'none'
+
+
 def _try_extract_json(text: str) -> str | None:
     """Try to extract a JSON object string from text using multiple strategies.
 
@@ -191,6 +239,7 @@ class _RunUsage:
     last_input_tokens: int = 0
     last_cache_read_tokens: int = 0
     last_output_tokens: int = 0
+    cache_style: str = 'deepseek'
 
 
 @dataclass
@@ -198,6 +247,7 @@ class _MsgUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
+    cache_style: str | None = None
 
 
 @dataclass
@@ -478,6 +528,8 @@ class CustomAdapter(AgentPlatformAdapter):
 
         finish_reason: str | None = None
         msg_usage = _MsgUsage()
+        msg_usage.cache_style = input.cache_style or 'deepseek'
+        _detected_this_run = False
 
         async for chunk in stream:
             if cancel_event.is_set():
@@ -492,6 +544,16 @@ class CustomAdapter(AgentPlatformAdapter):
                 cache_created = _usage_field(usage, "cache_creation_input_tokens") or _usage_field(
                     usage, "cache_creation_tokens"
                 )
+                # Auto-detect cacheStyle for openai-compatible on first usage
+                if (
+                    model_provider == 'openai-compatible'
+                    and msg_usage.cache_style == 'deepseek'
+                    and not _detected_this_run
+                ):
+                    detected = detect_cache_style_from_usage(usage)
+                    if detected:
+                        msg_usage.cache_style = detected
+                        _detected_this_run = True
                 msg_usage.input_tokens += inp
                 msg_usage.output_tokens += out
                 msg_usage.cache_read_tokens += cached
@@ -800,6 +862,8 @@ class CustomAdapter(AgentPlatformAdapter):
         turn = 0
         # token usage accumulated across turns; yield run.usage before run end for persistence
         run_usage = _RunUsage()
+        run_usage.cache_style = input.cache_style or 'deepseek'
+        _detected_this_run = False
 
         while turn < MAX_TURNS:
             if cancel_event.is_set():
@@ -851,6 +915,7 @@ class CustomAdapter(AgentPlatformAdapter):
             finish_reason: str | None = None
             # per-message usage for this turn; maintained alongside run_usage
             msg_usage = _MsgUsage()
+            msg_usage.cache_style = run_usage.cache_style
 
             async for chunk in stream:
                 if cancel_event.is_set():
@@ -877,6 +942,24 @@ class CustomAdapter(AgentPlatformAdapter):
                     run_usage.last_input_tokens = inp
                     run_usage.last_cache_read_tokens = cached
                     run_usage.last_output_tokens = out
+                    # Auto-detect cacheStyle for openai-compatible on first usage
+                    if (
+                        model_provider == 'openai-compatible'
+                        and run_usage.cache_style == 'deepseek'
+                        and not _detected_this_run
+                    ):
+                        detected = detect_cache_style_from_usage(usage)
+                        if detected:
+                            run_usage.cache_style = detected
+                            msg_usage.cache_style = detected
+                            _detected_this_run = True
+                            # Async writeback to ModelProfile.detected_cache_style
+                            if input.model_profile_id:
+                                asyncio.create_task(
+                                    _persist_detected_cache_style(
+                                        input.model_profile_id, detected
+                                    )
+                                )
                     # Record per-call cache metrics for aggregate monitoring
                     cache_metrics.record(
                         cache_read=cached,
@@ -1224,6 +1307,7 @@ def _to_message_usage(u: _MsgUsage) -> MessageUsage:
         input_tokens=u.input_tokens,
         output_tokens=u.output_tokens,
         cache_read_tokens=u.cache_read_tokens,
+        cache_style=u.cache_style,
     )
 
 
@@ -1238,6 +1322,7 @@ def _to_run_usage(u: _RunUsage, model_id: str, turn_count: int = 0) -> RunUsage:
         last_output_tokens=u.last_output_tokens,
         turn_count=turn_count,
         model=model_id,
+        cache_style=u.cache_style,
     )
 
 
@@ -1308,3 +1393,23 @@ def _build_multimodal_user_content(
         except OSError:
             logger.warning("[CustomAdapter] failed to read image %s", img.abs_path)
     return blocks
+
+
+async def _persist_detected_cache_style(model_profile_id: str, cache_style: str) -> None:
+    """Write back detected_cache_style to the ModelProfile (idempotent)."""
+    try:
+        async with get_db() as session:
+            from app.db.models import ModelProfile
+            profile = await session.get(ModelProfile, model_profile_id)
+            if profile is not None and profile.detected_cache_style != cache_style:
+                profile.detected_cache_style = cache_style
+                session.add(profile)
+                await session.commit()
+                logger.info(
+                    "[CustomAdapter] persisted detected_cache_style=%s to profile %s",
+                    cache_style, model_profile_id,
+                )
+    except Exception:
+        logger.debug(
+            "[CustomAdapter] failed to persist detected_cache_style", exc_info=True
+        )

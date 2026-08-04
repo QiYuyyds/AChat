@@ -7,25 +7,17 @@ for the plan-usage/stats API endpoint.
 from sqlalchemy import select
 
 from app.db.engine import get_local_db
-from app.db.models import AgentRun, Conversation
+from app.db.models import AgentRun
 
 
-async def get_plan_usage_stats(user_id: str | None = None) -> dict:
+async def get_plan_usage_stats() -> dict:
     """Aggregate plan usage statistics across runs.
-
-    Args:
-        user_id: If provided, scope stats to this user's runs (via conversation.user_id).
-                 If None, return global stats.
 
     Returns a camelCase wire dict matching the PlanUsageStatsResponse schema.
     """
     async with get_local_db() as db:
         # Build base query: runs with non-null usage
         stmt = select(AgentRun).where(AgentRun.usage.is_not(None))
-        if user_id is not None:
-            stmt = stmt.join(
-                Conversation, AgentRun.conversation_id == Conversation.id
-            ).where(Conversation.user_id == user_id)
 
         runs = (await db.execute(stmt)).scalars().all()
 

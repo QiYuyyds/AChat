@@ -83,6 +83,14 @@ class AdapterInput:
     # AgentRunner at run start after connecting to external MCP servers.
     mcp_tools: list[dict] | None = None
 
+    # Resolved cache style for this run: 'deepseek' | 'anthropic' | 'none'.
+    # Set by build_adapter_input based on provider / ModelProfile. Adapters
+    # SHOULD use this to populate RunUsage.cache_style.
+    cache_style: str | None = None
+    # ModelProfile ID for detected_cache_style writeback (openai-compatible only).
+    # None for CLI agents / guide agent / mock.
+    model_profile_id: str | None = None
+
     # multi-user: owning user ID for data isolation in CLI subprocess tools
     user_id: str | None = None
 

@@ -7,6 +7,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
+CacheStyle = Literal['deepseek', 'anthropic', 'none']
+
 
 # ─── DeployStatusRecord ─────────────────────────────────────
 class DeployStatusRecord(BaseModel):
@@ -196,6 +198,7 @@ class MessageUsage(BaseModel):
     input_tokens: int = Field(alias="inputTokens")
     output_tokens: int = Field(alias="outputTokens")
     cache_read_tokens: int = Field(alias="cacheReadTokens")
+    cache_style: CacheStyle | None = Field(default=None, alias="cacheStyle")
 
     model_config = {"populate_by_name": True}
 
@@ -217,6 +220,7 @@ class RunUsage(BaseModel):
     last_output_tokens: int = Field(default=0, alias="lastOutputTokens")
     turn_count: int = Field(default=0, alias="turnCount")
     model: str | None = None
+    cache_style: CacheStyle = Field(default='deepseek', alias='cacheStyle')
 
     model_config = {"populate_by_name": True}
 

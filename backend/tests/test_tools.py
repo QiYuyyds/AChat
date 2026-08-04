@@ -34,7 +34,6 @@ async def conversation(db, agents, tmp_path):
             fs_write_approval_mode="auto",
             created_at=now,
             updated_at=now,
-            user_id="test_user_1",
         )
         conv.agent_ids_list = [agents["alice"]]
         conv.pinned_message_ids_list = []

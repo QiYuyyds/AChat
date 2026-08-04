@@ -26,7 +26,6 @@ async def test_send_message_passes_model_profile_id(api_client, db, test_user):
     async with get_db() as session:
         profile = ModelProfile(
             id="mp_test_send",
-            user_id=test_user["id"],
             name="Test Profile",
             provider="deepseek",
             model_id="deepseek-chat",
@@ -44,7 +43,6 @@ async def test_send_message_passes_model_profile_id(api_client, db, test_user):
         # Create agent
         agent = Agent(
             id="ag_custom_test",
-            user_id=test_user["id"],
             name="Custom",
             avatar="C",
             description="custom agent",
@@ -67,7 +65,6 @@ async def test_send_message_passes_model_profile_id(api_client, db, test_user):
         ws_id = new_workspace_id()
         conv = Conversation(
             id=conv_id,
-            user_id=test_user["id"],
             title="Test Conv",
             mode="single",
             agent_ids=[agent.id],
@@ -126,7 +123,6 @@ async def test_send_message_without_model_profile_id(api_client, db, test_user):
     async with get_db() as session:
         agent = Agent(
             id="ag_mock_test2",
-            user_id=test_user["id"],
             name="Mock",
             avatar="M",
             description="mock agent",
@@ -146,7 +142,6 @@ async def test_send_message_without_model_profile_id(api_client, db, test_user):
 
         conv = Conversation(
             id=conv_id,
-            user_id=test_user["id"],
             title="Test Conv 2",
             mode="single",
             agent_ids=[agent.id],
@@ -216,39 +211,39 @@ async def test_migrate_agent_model_profiles(db, test_user, monkeypatch):
 
         # Insert agent with baked-in model config
         await session.execute(text(
-            "INSERT INTO agents (id, user_id, name, avatar, description, "
+            "INSERT INTO agents (id, name, avatar, description, "
             "system_prompt, adapter_name, is_builtin, is_orchestrator, is_guide, "
             "memory_enabled, created_at, capabilities, tool_names, skill_names, "
             "hook_names, mcp_server_ids, custom_args, "
             "model_provider, model_id, api_key, api_base_url, supports_vision) "
             "VALUES ("  # noqa: E501
-            "'ag_legacy_model', :uid, 'Legacy', 'L', 'legacy agent', "
+            "'ag_legacy_model', 'Legacy', 'L', 'legacy agent', "
             "'prompt', 'custom', 0, 0, 0, 0, :now, '[]', '[]', '[]', '[]', '[]', '[]', "
             "'deepseek', 'deepseek-chat', 'sk-legacy-key', 'https://api.deepseek.com/v1', 0)"
-        ), {"uid": test_user["id"], "now": now})
+        ), {"now": now})
 
         # Insert a second agent with same model config (dedup test)
         await session.execute(text(
-            "INSERT INTO agents (id, user_id, name, avatar, description, "
+            "INSERT INTO agents (id, name, avatar, description, "
             "system_prompt, adapter_name, is_builtin, is_orchestrator, is_guide, "
             "memory_enabled, created_at, capabilities, tool_names, skill_names, "
             "hook_names, mcp_server_ids, custom_args, "
             "model_provider, model_id, api_key, api_base_url, supports_vision) "
             "VALUES ("  # noqa: E501
-            "'ag_legacy_dup', :uid, 'Dup', 'D', 'dup agent', "
+            "'ag_legacy_dup', 'Dup', 'D', 'dup agent', "
             "'prompt', 'custom', 0, 0, 0, 0, :now, '[]', '[]', '[]', '[]', '[]', '[]', "
             "'deepseek', 'deepseek-chat', 'sk-legacy-key', 'https://api.deepseek.com/v1', 0)"
-        ), {"uid": test_user["id"], "now": now})
+        ), {"now": now})
 
         # Insert builtin agent (user_id IS NULL) — should be skipped
         await session.execute(text(
-            "INSERT INTO agents (id, user_id, name, avatar, description, "
+            "INSERT INTO agents (id, name, avatar, description, "
             "system_prompt, adapter_name, is_builtin, is_orchestrator, is_guide, "
             "memory_enabled, created_at, capabilities, tool_names, skill_names, "
             "hook_names, mcp_server_ids, custom_args, "
             "model_provider, model_id, api_key, api_base_url, supports_vision) "
             "VALUES ("  # noqa: E501
-            "'ag_builtin_model', NULL, 'Builtin', 'B', 'builtin agent', "
+            "'ag_builtin_model', 'Builtin', 'B', 'builtin agent', "
             "'prompt', 'mock', 1, 0, 0, 0, :now, '[]', '[]', '[]', '[]', '[]', '[]', "
             "'anthropic', 'claude-opus', 'sk-builtin', 'https://api.anthropic.com', 1)"
         ), {"now": now})
@@ -264,7 +259,7 @@ async def test_migrate_agent_model_profiles(db, test_user, monkeypatch):
     async with get_db() as session:
         profiles = (
             await session.execute(
-                select(ModelProfile).where(ModelProfile.user_id == test_user["id"])
+                select(ModelProfile)
             )
         ).scalars().all()
 
@@ -277,10 +272,11 @@ async def test_migrate_agent_model_profiles(db, test_user, monkeypatch):
         assert profile.api_base_url == "https://api.deepseek.com/v1"
         assert profile.is_default is True  # first profile → default
 
-        # Builtin agent (user_id IS NULL) should NOT have a profile
-        builtin_profiles = (
+        # Builtin agent should NOT have a profile
+        all_profiles = (
             await session.execute(
-                select(ModelProfile).where(ModelProfile.user_id.is_(None))
+                select(ModelProfile)
             )
         ).scalars().all()
-        assert len(builtin_profiles) == 0
+        # Only the two custom agents' profiles should exist (deduplicated to 1)
+        assert len(all_profiles) == 1

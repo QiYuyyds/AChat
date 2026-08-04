@@ -845,6 +845,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
             last_input_tokens=last_input_tokens,
             last_cache_read_tokens=last_cache_read_tokens,
             last_output_tokens=last_output_tokens,
+            cache_style='anthropic',
         )
         yield RunUsageEvent(
             conversation_id=input.conversation_id,

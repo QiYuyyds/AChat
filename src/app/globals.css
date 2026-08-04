@@ -473,10 +473,17 @@
   .agent-fade-up-delay-2,
   .agent-fade-up-delay-3,
   .agent-fade-up-delay-4,
-  .agent-ambient {
+  .agent-ambient,
+  .tab-content-enter {
     animation: none;
   }
 }
+
+@keyframes tab-content-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.tab-content-enter { animation: tab-content-enter 250ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 
 /* ===== Workspace Ambient Background — 极慢极淡的氛围动画 ===== */
 /* 与 auth 页面的 aurora 不同：workspace 是专注工作场景，
@@ -642,6 +649,122 @@
   .dag-edge-flowing,
   .dag-node-pending,
   .dag-approval-badge {
+    animation: none;
+  }
+}
+
+/* ===== Artifact Panel — premium motion & ambient ===== */
+
+@keyframes artifact-fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.artifact-fade-up         { animation: artifact-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.artifact-fade-up-delay-1 { animation: artifact-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 60ms both; }
+.artifact-fade-up-delay-2 { animation: artifact-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both; }
+.artifact-fade-up-delay-3 { animation: artifact-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 180ms both; }
+.artifact-fade-up-delay-4 { animation: artifact-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 240ms both; }
+.artifact-fade-up-delay-5 { animation: artifact-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 300ms both; }
+.artifact-fade-up-delay-6 { animation: artifact-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 360ms both; }
+.artifact-fade-up-delay-7 { animation: artifact-fade-up 500ms cubic-bezier(0.22, 1, 0.36, 1) 420ms both; }
+
+@keyframes artifact-ambient-breathe {
+  0%, 100% { opacity: 0.25; transform: scale(1); }
+  50%      { opacity: 0.4; transform: scale(1.06); }
+}
+.artifact-ambient { animation: artifact-ambient-breathe 8s ease-in-out infinite; }
+
+@keyframes artifact-empty-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+.artifact-empty-float { animation: artifact-empty-float 3s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .artifact-fade-up,
+  .artifact-fade-up-delay-1,
+  .artifact-fade-up-delay-2,
+  .artifact-fade-up-delay-3,
+  .artifact-fade-up-delay-4,
+  .artifact-fade-up-delay-5,
+  .artifact-fade-up-delay-6,
+  .artifact-fade-up-delay-7,
+  .artifact-ambient,
+  .artifact-empty-float {
+    animation: none;
+  }
+}
+
+/* ===== Extension Panel — premium motion & ambient ===== */
+
+@keyframes extension-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.extension-fade-up         { animation: extension-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.extension-fade-up-delay-1 { animation: extension-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) 60ms both; }
+.extension-fade-up-delay-2 { animation: extension-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both; }
+.extension-fade-up-delay-3 { animation: extension-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) 180ms both; }
+.extension-fade-up-delay-4 { animation: extension-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) 240ms both; }
+.extension-fade-up-delay-5 { animation: extension-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) 300ms both; }
+.extension-fade-up-delay-6 { animation: extension-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) 360ms both; }
+.extension-fade-up-delay-7 { animation: extension-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) 420ms both; }
+
+@keyframes extension-ambient-breathe {
+  0%, 100% { opacity: 0.20; transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(1.06); }
+}
+.extension-ambient { animation: extension-ambient-breathe 8s ease-in-out infinite; }
+
+@keyframes extension-empty-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-5px); }
+}
+.extension-empty-float { animation: extension-empty-float 3.5s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .extension-fade-up,
+  .extension-fade-up-delay-1,
+  .extension-fade-up-delay-2,
+  .extension-fade-up-delay-3,
+  .extension-fade-up-delay-4,
+  .extension-fade-up-delay-5,
+  .extension-fade-up-delay-6,
+  .extension-fade-up-delay-7,
+  .extension-ambient,
+  .extension-empty-float {
+    animation: none;
+  }
+}
+
+/* ===== Cognition Panel — premium motion & ambient ===== */
+
+@keyframes cognition-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.cognition-fade-up         { animation: cognition-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.cognition-fade-up-delay-1 { animation: cognition-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) 60ms both; }
+.cognition-fade-up-delay-2 { animation: cognition-fade-up 450ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both; }
+
+@keyframes cognition-ambient-breathe {
+  0%, 100% { opacity: 0.20; transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(1.06); }
+}
+.cognition-ambient { animation: cognition-ambient-breathe 8s ease-in-out infinite; }
+
+@keyframes cognition-empty-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-5px); }
+}
+.cognition-empty-float { animation: cognition-empty-float 3.5s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cognition-fade-up,
+  .cognition-fade-up-delay-1,
+  .cognition-fade-up-delay-2,
+  .cognition-ambient,
+  .cognition-empty-float {
     animation: none;
   }
 }

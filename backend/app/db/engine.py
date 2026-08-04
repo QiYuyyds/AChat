@@ -4,9 +4,7 @@ Dual-DB architecture:
 - _local_engine / _local_session_factory: SQLite (conversation hot data)
 - _remote_engine / _remote_session_factory: PostgreSQL (user system + RAG)
 
-When DATABASE_LOCAL_URL is set, local tables are created on SQLite and remote
-tables on PostgreSQL. When not set (server mode), all tables go to PostgreSQL
-and get_local_db() falls back to the remote session factory.
+Local tables are always created on SQLite; remote tables on PostgreSQL.
 """
 
 import contextlib
@@ -94,7 +92,7 @@ async def init_db() -> None:
         )
         await _migrate_columns_pg(conn)
 
-    # Local engine: create local tables (when configured)
+    # Local engine: create local tables
     if _local_engine is not None:
         async with _local_engine.begin() as conn:
             await conn.run_sync(
@@ -103,14 +101,6 @@ async def init_db() -> None:
                 )
             )
             await _migrate_columns_sqlite(conn)
-    else:
-        # Server mode: also create local tables on remote engine
-        async with _remote_engine.begin() as conn:
-            await conn.run_sync(
-                lambda sync_conn: Base.metadata.create_all(
-                    sync_conn, tables=local_tables, checkfirst=True
-                )
-            )
 
 
 def _attach_sqlite_pragmas(engine: AsyncEngine) -> None:
@@ -144,21 +134,23 @@ _PG_MIGRATION_STATEMENTS = [
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE conversation_context_summaries ADD COLUMN IF NOT EXISTS summary_type VARCHAR(16) NOT NULL DEFAULT 'compaction'",
     "ALTER TABLE conversation_context_summaries ADD COLUMN IF NOT EXISTS covers_up_to FLOAT",
-    # ─── Multi-user auth migration ───
-    "ALTER TABLE agents ADD COLUMN IF NOT EXISTS user_id VARCHAR",
-    "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id VARCHAR",
+    # ─── Multi-user auth migration (remote tables only) ───
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id VARCHAR",
-    "ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS user_id VARCHAR",
     "ALTER TABLE long_term_memory ADD COLUMN IF NOT EXISTS user_id VARCHAR",
     "ALTER TABLE memory_nodes ADD COLUMN IF NOT EXISTS user_id VARCHAR",
     "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS user_id VARCHAR",
     "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS user_id VARCHAR",
-    "CREATE INDEX IF NOT EXISTS idx_agents_user ON agents (user_id)",
-    "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_docs_user ON documents (user_id)",
-    "CREATE INDEX IF NOT EXISTS idx_mcp_user ON mcp_servers (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_ltm_user ON long_term_memory (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_rag_user ON rag_chunks (user_id)",
+    # ─── Drop user_id from local tables (single-user mode) ───
+    "ALTER TABLE agents DROP COLUMN IF EXISTS user_id",
+    "ALTER TABLE conversations DROP COLUMN IF EXISTS user_id",
+    "ALTER TABLE mcp_servers DROP COLUMN IF EXISTS user_id",
+    "ALTER TABLE model_profiles DROP COLUMN IF EXISTS user_id",
+    "DROP INDEX IF EXISTS idx_agents_user",
+    "DROP INDEX IF EXISTS idx_conv_user",
+    "DROP INDEX IF EXISTS idx_mcp_user",
     # ─── UserPreference source column ───
     "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'extracted'",
     # ─── Obsidian sync columns ───
@@ -176,8 +168,12 @@ _PG_MIGRATION_STATEMENTS = [
     # ─── CLI agent session resume ───
     "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS cli_session_id VARCHAR",
     # ─── ModelProfile table ───
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_model_profiles_default_per_user "
-    "ON model_profiles (user_id) WHERE is_default = true",
+    "DROP INDEX IF EXISTS uq_model_profiles_default_per_user",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_model_profiles_default "
+    "ON model_profiles (is_default) WHERE is_default = true",
+    # ─── ModelProfile cache_style columns ───
+    "ALTER TABLE model_profiles ADD COLUMN IF NOT EXISTS cache_style VARCHAR(16)",
+    "ALTER TABLE model_profiles ADD COLUMN IF NOT EXISTS detected_cache_style VARCHAR(16)",
     # ─── Drop model columns from agents (migrated to model_profiles) ───
     "ALTER TABLE agents DROP COLUMN IF EXISTS model_provider",
     "ALTER TABLE agents DROP COLUMN IF EXISTS model_id",
@@ -194,8 +190,7 @@ _PG_MIGRATION_STATEMENTS = [
 # ALTER TABLE statements to add columns that were introduced in later
 # migrations (multi-user, CLI agents, hooks, guide agent, etc.).
 _SQLITE_MIGRATION_STATEMENTS = [
-    # ─── agents: multi-user + CLI agent + hooks + MCP + guide + memory columns ───
-    "ALTER TABLE agents ADD COLUMN user_id VARCHAR",
+    # ─── agents: CLI agent + hooks + MCP + guide + memory columns ───
     "ALTER TABLE agents ADD COLUMN skill_names TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE agents ADD COLUMN executable_path VARCHAR",
     "ALTER TABLE agents ADD COLUMN protocol_family VARCHAR",
@@ -204,8 +199,7 @@ _SQLITE_MIGRATION_STATEMENTS = [
     "ALTER TABLE agents ADD COLUMN mcp_server_ids TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE agents ADD COLUMN is_guide BOOLEAN NOT NULL DEFAULT 0",
     "ALTER TABLE agents ADD COLUMN memory_enabled BOOLEAN NOT NULL DEFAULT 0",
-    # ─── conversations: multi-user + summary + dispatch_mode ───
-    "ALTER TABLE conversations ADD COLUMN user_id VARCHAR",
+    # ─── conversations: summary + dispatch_mode ───
     "ALTER TABLE conversations ADD COLUMN summary TEXT",
     "ALTER TABLE conversations ADD COLUMN dispatch_mode VARCHAR NOT NULL DEFAULT 'solo'",
     "ALTER TABLE conversations ADD COLUMN parent_conversation_id VARCHAR",
@@ -217,17 +211,26 @@ _SQLITE_MIGRATION_STATEMENTS = [
     # ─── conversation_context_summaries: session memory columns ───
     "ALTER TABLE conversation_context_summaries ADD COLUMN summary_type VARCHAR(16) NOT NULL DEFAULT 'compaction'",
     "ALTER TABLE conversation_context_summaries ADD COLUMN covers_up_to FLOAT",
-    # ─── mcp_servers: multi-user ───
-    "ALTER TABLE mcp_servers ADD COLUMN user_id VARCHAR",
-    # ─── CREATE INDEX (IF NOT EXISTS supported on SQLite) ───
-    "CREATE INDEX IF NOT EXISTS idx_agents_user ON agents (user_id)",
-    "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations (user_id)",
-    "CREATE INDEX IF NOT EXISTS idx_mcp_user ON mcp_servers (user_id)",
+    # ─── Drop user_id from local tables (single-user mode) ───
+    # Must drop indexes that reference user_id BEFORE the columns,
+    # otherwise SQLite raises "error in index ... after drop column".
+    "DROP INDEX IF EXISTS idx_agents_user",
+    "DROP INDEX IF EXISTS idx_conv_user",
+    "DROP INDEX IF EXISTS idx_mcp_user",
+    "DROP INDEX IF EXISTS idx_model_profiles_user",
+    "ALTER TABLE agents DROP COLUMN user_id",
+    "ALTER TABLE conversations DROP COLUMN user_id",
+    "ALTER TABLE mcp_servers DROP COLUMN user_id",
+    "ALTER TABLE model_profiles DROP COLUMN user_id",
     # ─── agent_runs: CLI session resume ───
     "ALTER TABLE agent_runs ADD COLUMN cli_session_id VARCHAR",
-    # ─── model_profiles: unique default per user ───
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_model_profiles_default_per_user "
-    "ON model_profiles (user_id) WHERE is_default = 1",
+    # ─── model_profiles: unique default ───
+    "DROP INDEX IF EXISTS uq_model_profiles_default_per_user",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_model_profiles_default "
+    "ON model_profiles (is_default) WHERE is_default = 1",
+    # ─── model_profiles: cache_style columns ───
+    "ALTER TABLE model_profiles ADD COLUMN cache_style VARCHAR(16)",
+    "ALTER TABLE model_profiles ADD COLUMN detected_cache_style VARCHAR(16)",
     # ─── Drop model columns from agents (migrated to model_profiles) ───
     # SQLite 3.35.0+ supports ALTER TABLE DROP COLUMN; wrapped in
     # suppress(Exception) so older SQLite or missing columns are silently
@@ -286,16 +289,11 @@ async def close_db() -> None:
 
 @asynccontextmanager
 async def get_local_db() -> AsyncIterator[AsyncSession]:
-    """Get a session for local (SQLite) tables.
+    """Get a session for local (SQLite) tables."""
+    if _local_session_factory is None:
+        raise RuntimeError("Local database not initialized. Call init_db() first.")
 
-    Falls back to the remote session factory when local engine is not
-    configured (server deployment mode).
-    """
-    factory = _local_session_factory or _remote_session_factory
-    if factory is None:
-        raise RuntimeError("Database not initialized. Call init_db() first.")
-
-    async with factory() as session:
+    async with _local_session_factory() as session:
         try:
             yield session
             await session.commit()

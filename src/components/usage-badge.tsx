@@ -7,7 +7,14 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { compactConversation } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { getModelLimits, getModelPricing } from '@/shared/model-registry'
-import { computeCost, computeLastNetInput, computeNetInput } from '@/shared/usage'
+import {
+  computeCacheHitRate,
+  computeCost,
+  computeLastNetInput,
+  computeWeightedCacheHitRate,
+  type CacheStyleBucket,
+} from '@/shared/usage'
+import type { CacheStyle } from '@/shared/types'
 import { useAppStore, useConversationUsageTotal, type AgentUsageDetail } from '@/stores/app-store'
 
 /**
@@ -31,14 +38,7 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
 
   if (total.runCount === 0) return null
 
-  // Cache hit rate calculation — provider-aware:
-  // DeepSeek: prompt_tokens already includes cache_hit → hitRate = cacheRead / inputTokens
-  // Anthropic: input_tokens excludes cache → hitRate = cacheRead / (input + cacheRead + cacheCreation)
-  const cacheHitRate = computeCacheHitRate(
-    total.inputTokens,
-    total.cacheCreationTokens,
-    total.cacheReadTokens,
-  )
+  const cacheHitRate = computeWeightedCacheHitRate(total.byCacheStyle)
   const hasCacheData = total.cacheReadTokens > 0 || total.runCount > 1
 
   // 取本会话内 contextWindow 最大的 model profile 作为可见上限。
@@ -78,18 +78,12 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
   const hasSubagentTokens = agentEntries.some(([, d]) => d.subagentTokens > 0)
   const showAgentDetails = hasMultipleAgents || hasSubagentTokens
 
-  // 累计「新内容(净)」——provider-aware: DeepSeek 扣 cacheRead, Anthropic 加 cacheCreation
-  const netInput = computeNetInput(
-    total.inputTokens,
-    total.cacheReadTokens,
-    total.cacheCreationTokens,
-  )
-  // 单次 ctx 拆解：旧记录 (lastCacheReadTokens === 0 && turnCount === 0) 时隐藏子树
+  const netInput = total.netInput
   const hasDecomposition = total.lastCacheReadTokens > 0 || total.turnCount > 0
   const lastNetNew = computeLastNetInput(
+    total.lastCacheStyle,
     total.lastInputTokens,
     total.lastCacheReadTokens,
-    total.cacheCreationTokens,
   )
 
   return (
@@ -152,20 +146,13 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
           <div className="my-1 border-t" />
           <Row
             label="实际 Prompt"
-            value={
-              total.cacheCreationTokens > 0
-                ? total.inputTokens + total.cacheCreationTokens + total.cacheReadTokens
-                : total.inputTokens
-            }
+            value={total.totalTokens}
             bold
-            hint="累计 input + cache 总量"
+            hint="逐 run 按 cacheStyle 正确累加"
           />
           <CostEstimateRow
             byModel={total.byModel}
-            inputTokens={total.inputTokens}
-            cacheReadTokens={total.cacheReadTokens}
-            cacheCreationTokens={total.cacheCreationTokens}
-            outputTokens={total.outputTokens}
+            byCacheStyle={total.byCacheStyle}
           />
           {/* Cache 命中率 — provider-aware formula + visual bar */}
           {hasCacheData && (
@@ -258,7 +245,7 @@ function AgentUsageCard({
   model?: string
   detail: AgentUsageDetail
 }) {
-  const rate = computeCacheHitRate(d.inputTokens, d.cacheCreationTokens, d.cacheReadTokens)
+  const rate = computeCacheHitRateFromDetail(d)
   const pct = Math.round(rate)
   const tone = pct >= 80 ? 'good' : pct >= 50 ? 'warn' : 'low'
   const barColor =
@@ -391,19 +378,9 @@ function formatTok(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`
 }
 
-/** Cache 命中率计算 — provider-aware */
-function computeCacheHitRate(
-  inputTokens: number,
-  cacheCreationTokens: number,
-  cacheReadTokens: number,
-): number {
-  if (cacheCreationTokens > 0) {
-    // Anthropic-style: input excludes cache read/creation
-    const denom = inputTokens + cacheReadTokens + cacheCreationTokens
-    return denom > 0 ? (cacheReadTokens / denom) * 100 : 0
-  }
-  // DeepSeek-style: input already includes cache hit
-  return inputTokens > 0 ? (cacheReadTokens / inputTokens) * 100 : 0
+/** AgentUsageCard 专用的 cache 命中率：从 detail 的 cacheStyle 调 computeCacheHitRate */
+function computeCacheHitRateFromDetail(d: AgentUsageDetail): number {
+  return computeCacheHitRate(d.cacheStyle, d.inputTokens, d.cacheCreationTokens, d.cacheReadTokens)
 }
 
 /** 费用格式化：CNY ¥ 2 位小数，USD $ 4 位小数（单次会话通常 < $0.01）。 */
@@ -421,18 +398,11 @@ function formatCost(cost: number, currency: 'CNY' | 'USD'): string {
  */
 function CostEstimateRow({
   byModel,
-  inputTokens,
-  cacheReadTokens,
-  cacheCreationTokens,
-  outputTokens,
+  byCacheStyle,
 }: {
   byModel: Record<string, number>
-  inputTokens: number
-  cacheReadTokens: number
-  cacheCreationTokens: number
-  outputTokens: number
+  byCacheStyle: Record<CacheStyle, CacheStyleBucket>
 }) {
-  // 取累计 token 用量最大的模型作为主模型
   const entries = Object.entries(byModel).sort((a, b) => b[1] - a[1])
   const primaryModel = entries[0]?.[0]
   if (!primaryModel) return null
@@ -440,13 +410,25 @@ function CostEstimateRow({
   const pricing = getModelPricing(null, primaryModel)
   if (!pricing) return null
 
-  const { actualCost, noCacheCost, savings, savingsPct, currency } = computeCost(
-    pricing,
-    inputTokens,
-    cacheReadTokens,
-    cacheCreationTokens,
-    outputTokens,
-  )
+  let actualCost = 0
+  let noCacheCost = 0
+  for (const style of ['deepseek', 'anthropic', 'none'] as CacheStyle[]) {
+    const bucket = byCacheStyle[style]
+    if (!bucket) continue
+    const est = computeCost(
+      style,
+      pricing,
+      bucket.inputTokens,
+      bucket.cacheReadTokens,
+      bucket.cacheCreationTokens,
+      bucket.outputTokens,
+    )
+    actualCost += est.actualCost
+    noCacheCost += est.noCacheCost
+  }
+  const savings = noCacheCost - actualCost
+  const savingsPct = noCacheCost > 0 ? (savings / noCacheCost) * 100 : 0
+  const currency = pricing.currency
 
   return (
     <div className="mt-1 space-y-0.5 rounded-md bg-muted/20 px-2 py-1.5" title={`按 ${primaryModel} 官方定价估算（单价 per 1M tokens）`}>

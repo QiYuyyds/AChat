@@ -5,6 +5,7 @@ import logging
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 # On Windows the default ProactorEventLoop is required for subprocess support.
 # Some libraries / env configs may switch to SelectorEventLoop which does not
@@ -340,7 +341,6 @@ async def _seed_guide_agent() -> None:
                 ],
                 is_builtin=True,
                 is_guide=True,
-                user_id=None,
                 created_at=now_ms(),
             )
             db.add(guide)
@@ -353,10 +353,8 @@ async def _migrate_agent_model_profiles() -> None:
     """One-time migration: copy baked-in model config from agents to model_profiles.
 
     Scans the agents table for rows that still have model_provider set (pre-migration),
-    deduplicates by (user_id, provider, model_id, api_key, api_base_url), and inserts
-    into model_profiles. Marks the earliest-created profile per user as default.
-    Builtin agents (user_id IS NULL) are skipped — the guide agent resolves its model
-    from GUIDE_AGENT_* env vars at runtime.
+    deduplicates by (provider, model_id, api_key, api_base_url), and inserts
+    into model_profiles. Marks the earliest-created profile as default.
     """
     try:
         from sqlalchemy import select, text
@@ -382,15 +380,14 @@ async def _migrate_agent_model_profiles() -> None:
                 logger.info("Agent model migration: column already dropped, skipping")
                 return
 
-            # Scan agents with baked-in model config (exclude builtin / user_id IS NULL)
+            # Scan agents with baked-in model config
             rows = (
                 await db.execute(
                     text(
-                        "SELECT id, user_id, model_provider, model_id, "
+                        "SELECT id, model_provider, model_id, "
                         "api_key, api_base_url, supports_vision, created_at "
                         "FROM agents "
                         "WHERE model_provider IS NOT NULL AND model_id IS NOT NULL "
-                        "AND user_id IS NOT NULL "
                         "ORDER BY created_at ASC"
                     )
                 )
@@ -402,13 +399,12 @@ async def _migrate_agent_model_profiles() -> None:
 
             migrated = 0
             for row in rows:
-                _agent_id, user_id, provider, model_id, api_key, api_base_url, supports_vision, _created_at = row
+                _agent_id, provider, model_id, api_key, api_base_url, supports_vision, _created_at = row
 
                 # Check if a matching profile already exists
                 existing = (
                     await db.execute(
                         select(ModelProfile).where(
-                            ModelProfile.user_id == user_id,
                             ModelProfile.provider == provider,
                             ModelProfile.model_id == model_id,
                         )
@@ -418,17 +414,16 @@ async def _migrate_agent_model_profiles() -> None:
                 if existing is not None:
                     continue
 
-                # Check if user already has any profile (to set is_default)
-                user_profiles_count = (
+                # Check if any profile exists (to set is_default)
+                all_profiles = (
                     await db.execute(
-                        select(ModelProfile).where(ModelProfile.user_id == user_id)
+                        select(ModelProfile)
                     )
                 ).scalars().all()
-                is_default = len(user_profiles_count) == 0
+                is_default = len(all_profiles) == 0
 
                 profile = ModelProfile(
                     id=new_model_profile_id(),
-                    user_id=user_id,
                     name=f"{provider}/{model_id}",
                     provider=provider,
                     model_id=model_id,
@@ -832,10 +827,11 @@ def create_app() -> FastAPI:
         debug=settings.debug,
     )
 
-    # CORS middleware
+    # CORS middleware - also allow localhost variations for dev environments
+    _cors_origins = settings.cors_origins_list + ["http://127.0.0.1:3000", "http://[::1]:3000"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins_list,
+        allow_origins=_cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -843,17 +839,24 @@ def create_app() -> FastAPI:
 
     # CSRF: reject mutation requests from unallowed origins
     _allowed_origins = set(settings.cors_origins_list)
+    # Also accept localhost variations (127.0.0.1, ::1) for dev environments
+    _localhost_variants = {"http://127.0.0.1:3000", "http://[::1]:3000"}
 
     @app.middleware("http")
     async def csrf_origin_check(request: Request, call_next):
         """Reject POST/PATCH/DELETE requests whose Origin header doesn't match allowed origins."""
         if request.method in ("POST", "PATCH", "PUT", "DELETE"):
-            origin = request.headers.get("origin") or request.headers.get("referer")
-            if origin and origin not in _allowed_origins:
-                return JSONResponse(
-                    status_code=403,
-                    content={"detail": "Origin not allowed"},
-                )
+            raw = request.headers.get("origin") or request.headers.get("referer")
+            if raw:
+                # Referer includes a path (e.g. http://localhost:3000/); normalise
+                # to scheme://host:port so it matches the allowed-origin entries.
+                parsed = urlparse(raw)
+                origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else raw
+                if origin not in _allowed_origins and origin not in _localhost_variants:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"detail": "Origin not allowed"},
+                    )
         return await call_next(request)
 
     # Include routers
@@ -862,8 +865,8 @@ def create_app() -> FastAPI:
         artifacts,
         attachments,
         auth,
-        conversations,
         code_intelligence,
+        conversations,
         deployments,
         documents,
         eval,

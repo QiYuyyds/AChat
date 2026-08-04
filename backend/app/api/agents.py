@@ -32,7 +32,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from app.auth.dependencies import get_current_user
 from app.db.engine import get_local_db
@@ -88,7 +88,6 @@ async def list_agents(user: User = Depends(get_current_user)) -> JSONResponse:
     async with get_local_db() as db:
         result = await db.execute(
             select(Agent)
-            .where(or_(Agent.user_id.is_(None), Agent.user_id == user.id))
             .order_by(
                 Agent.is_builtin.desc(),
                 Agent.created_at.desc(),
@@ -123,21 +122,20 @@ async def create_agent(request: Request, user: User = Depends(get_current_user))
     # zod .refine: custom adapter no longer requires model fields (resolved at runtime via ModelProfile).
 
     try:
-        row = await _create_custom_agent(body, user.id)
+        row = await _create_custom_agent(body)
     except ValueError as err:
         return JSONResponse({"error": str(err)}, status_code=400)
 
     return JSONResponse({"agent": row}, status_code=201)
 
 
-async def _create_custom_agent(body: CreateAgentRequest, user_id: str) -> dict[str, Any]:
+async def _create_custom_agent(body: CreateAgentRequest) -> dict[str, Any]:
     adapter_name = body.adapter_name
 
     avatar = (body.avatar or "").strip() or "🤖"
 
     agent = Agent(
         id=new_agent_id(),
-        user_id=user_id,
         name=body.name.strip(),
         avatar=avatar,
         description=body.description.strip(),
@@ -244,7 +242,7 @@ async def update_agent(agent_id: str, request: Request, user: User = Depends(get
 
     try:
         row = await _update_custom_agent(
-            agent_id, body, has_adapter_name, adapter_name_patch, user.id
+            agent_id, body, has_adapter_name, adapter_name_patch
         )
     except ValueError as err:
         return JSONResponse({"error": str(err)}, status_code=400)
@@ -264,7 +262,6 @@ async def _update_custom_agent(
     body: UpdateAgentRequest,
     has_adapter_name: bool,
     adapter_name_patch: str | None,
-    user_id: str,
 ) -> dict[str, Any]:
     provided = body.model_fields_set
     has_tool_names = "tool_names" in provided
@@ -278,8 +275,6 @@ async def _update_custom_agent(
     async with get_local_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
-            raise ValueError(f"Agent not found: {agent_id}")
-        if agent.user_id is not None and agent.user_id != user_id:
             raise ValueError(f"Agent not found: {agent_id}")
         # Builtin agents may be reconfigured; only deletion is protected.
 
@@ -357,18 +352,16 @@ async def _update_custom_agent(
 async def delete_agent(agent_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     """Delete a non-builtin agent (ports deleteCustomAgent)."""
     try:
-        await _delete_custom_agent(agent_id, user.id)
+        await _delete_custom_agent(agent_id)
     except ValueError as err:
         return JSONResponse({"error": str(err)}, status_code=400)
     return JSONResponse({"ok": True})
 
 
-async def _delete_custom_agent(agent_id: str, user_id: str) -> None:
+async def _delete_custom_agent(agent_id: str) -> None:
     async with get_local_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
-            raise ValueError(f"Agent not found: {agent_id}")
-        if agent.user_id is not None and agent.user_id != user_id:
             raise ValueError(f"Agent not found: {agent_id}")
         if agent.is_builtin:
             raise ValueError("Built-in agents cannot be deleted")

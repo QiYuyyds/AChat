@@ -58,7 +58,7 @@ async def _seed(dual_db, conv_id="conv1", agent_id="ag1", run_id="run1"):
     now = now_ms()
     async with dual_db.get_local_db() as session:
         conv = Conversation(
-            id=conv_id, user_id="u1", title="T", mode="single",
+            id=conv_id, title="T", mode="single",
             created_at=now, updated_at=now,
         )
         conv.agent_ids_list = []
@@ -70,7 +70,7 @@ async def _seed(dual_db, conv_id="conv1", agent_id="ag1", run_id="run1"):
             id=agent_id, name="A", avatar="A", description="d",
             system_prompt="p", adapter_name="mock", is_builtin=False,
             is_orchestrator=False,
-            created_at=now, user_id="u1",
+            created_at=now,
         )
         agent.capabilities_list = []
         agent.tool_names_list = []

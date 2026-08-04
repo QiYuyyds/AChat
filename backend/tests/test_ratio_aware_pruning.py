@@ -25,7 +25,6 @@ async def _seed_conversation(agent_ids: list[str]) -> str:
     async with get_db() as db:
         conv = Conversation(
             id=conv_id,
-            user_id="test_user_1",
             title="ratio test",
             mode="single",
             archived=False,

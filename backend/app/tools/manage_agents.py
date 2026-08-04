@@ -18,33 +18,28 @@ from app.tools.manage_base import emit_guide_side_effect
 
 async def _manage_agents_handler(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     action = args.get("action", "")
-    user_id = ctx.user_id
-    if user_id is None:
-        return err("manage_agents requires a user context")
 
     if action == "list":
-        return await _list_agents(args, user_id)
+        return await _list_agents(args)
     elif action == "create":
-        return await _create_agent(args, user_id, ctx)
+        return await _create_agent(args, ctx)
     elif action == "update":
-        return await _update_agent(args, user_id, ctx)
+        return await _update_agent(args, ctx)
     elif action == "delete":
-        return await _delete_agent(args, user_id, ctx)
+        return await _delete_agent(args, ctx)
     else:
         return err(f"Unknown action: {action}")
 
 
-async def _list_agents(args: dict[str, Any], user_id: str) -> ToolResult:
-    from sqlalchemy import or_, select
+async def _list_agents(args: dict[str, Any]) -> ToolResult:
+    from sqlalchemy import select
 
     from app.db.engine import get_local_db
     from app.db.models import Agent
 
     include_builtin = args.get("include_builtin", True)
     async with get_local_db() as db:
-        query = select(Agent).where(
-            or_(Agent.user_id.is_(None), Agent.user_id == user_id)
-        )
+        query = select(Agent)
         if not include_builtin:
             query = query.where(Agent.is_builtin.is_(False))
         query = query.order_by(Agent.is_builtin.desc(), Agent.created_at.desc())
@@ -56,7 +51,7 @@ async def _list_agents(args: dict[str, Any], user_id: str) -> ToolResult:
     return ok({"agents": [_serialize(r) for r in rows]})
 
 
-async def _create_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) -> ToolResult:
+async def _create_agent(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     from app.api.agents import _create_custom_agent
     from app.schemas import CreateAgentRequest
 
@@ -81,7 +76,7 @@ async def _create_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
     }
     try:
         body = CreateAgentRequest.model_validate(body_data)
-        row = await _create_custom_agent(body, user_id)
+        row = await _create_custom_agent(body)
     except ValueError as e:
         return err(str(e))
     except Exception as e:
@@ -91,7 +86,7 @@ async def _create_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
     return ok({"agent": row, "message": f"已创建 Agent「{row['name']}」"})
 
 
-async def _update_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) -> ToolResult:
+async def _update_agent(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     from app.db.engine import get_local_db
     from app.db.models import Agent
@@ -104,8 +99,6 @@ async def _update_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
     async with get_local_db() as db:
         agent = await db.get(Agent, agent_id)
         if agent is None:
-            return err(f"Agent not found: {agent_id}")
-        if agent.user_id is not None and agent.user_id != user_id:
             return err(f"Agent not found: {agent_id}")
         if agent.is_builtin or getattr(agent, "is_guide", False):
             return err("不能修改 builtin 或 guide Agent")
@@ -138,7 +131,6 @@ async def _update_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
             agent_id, body,
             has_adapter_name="adapterName" in updates_raw,
             adapter_name_patch=updates_raw.get("adapterName"),
-            user_id=user_id,
         )
     except ValueError as e:
         return err(str(e))
@@ -149,7 +141,7 @@ async def _update_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
     return ok({"agent": row, "message": f"已更新 Agent「{row['name']}」"})
 
 
-async def _delete_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) -> ToolResult:
+async def _delete_agent(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not args.get("confirm", False):
         return err("删除操作需要先通过 ask_user 向用户确认，并传 confirm=true")
 
@@ -164,8 +156,6 @@ async def _delete_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
         agent = await db.get(Agent, agent_id)
         if agent is None:
             return err(f"Agent not found: {agent_id}")
-        if agent.user_id is not None and agent.user_id != user_id:
-            return err(f"Agent not found: {agent_id}")
         if agent.is_builtin:
             return err("不能删除 builtin Agent")
         if getattr(agent, "is_guide", False):
@@ -175,7 +165,7 @@ async def _delete_agent(args: dict[str, Any], user_id: str, ctx: ToolContext) ->
     from app.api.agents import _delete_custom_agent
 
     try:
-        await _delete_custom_agent(agent_id, user_id)
+        await _delete_custom_agent(agent_id)
     except ValueError as e:
         return err(str(e))
 
