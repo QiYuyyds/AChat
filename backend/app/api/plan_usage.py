@@ -22,5 +22,5 @@ async def plan_usage_stats(
     Regular users see their own stats. Currently all users are treated equally
     (no admin role exists); a future admin role can be added for global stats.
     """
-    stats = await get_plan_usage_stats(user_id=user.id)
+    stats = await get_plan_usage_stats()
     return JSONResponse(stats)

@@ -397,23 +397,21 @@ async def _get_agent_model_limit(agent_id: str) -> int | None:
         # CLI agents: no model limit (CLI manages its own context)
         if agent.adapter_name in ("claude-code", "codex"):
             return None
-        # SDK agents: resolve from user's default ModelProfile
-        if agent.user_id:
-            async with get_local_db() as db:
-                profile = (
-                    await db.execute(
-                        select(ModelProfile)
-                        .where(
-                            ModelProfile.user_id == agent.user_id,
-                            ModelProfile.is_default == True,  # noqa: E712
-                        )
-                        .limit(1)
+        # SDK agents: resolve from default ModelProfile
+        async with get_local_db() as db:
+            profile = (
+                await db.execute(
+                    select(ModelProfile)
+                    .where(
+                        ModelProfile.is_default == True,  # noqa: E712
                     )
-                ).scalar_one_or_none()
-                if profile is None:
-                    return None
-                limits = get_model_limits(profile.provider, profile.model_id)
-                return limits.effective_context_window
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if profile is None:
+                return None
+            limits = get_model_limits(profile.provider, profile.model_id)
+            return limits.effective_context_window
         return None
     except Exception as e:
         logger.warning("[auto-compact] failed to get model limit for agent %s: %s", agent_id, e)
@@ -1840,11 +1838,10 @@ async def execute_run(
             )
         ).scalar_one_or_none()
 
-        # Resolve user_id from conversation for SSE event filtering.
+        # user_id is no longer stored on conversations (single-user mode).
         # Subagent runs inherit user_id from parent via args; top-level runs
-        # resolve it from the conversation record.
-        if args.user_id is None and conv is not None:
-            args = replace(args, user_id=conv.user_id)
+        # keep whatever user_id was passed (may be None).
+        # No conv.user_id resolution needed.
 
         is_orchestrator = agent.is_orchestrator
         trigger_parts = trigger_message.parts_list
@@ -3306,7 +3303,7 @@ async def build_adapter_input(
             model_profile = _build_guide_model_profile()
         else:
             model_profile = await _resolve_model_profile(
-                args.model_profile_id, args.user_id
+                args.model_profile_id
             )
             if model_profile is None:
                 raise ValueError(
@@ -3502,6 +3499,25 @@ async def build_adapter_input(
         else None
     )
 
+    # ── cacheStyle resolution (SDK only; CLI agents hardcode) ──────
+    resolved_cache_style: str | None = None
+    resolved_model_profile_id: str | None = None
+    if is_sdk and model_profile and not is_guide:
+        from app.adapters.custom_adapter import resolve_cache_style
+        resolved_cache_style = resolve_cache_style(
+            model_profile.provider,
+            model_profile.cache_style,
+            model_profile.detected_cache_style,
+        )
+        resolved_model_profile_id = model_profile.id
+    elif is_sdk and is_guide:
+        # Guide agent uses env-driven provider; resolve from known providers
+        from app.adapters.custom_adapter import resolve_cache_style
+        resolved_cache_style = resolve_cache_style(
+            model_profile.provider if model_profile else 'deepseek',
+            None, None,
+        )
+
     # ── CLI-specific fields ──────────────────────────────────────────
     cli_exec_path = agent.executable_path if is_cli else None
     cli_custom_args = agent.custom_args_list if is_cli else None
@@ -3541,6 +3557,8 @@ async def build_adapter_input(
         resume_session_id=cli_resume_session_id,
         mcp_config=None,  # MCP bridge deferred
         user_id=args.user_id,
+        cache_style=resolved_cache_style,
+        model_profile_id=resolved_model_profile_id,
     )
 
 
@@ -3580,29 +3598,26 @@ def _build_guide_model_profile() -> ModelProfile:
 
 
 async def _resolve_model_profile(
-    profile_id: str | None, user_id: str | None
+    profile_id: str | None
 ) -> ModelProfile | None:
-    """Resolve ModelProfile: explicit profile_id → user default → None.
+    """Resolve ModelProfile: explicit profile_id → default → None.
 
-    If profile_id is provided but not found (or not owned), falls back to
-    the user's default profile and logs a warning.
+    If profile_id is provided but not found, falls back to
+    the default profile and logs a warning.
     """
-    if not user_id:
-        return None
     async with get_local_db() as db:
         if profile_id:
             profile = await db.get(ModelProfile, profile_id)
-            if profile and profile.user_id == user_id:
+            if profile:
                 return profile
             logger.warning(
-                "[agent-runner] model profile %s not found or not owned; "
+                "[agent-runner] model profile %s not found; "
                 "falling back to default",
                 profile_id,
             )
         result = await db.execute(
             select(ModelProfile)
             .where(
-                ModelProfile.user_id == user_id,
                 ModelProfile.is_default == True,  # noqa: E712
             )
             .limit(1)

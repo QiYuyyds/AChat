@@ -1,11 +1,8 @@
 'use client'
 
-import { BookOpen, ChevronRight, FileText, Folder, FolderOpen, Library, Loader2, Plus, RefreshCw, Search, Trash2, Upload, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ChevronRight, FileText, Folder, FolderOpen, Loader2, RefreshCw, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
 
-import { DocumentDetail } from '@/components/document-detail'
-import { UploadDocumentDialog } from '@/components/upload-document-dialog'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -15,15 +12,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   deleteDocument,
   fetchDocumentFlat,
   fetchDocumentTree,
-  fetchDocuments,
   getObsidianStatus,
   syncObsidian,
-  uploadDocument,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
@@ -50,9 +44,22 @@ const SOURCE_LABELS: Record<string, string> = {
   artifact_import: '产物',
 }
 
+const SOURCE_COLORS: Record<string, { dot: string; badge: string }> = {
+  agent_generated: { dot: 'bg-violet-500', badge: 'bg-violet-500/10 text-violet-600 dark:text-violet-400' },
+  user_upload: { dot: 'bg-blue-500', badge: 'bg-blue-500/10 text-blue-600 dark:text-blue-400' },
+  obsidian_sync: { dot: 'bg-amber-500', badge: 'bg-amber-500/10 text-amber-600 dark:text-amber-400' },
+  artifact_import: { dot: 'bg-emerald-500', badge: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' },
+}
+
 // ─── Obsidian Vault Section ──────────────────────────────────
 
-export function ObsidianVaultSection({ onSelectFile }: { onSelectFile: (id: string) => void }) {
+export function ObsidianVaultSection({
+  onSelectFile,
+  search,
+}: {
+  onSelectFile: (id: string) => void
+  search?: string
+}) {
   const [tree, setTree] = useState<DocumentTree | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -130,48 +137,53 @@ export function ObsidianVaultSection({ onSelectFile }: { onSelectFile: (id: stri
   return (
     <div className="flex flex-col gap-1.5">
       {/* Section header */}
-      <div className="flex items-center justify-between gap-2 px-1 py-1">
+      <div className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5">
         <div className="flex items-center gap-1.5">
-          <Folder className="size-3.5 text-muted-foreground" />
-          <span className="text-xs font-medium text-foreground">Obsidian Vault</span>
+          <div className="flex size-4 items-center justify-center rounded-sm bg-amber-500/10">
+            <Folder className="size-3 text-amber-500" />
+          </div>
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Obsidian</span>
         </div>
         <Button
           size="sm"
-          variant="outline"
-          className="h-6 gap-1 px-2 text-[10px]"
+          variant="ghost"
+          className="h-6 gap-1 px-1.5 text-[10px] text-muted-foreground hover:text-foreground"
           onClick={() => void handleSync()}
           disabled={syncing || !hasVault}
           title={!hasVault ? '请先在设置中配置 Vault 路径' : '同步 Obsidian Vault'}
         >
           {syncing ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-          同步
         </Button>
       </div>
 
       {/* Sync report toast */}
       {syncReport && (
-        <div className="rounded-md border bg-primary/5 px-2.5 py-1.5 text-[10px]">
-          <span className="font-medium">同步完成</span>
-          {syncReport.added > 0 && <span className="ml-1.5 text-success">+{syncReport.added}</span>}
-          {syncReport.updated > 0 && <span className="ml-1.5 text-primary">↑{syncReport.updated}</span>}
-          {syncReport.deleted > 0 && <span className="ml-1.5 text-destructive">−{syncReport.deleted}</span>}
-          {syncReport.skipped > 0 && <span className="ml-1.5 text-muted-foreground">↷{syncReport.skipped}</span>}
-          {syncReport.errors.length > 0 && (
-            <span className="ml-1.5 text-destructive">!{syncReport.errors.length} 错误</span>
-          )}
-          <button
-            type="button"
-            onClick={() => setSyncReport(null)}
-            className="ml-1.5 text-muted-foreground hover:text-foreground"
-          >
-            <X className="size-2.5" />
-          </button>
+        <div className="cognition-fade-up rounded-lg border bg-card px-2.5 py-1.5 text-[10px] shadow-[var(--shadow-sm)]">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-foreground">同步完成</span>
+            <button
+              type="button"
+              onClick={() => setSyncReport(null)}
+              className="text-muted-foreground transition hover:text-foreground"
+            >
+              <X className="size-2.5" />
+            </button>
+          </div>
+          <div className="mt-0.5 flex items-center gap-2 text-muted-foreground">
+            {syncReport.added > 0 && <span className="text-success">+{syncReport.added}</span>}
+            {syncReport.updated > 0 && <span className="text-primary">↑{syncReport.updated}</span>}
+            {syncReport.deleted > 0 && <span className="text-destructive">−{syncReport.deleted}</span>}
+            {syncReport.skipped > 0 && <span>↷{syncReport.skipped}</span>}
+            {syncReport.errors.length > 0 && (
+              <span className="text-destructive">!{syncReport.errors.length} 错误</span>
+            )}
+          </div>
         </div>
       )}
 
       {/* No vault configured */}
       {!hasVault && (
-        <div className="rounded-md border border-dashed px-2.5 py-2 text-center text-[10px] text-muted-foreground">
+        <div className="rounded-lg border border-dashed px-2.5 py-3 text-center text-[10px] text-muted-foreground">
           未配置 Vault 路径
         </div>
       )}
@@ -190,7 +202,7 @@ export function ObsidianVaultSection({ onSelectFile }: { onSelectFile: (id: stri
             <button
               type="button"
               onClick={() => void loadTree(getParentPath(currentPath))}
-              className="flex items-center gap-1 text-[10px] text-muted-foreground transition hover:text-foreground"
+              className="flex items-center gap-1 px-2 text-[10px] text-muted-foreground transition hover:text-foreground"
             >
               <ChevronRight className="size-2.5 rotate-180" />
               返回上级
@@ -201,32 +213,36 @@ export function ObsidianVaultSection({ onSelectFile }: { onSelectFile: (id: stri
           {tree.folders.map((folder) => (
             <div
               key={folder.path}
-              className="flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs transition hover:bg-accent"
+              className="group flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs transition hover:bg-accent"
               onClick={() => toggleFolder(folder)}
             >
-              <FolderOpen className="size-3.5 shrink-0 text-warning" />
-              <span className="min-w-0 flex-1 truncate">{folder.name}</span>
-              <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+              <FolderOpen className="size-3.5 shrink-0 text-amber-500/80" />
+              <span className="min-w-0 flex-1 truncate text-foreground">{folder.name}</span>
+              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
                 {folder.docCount}
               </span>
             </div>
           ))}
 
           {/* Files */}
-          {tree.files.map((file) => (
-            <div
-              key={file.id}
-              className={cn(
-                'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs transition hover:bg-accent',
-                selectedId === file.id && 'bg-primary/10 text-primary',
-              )}
-              onClick={() => onSelectFile(file.id)}
-            >
-              <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate">{file.title}</span>
-              <span className="shrink-0 text-[10px] text-muted-foreground">{formatTime(file.updatedAt)}</span>
-            </div>
-          ))}
+          {tree.files
+            .filter((file) => !search || file.title.toLowerCase().includes(search.toLowerCase()))
+            .map((file) => (
+              <div
+                key={file.id}
+                className={cn(
+                  'flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-all duration-150',
+                  selectedId === file.id
+                    ? 'bg-primary/10 text-primary'
+                    : 'text-foreground/80 hover:bg-accent hover:text-foreground',
+                )}
+                onClick={() => onSelectFile(file.id)}
+              >
+                <div className="size-1 shrink-0 rounded-full bg-amber-500/60" />
+                <span className="min-w-0 flex-1 truncate">{file.title}</span>
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{formatTime(file.updatedAt)}</span>
+              </div>
+            ))}
 
           {tree.folders.length === 0 && tree.files.length === 0 && (
             <div className="py-3 text-center text-[10px] text-muted-foreground">
@@ -238,7 +254,7 @@ export function ObsidianVaultSection({ onSelectFile }: { onSelectFile: (id: stri
 
       {/* Status info */}
       {syncStatus && hasVault && (
-        <div className="px-1 text-[10px] text-muted-foreground">
+        <div className="px-2 text-[10px] tabular-nums text-muted-foreground/70">
           {syncStatus.totalMdFiles} 个 .md 文件
           {syncStatus.lastSyncAt && (
             <> · 上次同步 {formatTime(syncStatus.lastSyncAt)}</>
@@ -251,7 +267,7 @@ export function ObsidianVaultSection({ onSelectFile }: { onSelectFile: (id: stri
 
 // ─── My Documents Section (flat list) ────────────────────────
 
-export function MyDocumentsSection() {
+export function MyDocumentsSection({ search }: { search?: string }) {
   const [documents, setDocuments] = useState<DocumentRow[]>([])
   const [loading, setLoading] = useState(true)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
@@ -297,58 +313,72 @@ export function MyDocumentsSection() {
     ? documents.find((d) => d.id === deleteTargetId)
     : null
 
+  const filteredDocuments = search
+    ? documents.filter((d) => d.title.toLowerCase().includes(search.toLowerCase()))
+    : documents
+
   return (
     <div className="flex flex-col gap-1.5">
       {/* Section header */}
-      <div className="flex items-center gap-1.5 px-1 py-1">
-        <FileText className="size-3.5 text-muted-foreground" />
-        <span className="text-xs font-medium text-foreground">我的文档</span>
+      <div className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5">
+        <div className="flex items-center gap-1.5">
+          <div className="flex size-4 items-center justify-center rounded-sm bg-blue-500/10">
+            <FileText className="size-3 text-blue-500" />
+          </div>
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">我的文档</span>
+        </div>
+        {!loading && filteredDocuments.length > 0 && (
+          <span className="text-[10px] tabular-nums text-muted-foreground/60">{filteredDocuments.length}</span>
+        )}
       </div>
 
       {loading ? (
         <div className="flex items-center justify-center py-4">
           <Loader2 className="size-4 animate-spin text-muted-foreground" />
         </div>
-      ) : documents.length === 0 ? (
+      ) : filteredDocuments.length === 0 ? (
         <div className="flex flex-col items-center gap-2 py-6 text-center">
-          <FileText className="size-6 text-muted-foreground/40" />
-          <p className="text-[10px] text-muted-foreground">还没有上传的文档</p>
+          <FileText className="size-6 text-muted-foreground/30" />
+          <p className="text-[10px] text-muted-foreground">
+            {search ? '没有匹配的文档' : '还没有上传的文档'}
+          </p>
         </div>
       ) : (
-        <div className="space-y-1">
-          {documents.map((doc) => {
+        <div className="space-y-0.5">
+          {filteredDocuments.map((doc) => {
             const meta = doc.latestMetadata ?? {}
             const parser = (meta.parser as string | undefined) ?? doc.latestParser
-            const filename = (meta.filename as string | undefined) ?? null
+            const sourceColor = SOURCE_COLORS[doc.source] ?? SOURCE_COLORS.user_upload
 
             return (
               <div
                 key={doc.id}
                 className={cn(
-                  'group flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-2 text-xs transition-all duration-150',
+                  'group flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-all duration-150',
                   selectedId === doc.id
-                    ? 'border-primary/40 bg-primary/5 shadow-[var(--shadow-sm)]'
-                    : 'border-border/40 hover:border-primary/20 hover:bg-accent/50',
+                    ? 'bg-primary/8 ring-1 ring-primary/20'
+                    : 'hover:bg-accent',
                 )}
                 onClick={() => setSelectedId(doc.id)}
               >
-                <FileText className="size-3.5 shrink-0 text-muted-foreground" />
+                <div className={cn('size-1.5 shrink-0 rounded-full', sourceColor.dot)} />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
-                    <span className="min-w-0 truncate text-xs font-medium text-foreground">{doc.title}</span>
-                    <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    <span className={cn(
+                      'min-w-0 truncate text-xs font-medium',
+                      selectedId === doc.id ? 'text-primary' : 'text-foreground',
+                    )}>{doc.title}</span>
+                    <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[9px] tabular-nums text-muted-foreground">
                       v{doc.latestVersion}
                     </span>
                   </div>
                   <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                    <span>{SOURCE_LABELS[doc.source] ?? doc.source}</span>
-                    <span>·</span>
-                    <span>{formatTime(doc.updatedAt)}</span>
+                    <span className={cn('rounded px-1 py-0.5 text-[9px] font-medium', sourceColor.badge)}>
+                      {SOURCE_LABELS[doc.source] ?? doc.source}
+                    </span>
+                    <span className="tabular-nums">{formatTime(doc.updatedAt)}</span>
                     {parser && (
-                      <>
-                        <span>·</span>
-                        <span className="rounded bg-muted/60 px-1 py-0.5 text-[9px]">{parser}</span>
-                      </>
+                      <span className="rounded bg-muted/60 px-1 py-0.5 text-[9px]">{parser}</span>
                     )}
                   </div>
                 </div>
@@ -359,7 +389,7 @@ export function MyDocumentsSection() {
                     setDeleteTargetId(doc.id)
                   }}
                   title="删除文档"
-                  className="shrink-0 self-center opacity-0 transition group-hover:opacity-100 hover:text-destructive"
+                  className="shrink-0 self-center rounded p-0.5 text-muted-foreground opacity-0 transition group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive"
                 >
                   <Trash2 className="size-3.5" />
                 </button>
@@ -395,154 +425,4 @@ export function MyDocumentsSection() {
       </Dialog>
     </div>
   )
-}
-
-// ─── Main Sidebar ─────────────────────────────────────────────
-
-/** 侧边栏导航：文档列表 + 搜索 + 上传入口 */
-export function KnowledgeSidebarNav() {
-  const [search, setSearch] = useState('')
-  const [uploadOpen, setUploadOpen] = useState(false)
-  const [dragOver, setDragOver] = useState(false)
-  const [uploading, setUploading] = useState(false)
-  const [uploadError, setUploadError] = useState<string | null>(null)
-
-  const selectedId = useAppStore((s) => s.selectedKnowledgeDocId)
-  const setSelectedId = useAppStore((s) => s.setSelectedKnowledgeDocId)
-
-  const handleDrop = useCallback(
-    async (e: React.DragEvent) => {
-      e.preventDefault()
-      setDragOver(false)
-      const files = Array.from(e.dataTransfer.files)
-      if (files.length === 0) return
-      setUploading(true)
-      setUploadError(null)
-      try {
-        for (const file of files) await uploadDocument(file)
-      } catch (err) {
-        setUploadError(err instanceof Error ? err.message : String(err))
-      } finally {
-        setUploading(false)
-      }
-    },
-    [],
-  )
-
-  return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-      {/* Header */}
-      <div className="shrink-0 px-3 pt-4 pb-3">
-        <div className="flex items-center gap-2">
-          <div className="flex size-7 items-center justify-center rounded-lg bg-primary/10">
-            <Library className="size-3.5 text-primary" />
-          </div>
-          <h2 className="text-sm font-semibold">知识库</h2>
-        </div>
-      </div>
-
-      {/* Search + upload */}
-      <div className="shrink-0 px-3 pb-2">
-        <div className="flex items-center gap-1.5">
-          <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <input
-              type="text"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索文档..."
-              className="w-full rounded-md border bg-background py-1.5 pl-8 pr-7 text-xs outline-none transition focus:border-primary/40"
-            />
-            {search && (
-              <button
-                type="button"
-                onClick={() => setSearch('')}
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                <X className="size-3" />
-              </button>
-            )}
-          </div>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 gap-1 text-xs"
-            onClick={() => setUploadOpen(true)}
-          >
-            <Upload className="size-3.5" />
-            上传
-          </Button>
-        </div>
-        {/* Drop zone */}
-        <div
-          onDragOver={(e) => {
-            e.preventDefault()
-            setDragOver(true)
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => void handleDrop(e)}
-          className={cn(
-            'mt-2 flex items-center justify-center gap-1.5 rounded-md border border-dashed px-3 py-2 text-center text-[10px] transition',
-            dragOver
-              ? 'border-primary bg-primary/5 text-primary'
-              : 'text-muted-foreground hover:border-border/60',
-          )}
-        >
-          {uploading ? (
-            <><Loader2 className="size-3 animate-spin" /> 上传中...</>
-          ) : (
-            <><Plus className="size-3" /> 拖入文档上传</>
-          )}
-        </div>
-        {uploadError && (
-          <div className="mt-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[10px] text-destructive">
-            {uploadError}
-          </div>
-        )}
-      </div>
-
-      {/* Obsidian Vault section */}
-      <div className="border-t px-2 py-2">
-        <ObsidianVaultSection onSelectFile={setSelectedId} />
-      </div>
-
-      {/* My Documents section */}
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="border-t px-2 py-2">
-          <MyDocumentsSection />
-        </div>
-      </ScrollArea>
-
-      {/* Upload dialog */}
-      <UploadDocumentDialog
-        open={uploadOpen}
-        onOpenChange={setUploadOpen}
-        onUploaded={() => {}}
-      />
-    </div>
-  )
-}
-
-/** 主区域内容：文档详情或空状态 */
-export function KnowledgeMainPanel() {
-  const selectedId = useAppStore((s) => s.selectedKnowledgeDocId)
-  const setSelectedId = useAppStore((s) => s.setSelectedKnowledgeDocId)
-
-  if (!selectedId) {
-    return (
-      <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center bg-background/85 backdrop-blur-2xl">
-        <div className="flex flex-col items-center gap-3 text-center">
-          <div className="flex size-14 items-center justify-center rounded-2xl bg-muted/60 shadow-[var(--shadow-sm)]">
-            <BookOpen className="size-6 text-muted-foreground" />
-          </div>
-          <div className="space-y-0.5">
-            <p className="text-sm font-medium text-foreground">知识库</p>
-            <p className="text-xs text-muted-foreground">从左侧选择文档查看详情</p>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  return <DocumentDetail documentId={selectedId} onBack={() => setSelectedId(null)} />
 }

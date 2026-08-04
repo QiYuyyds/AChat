@@ -12,7 +12,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { cn } from '@/lib/utils'
 import type { SkillSummary } from '@/lib/api'
 
 interface SkillDetailDialogProps {
@@ -33,7 +34,6 @@ export function SkillDetailDialog({ skill, open, onOpenChange, onDelete }: Skill
       return
     }
 
-    // Fetch skill content
     setLoading(true)
     fetch(`/api/skills/${skill.slug}`)
       .then((res) => {
@@ -59,77 +59,101 @@ export function SkillDetailDialog({ skill, open, onOpenChange, onDelete }: Skill
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="w-[95vw] sm:w-[90vw] lg:w-[85vw] xl:w-[80vw] h-auto max-h-[80vh] flex flex-col overflow-hidden p-0" style={{ maxWidth: '1200px' }}>
-          <DialogHeader className="shrink-0 px-6 pt-6 pb-2">
+        <DialogContent
+          className="flex h-auto max-h-[80vh] flex-col overflow-hidden p-0 sm:max-w-3xl"
+        >
+          {/* Header with accent */}
+          <DialogHeader className="shrink-0 border-b px-6 pb-4 pt-6">
             <div className="flex items-start gap-3">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-500">
-                <Sparkles className="size-5" />
+              <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-amber-500/10 text-amber-500">
+                <Sparkles className="size-5.5" />
               </div>
               <div className="min-w-0 flex-1">
-                <DialogTitle className="text-lg">{skill.name}</DialogTitle>
-                <DialogDescription className="mt-1">
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{skill.slug}</code>
-                </DialogDescription>
+                <DialogTitle className="text-lg tracking-tight">{skill.name}</DialogTitle>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    {skill.slug}
+                  </code>
+                  {skill.triggerKeywords && skill.triggerKeywords.length > 0 && (
+                    <div className="flex items-center gap-1">
+                      {skill.triggerKeywords.slice(0, 4).map((kw) => (
+                        <span
+                          key={kw}
+                          className="inline-flex items-center rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                        >
+                          {kw}
+                        </span>
+                      ))}
+                      {skill.triggerKeywords.length > 4 && (
+                        <span className="text-[10px] text-muted-foreground">
+                          +{skill.triggerKeywords.length - 4}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </DialogHeader>
 
-          <div className="flex-1 min-h-0 overflow-y-auto px-6">
-            <div className="space-y-4 py-4">
+          {/* Body */}
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="space-y-5 px-6 py-5">
               {/* Description */}
-              <div>
-                <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">描述</h4>
-                <p className="mt-1.5 text-sm">{skill.description}</p>
-              </div>
-
-              {/* Trigger Keywords */}
-              {skill.triggerKeywords && skill.triggerKeywords.length > 0 && (
+              {skill.description && (
                 <div>
-                  <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">触发关键词</h4>
-                  <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    {skill.triggerKeywords.map((kw) => (
-                      <Badge key={kw} variant="secondary" className="text-xs">
-                        {kw}
-                      </Badge>
-                    ))}
-                  </div>
+                  <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    描述
+                  </h4>
+                  <p className="mt-2 text-sm leading-relaxed">{skill.description}</p>
                 </div>
               )}
 
               {/* Content */}
               <div>
-                <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">SKILL.md 内容</h4>
-                <div className="mt-1.5 rounded-lg border bg-muted/50 p-4">
+                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  SKILL.md 内容
+                </h4>
+                <div className="mt-2 overflow-hidden rounded-xl border bg-muted/30">
                   {loading ? (
-                    <div className="flex items-center justify-center py-8 text-muted-foreground">
+                    <div className="flex items-center justify-center py-12 text-muted-foreground">
                       <div className="size-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-                      <span className="ml-2 text-sm">加载中...</span>
+                      <span className="ml-2 text-sm">加载中…</span>
                     </div>
                   ) : skillContent ? (
-                    <pre className="whitespace-pre-wrap text-xs leading-relaxed font-mono text-foreground/90">
+                    <pre
+                      className={cn(
+                        'max-h-[50vh] overflow-auto whitespace-pre-wrap p-4',
+                        'font-mono text-xs leading-relaxed text-foreground/90',
+                      )}
+                    >
                       {skillContent}
                     </pre>
                   ) : (
-                    <p className="text-sm text-muted-foreground">暂无内容</p>
+                    <p className="p-4 text-sm text-muted-foreground">暂无内容</p>
                   )}
                 </div>
               </div>
             </div>
-          </div>
+          </ScrollArea>
 
-          <DialogFooter className="shrink-0 gap-2 px-6 pb-6 pt-2 border-t">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
-              关闭
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => setDeleteConfirmOpen(true)}
-              className="gap-1.5"
-            >
-              <Trash2 className="size-4" />
-              删除
-            </Button>
-          </DialogFooter>
+          {/* Footer */}
+          <div className="shrink-0 border-t px-6 py-4">
+            <div className="flex items-center justify-between">
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setDeleteConfirmOpen(true)}
+                className="gap-1.5"
+              >
+                <Trash2 className="size-3.5" />
+                删除
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+                关闭
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 

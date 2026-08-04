@@ -36,14 +36,11 @@
 
 ### 单 DB 回退
 
-不设置 `DATABASE_LOCAL_URL` 时，`get_local_db()` 回退到远端 PG session（单 DB 模式，向后兼容）。`get_db` 设为 `get_remote_db` 别名用于过渡期兼容。
+不设置 `DATABASE_LOCAL_URL` 时，本地引擎不初始化（双 DB 是唯一部署模式）。`get_db` 设为 `get_remote_db` 别名用于过渡期兼容。
 
-### 跨库 FK 移除
+### 本地表无 user_id 列
 
-3 个跨库 FK 已移除 `ForeignKey("users.id")` 约束，改为纯 String 列：
-- `conversations.user_id` → 纯 String 列（App 层 JWT 校验）
-- `agents.user_id` → 纯 String 列（nullable）
-- `mcp_servers.user_id` → 纯 String 列（nullable）
+本地表（`agents` / `conversations` / `mcp_servers` / `model_profiles` 等）不再有 `user_id` 列——双 DB 模式下单用户，无需用户隔离。远端表（`documents` / `rag_chunks` / `long_term_memory` 等）保留 `user_id` 列用于 PG 侧多用户隔离。
 
 SQLite 内部 FK 保持不变（`messages.agent_id → agents.id` 等），`PRAGMA foreign_keys=ON` 确保级联删除生效。
 

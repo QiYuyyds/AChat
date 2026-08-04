@@ -38,7 +38,7 @@ async def _list_conversations(args: dict[str, Any], user_id: str) -> ToolResult:
     from app.services.conversation_service import list_conversations
     from app.utils.clock import now_ms
 
-    convs = await list_conversations(user_id)
+    convs = await list_conversations()
     include_archived = args.get("include_archived", False)
     since_hours = args.get("since_hours")
     limit = min(args.get("limit", 20), 100)
@@ -82,7 +82,7 @@ async def _get_conversation(args: dict[str, Any], user_id: str) -> ToolResult:
 
     async with get_local_db() as db:
         conv = await db.get(Conversation, conversation_id)
-        if conv is None or conv.user_id != user_id:
+        if conv is None:
             return err(f"Conversation not found: {conversation_id}")
 
         msg_result = await db.execute(
@@ -213,7 +213,7 @@ async def _delete_conversation(args: dict[str, Any], user_id: str, ctx: ToolCont
 
     async with get_local_db() as db:
         conv = await db.get(Conversation, conversation_id)
-        if conv is None or conv.user_id != user_id:
+        if conv is None:
             return err(f"Conversation not found: {conversation_id}")
         if conv.mode == "guide":
             return err("不能删除 guide 会话")

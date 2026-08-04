@@ -220,6 +220,10 @@ export type ModelProvider =
   | 'volcano-ark'
   | 'openai-compatible'
 
+// ─── CacheStyle ─────────────────────────────────────────────
+/** Cache 语义声明，用于 token 用量计算。 */
+export type CacheStyle = 'deepseek' | 'anthropic' | 'none'
+
 // ─── ModelProfile ────────────────────────────────────────────
 export interface ModelProfile {
   id: string
@@ -232,6 +236,8 @@ export interface ModelProfile {
   supportsVision: boolean
   lastTestStatus: 'untested' | 'ok' | 'fail'
   lastTestedAt: number | null
+  cacheStyle: CacheStyle | null
+  detectedCacheStyle: CacheStyle | null
   createdAt: number
   updatedAt: number
 }
@@ -244,6 +250,7 @@ export interface CreateModelProfileBody {
   apiBaseUrl?: string | null
   isDefault?: boolean
   supportsVision?: boolean
+  cacheStyle?: CacheStyle | null
 }
 
 export type UpdateModelProfileBody = Partial<CreateModelProfileBody>
@@ -608,6 +615,7 @@ export interface RunUsageEvent {
   lastOutputTokens?: number
   turnCount?: number
   model?: string
+  cacheStyle?: CacheStyle
 }
 
 /** Per-message usage 事件 payload。与 db/schema.ts 的 MessageUsage 同形。 */
@@ -615,6 +623,7 @@ export interface MessageUsageEvent {
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
+  cacheStyle?: CacheStyle | null
 }
 
 /** Per-turn token breakdown for TurnMetricEvent. */

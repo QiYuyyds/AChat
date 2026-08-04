@@ -21,6 +21,7 @@ from app.db.models import ModelProfile, User
 from app.schemas.model_profile import (
     CreateModelProfileRequest,
     UpdateModelProfileRequest,
+    _KNOWN_PROVIDERS,
     _mask_key,
 )
 from app.utils.clock import now_ms
@@ -46,6 +47,8 @@ def _serialize(row: ModelProfile) -> dict[str, Any]:
         "supportsVision": row.supports_vision,
         "lastTestStatus": row.last_test_status,
         "lastTestedAt": row.last_tested_at,
+        "cacheStyle": row.cache_style,
+        "detectedCacheStyle": row.detected_cache_style,
         "createdAt": row.created_at,
         "updatedAt": row.updated_at,
     }
@@ -54,12 +57,11 @@ def _serialize(row: ModelProfile) -> dict[str, Any]:
 # ─── GET /api/model-profiles ──────────────────────────────────────
 @router.get("/model-profiles")
 async def list_model_profiles(user: User = Depends(get_current_user)) -> JSONResponse:
-    """List all ModelProfiles for the current user."""
+    """List all ModelProfiles."""
     async with get_local_db() as db:
         rows = (
             await db.execute(
                 select(ModelProfile)
-                .where(ModelProfile.user_id == user.id)
                 .order_by(ModelProfile.created_at.asc())
             )
         ).scalars().all()
@@ -91,11 +93,14 @@ async def create_model_profile(
     api_key_error = validate_openai_compatible_api_key(body.provider, body.api_key)
     if api_key_error:
         return JSONResponse({"error": api_key_error}, status_code=400)
+    # Validate cacheStyle: known providers ignore user-set cacheStyle
+    effective_cache_style = body.cache_style
+    if body.provider in _KNOWN_PROVIDERS and effective_cache_style is not None:
+        effective_cache_style = None
 
     now = now_ms()
     profile = ModelProfile(
         id=new_model_profile_id(),
-        user_id=user.id,
         name=body.name.strip(),
         provider=body.provider,
         model_id=body.model_id.strip(),
@@ -105,15 +110,16 @@ async def create_model_profile(
         supports_vision=body.supports_vision or False,
         last_test_status="untested",
         last_tested_at=None,
+        cache_style=effective_cache_style,
         created_at=now,
         updated_at=now,
     )
 
     async with get_local_db() as db:
-        # Check if user has zero profiles → this becomes default
+        # Check if there are zero profiles → this becomes default
         existing_count = (
             await db.execute(
-                select(ModelProfile).where(ModelProfile.user_id == user.id)
+                select(ModelProfile)
             )
         ).scalars().all()
         if len(existing_count) == 0:
@@ -158,7 +164,7 @@ async def update_model_profile(
 
     async with get_local_db() as db:
         profile = await db.get(ModelProfile, profile_id)
-        if profile is None or profile.user_id != user.id:
+        if profile is None:
             return JSONResponse({"error": "Profile not found"}, status_code=404)
 
         provided = body.model_fields_set
@@ -175,6 +181,10 @@ async def update_model_profile(
             profile.api_base_url = body.api_base_url.strip() or None
         if "supports_vision" in provided and body.supports_vision is not None:
             profile.supports_vision = body.supports_vision
+        if "cache_style" in provided and body.cache_style is not None:
+            # Known providers ignore user-set cacheStyle
+            if profile.provider not in _KNOWN_PROVIDERS:
+                profile.cache_style = body.cache_style
 
         # Validate openai-compatible fields after merge
         base_url_error = validate_openai_compatible_base_url(
@@ -196,7 +206,6 @@ async def update_model_profile(
                     await db.execute(
                         select(ModelProfile)
                         .where(
-                            ModelProfile.user_id == user.id,
                             ModelProfile.is_default == True,  # noqa: E712
                             ModelProfile.id != profile_id,
                         )
@@ -228,7 +237,7 @@ async def delete_model_profile(
     """Delete a ModelProfile. If deleting the default, auto-assign new default."""
     async with get_local_db() as db:
         profile = await db.get(ModelProfile, profile_id)
-        if profile is None or profile.user_id != user.id:
+        if profile is None:
             return JSONResponse({"error": "Profile not found"}, status_code=404)
 
         was_default = profile.is_default
@@ -240,7 +249,6 @@ async def delete_model_profile(
             remaining = (
                 await db.execute(
                     select(ModelProfile)
-                    .where(ModelProfile.user_id == user.id)
                     .order_by(ModelProfile.created_at.asc())
                 )
             ).scalars().first()
@@ -271,7 +279,7 @@ async def test_model_profile(
 
     async with get_local_db() as db:
         profile = await db.get(ModelProfile, profile_id)
-        if profile is None or profile.user_id != user.id:
+        if profile is None:
             return JSONResponse({"error": "Profile not found"}, status_code=404)
 
         # Resolve client config

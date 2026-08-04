@@ -45,7 +45,7 @@ async def _seed_conversation(dual_db, conv_id="conv1"):
     now = now_ms()
     async with dual_db.get_local_db() as session:
         conv = Conversation(
-            id=conv_id, user_id="u1", title="T", mode="single",
+            id=conv_id, title="T", mode="single",
             created_at=now, updated_at=now,
         )
         conv.agent_ids_list = []

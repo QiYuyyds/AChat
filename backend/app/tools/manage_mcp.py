@@ -33,23 +33,20 @@ def _serialize_server(row: Any) -> dict[str, Any]:
 
 async def _manage_mcp_handler(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     action = args.get("action", "")
-    user_id = ctx.user_id
-    if user_id is None:
-        return err("manage_mcp requires a user context")
 
     if action == "list":
-        return await _list_mcp(user_id)
+        return await _list_mcp()
     elif action == "create":
-        return await _create_mcp(args, user_id, ctx)
+        return await _create_mcp(args, ctx)
     elif action == "update":
-        return await _update_mcp(args, user_id, ctx)
+        return await _update_mcp(args, ctx)
     elif action == "delete":
-        return await _delete_mcp(args, user_id, ctx)
+        return await _delete_mcp(args, ctx)
     else:
         return err(f"Unknown action: {action}")
 
 
-async def _list_mcp(user_id: str) -> ToolResult:
+async def _list_mcp() -> ToolResult:
     from sqlalchemy import select
 
     from app.db.engine import get_local_db
@@ -58,7 +55,6 @@ async def _list_mcp(user_id: str) -> ToolResult:
     async with get_local_db() as db:
         result = await db.execute(
             select(McpServer)
-            .where(McpServer.user_id == user_id)
             .order_by(McpServer.created_at)
         )
         rows = result.scalars().all()
@@ -66,7 +62,7 @@ async def _list_mcp(user_id: str) -> ToolResult:
     return ok({"servers": [_serialize_server(r) for r in rows]})
 
 
-async def _create_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> ToolResult:
+async def _create_mcp(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     from sqlalchemy import select
 
     from app.db.engine import get_local_db
@@ -93,7 +89,6 @@ async def _create_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> T
 
         server = McpServer(
             id=new_mcp_server_id(),
-            user_id=user_id,
             name=name,
             transport=transport,
             command=command,
@@ -113,7 +108,7 @@ async def _create_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> T
     return ok({"server": result, "message": f"已创建 MCP Server「{name}」"})
 
 
-async def _update_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> ToolResult:
+async def _update_mcp(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     from app.db.engine import get_local_db
     from app.db.models import McpServer
 
@@ -123,7 +118,7 @@ async def _update_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> T
 
     async with get_local_db() as db:
         server = await db.get(McpServer, server_id)
-        if server is None or server.user_id != user_id:
+        if server is None:
             return err(f"MCP server not found: {server_id}")
 
         if "name" in args:
@@ -150,7 +145,7 @@ async def _update_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> T
     return ok({"server": result, "message": f"已更新 MCP Server「{result['name']}」"})
 
 
-async def _delete_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> ToolResult:
+async def _delete_mcp(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     if not args.get("confirm", False):
         return err("删除操作需要先通过 ask_user 向用户确认，并传 confirm=true")
 
@@ -163,7 +158,7 @@ async def _delete_mcp(args: dict[str, Any], user_id: str, ctx: ToolContext) -> T
 
     async with get_local_db() as db:
         server = await db.get(McpServer, server_id)
-        if server is None or server.user_id != user_id:
+        if server is None:
             return err(f"MCP server not found: {server_id}")
         server_name = server.name
         await db.delete(server)

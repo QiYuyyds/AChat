@@ -21,7 +21,14 @@ import type {
   TurnMetricData,
 } from '@/shared/types'
 import type { PendingMergeConflict } from '@/lib/api'
-import { computeTotalTokens, computeMessageTotalTokens } from '@/shared/usage'
+import {
+  computeTotalTokens,
+  computeMessageTotalTokens,
+  computeNetInput,
+  inferCacheStyle,
+  type CacheStyleBucket,
+} from '@/shared/usage'
+import type { CacheStyle } from '@/shared/types'
 
 enableMapSet()
 
@@ -1894,6 +1901,8 @@ export interface AgentUsageDetail {
   runCount: number
   /** 最近使用的 model（从 run.usage 或 agent.modelId 推断） */
   model?: string
+  /** 该 agent 最近一次使用的 cache style */
+  cacheStyle: CacheStyle
   /** subagent runs 的 token 总量（rolled up to parent） */
   subagentTokens: number
   /** subagent runs 的数量 */
@@ -1907,6 +1916,12 @@ export interface ConversationUsageTotal {
   cacheCreationTokens: number
   cacheReadTokens: number
   totalTokens: number
+  /** 逐 run 按各自 cacheStyle 计算后累积的 netInput（预计算值） */
+  netInput: number
+  /** 按 cacheStyle 分桶的用量明细，用于加权命中率和分桶费用估算 */
+  byCacheStyle: Record<CacheStyle, CacheStyleBucket>
+  /** 最近一次有 usage 的 run 的 cacheStyle */
+  lastCacheStyle: CacheStyle
   /** 最近一次有 usage 的 run 的 input prompt token 数（context window 仪表用） */
   lastInputTokens: number
   /** 最近一次 run 的缓存命中 token 数（单次 ctx 拆解树用） */
@@ -1947,6 +1962,13 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
       cacheCreationTokens: 0,
       cacheReadTokens: 0,
       totalTokens: 0,
+      netInput: 0,
+      byCacheStyle: {
+        deepseek: { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, outputTokens: 0 },
+        anthropic: { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, outputTokens: 0 },
+        none: { inputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, outputTokens: 0 },
+      },
+      lastCacheStyle: 'deepseek',
       lastInputTokens: 0,
       lastCacheReadTokens: 0,
       lastOutputTokens: 0,
@@ -1968,75 +1990,59 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
     // Subagent runs (parentRunId set) with the SAME agent as the parent roll up
     // to the parent's subagent fields (clone-self dispatch). Subagent runs with
     // a DIFFERENT agent (DAG cross-agent dispatch) are counted independently.
+    // 每个 run 用自己的 cacheStyle 计算 token 语义，不再用全局信号反推。
     const runsWithUsage = new Set<string>()
     if (runs) {
-      // Build run map for parent chain walking
       const runMap = new Map(Object.values(runs).map((r) => [r.id, r]))
       for (const run of Object.values(runs)) {
         const u = run.usage
         if (!u) continue
         runsWithUsage.add(run.id)
 
-        // Walk parent chain to find top-level run
+        const style = u.cacheStyle ?? inferCacheStyle(u.cacheCreationTokens)
+        const runTotal = computeTotalTokens(
+          style, u.inputTokens, u.outputTokens, u.cacheCreationTokens, u.cacheReadTokens,
+        )
+        const netInput = computeNetInput(
+          style, u.inputTokens, u.cacheReadTokens, u.cacheCreationTokens,
+        )
+        const sub = u.inputTokens + u.outputTokens
+
         let topRun = run
         while (topRun.parentRunId && runMap.has(topRun.parentRunId)) {
           topRun = runMap.get(topRun.parentRunId)!
         }
         const isSubagent = topRun.id !== run.id
         const isCloneSelf = isSubagent && run.agentId === topRun.agentId
-        const sub = u.inputTokens + u.outputTokens
 
         if (isCloneSelf) {
-          // Clone-self: roll up to parent agent's subagent fields
           const d = detail[topRun.agentId] ??= {
             inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
             cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+            cacheStyle: 'deepseek' as CacheStyle,
             subagentTokens: 0, subagentRunCount: 0,
           }
           d.subagentTokens += sub
           d.subagentRunCount++
           if (u.model) d.model = u.model
-        } else if (isSubagent) {
-          // Cross-agent dispatch (DAG): count independently under child agent
-          const runTotal = computeTotalTokens(
-            u.inputTokens, u.outputTokens, u.cacheCreationTokens, u.cacheReadTokens,
-          )
-          result.inputTokens += u.inputTokens
-          result.outputTokens += u.outputTokens
-          result.cacheCreationTokens += u.cacheCreationTokens
-          result.cacheReadTokens += u.cacheReadTokens
-          result.totalTokens += runTotal
-          result.runCount++
-          result.byAgent[run.agentId] = (result.byAgent[run.agentId] ?? 0) + runTotal
-          if (u.model) result.byModel[u.model] = (result.byModel[u.model] ?? 0) + runTotal
-          const d = detail[run.agentId] ??= {
-            inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
-            cacheReadTokens: 0, totalTokens: 0, runCount: 0,
-            subagentTokens: 0, subagentRunCount: 0,
-          }
-          d.inputTokens += u.inputTokens
-          d.outputTokens += u.outputTokens
-          d.cacheCreationTokens += u.cacheCreationTokens
-          d.cacheReadTokens += u.cacheReadTokens
-          d.totalTokens += runTotal
-          d.runCount++
-          if (u.model) d.model = u.model
         } else {
-          // Top-level run: count normally
-          const runTotal = computeTotalTokens(
-            u.inputTokens, u.outputTokens, u.cacheCreationTokens, u.cacheReadTokens,
-          )
           result.inputTokens += u.inputTokens
           result.outputTokens += u.outputTokens
           result.cacheCreationTokens += u.cacheCreationTokens
           result.cacheReadTokens += u.cacheReadTokens
           result.totalTokens += runTotal
+          result.netInput += netInput
           result.runCount++
+          result.byCacheStyle[style].inputTokens += u.inputTokens
+          result.byCacheStyle[style].outputTokens += u.outputTokens
+          result.byCacheStyle[style].cacheCreationTokens += u.cacheCreationTokens
+          result.byCacheStyle[style].cacheReadTokens += u.cacheReadTokens
           result.byAgent[run.agentId] = (result.byAgent[run.agentId] ?? 0) + runTotal
           if (u.model) result.byModel[u.model] = (result.byModel[u.model] ?? 0) + runTotal
           const d = detail[run.agentId] ??= {
             inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
             cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+            cacheStyle: 'deepseek' as CacheStyle,
             subagentTokens: 0, subagentRunCount: 0,
           }
           d.inputTokens += u.inputTokens
@@ -2045,9 +2051,11 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           d.cacheReadTokens += u.cacheReadTokens
           d.totalTokens += runTotal
           d.runCount++
+          d.cacheStyle = style
           if (u.model) d.model = u.model
-          if (run.startedAt > lastInputTs) {
+          if (!isSubagent && run.startedAt > lastInputTs) {
             lastInputTs = run.startedAt
+            result.lastCacheStyle = style
             result.lastInputTokens = u.lastInputTokens ?? u.inputTokens
             result.lastCacheReadTokens = u.lastCacheReadTokens ?? 0
             result.lastOutputTokens = u.lastOutputTokens ?? 0
@@ -2067,36 +2075,48 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
         if (m.runId && runsWithUsage.has(m.runId)) continue
 
         const u = m.usage
-        const provider = undefined
+        let msgStyle: CacheStyle = u.cacheStyle ?? 'deepseek'
+        if (!u.cacheStyle && m.runId && runs) {
+          const parentRun = Object.values(runs).find((r) => r.id === m.runId)
+          if (parentRun?.usage?.cacheStyle) msgStyle = parentRun.usage.cacheStyle
+        }
         const msgTotal = computeMessageTotalTokens(
-          u.inputTokens, u.outputTokens, u.cacheReadTokens, provider,
+          msgStyle, u.inputTokens, u.outputTokens, u.cacheReadTokens,
+        )
+        const msgNetInput = computeNetInput(
+          msgStyle, u.inputTokens, u.cacheReadTokens, 0,
         )
         result.inputTokens += u.inputTokens
         result.outputTokens += u.outputTokens
         result.cacheReadTokens += u.cacheReadTokens
         result.totalTokens += msgTotal
+        result.netInput += msgNetInput
+        result.byCacheStyle[msgStyle].inputTokens += u.inputTokens
+        result.byCacheStyle[msgStyle].outputTokens += u.outputTokens
+        result.byCacheStyle[msgStyle].cacheReadTokens += u.cacheReadTokens
         if (m.runId && !seenRunIds.has(m.runId)) {
           seenRunIds.add(m.runId)
           result.runCount++
         }
         if (m.agentId) {
           result.byAgent[m.agentId] = (result.byAgent[m.agentId] ?? 0) + msgTotal
-          // modelId no longer available on agent; skip byModel aggregation
           const d = detail[m.agentId] ??= {
             inputTokens: 0, outputTokens: 0, cacheCreationTokens: 0,
             cacheReadTokens: 0, totalTokens: 0, runCount: 0,
+            cacheStyle: 'deepseek' as CacheStyle,
             subagentTokens: 0, subagentRunCount: 0,
           }
           d.inputTokens += u.inputTokens
           d.outputTokens += u.outputTokens
           d.cacheReadTokens += u.cacheReadTokens
           d.totalTokens += msgTotal
+          d.cacheStyle = msgStyle
           if (m.runId && !seenRunIds.has(m.runId)) d.runCount++
         }
         if (m.createdAt > lastInputTs) {
           lastInputTs = m.createdAt
+          result.lastCacheStyle = msgStyle
           result.lastInputTokens = u.inputTokens
-          // MessageUsage 无 turnCount / lastOutputTokens，仅能取 cacheRead 快照
           result.lastCacheReadTokens = u.cacheReadTokens
           result.lastOutputTokens = u.outputTokens
           result.turnCount = 0

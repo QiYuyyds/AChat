@@ -1,11 +1,10 @@
 'use client'
 
-import { CheckCircle2, Coins, Loader2, Pencil, Plus, Star, Trash2, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronRight, Coins, Loader2, Pencil, Plus, Star, Trash2, XCircle, Zap } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
   DialogContent,
@@ -25,7 +24,7 @@ import {
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/app-store'
 import { formatTok } from '@/components/usage-dashboard'
-import type { ModelProfile, ModelProvider } from '@/shared/types'
+import type { CacheStyle, ModelProfile, ModelProvider } from '@/shared/types'
 import type { UsageSummary } from '@/lib/api'
 
 const PROVIDERS: { value: ModelProvider; label: string }[] = [
@@ -36,12 +35,24 @@ const PROVIDERS: { value: ModelProvider; label: string }[] = [
   { value: 'openai-compatible', label: 'OpenAI-compatible' },
 ]
 
-const PROVIDER_COLORS: Record<ModelProvider, string> = {
-  deepseek: 'bg-blue-500/10 text-blue-500',
-  anthropic: 'bg-orange-500/10 text-orange-500',
-  openai: 'bg-green-500/10 text-green-500',
-  'volcano-ark': 'bg-purple-500/10 text-purple-500',
-  'openai-compatible': 'bg-gray-500/10 text-gray-500',
+const PROVIDER_DOT: Record<ModelProvider, string> = {
+  deepseek: 'bg-blue-500/40',
+  anthropic: 'bg-orange-500/40',
+  openai: 'bg-green-500/40',
+  'volcano-ark': 'bg-purple-500/40',
+  'openai-compatible': 'bg-gray-500/40',
+}
+
+const CACHE_STYLE_LABELS: Record<CacheStyle, string> = {
+  deepseek: 'DeepSeek 风格',
+  anthropic: 'Anthropic 风格',
+  none: '不支持缓存',
+}
+
+interface TestState {
+  status: string
+  latencyMs?: number
+  error?: string
 }
 
 export function ModelConfigTab() {
@@ -54,9 +65,10 @@ export function ModelConfigTab() {
   const [editingProfile, setEditingProfile] = useState<ModelProfile | null>(null)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
-  const [testResult, setTestResult] = useState<Record<string, { status: string; latencyMs?: number; error?: string } | undefined>>({})
+  const [testResult, setTestResult] = useState<Record<string, TestState | undefined>>({})
   const [testingIds, setTestingIds] = useState<Set<string>>(new Set())
   const [usageSummary, setUsageSummary] = useState<UsageSummary | null>(null)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true)
@@ -72,7 +84,6 @@ export function ModelConfigTab() {
     [profiles],
   )
 
-  // Build a map of modelId → totalTokens from usage data
   const modelUsageMap = useMemo(() => {
     const map = new Map<string, number>()
     if (usageSummary) {
@@ -83,10 +94,13 @@ export function ModelConfigTab() {
     return map
   }, [usageSummary])
 
-  const maxUsage = useMemo(() => {
-    if (modelUsageMap.size === 0) return 1
-    return Math.max(...modelUsageMap.values(), 1)
-  }, [modelUsageMap])
+  const stats = useMemo(() => {
+    const passed = profileList.filter((p) => testResult[p.id]?.status === 'ok' || p.lastTestStatus === 'ok').length
+    const untested = profileList.filter(
+      (p) => !testResult[p.id] && p.lastTestStatus === 'untested',
+    ).length
+    return { total: profileList.length, passed, untested }
+  }, [profileList, testResult])
 
   const handleTest = useCallback(async (profileId: string) => {
     setTestingIds((prev) => new Set(prev).add(profileId))
@@ -126,6 +140,7 @@ export function ModelConfigTab() {
     try {
       await deleteModelProfile(deleteTargetId)
       removeModelProfile(deleteTargetId)
+      setExpandedId(null)
       setDeleteTargetId(null)
     } catch (err) {
       console.error('[ModelConfig] delete failed', err)
@@ -135,172 +150,70 @@ export function ModelConfigTab() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Title and description + action */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold">模型配置</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            管理模型配置档，独立于 Agent 实体，可在输入栏按消息切换
-          </p>
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="agent-fade-up flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2.5">
+          <h2 className="text-base font-medium">模型配置</h2>
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {stats.total} 个配置
+          </span>
+          {stats.total > 0 && (
+            <div className="hidden items-center gap-2 text-xs tabular-nums text-muted-foreground sm:flex">
+              <span className="text-border">|</span>
+              <span className="text-success">{stats.passed} 已通过</span>
+              {stats.untested > 0 && (
+                <>
+                  <span className="text-border">|</span>
+                  <span>{stats.untested} 待测试</span>
+                </>
+              )}
+            </div>
+          )}
         </div>
         <Button
           size="sm"
-          className="gap-1.5 text-xs"
+          className="group/add gap-1.5 overflow-hidden shadow-[var(--shadow-sm),var(--inset-hi)] transition-all duration-200 hover:shadow-[var(--shadow-md),var(--inset-hi)] hover:brightness-110 active:scale-[0.97]"
           onClick={() => { setEditingProfile(null); setEditOpen(true) }}
         >
-          <Plus className="size-3.5" />
-          添加
+          <span className="relative flex size-3.5 items-center justify-center">
+            <Plus className="size-3.5 transition-transform duration-300 group-hover/add:rotate-90" />
+          </span>
+          添加配置
         </Button>
       </div>
 
-      {/* Grid */}
+      {/* List */}
       {loading && profileList.length === 0 ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className="h-48 animate-pulse rounded-xl border border-border/40 bg-card" />
+        <div className="agent-fade-up agent-fade-up-delay-1 space-y-1.5">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/40" />
           ))}
         </div>
       ) : profileList.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <div className="flex size-16 items-center justify-center rounded-2xl bg-muted">
-            <Plus className="size-8 text-muted-foreground opacity-50" />
-          </div>
-          <h3 className="mt-4 text-sm font-medium">还没有模型配置</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            点击右上角「添加」创建第一个模型档
-          </p>
-        </div>
+        <EmptyState
+          onCTA={() => { setEditingProfile(null); setEditOpen(true) }}
+          delayClass="agent-fade-up agent-fade-up-delay-1"
+        />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {profileList.map((p) => {
-            const testing = testingIds.has(p.id)
-            const result = testResult[p.id]
-            const usage = modelUsageMap.get(p.modelId) ?? 0
-            const usagePct = maxUsage > 0 ? (usage * 100) / maxUsage : 0
-            const providerColor = PROVIDER_COLORS[p.provider] ?? 'bg-gray-500/10 text-gray-500'
-            return (
-              <div
+        <div className="agent-fade-up agent-fade-up-delay-1 overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-sm)]">
+          <div className="divide-y divide-border">
+            {profileList.map((p) => (
+              <ProfileRow
                 key={p.id}
-                className="group relative flex cursor-pointer flex-col rounded-xl border bg-card p-4 transition-all hover:border-primary/50 hover:shadow-sm"
-                onClick={() => { setEditingProfile(p); setEditOpen(true) }}
-              >
-                {/* Header */}
-                <div className="flex items-start gap-3">
-                  <div className={cn('flex size-10 shrink-0 items-center justify-center rounded-lg', providerColor)}>
-                    <span className="text-xs font-bold uppercase">{p.provider.slice(0, 2)}</span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1.5">
-                      {p.isDefault && (
-                        <Star className="size-3 shrink-0 fill-warning text-warning" />
-                      )}
-                      <h4 className="truncate text-sm font-medium">{p.name}</h4>
-                    </div>
-                    <p className="mt-0.5 truncate text-xs text-muted-foreground">{p.modelId}</p>
-                  </div>
-                </div>
-
-                {/* Provider label */}
-                <div className="mt-2 text-xs text-muted-foreground">
-                  {PROVIDERS.find((x) => x.value === p.provider)?.label ?? p.provider}
-                </div>
-
-                {/* API key hint */}
-                {p.apiKeyLast4 && (
-                  <div className="mt-1 text-xs text-muted-foreground/70">
-                    key ••••{p.apiKeyLast4}
-                  </div>
-                )}
-
-                {/* Test status */}
-                <div className="mt-2 flex items-center gap-1.5">
-                  {testing ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                      <Loader2 className="size-3 animate-spin" /> 测试中…
-                    </span>
-                  ) : result ? (
-                    <span className={cn(
-                      'inline-flex items-center gap-1 text-xs',
-                      result.status === 'ok' ? 'text-success' : 'text-destructive',
-                    )}>
-                      {result.status === 'ok' ? <CheckCircle2 className="size-3" /> : <XCircle className="size-3" />}
-                      {result.status === 'ok' ? `${result.latencyMs}ms` : result.error ?? '失败'}
-                    </span>
-                  ) : p.lastTestStatus === 'ok' ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-success">
-                      <CheckCircle2 className="size-3" /> 已通过
-                    </span>
-                  ) : p.lastTestStatus === 'fail' ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-destructive">
-                      <XCircle className="size-3" /> 未通过
-                    </span>
-                  ) : (
-                    <span className="text-xs text-muted-foreground/50">未测试</span>
-                  )}
-                </div>
-
-                {/* Usage bar */}
-                {usage > 0 && (
-                  <div className="mt-3 space-y-1">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                        <Coins className="size-2.5" /> 用量
-                      </span>
-                      <span className="font-mono text-[10px] text-muted-foreground">
-                        {formatTok(usage)}
-                      </span>
-                    </div>
-                    <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-primary/70 via-primary/50 to-primary/30 transition-all duration-500"
-                        style={{ width: `${usagePct}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {/* Hover actions */}
-                <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); void handleTest(p.id) }}
-                    disabled={testing}
-                    className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-                    title="测试连通性"
-                  >
-                    {testing ? (
-                      <Loader2 className="size-3.5 animate-spin" />
-                    ) : (
-                      <Loader2 className="size-3.5" />
-                    )}
-                  </button>
-                  {!p.isDefault && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); void handleSetDefault(p.id) }}
-                      className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-                      title="设为默认"
-                    >
-                      <Star className="size-3.5" />
-                    </button>
-                  )}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setEditingProfile(p); setEditOpen(true) }}
-                    className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-                    title="编辑"
-                  >
-                    <Pencil className="size-3.5" />
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setDeleteTargetId(p.id) }}
-                    className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-destructive"
-                    title="删除"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </button>
-                </div>
-              </div>
-            )
-          })}
+                profile={p}
+                expanded={expandedId === p.id}
+                onToggle={() => setExpandedId(expandedId === p.id ? null : p.id)}
+                onEdit={() => { setEditingProfile(p); setEditOpen(true) }}
+                onDelete={() => setDeleteTargetId(p.id)}
+                onTest={() => void handleTest(p.id)}
+                onSetDefault={() => void handleSetDefault(p.id)}
+                testing={testingIds.has(p.id)}
+                testResult={testResult[p.id]}
+                usage={modelUsageMap.get(p.modelId) ?? 0}
+              />
+            ))}
+          </div>
         </div>
       )}
 
@@ -337,6 +250,243 @@ export function ModelConfigTab() {
   )
 }
 
+function ProfileRow({
+  profile: p,
+  expanded,
+  onToggle,
+  onEdit,
+  onDelete,
+  onTest,
+  onSetDefault,
+  testing,
+  testResult,
+  usage,
+}: {
+  profile: ModelProfile
+  expanded: boolean
+  onToggle: () => void
+  onEdit: () => void
+  onDelete: () => void
+  onTest: () => void
+  onSetDefault: () => void
+  testing: boolean
+  testResult?: TestState
+  usage: number
+}) {
+  const providerLabel = PROVIDERS.find((x) => x.value === p.provider)?.label ?? p.provider
+  const dotColor = PROVIDER_DOT[p.provider] ?? 'bg-gray-500/40'
+
+  return (
+    <div>
+      {/* Collapsed row */}
+      <button
+        type="button"
+        onClick={onToggle}
+        className="group flex w-full items-center gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-muted/30"
+      >
+        {/* Provider dot */}
+        <span className={cn('size-1.5 shrink-0 rounded-full', dotColor)} />
+
+        {/* Name + default badge */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium">{p.name}</span>
+            {p.isDefault && (
+              <span className="shrink-0 rounded-4xl bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
+                默认
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Provider label */}
+        <span className="hidden shrink-0 font-mono text-xs text-muted-foreground/60 sm:block">
+          {providerLabel}
+        </span>
+
+        {/* Test status */}
+        <TestStatusPill testing={testing} result={testResult} lastTestStatus={p.lastTestStatus} />
+
+        {/* Usage */}
+        {usage > 0 && (
+          <span className="hidden shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums text-muted-foreground/60 md:flex">
+            <Coins className="size-2.5" />
+            {formatTok(usage)}
+          </span>
+        )}
+
+        {/* Chevron */}
+        <ChevronRight
+          className={cn(
+            'size-4 shrink-0 text-muted-foreground/40 transition-transform duration-200',
+            expanded && 'rotate-90',
+          )}
+        />
+      </button>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div className="border-t border-border bg-muted/20 px-4 py-3">
+          {/* Test error */}
+          {testResult?.status === 'fail' && testResult.error && (
+            <div className="mb-3 rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              {testResult.error}
+            </div>
+          )}
+
+          {/* Technical details */}
+          <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-xs">
+            <dt className="font-medium text-muted-foreground">Model</dt>
+            <dd className="truncate font-mono">{p.modelId}</dd>
+
+            <dt className="font-medium text-muted-foreground">Provider</dt>
+            <dd>{providerLabel}</dd>
+
+            {p.apiKeyLast4 && (
+              <>
+                <dt className="font-medium text-muted-foreground">API Key</dt>
+                <dd className="font-mono">{'\u2022\u2022\u2022\u2022'}{p.apiKeyLast4}</dd>
+              </>
+            )}
+
+            {p.apiBaseUrl && (
+              <>
+                <dt className="font-medium text-muted-foreground">Base URL</dt>
+                <dd className="truncate font-mono">{p.apiBaseUrl}</dd>
+              </>
+            )}
+
+            <dt className="font-medium text-muted-foreground">视觉</dt>
+            <dd>{p.supportsVision ? '支持' : '不支持'}</dd>
+
+            {p.provider === 'openai-compatible' && (
+              <>
+                <dt className="font-medium text-muted-foreground">Cache</dt>
+                <dd className="font-mono">
+                  {p.cacheStyle === null ? '自动探测' : CACHE_STYLE_LABELS[p.cacheStyle]}
+                  {p.detectedCacheStyle && (
+                    <span className="text-muted-foreground"> (检测: {CACHE_STYLE_LABELS[p.detectedCacheStyle]})</span>
+                  )}
+                </dd>
+              </>
+            )}
+          </dl>
+
+          {/* Actions */}
+          <div className="mt-3 flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={onTest} disabled={testing} className="h-7 gap-1.5 text-xs">
+              {testing ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Zap className="size-3.5" />
+              )}
+              测试连通性
+            </Button>
+            {!p.isDefault && (
+              <Button size="sm" variant="ghost" onClick={onSetDefault} className="h-7 gap-1.5 text-xs">
+                <Star className="size-3.5" />
+                设为默认
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={onEdit} className="h-7 gap-1.5 text-xs">
+              <Pencil className="size-3.5" />
+              编辑
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onDelete}
+              className="h-7 gap-1.5 text-xs text-destructive hover:text-destructive"
+            >
+              <Trash2 className="size-3.5" />
+              删除
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TestStatusPill({
+  testing,
+  result,
+  lastTestStatus,
+}: {
+  testing: boolean
+  result?: TestState
+  lastTestStatus: 'untested' | 'ok' | 'fail'
+}) {
+  if (testing) {
+    return (
+      <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
+        <Loader2 className="size-3 animate-spin" />
+        测试中
+      </span>
+    )
+  }
+  if (result) {
+    return result.status === 'ok' ? (
+      <span className="flex shrink-0 items-center gap-1 text-[11px] text-success">
+        <CheckCircle2 className="size-3" />
+        <span className="tabular-nums">{result.latencyMs}ms</span>
+      </span>
+    ) : (
+      <span className="flex shrink-0 items-center gap-1 text-[11px] text-destructive">
+        <XCircle className="size-3" />
+        失败
+      </span>
+    )
+  }
+  if (lastTestStatus === 'ok') {
+    return (
+      <span className="flex shrink-0 items-center gap-1 text-[11px] text-success">
+        <CheckCircle2 className="size-3" />
+        已通过
+      </span>
+    )
+  }
+  if (lastTestStatus === 'fail') {
+    return (
+      <span className="flex shrink-0 items-center gap-1 text-[11px] text-destructive">
+        <XCircle className="size-3" />
+        未通过
+      </span>
+    )
+  }
+  return (
+    <span className="shrink-0 text-[11px] text-muted-foreground/50">
+      未测试
+    </span>
+  )
+}
+
+function EmptyState({
+  onCTA,
+  delayClass,
+}: {
+  onCTA: () => void
+  delayClass: string
+}) {
+  return (
+    <div className={cn(delayClass, 'flex flex-col items-center gap-4 rounded-xl border border-dashed border-border py-20 text-center')}>
+      <div className="flex size-14 items-center justify-center rounded-2xl bg-primary/5">
+        <Zap className="size-7 text-primary/60" />
+      </div>
+      <div className="space-y-1">
+        <h3 className="text-balance text-sm font-medium">还没有模型配置</h3>
+        <p className="text-pretty text-xs text-muted-foreground">
+          添加你的第一个模型配置档，Agent 运行时将按优先级自动解析
+        </p>
+      </div>
+      <Button size="sm" className="gap-1.5" onClick={onCTA}>
+        <Plus className="size-3.5" />
+        添加配置
+      </Button>
+    </div>
+  )
+}
+
 function EditDialog({
   open,
   onOpenChange,
@@ -355,6 +505,7 @@ function EditDialog({
   const [apiBaseUrl, setApiBaseUrl] = useState('')
   const [isDefault, setIsDefault] = useState(false)
   const [supportsVision, setSupportsVision] = useState(false)
+  const [cacheStyle, setCacheStyle] = useState<CacheStyle | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -369,6 +520,7 @@ function EditDialog({
         setApiBaseUrl(profile.apiBaseUrl ?? '')
         setIsDefault(profile.isDefault)
         setSupportsVision(profile.supportsVision)
+        setCacheStyle(profile.cacheStyle ?? null)
       } else {
         setName('')
         setProvider('deepseek')
@@ -377,6 +529,7 @@ function EditDialog({
         setApiBaseUrl('')
         setIsDefault(false)
         setSupportsVision(false)
+        setCacheStyle(null)
       }
     }
   }, [open, profile])
@@ -399,6 +552,7 @@ function EditDialog({
         apiBaseUrl: apiBaseUrl.trim() || undefined,
         isDefault,
         supportsVision,
+        cacheStyle: provider === 'openai-compatible' ? cacheStyle : undefined,
       }
       const saved = profile
         ? await updateModelProfile(profile.id, body)
@@ -465,7 +619,7 @@ function EditDialog({
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder={profile ? `••••${profile.apiKeyLast4 ?? ''}` : 'sk-...'}
+              placeholder={profile ? `\u2022\u2022\u2022\u2022${profile.apiKeyLast4 ?? ''}` : 'sk-...'}
               className="mt-1"
             />
           </div>
@@ -498,6 +652,40 @@ function EditDialog({
               <span>支持视觉</span>
             </label>
           </div>
+          {provider === 'openai-compatible' && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Cache 语义
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {([
+                  { value: null, label: '自动探测' },
+                  { value: 'deepseek' as CacheStyle, label: 'DeepSeek 风格 (input 含 cache)' },
+                  { value: 'anthropic' as CacheStyle, label: 'Anthropic 风格 (input 不含 cache)' },
+                  { value: 'none' as CacheStyle, label: '不支持缓存' },
+                ] as { value: CacheStyle | null; label: string }[]).map((opt) => (
+                  <button
+                    key={String(opt.value)}
+                    type="button"
+                    onClick={() => setCacheStyle(opt.value)}
+                    className={cn(
+                      'rounded-md border px-2.5 py-1 text-xs transition',
+                      cacheStyle === opt.value
+                        ? 'border-primary bg-primary/10 text-primary'
+                        : 'border-border text-muted-foreground hover:border-foreground/30',
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+              {profile?.detectedCacheStyle && (
+                <p className="text-[10px] text-muted-foreground">
+                  上次自动检测: {profile.detectedCacheStyle}
+                </p>
+              )}
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>

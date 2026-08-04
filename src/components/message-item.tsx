@@ -34,7 +34,7 @@ import { formatDuration } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import type { MessageRow } from '@/db/schema'
 import { PIN_LIMIT_PER_CONVERSATION } from '@/shared/constants'
-import { computeMessageTotalTokens } from '@/shared/usage'
+import { computeMessageTotalTokens, inferCacheStyle } from '@/shared/usage'
 import {
   useAppStore,
   useIsRunActive,
@@ -275,10 +275,10 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
             >
               {formatTokenShort(
                 computeMessageTotalTokens(
+                  message.usage.cacheStyle ?? inferCacheStyle(0),
                   message.usage.inputTokens,
                   message.usage.outputTokens,
                   message.usage.cacheReadTokens,
-                  undefined,
                 ),
               )}{' '}
               tok

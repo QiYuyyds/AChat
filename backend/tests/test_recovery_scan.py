@@ -16,7 +16,7 @@ from app.utils.clock import now_ms
 
 
 async def _seed_stuck_message(
-    user_id: str,
+    user_id: str | None = None,
     msg_id: str = "msg_stuck",
     run_id: str = "run_stuck",
     conv_id: str = "conv_stuck",
@@ -29,7 +29,6 @@ async def _seed_stuck_message(
     async with get_db() as session:
         conv = Conversation(
             id=conv_id,
-            user_id=user_id,
             title="Stuck Test",
             mode="single",
             archived=False,

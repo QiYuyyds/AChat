@@ -1,46 +1,188 @@
 import { describe, expect, it } from 'vitest'
 
-import { computeCost, computeLastNetInput, computeNetInput } from '@/shared/usage'
+import {
+  computeCacheHitRate,
+  computeCost,
+  computeLastNetInput,
+  computeMessageTotalTokens,
+  computeNetInput,
+  computeTotalTokens,
+  computeWeightedCacheHitRate,
+  inferCacheStyle,
+  type CacheStyleBucket,
+} from '@/shared/usage'
 
-describe('computeNetInput', () => {
-  it('DeepSeek: subtracts cacheReadTokens from inputTokens (input includes cache hit)', () => {
-    // 564k input, 488.7k cache read → 75.3k net new
-    expect(computeNetInput(564_000, 488_700, 0)).toBe(75_300)
+// ─── inferCacheStyle (11.6) ───────────────────────────────
+
+describe('inferCacheStyle', () => {
+  it('returns "anthropic" when cacheCreationTokens > 0', () => {
+    expect(inferCacheStyle(500)).toBe('anthropic')
   })
 
-  it('Anthropic: adds cacheCreationTokens to inputTokens (input excludes cache creation)', () => {
-    // 9k input, 5k cache creation → 14k net new
-    expect(computeNetInput(9_000, 0, 5_000)).toBe(14_000)
+  it('returns "deepseek" when cacheCreationTokens === 0', () => {
+    expect(inferCacheStyle(0)).toBe('deepseek')
+  })
+
+  it('returns "deepseek" for negative values (defensive)', () => {
+    expect(inferCacheStyle(-1)).toBe('deepseek')
+  })
+})
+
+// ─── computeTotalTokens (11.5) ─────────────────────────────
+
+describe('computeTotalTokens', () => {
+  it('deepseek: input + output (cache already in input)', () => {
+    expect(computeTotalTokens('deepseek', 564_000, 7_100, 0, 488_700)).toBe(571_100)
+  })
+
+  it('anthropic: input + output + cacheCreation + cacheRead', () => {
+    expect(computeTotalTokens('anthropic', 9_000, 2_000, 5_000, 3_000)).toBe(19_000)
+  })
+
+  it('none: input + output (no cache)', () => {
+    expect(computeTotalTokens('none', 1_000, 200, 0, 0)).toBe(1_200)
+  })
+})
+
+// ─── computeMessageTotalTokens (11.5) ─────────────────────
+
+describe('computeMessageTotalTokens', () => {
+  it('deepseek: input + output (no cacheCreation in MessageUsage)', () => {
+    expect(computeMessageTotalTokens('deepseek', 1_000, 200, 500)).toBe(1_200)
+  })
+
+  it('anthropic: input + output + cacheRead (no cacheCreation field)', () => {
+    expect(computeMessageTotalTokens('anthropic', 1_000, 200, 500)).toBe(1_700)
+  })
+
+  it('none: input + output', () => {
+    expect(computeMessageTotalTokens('none', 1_000, 200, 0)).toBe(1_200)
+  })
+})
+
+// ─── computeNetInput ──────────────────────────────────────
+
+describe('computeNetInput', () => {
+  it('DeepSeek: subtracts cacheReadTokens from inputTokens', () => {
+    expect(computeNetInput('deepseek', 564_000, 488_700, 0)).toBe(75_300)
+  })
+
+  it('Anthropic: adds cacheCreationTokens to inputTokens', () => {
+    expect(computeNetInput('anthropic', 9_000, 0, 5_000)).toBe(14_000)
   })
 
   it('DeepSeek: clamps to 0 when cacheRead > input (defensive)', () => {
-    expect(computeNetInput(100, 200, 0)).toBe(0)
+    expect(computeNetInput('deepseek', 100, 200, 0)).toBe(0)
   })
 
   it('DeepSeek: returns full input when no cache read', () => {
-    expect(computeNetInput(1_000, 0, 0)).toBe(1_000)
+    expect(computeNetInput('deepseek', 1_000, 0, 0)).toBe(1_000)
+  })
+
+  it('none: returns inputTokens as-is', () => {
+    expect(computeNetInput('none', 1_000, 500, 0)).toBe(1_000)
   })
 })
 
+// ─── computeLastNetInput ──────────────────────────────────
+
 describe('computeLastNetInput', () => {
-  it('DeepSeek: lastInput - lastCacheRead (single-turn snapshot)', () => {
-    // 79.1k last input, 70k last cache read → 9.1k net new
-    expect(computeLastNetInput(79_100, 70_000, 0)).toBe(9_100)
+  it('DeepSeek: lastInput - lastCacheRead', () => {
+    expect(computeLastNetInput('deepseek', 79_100, 70_000)).toBe(9_100)
   })
 
-  it('Anthropic: returns lastInputTokens as approximation (no lastCacheCreation)', () => {
-    // Anthropic: lastInput excludes cache, so all input is "new"
-    expect(computeLastNetInput(9_000, 5_000, 5_000)).toBe(9_000)
+  it('Anthropic: returns lastInputTokens (input excludes cache)', () => {
+    expect(computeLastNetInput('anthropic', 9_000, 5_000)).toBe(9_000)
   })
 
   it('DeepSeek: clamps to 0 when lastCacheRead > lastInput', () => {
-    expect(computeLastNetInput(100, 200, 0)).toBe(0)
+    expect(computeLastNetInput('deepseek', 100, 200)).toBe(0)
+  })
+
+  it('none: returns lastInputTokens', () => {
+    expect(computeLastNetInput('none', 1_000, 500)).toBe(1_000)
   })
 })
 
+// ─── computeCacheHitRate ─────────────────────────────────
+
+describe('computeCacheHitRate', () => {
+  it('deepseek: cacheRead / inputTokens', () => {
+    expect(computeCacheHitRate('deepseek', 1000, 0, 500)).toBeCloseTo(50, 0)
+  })
+
+  it('anthropic: cacheRead / (input + cacheRead + cacheCreation)', () => {
+    expect(computeCacheHitRate('anthropic', 1000, 500, 500)).toBeCloseTo(25, 0)
+  })
+
+  it('none: always 0', () => {
+    expect(computeCacheHitRate('none', 1000, 0, 500)).toBe(0)
+  })
+
+  it('deepseek: 0 when no input', () => {
+    expect(computeCacheHitRate('deepseek', 0, 0, 500)).toBe(0)
+  })
+})
+
+// ─── computeWeightedCacheHitRate (11.7) ──────────────────
+
+describe('computeWeightedCacheHitRate', () => {
+  const emptyBucket: CacheStyleBucket = {
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    outputTokens: 0,
+  }
+
+  it('returns 0 when all buckets empty', () => {
+    expect(
+      computeWeightedCacheHitRate({
+        deepseek: emptyBucket,
+        anthropic: emptyBucket,
+        none: emptyBucket,
+      }),
+    ).toBe(0)
+  })
+
+  it('single deepseek bucket: same as computeCacheHitRate', () => {
+    const buckets = {
+      deepseek: { inputTokens: 1000, cacheReadTokens: 500, cacheCreationTokens: 0, outputTokens: 200 },
+      anthropic: emptyBucket,
+      none: emptyBucket,
+    }
+    expect(computeWeightedCacheHitRate(buckets)).toBeCloseTo(50, 0)
+  })
+
+  it('mixed deepseek + anthropic: weighted average', () => {
+    // deepseek: 1000 input, 500 cacheRead → 50% hit rate, weight = 1500
+    // anthropic: 1000 input, 0 cacheCreation, 500 cacheRead → 33.3% hit rate, weight = 1500
+    // weighted = (0.5 * 1500 + 0.333 * 1500) / 3000 = (750 + 500) / 3000 = 41.67%
+    const buckets = {
+      deepseek: { inputTokens: 1000, cacheReadTokens: 500, cacheCreationTokens: 0, outputTokens: 200 },
+      anthropic: { inputTokens: 1000, cacheReadTokens: 500, cacheCreationTokens: 0, outputTokens: 200 },
+      none: emptyBucket,
+    }
+    const result = computeWeightedCacheHitRate(buckets)
+    expect(result).toBeCloseTo(41.67, 0)
+  })
+
+  it('none bucket contributes 0 hit rate but adds to weight', () => {
+    // deepseek: 1000 input, 500 cacheRead → 50%, weight = 1500
+    // none: 1000 input, 0 cacheRead → 0%, weight = 1000
+    // weighted = (0.5 * 1500 + 0 * 1000) / 2500 = 750 / 2500 = 30%
+    const buckets = {
+      deepseek: { inputTokens: 1000, cacheReadTokens: 500, cacheCreationTokens: 0, outputTokens: 200 },
+      anthropic: emptyBucket,
+      none: { inputTokens: 1000, cacheReadTokens: 0, cacheCreationTokens: 0, outputTokens: 200 },
+    }
+    const result = computeWeightedCacheHitRate(buckets)
+    expect(result).toBeCloseTo(30, 0)
+  })
+})
+
+// ─── computeCost ──────────────────────────────────────────
+
 describe('computeCost', () => {
-  // DeepSeek V4 Flash pricing (per 1M tokens, CNY):
-  //   inputCacheHit: 0.02, inputCacheMiss: 1, output: 2
   const flashPricing = {
     currency: 'CNY' as const,
     inputCacheHit: 0.02,
@@ -49,40 +191,20 @@ describe('computeCost', () => {
   }
 
   it('DeepSeek v4-flash: actualCost ≈ ¥0.10 with real data', () => {
-    // input=564k, cacheRead=488.7k, output=7.1k
-    // netNew = 564k - 488.7k = 75.3k
-    // actualCost = 488.7k×0.02 + 75.3k×1 + 7.1k×2 (per 1M)
-    //            = 0.009774 + 0.0753 + 0.0142 ≈ 0.0993 → ¥0.10
-    const result = computeCost(flashPricing, 564_000, 488_700, 0, 7_100)
+    const result = computeCost('deepseek', flashPricing, 564_000, 488_700, 0, 7_100)
     expect(result.actualCost).toBeCloseTo(0.0993, 3)
     expect(result.currency).toBe('CNY')
   })
 
-  it('DeepSeek v4-flash: noCacheCost ≈ ¥0.58 (all input at miss price)', () => {
-    // noCacheCost = (488.7k + 75.3k)×1 + 7.1k×2 (per 1M)
-    //             = 0.564 + 0.0142 = 0.5782 → ¥0.58
-    const result = computeCost(flashPricing, 564_000, 488_700, 0, 7_100)
+  it('DeepSeek v4-flash: noCacheCost ≈ ¥0.58', () => {
+    const result = computeCost('deepseek', flashPricing, 564_000, 488_700, 0, 7_100)
     expect(result.noCacheCost).toBeCloseTo(0.5782, 3)
   })
 
   it('DeepSeek v4-flash: savings ≈ ¥0.48 (83%)', () => {
-    const result = computeCost(flashPricing, 564_000, 488_700, 0, 7_100)
+    const result = computeCost('deepseek', flashPricing, 564_000, 488_700, 0, 7_100)
     expect(result.savings).toBeCloseTo(0.4789, 3)
     expect(result.savingsPct).toBeCloseTo(83, 0)
-  })
-
-  it('DeepSeek v4-pro: uses pro pricing (higher rates)', () => {
-    const proPricing = {
-      currency: 'CNY' as const,
-      inputCacheHit: 0.025,
-      inputCacheMiss: 3,
-      output: 6,
-    }
-    // Same token usage → higher cost
-    const result = computeCost(proPricing, 564_000, 488_700, 0, 7_100)
-    // actualCost = 488.7k×0.025 + 75.3k×3 + 7.1k×6 (per 1M)
-    //            = 0.0122 + 0.2259 + 0.0426 = 0.2807
-    expect(result.actualCost).toBeCloseTo(0.2807, 3)
   })
 
   it('Anthropic-style: includes cacheCreation in netNew', () => {
@@ -92,18 +214,19 @@ describe('computeCost', () => {
       inputCacheMiss: 3,
       output: 15,
     }
-    // input=9k, cacheCreation=5k, cacheRead=3k, output=2k
-    // netNew = 9k + 5k = 14k (Anthropic: input + cacheCreation)
-    // actualCost = 3k×0.3 + 14k×3 + 2k×15 (per 1M)
-    //            = 0.0009 + 0.042 + 0.03 = 0.0729
-    const result = computeCost(anthropicPricing, 9_000, 3_000, 5_000, 2_000)
+    const result = computeCost('anthropic', anthropicPricing, 9_000, 3_000, 5_000, 2_000)
     expect(result.actualCost).toBeCloseTo(0.0729, 4)
     expect(result.currency).toBe('USD')
   })
 
+  it('none style: no cache, cost = input + output', () => {
+    const result = computeCost('none', flashPricing, 1_000, 0, 0, 500)
+    // netNew = 1000, actualCost = 0 + 1000*1 + 500*2 (per 1M) = 0.001 + 0.001 = 0.002
+    expect(result.actualCost).toBeCloseTo(0.002, 5)
+  })
+
   it('zero output → cost is cache + netNew only', () => {
-    const result = computeCost(flashPricing, 1_000, 500, 0, 0)
-    // netNew = 500, actualCost = 500×0.02 + 500×1 + 0 = 0.01 + 0.5 = 0.51 (per 1M)
+    const result = computeCost('deepseek', flashPricing, 1_000, 500, 0, 0)
     expect(result.actualCost).toBeCloseTo(0.00001 + 0.0005, 5)
   })
 })

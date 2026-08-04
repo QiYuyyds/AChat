@@ -56,7 +56,7 @@ async def _read_json(req: Request) -> Any:
 # ─── /conversations ──────────────────────────────────────────────────────────
 @router.get("/conversations")
 async def list_conversations(user: User = Depends(get_current_user)) -> JSONResponse:
-    conversations = await conversation_service.list_conversations(user_id=user.id)
+    conversations = await conversation_service.list_conversations()
     return JSONResponse(content={"conversations": _model(conversations)})
 
 
@@ -76,7 +76,6 @@ async def create_conversation(req: Request, user: User = Depends(get_current_use
             bound_path=body.bound_path,
             code_intelligence_enabled=body.code_intelligence_enabled,
             dispatch_mode=body.dispatch_mode,
-            user_id=user.id,
         )
     except ValueError as err:
         return _err(str(err), 400)
@@ -294,7 +293,6 @@ async def fork_conversation(
         new_conv = await conversation_service.fork_conversation(
             source_conv_id=conversation_id,
             fork_point_message_id=body.fork_point_message_id,
-            user_id=user.id,
             confirm_git_init=body.confirm_git_init,
         )
     except GitInitRequiredError as exc:

@@ -2,6 +2,7 @@
 
 import { isValidElement, type ReactElement, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
+import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
 
 import { CodeBlock } from '@/components/code-block'
@@ -21,6 +22,7 @@ export function Markdown({ children, className }: MarkdownProps) {
     <div className={cn('text-sm leading-6 text-foreground', className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw]}
         components={{
           h1: ({ children }) => <h1 className="mt-2 mb-1 text-lg font-semibold">{children}</h1>,
           h2: ({ children }) => <h2 className="mt-2 mb-1 text-base font-semibold">{children}</h2>,

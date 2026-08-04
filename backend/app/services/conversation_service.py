@@ -184,7 +184,6 @@ async def fork_conversation(
     *,
     source_conv_id: str,
     fork_point_message_id: str,
-    user_id: str | None = None,
     confirm_git_init: bool = False,
 ) -> ConversationResponse:
     """Create a new conversation by deep-copying messages from source up to fork point.
@@ -229,21 +228,20 @@ async def fork_conversation(
             raise ValueError(f"Failed to initialize git in source directory: {exc}") from exc
 
     # ── Create fork worktree ──────────────────────────────────────────
-    worktree_ref = await create_fork_worktree(source_cwd, new_conv_id, user_id)
+    worktree_ref = await create_fork_worktree(source_cwd, new_conv_id)
     if worktree_ref is None:
         raise ValueError("Failed to create fork workspace")
     worktree_path = worktree_ref.path
 
     # ── Title deduplication ───────────────────────────────────────────
     base_title = f"{source_conv.title} (分支)"
-    resolved_title = await _deduplicate_fork_title(base_title, source_conv_id, user_id)
+    resolved_title = await _deduplicate_fork_title(base_title, source_conv_id)
 
     try:
         # ── Create new Conversation + Workspace ───────────────────────
         async with get_local_db() as db:
             new_conv = Conversation(
                 id=new_conv_id,
-                user_id=user_id,
                 title=resolved_title,
                 mode=source_conv.mode,
                 archived=False,
@@ -335,7 +333,6 @@ async def fork_conversation(
 async def _deduplicate_fork_title(
     base_title: str,
     source_conv_id: str,
-    user_id: str | None,
 ) -> str:
     """Find a unique fork title: base, base 2, base 3, ..."""
     async with get_local_db() as db:
@@ -453,9 +450,9 @@ async def maybe_generate_summary(
     if agent is None:
         logger.info("[maybe_generate_summary] Skipped: agent not found")
         return
-    if agent.adapter_name != "custom" or not agent.user_id:
+    if agent.adapter_name != "custom":
         logger.info(
-            "[maybe_generate_summary] Skipped: agent is not SDK or has no user_id"
+            "[maybe_generate_summary] Skipped: agent is not SDK"
         )
         return
 
@@ -463,15 +460,13 @@ async def maybe_generate_summary(
         profile = (
             await db.execute(
                 select(ModelProfile).where(
-                    ModelProfile.user_id == agent.user_id,
                     ModelProfile.is_default == True,  # noqa: E712
                 ).limit(1)
             )
         ).scalar_one_or_none()
     if profile is None:
         logger.info(
-            "[maybe_generate_summary] Skipped: no default ModelProfile for user %s",
-            agent.user_id,
+            "[maybe_generate_summary] Skipped: no default ModelProfile"
         )
         return
 
@@ -545,7 +540,7 @@ async def maybe_generate_summary(
             timestamp=now_ms(),
             summary=summary,
         ),
-        user_id=conv.user_id,
+        user_id=None,
     )
     logger.info(
         "[maybe_generate_summary] Success! conv=%s summary=%s",
@@ -637,7 +632,6 @@ async def create_conversation(
 
         conv = Conversation(
             id=conversation_id,
-            user_id=user_id,
             title=resolved_title,
             mode=mode,
             archived=False,
@@ -710,14 +704,12 @@ async def create_conversation(
 
 
 # ─── List ───────────────────────────────────────────────────────────────────
-async def list_conversations(user_id: str | None = None) -> list[ConversationResponse]:
+async def list_conversations() -> list[ConversationResponse]:
     """Pinned first (by pinnedAt desc), then by updatedAt desc. Excludes guide-mode conversations."""
     async with get_local_db() as db:
         query = select(Conversation).where(Conversation.mode != "guide").order_by(
             Conversation.pinned_at.desc(), Conversation.updated_at.desc()
         )
-        if user_id is not None:
-            query = query.where(Conversation.user_id == user_id)
         result = await db.execute(query)
         convs = result.scalars().all()
         if not convs:
@@ -1053,7 +1045,7 @@ async def _send_message_unlocked(
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
-        conv_user_id = conv.user_id
+        conv_user_id = None
 
         parts: list[dict] = []
         if content and content.strip():
@@ -1112,7 +1104,7 @@ async def _send_message_unlocked(
                 created_at=now,
             ),
         ),
-        user_id=conv_user_id,
+        user_id=None,
     )
 
     # Bare deploy command (only when it's a lone text message): handle inline.
@@ -1325,7 +1317,7 @@ async def _revise_dispatch_plan_unlocked(
                 created_at=now,
             ),
         ),
-        user_id=conv.user_id,
+        user_id=None,
     )
 
     ok = pending_dispatch_plans.revise(plan_id, feedback)
@@ -1365,8 +1357,8 @@ async def _withdraw_latest_user_message_unlocked(
             raise ValueError("Only user messages can be withdrawn")
         msg_created_at = msg.created_at
 
-        conv = await _require_conversation(db, conversation_id)
-        conv_user_id = conv.user_id
+        await _require_conversation(db, conversation_id)
+        conv_user_id = None
 
         latest_user = await _latest_user_message(db, conversation_id)
         if latest_user is None or latest_user.id != message_id:
@@ -1426,7 +1418,7 @@ async def _regenerate_latest_response_unlocked(conversation_id: str) -> Regenera
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
-        conv_user_id = conv.user_id
+        conv_user_id = None
 
         latest_user = await _latest_user_message(db, conversation_id)
         if latest_user is None:

@@ -6,7 +6,7 @@
 
 import { sql } from 'drizzle-orm'
 import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
-import type { ArtifactContent, ArtifactType, AdapterName, MessagePart, ModelProvider } from '@/shared/types'
+import type { ArtifactContent, ArtifactType, AdapterName, CacheStyle, MessagePart, ModelProvider } from '@/shared/types'
 
 // ─── Agents ──────────────────────────────────────────────────
 export const agents = sqliteTable('agents', {
@@ -45,7 +45,6 @@ export const agents = sqliteTable('agents', {
 // ─── Model Profiles ─────────────────────────────────────────
 export const modelProfiles = sqliteTable('model_profiles', {
   id: text('id').primaryKey(),
-  userId: text('user_id').notNull(),
   name: text('name').notNull(),
   provider: text('provider').$type<ModelProvider>().notNull(),
   modelId: text('model_id').notNull(),
@@ -55,11 +54,16 @@ export const modelProfiles = sqliteTable('model_profiles', {
   supportsVision: integer('supports_vision', { mode: 'boolean' }).notNull().default(false),
   lastTestStatus: text('last_test_status').notNull().default('untested'),
   lastTestedAt: integer('last_tested_at'),
+  cacheStyle: text('cache_style'),
+  detectedCacheStyle: text('detected_cache_style'),
   createdAt: integer('created_at').notNull(),
   updatedAt: integer('updated_at').notNull(),
 })
 
-export type ModelProfileRow = typeof modelProfiles.$inferSelect
+export type ModelProfileRow = typeof modelProfiles.$inferSelect & {
+  cacheStyle?: string | null
+  detectedCacheStyle?: string | null
+}
 
 // ─── Conversations ───────────────────────────────────────────
 export const conversations = sqliteTable(
@@ -146,6 +150,7 @@ export interface MessageUsage {
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
+  cacheStyle?: CacheStyle | null
 }
 
 // ─── Artifacts ───────────────────────────────────────────────
@@ -263,6 +268,8 @@ export interface RunUsage {
   turnCount?: number
   /** 实际使用的模型 id；不同 run 可能不同（agent 配置改过 / 第三方网关动态路由），用来归类 */
   model?: string
+  /** cache 语义声明：'deepseek' | 'anthropic' | 'none' */
+  cacheStyle?: CacheStyle
 }
 
 // ─── Conversation context summaries ────────────────────────────────────────

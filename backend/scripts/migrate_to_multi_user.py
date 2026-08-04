@@ -31,12 +31,9 @@ from app.auth.password import hash_password
 from app.config import get_settings
 from app.db.engine import get_db, init_db
 from app.db.models import (
-    Agent,
     AppSettings,
-    Conversation,
     Document,
     GlobalSettings,
-    McpServer,
     User,
     UserSettings,
 )
@@ -75,12 +72,10 @@ async def migrate() -> None:
 
         default_user_id = user.id
 
-        # 2. Back-fill user_id on all ownership tables
+        # 2. Back-fill user_id on remote ownership tables only
+        # (local tables no longer have user_id columns)
         for _model_cls, label in [
-            (Agent, "agents"),
-            (Conversation, "conversations"),
             (Document, "documents"),
-            (McpServer, "mcp_servers"),
         ]:
             result = await db.execute(
                 text(
@@ -159,8 +154,8 @@ async def migrate() -> None:
                 db.add(us)
                 print("[migration] Created user_settings from app_settings")
 
-        # 6. Set NOT NULL constraints on ownership columns (PostgreSQL)
-        for table_name in ("conversations", "documents", "mcp_servers"):
+        # 6. Set NOT NULL constraints on remote ownership columns (PostgreSQL)
+        for table_name in ("documents",):
             try:
                 await db.execute(
                     text(f"ALTER TABLE {table_name} ALTER COLUMN user_id SET NOT NULL")

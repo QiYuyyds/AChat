@@ -1,7 +1,7 @@
 """Tests for SSE stream authentication (app/api/stream.py).
 
 Verifies that SSE connections without a token are rejected (401) and that
-authenticated connections receive events filtered by user_id.
+authenticated connections receive events (single-user mode — no user_id filtering).
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ async def test_sse_with_valid_token_resolves_user(db, test_user):
     assert user_id == test_user["id"]
 
 
-async def test_event_bus_filters_by_user_id():
-    """EventBus only delivers events to matching user_id subscribers."""
+async def test_event_bus_delivers_to_all_subscribers():
+    """EventBus delivers events to all subscribers (single-user mode — no user_id filtering)."""
     from app.api.stream import _event_stream
 
     # User A subscribes
@@ -57,21 +57,16 @@ async def test_event_bus_filters_by_user_id():
         )
         event_bus.publish(event_a, user_id="user_a")
 
-        # User A receives it
+        # Both users receive it (single-user mode — no filtering)
         frame_a = await asyncio.wait_for(gen_a.__anext__(), timeout=2.0)
         payload_a = json.loads(frame_a["data"])
         assert payload_a["type"] == "run.start"
         assert payload_a["runId"] == "run_a"
 
-        # User B does NOT receive it (should timeout or get heartbeat)
-        # Give it a short window to confirm no event arrives
-        try:
-            frame_b = await asyncio.wait_for(gen_b.__anext__(), timeout=0.5)
-            payload_b = json.loads(frame_b["data"])
-            # If we get something, it should only be a heartbeat, not the event
-            assert payload_b["type"] != "run.start"
-        except TimeoutError:
-            pass  # expected — no event for user B
+        frame_b = await asyncio.wait_for(gen_b.__anext__(), timeout=2.0)
+        payload_b = json.loads(frame_b["data"])
+        assert payload_b["type"] == "run.start"
+        assert payload_b["runId"] == "run_a"
 
     finally:
         await gen_a.aclose()

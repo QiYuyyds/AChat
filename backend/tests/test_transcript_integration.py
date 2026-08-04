@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.db.engine import get_db
-from app.db.models import Agent, Conversation, Message
+from app.db.models import Agent, Conversation, Message, ModelProfile
 from app.services import context_compaction_service
 from app.services.context_compaction_service import (
     compact_conversation,
@@ -23,7 +23,7 @@ from app.utils.model_registry import estimate_tokens
 _LONG_TEXT = "这是一段用于测试压缩的对话内容。" * 200  # ~5200 chars → ~1300 tokens
 
 
-async def _seed_agent_and_conversation(db, user_id: str) -> tuple[str, str]:
+async def _seed_agent_and_conversation(db, user_id: str | None = None) -> tuple[str, str]:
     """Seed a model-backed custom agent + a conversation; return (agent_id, conv_id)."""
     now = now_ms()
     agent_id = "ag_transcript_test"
@@ -36,15 +36,27 @@ async def _seed_agent_and_conversation(db, user_id: str) -> tuple[str, str]:
             description="test agent",
             system_prompt="test system prompt",
             adapter_name="custom",
-            model_provider="openai",
-            model_id="gpt-4o-mini",
             is_builtin=False,
             is_orchestrator=False,
             created_at=now,
-            user_id=user_id,
         )
         agent.capabilities_list = []
         agent.tool_names_list = []
+
+        profile = ModelProfile(
+            id="mp_transcript_test",
+            name="test-profile",
+            provider="openai",
+            model_id="gpt-4o-mini",
+            api_key="sk-test",
+            api_base_url=None,
+            is_default=True,
+            supports_vision=False,
+            last_test_status="untested",
+            last_tested_at=None,
+            created_at=now,
+            updated_at=now,
+        )
 
         conv = Conversation(
             id=conv_id,
@@ -54,11 +66,11 @@ async def _seed_agent_and_conversation(db, user_id: str) -> tuple[str, str]:
             fs_write_approval_mode="review",
             created_at=now,
             updated_at=now,
-            user_id=user_id,
         )
         conv.agent_ids_list = [agent_id]
         conv.pinned_message_ids_list = []
         session.add(agent)
+        session.add(profile)
         session.add(conv)
     return agent_id, conv_id
 

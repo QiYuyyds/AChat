@@ -385,11 +385,6 @@ async def list_session_memories(
             .where(ContextSummary.summary_type == "session")
             .order_by(ContextSummary.created_at.desc())
         )
-        # Filter by user via conversation ownership
-        stmt = stmt.join(
-            Conversation,
-            ContextSummary.conversation_id == Conversation.id,
-        ).where(Conversation.user_id == user.id)
         result = await session.execute(stmt)
         rows = result.all()
 

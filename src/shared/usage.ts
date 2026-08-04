@@ -1,82 +1,158 @@
 /**
- * Token 用量计算 helpers —— provider-aware。
+ * Token 用量计算 helpers —— cacheStyle-aware。
  *
- * 核心差异（与 `usage-badge.tsx` 的 `computeCacheHitRate` 同源）：
- * - Anthropic：`input_tokens` **不含** cache_read / cache_creation → 总量需加上两者
- * - DeepSeek / OpenAI 等：`prompt_tokens` **已含** cached_tokens → 总量不能再加 cacheRead
+ * 核心差异：
+ * - 'deepseek'：input_tokens 已含 cache_read → total = input + output，netInput = input - cacheRead
+ * - 'anthropic'：input_tokens 不含 cache → total = input + output + cacheCreation + cacheRead，netInput = input + cacheCreation
+ * - 'none'：不支持缓存 → total = input + output，netInput = input
  *
- * 信号：`cacheCreationTokens > 0` 表示 Anthropic 风格上报。
- * 当 `cacheCreationTokens` 不可用时（MessageUsage 不含此字段），用 `modelProvider === 'anthropic'` 兜底。
+ * 所有函数第一个参数是 cacheStyle，消除从数据反推 provider 的反模式。
  */
 
-import type { ModelProvider } from './types'
+import type { CacheStyle } from './types'
 
 /**
- * 计算真实的 token 总量（input + output，按 provider 语义修正 cache 双重计算）。
- *
- * 用于 RunUsage（含 cacheCreationTokens 字段）。
+ * 旧数据兼容：从 cacheCreationTokens 反推 cacheStyle。
+ * > 0 → 'anthropic'，否则 'deepseek'。与 pre-change 行为完全一致。
+ */
+export function inferCacheStyle(cacheCreationTokens: number): CacheStyle {
+  return cacheCreationTokens > 0 ? 'anthropic' : 'deepseek'
+}
+
+/**
+ * 计算真实的 token 总量（input + output，按 cacheStyle 语义修正 cache 双重计算）。
  */
 export function computeTotalTokens(
+  cacheStyle: CacheStyle,
   inputTokens: number,
   outputTokens: number,
   cacheCreationTokens: number,
   cacheReadTokens: number,
 ): number {
-  if (cacheCreationTokens > 0) {
-    return inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
+  switch (cacheStyle) {
+    case 'anthropic':
+      return inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
+    case 'deepseek':
+      return inputTokens + outputTokens
+    case 'none':
+      return inputTokens + outputTokens
   }
-  return inputTokens + outputTokens
 }
 
 /**
  * 计算单条消息的 token 总量。
- *
- * MessageUsage 不含 cacheCreationTokens，用 modelProvider 做兜底信号：
- * anthropic → input 排除 cache，需加回 cacheRead
- * 其他 provider（deepseek / openai / ...）→ input 已含 cacheRead，不重复加
+ * MessageUsage 不含 cacheCreationTokens，用 cacheStyle 判断。
  */
 export function computeMessageTotalTokens(
+  cacheStyle: CacheStyle,
   inputTokens: number,
   outputTokens: number,
   cacheReadTokens: number,
-  modelProvider?: ModelProvider | null,
 ): number {
-  if (modelProvider === 'anthropic') {
-    return inputTokens + outputTokens + cacheReadTokens
+  switch (cacheStyle) {
+    case 'anthropic':
+      return inputTokens + outputTokens + cacheReadTokens
+    case 'deepseek':
+      return inputTokens + outputTokens
+    case 'none':
+      return inputTokens + outputTokens
   }
-  return inputTokens + outputTokens
 }
 
 /**
- * 累计「新内容(净)」——provider-aware:
- * - DeepSeek (cacheCreation == 0): inputTokens - cacheReadTokens（input 已含 cache hit）
- * - Anthropic (cacheCreation > 0): inputTokens + cacheCreationTokens（input 不含 cache creation）
- * 结果恒为「真正按 1× 计费的量」。
+ * 累计「新内容(净)」——cacheStyle-aware:
+ * - deepseek: inputTokens - cacheReadTokens（input 已含 cache hit）
+ * - anthropic: inputTokens + cacheCreationTokens（input 不含 cache creation）
+ * - none: inputTokens（不支持缓存）
  */
 export function computeNetInput(
+  cacheStyle: CacheStyle,
   inputTokens: number,
   cacheReadTokens: number,
   cacheCreationTokens: number,
 ): number {
-  if (cacheCreationTokens > 0) {
-    return inputTokens + cacheCreationTokens
+  switch (cacheStyle) {
+    case 'anthropic':
+      return inputTokens + cacheCreationTokens
+    case 'deepseek':
+      return Math.max(0, inputTokens - cacheReadTokens)
+    case 'none':
+      return inputTokens
   }
-  return Math.max(0, inputTokens - cacheReadTokens)
 }
 
 /**
  * 单次 ctx 拆解的「新内容」——与 computeNetInput 同源但用 last-turn 快照值。
- * Anthropic 无 lastCacheCreationTokens，用累计 cacheCreation>0 做 provider 信号，netNew ≈ lastInputTokens。
  */
 export function computeLastNetInput(
+  cacheStyle: CacheStyle,
   lastInputTokens: number,
   lastCacheReadTokens: number,
-  cacheCreationTokens: number,
 ): number {
-  if (cacheCreationTokens > 0) {
-    return lastInputTokens
+  switch (cacheStyle) {
+    case 'anthropic':
+      return lastInputTokens
+    case 'deepseek':
+      return Math.max(0, lastInputTokens - lastCacheReadTokens)
+    case 'none':
+      return lastInputTokens
   }
-  return Math.max(0, lastInputTokens - lastCacheReadTokens)
+}
+
+/**
+ * 计算 cache 命中率——cacheStyle-aware。
+ * - deepseek: cacheRead / inputTokens（input 已含 cache）
+ * - anthropic: cacheRead / (input + cacheRead + cacheCreation)
+ * - none: 0（不支持缓存）
+ */
+export function computeCacheHitRate(
+  cacheStyle: CacheStyle,
+  inputTokens: number,
+  cacheCreationTokens: number,
+  cacheReadTokens: number,
+): number {
+  switch (cacheStyle) {
+    case 'anthropic': {
+      const denom = inputTokens + cacheReadTokens + cacheCreationTokens
+      return denom > 0 ? (cacheReadTokens / denom) * 100 : 0
+    }
+    case 'deepseek':
+      return inputTokens > 0 ? (cacheReadTokens / inputTokens) * 100 : 0
+    case 'none':
+      return 0
+  }
+}
+
+/** 分桶数据 */
+export interface CacheStyleBucket {
+  inputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+  outputTokens: number
+}
+
+/**
+ * 计算加权 cache 命中率——逐 style 用各自正确分母公式算命中率后加权平均。
+ */
+export function computeWeightedCacheHitRate(
+  byCacheStyle: Record<CacheStyle, CacheStyleBucket>,
+): number {
+  let weightedSum = 0
+  let totalInput = 0
+  for (const style of ['deepseek', 'anthropic', 'none'] as CacheStyle[]) {
+    const bucket = byCacheStyle[style]
+    if (!bucket) continue
+    const rate = computeCacheHitRate(
+      style,
+      bucket.inputTokens,
+      bucket.cacheCreationTokens,
+      bucket.cacheReadTokens,
+    ) / 100
+    const weight = bucket.inputTokens + bucket.cacheReadTokens + bucket.cacheCreationTokens
+    weightedSum += rate * weight
+    totalInput += weight
+  }
+  return totalInput > 0 ? (weightedSum / totalInput) * 100 : 0
 }
 
 /** 估算费用结果。所有金额按原币种，不换算。 */
@@ -89,19 +165,17 @@ export interface CostEstimate {
 }
 
 /**
- * 计算费用估算——provider-aware，复用 computeNetInput 的 netNew 语义。
- * - actualCost = cacheRead × hitPrice + netNew × missPrice + output × outPrice
- * - noCacheCost = (cacheRead + netNew) × missPrice + output × outPrice
- * - 所有单价 per 1M tokens，结果为单位货币。
+ * 计算费用估算——cacheStyle-aware，复用 computeNetInput 的 netNew 语义。
  */
 export function computeCost(
+  cacheStyle: CacheStyle,
   pricing: { currency: 'CNY' | 'USD'; inputCacheHit: number; inputCacheMiss: number; output: number },
   inputTokens: number,
   cacheReadTokens: number,
   cacheCreationTokens: number,
   outputTokens: number,
 ): CostEstimate {
-  const netNew = computeNetInput(inputTokens, cacheReadTokens, cacheCreationTokens)
+  const netNew = computeNetInput(cacheStyle, inputTokens, cacheReadTokens, cacheCreationTokens)
   const divisor = 1_000_000
   const actualCost =
     (cacheReadTokens * pricing.inputCacheHit +
