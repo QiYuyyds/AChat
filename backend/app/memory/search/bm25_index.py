@@ -28,38 +28,79 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 """
 
 
-def _tokenize(text: str) -> str:
-    """Tokenize text for FTS5 insertion.
+def _is_cjk(ch: str) -> bool:
+    return 0x4E00 <= ord(ch) <= 0x9FFF
 
-    Chinese characters are split into individual chars + jieba words (if available).
-    English/numeric tokens are kept as-is. All tokens are space-separated.
+
+def _is_indexable_token(token: str) -> bool:
+    """Keep tokens that contain letters, digits, or CJK; drop pure punctuation."""
+    return any(ch.isalnum() or _is_cjk(ch) for ch in token)
+
+
+def _fallback_tokenize(text: str) -> list[str]:
+    """No-jieba fallback: ASCII words + CJK unigrams and bigrams."""
+    tokens: list[str] = []
+    word = ""
+    cjk_run: list[str] = []
+
+    def flush_word() -> None:
+        nonlocal word
+        if word:
+            tokens.append(word.lower())
+            word = ""
+
+    def flush_cjk() -> None:
+        nonlocal cjk_run
+        if not cjk_run:
+            return
+        tokens.extend(cjk_run)
+        if len(cjk_run) >= 2:
+            tokens.extend(cjk_run[i] + cjk_run[i + 1] for i in range(len(cjk_run) - 1))
+        cjk_run = []
+
+    for ch in text:
+        if _is_cjk(ch):
+            flush_word()
+            cjk_run.append(ch)
+        elif ch.isalnum():
+            flush_cjk()
+            word += ch
+        else:
+            flush_word()
+            flush_cjk()
+    flush_word()
+    flush_cjk()
+    return tokens
+
+
+def _tokenize(text: str) -> str:
+    """Tokenize text for FTS5 insertion/query.
+
+    Prefer jieba for Chinese word segmentation. Fall back to ASCII words +
+    CJK unigram/bigram if jieba is unavailable. Output is space-separated
+    so FTS5 unicode61 treats each piece as one token.
     """
     if not text:
         return ""
     try:
         import jieba
-        tokens = list(jieba.cut(text, cut_all=False))
-        return " ".join(t.strip() for t in tokens if t.strip())
+
+        raw = list(jieba.cut(text, cut_all=False))
     except ImportError:
-        # Fallback: char-level for CJK, word-level for ASCII
-        tokens: list[str] = []
-        word = ""
-        for ch in text:
-            cp = ord(ch)
-            if 0x4E00 <= cp <= 0x9FFF:
-                if word:
-                    tokens.append(word.lower())
-                    word = ""
-                tokens.append(ch)
-            elif ch.isalnum():
-                word += ch
-            else:
-                if word:
-                    tokens.append(word.lower())
-                    word = ""
-        if word:
-            tokens.append(word.lower())
-        return " ".join(tokens)
+        logger.warning(
+            "jieba not installed; using CJK bigram fallback for BM25 tokenization"
+        )
+        raw = _fallback_tokenize(text)
+
+    tokens: list[str] = []
+    for t in raw:
+        t = t.strip()
+        if not t or not _is_indexable_token(t):
+            continue
+        if t.isascii():
+            t = t.lower()
+        tokens.append(t)
+    return " ".join(tokens)
 
 
 class BM25Index:

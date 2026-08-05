@@ -118,11 +118,21 @@ class WikilinkExpander:
         )
         self._conn.commit()
 
-    def expand(self, seed_paths: list[str], max_hops: int = 1) -> list[str]:
+    def expand(
+        self,
+        seed_paths: list[str],
+        max_hops: int = 1,
+        *,
+        exclude_predicates: set[str] | None = None,
+    ) -> list[str]:
         """BFS expansion from seed paths.
 
         Returns paths found via wikilink traversal (excluding the seeds themselves).
         Depth is limited to max_hops (default 1).
+
+        exclude_predicates: skip edges whose predicate is in this set.
+        Provenance edges like ``derived_from`` are useful for lineage display
+        but must not inflate keyword search with unrelated sources.
         """
         if not self._conn or not seed_paths:
             return []
@@ -130,15 +140,26 @@ class WikilinkExpander:
         visited = set(seed_paths)
         frontier = list(seed_paths)
         results: list[str] = []
+        excluded = exclude_predicates or set()
 
         for _hop in range(max_hops):
             if not frontier:
                 break
             placeholders = ",".join("?" * len(frontier))
-            cursor = self._conn.execute(
-                f"SELECT DISTINCT target_path FROM wikilinks WHERE source_path IN ({placeholders})",
-                frontier,
+            params: list[str] = list(frontier)
+            sql = (
+                f"SELECT DISTINCT target_path, predicate FROM wikilinks "
+                f"WHERE source_path IN ({placeholders})"
             )
+            if excluded:
+                # Keep NULL / empty predicate edges; only drop named exclusions.
+                pred_ph = ",".join("?" * len(excluded))
+                sql += (
+                    f" AND (predicate IS NULL OR predicate = '' "
+                    f"OR predicate NOT IN ({pred_ph}))"
+                )
+                params.extend(sorted(excluded))
+            cursor = self._conn.execute(sql, params)
             next_frontier: list[str] = []
             for row in cursor.fetchall():
                 target = row[0]

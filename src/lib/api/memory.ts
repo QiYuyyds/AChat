@@ -76,7 +76,7 @@ export interface ProactiveTopic {
   reason: string
   keywords: string[]
   evidence: string
-  bucket: 'procedure' | 'wiki' | 'daily' | string
+  bucket: 'procedure' | 'personal' | 'wiki' | 'daily' | string
 }
 
 export interface ProactiveResponse {

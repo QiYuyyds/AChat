@@ -1,7 +1,8 @@
 """Frontmatter schema for memory Markdown files.
 
 Each memory file has YAML frontmatter with:
-  name, description, agent_id, tags, importance, bucket, created_at, updated_at, source
+  name, description, agent_id, tags, importance, bucket, stable_key,
+  created_at, updated_at, source
 """
 
 from __future__ import annotations
@@ -9,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
+
+from app.memory.buckets import DIGEST_BUCKETS, make_stable_key, normalize_bucket
 
 
 @dataclass
@@ -20,11 +23,12 @@ class MemoryFrontmatter:
     agent_id: str | None = None
     tags: list[str] = field(default_factory=list)
     importance: float = 0.5
-    bucket: str = "wiki"  # procedure | wiki
+    bucket: str = "wiki"  # procedure | personal | wiki
     status: str = "active"  # active | archived
     created_at: str = ""  # YYYY-MM-DD
     updated_at: str = ""  # YYYY-MM-DD
     source: str = ""  # relative path to source daily card
+    stable_key: str = ""  # merge key across title variants
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,22 +42,29 @@ class MemoryFrontmatter:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "source": self.source,
+            "stable_key": self.stable_key,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MemoryFrontmatter:
         today = date.today().isoformat()
+        name = str(data.get("name", "")).strip()
+        bucket = normalize_bucket(str(data.get("bucket", "wiki")))
+        stable_key = str(data.get("stable_key", "")).strip()
+        if not stable_key and name:
+            stable_key = make_stable_key(bucket, name)
         return cls(
-            name=str(data.get("name", "")).strip(),
+            name=name,
             description=str(data.get("description", "")).strip(),
             agent_id=data.get("agent_id") or None,
             tags=[str(t) for t in (data.get("tags") or []) if t],
             importance=float(data.get("importance", 0.5) or 0.5),
-            bucket=str(data.get("bucket", "wiki")).strip() or "wiki",
+            bucket=bucket,
             status=str(data.get("status", "active")).strip() or "active",
             created_at=str(data.get("created_at", today)).strip() or today,
             updated_at=str(data.get("updated_at", today)).strip() or today,
             source=str(data.get("source", "")).strip(),
+            stable_key=stable_key,
         )
 
     def validate(self) -> list[str]:
@@ -61,8 +72,10 @@ class MemoryFrontmatter:
         errors: list[str] = []
         if not self.name:
             errors.append("name is required")
-        if self.bucket not in ("procedure", "wiki"):
-            errors.append(f"bucket must be 'procedure' or 'wiki', got '{self.bucket}'")
+        if self.bucket not in DIGEST_BUCKETS:
+            errors.append(
+                f"bucket must be one of {DIGEST_BUCKETS}, got '{self.bucket}'"
+            )
         if self.status not in ("active", "archived"):
             errors.append(f"status must be 'active' or 'archived', got '{self.status}'")
         if not (0.0 <= self.importance <= 1.0):

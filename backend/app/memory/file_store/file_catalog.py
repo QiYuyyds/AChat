@@ -56,7 +56,7 @@ class FileCatalog:
         try:
             rel = abs_path.relative_to(digest_dir)
             parts = rel.parts
-            if parts and parts[0] in ("procedure", "wiki"):
+            if parts and parts[0] in ("procedure", "personal", "wiki"):
                 return parts[0]
             return "digest"
         except ValueError:

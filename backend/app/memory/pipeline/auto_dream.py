@@ -31,6 +31,12 @@ from pathlib import Path
 
 import yaml
 
+from app.memory.buckets import (
+    make_stable_key,
+    normalize_bucket,
+    to_relative_memory_path,
+    validate_and_normalize_unit,
+)
 from app.memory.file_store.file_catalog import FileCatalog
 from app.memory.file_store.frontmatter import MemoryFrontmatter
 from app.memory.file_store.markdown_io import read_markdown, write_markdown
@@ -51,15 +57,30 @@ abstractions that belong in long-term memory.
 - "Do not emit passing mentions, known-concept recaps, one-off timestamps, attendance facts, or facts with no reusable value" — 噪声过滤
 - "Merge evidence from multiple files when it teaches the same abstraction" — 跨文件合并指导
 
-## Bucket Classification
-- **procedure**: How-to experience, task patterns, deployment steps, debugging strategies
-- **personal**: user/team/project-specific identity, preferences, conventions, constraints, avoidances
-- **wiki**: Knowledge nodes, concepts, technical facts, architecture decisions
+## Bucket Classification (HARD BOUNDARIES)
+- **procedure**: reusable how-to / runbooks / debugging strategies.
+  Subject form: "When X, do steps…"
+- **personal**: ONLY stable facts/rules ABOUT THE USER — identity, durable preferences,
+  communication conventions, hard constraints/avoidances.
+  Subject form: "User is… / User prefers… / Never…"
+  personal body MUST be short: one Rule sentence + ≤5 How-to-apply bullets.
+- **wiki**: reusable knowledge — concepts, works, geography, technical facts.
+  Subject form: "X is… / X includes…"
+
+## CRITICAL SPLIT RULE
+If a card mixes user interest + encyclopedic detail, emit TWO units:
+1) short personal interest/strategy card
+2) wiki knowledge card
+NEVER put long song lists, chapter stats, author bios, or project delivery logs into personal.
+
+## NEVER put in personal
+- project delivery status, deploy URLs, task board state, feature checklists
+- how-to steps (use procedure)
+- encyclopedias the user merely asked about (use wiki)
+- atomic key=value prefs that need no why/how (handled by Preference store)
 
 ## Cross-File Merging
-When multiple daily files teach the same abstraction or concept, merge their
-evidence into a single unit. The unit's content should synthesize insights
-from all contributing files.
+When multiple daily files teach the same abstraction, merge into one unit.
 
 ## Output Format
 Return JSON with a "units" array and a "topic_candidates" array:
@@ -69,8 +90,9 @@ Return JSON with a "units" array and a "topic_candidates" array:
     {
       "name": "concise title",
       "bucket": "procedure" or "personal" or "wiki",
+      "stable_key": "user.identity.profile | user.interest.music.doudou | wiki.topic | proc.topic",
       "summary": "1-2 sentence summary",
-      "content": "detailed Markdown body",
+      "content": "detailed Markdown body (personal: SHORT rule card only)",
       "tags": ["tag1", "tag2"],
       "importance": 0.6,
       "source_paths": ["daily/2026-08-04/session1.md"]
@@ -90,7 +112,6 @@ Return JSON with a "units" array and a "topic_candidates" array:
 If nothing worth refining, return: {"units": [], "topic_candidates": []}
 
 Match the language of the input cards.
-
 """
 
 _INTEGRATE_SYSTEM_PROMPT_PROCEDURE = """\
@@ -197,37 +218,41 @@ Match the language of the input.
 """
 
 _INTEGRATE_SYSTEM_PROMPT_PERSONAL = """\
-You are a Memory Integration Engine for PERSONAL-type memories (user/team/project-specific identity, preferences, conventions, constraints, avoidances).
+You are a Memory Integration Engine for PERSONAL-type memories
+(identity, durable preferences, conventions, constraints, avoidances ABOUT THE USER).
 
 ## Workflow
-1. Recall: Review the new memory unit and any existing digest nodes found by search
-2. Classify: Decide what action to take
-3. Act: Generate the final content
-4. Weave: Add wikilinks to related nodes
+1. Recall existing personal nodes (same stable topic) and related wiki nodes
+2. Classify action
+3. Write SHORT rule card only
+4. Weave wikilinks (relate to wiki knowledge; do not copy wiki body)
 
 ## Actions
-- **CREATE**: No existing memory matches — output the COMPLETE body for a new file
-- **CORROBORATE**: Existing memory is confirmed — output only the NEW evidence/source to append
-- **REFINE**: Existing memory can be improved — output only the NEW details to append
-- **CORRECT**: Existing memory is wrong — output the COMPLETE corrected replacement body
+- **CREATE**: No matching personal node — complete short body
+- **CORROBORATE**: confirm existing — only NEW evidence/source to append
+- **REFINE**: improve existing — only NEW details to append
+- **CORRECT**: replace with complete corrected short body
 
-## Body Shape: Rule of Engagement
-For CREATE and CORRECT, write the complete body as a rule of engagement:
+## Body Shape (KEEP SHORT)
 ```
 ## Rule / fact
-<one sentence stating the preference, convention, identity fact, constraint, or avoid-rule>
+<one sentence: User is… / prefers… / never…>
 
 ## Why
-<reason or context for this rule>
+<1-2 short reasons>
 
 ## How to apply
-<applicable contexts, tasks, boundaries, or exceptions>
+- ≤5 bullets, actionable, no encyclopedias
 ```
-For CORROBORATE and REFINE, output only the new content to append (e.g. additional context, refined application, or supporting evidence). Do NOT repeat existing content.
+FORBIDDEN in personal body: song lists, chapter counts, author bios, deploy URLs,
+feature checklists, long how-to steps.
+
+If existing wiki nodes cover the knowledge side, add
+`relates_to:: [[digest/wiki/...]]` instead of copying facts.
 
 ## Wikilink Rules
-- Add `derived_from:: [[daily/<date>/<session>.md]]` pointing to source daily card(s)
-- Add `relates_to:: [[digest/<bucket>/<name>.md]]` for related digest nodes
+- `derived_from:: [[daily/<date>/<session>.md]]` (relative paths only)
+- `relates_to:: [[digest/<bucket>/<name>.md]]` for related nodes
 - Preserve existing `derived_from::` wikilinks (additive only)
 - UPDATE must be additive: never remove existing wikilinks or derived_from entries
 - Default to weaving more, not less
@@ -242,7 +267,6 @@ Return JSON:
 }
 
 Match the language of the input.
-
 """
 
 _TOPICS_SYSTEM_PROMPT = """\
@@ -308,6 +332,40 @@ def _dedupe_by_path(hits_1: list, hits_2: list) -> list:
                     key=lambda h: getattr(h, 'score', 0.0), 
                     reverse=True)[:5]
     return deduped
+
+
+def _path_key(path: str) -> str:
+    """Normalize memory path strings for source_path matching."""
+    return path.replace("\\", "/").lstrip("./").strip()
+
+
+def _match_changed_path(path: str, changed_paths: list[str]) -> str | None:
+    """Map an LLM-provided source path onto a known changed path, if any.
+
+    Accepts exact / slash-normalized matches and unique basename matches.
+    Does NOT invent sources from the batch when matching fails.
+    """
+    if not path or not changed_paths:
+        return None
+    key = _path_key(path)
+    if not key:
+        return None
+
+    by_key = {_path_key(c): c for c in changed_paths}
+    if key in by_key:
+        return by_key[key]
+
+    # Absolute or partially-qualified path ending with a changed relative path.
+    for ck, original in by_key.items():
+        if key.endswith("/" + ck) or ck.endswith("/" + key):
+            return original
+
+    # Basename fallback only when unique among changed files.
+    base = key.rsplit("/", 1)[-1]
+    basename_hits = [c for c in changed_paths if _path_key(c).rsplit("/", 1)[-1] == base]
+    if len(basename_hits) == 1:
+        return basename_hits[0]
+    return None
 
 
 def _normalize_topic_title(title: str) -> str:
@@ -445,67 +503,246 @@ class AutoDream:
         if not isinstance(topic_candidates, list):
             topic_candidates = []
 
-        # Validate source_paths and enrich units
+        # Validate source_paths against changed files (normalized match).
+        # Keep catalog/original path strings here; relativize only when writing
+        # derived_from wikilinks. Never invent multi-file provenance from the batch.
+        normalized_units: list[dict] = []
         for unit in units:
+            if not isinstance(unit, dict):
+                continue
             source_paths = unit.get("source_paths", [])
-            # Filter source_paths to only include changed_paths
-            valid_paths = []
+            if not isinstance(source_paths, list):
+                source_paths = []
+            valid_paths: list[str] = []
+            seen: set[str] = set()
             for path in source_paths:
-                if path in changed_paths:
-                    valid_paths.append(path)
-            
-            # If all paths were filtered out, fallback to changed_paths[:3]
-            if not valid_paths and changed_paths:
-                valid_paths = changed_paths[:3]
-                logger.debug("auto_dream extract: source_paths filtered to empty, fallback to changed_paths[:3]")
-            
+                matched = _match_changed_path(str(path), changed_paths)
+                if matched and matched not in seen:
+                    seen.add(matched)
+                    valid_paths.append(matched)
+            # Unique-source fallback: if LLM paths all missed but exactly one
+            # daily changed, that file is the only possible provenance.
+            if not valid_paths and len(changed_paths) == 1:
+                valid_paths = [changed_paths[0]]
+            elif not valid_paths and source_paths:
+                logger.debug(
+                    "auto_dream extract: no source_paths matched changed files for unit %s",
+                    unit.get("name", ""),
+                )
             unit["source_paths"] = valid_paths
 
-        return units[:max_units], topic_candidates
+            cleaned = validate_and_normalize_unit(unit)
+            if cleaned is None:
+                logger.info(
+                    "auto_dream extract: dropped unit after validator: %s",
+                    unit.get("name", ""),
+                )
+                continue
+            normalized_units.append(cleaned)
+
+        return normalized_units[:max_units], topic_candidates
+
+    def _find_by_stable_key(self, stable_key: str, bucket: str) -> Path | None:
+        """Locate an existing digest file with the same stable_key in-bucket."""
+        if not stable_key:
+            return None
+        for f in self.workspace.list_digest_files(bucket=bucket):
+            mem = read_markdown(f)
+            if not mem or mem.frontmatter.status == "archived":
+                continue
+            key = (mem.frontmatter.stable_key or "").strip()
+            if not key:
+                key = make_stable_key(mem.frontmatter.bucket, mem.frontmatter.name)
+            if key == stable_key:
+                return f
+        return None
+
+    def _node_from_path(self, path: Path, score: float = 1.0):
+        mem = read_markdown(path)
+        if not mem:
+            return None
+        return type(
+            "Node",
+            (),
+            {
+                "path": str(path),
+                "name": mem.frontmatter.name,
+                "content": mem.body,
+                "score": score,
+                "frontmatter": mem.frontmatter.to_dict(),
+                "bucket": mem.frontmatter.bucket,
+            },
+        )()
+
+    def _collect_related_nodes(
+        self,
+        *,
+        name: str,
+        summary: str,
+        bucket: str,
+        stable_key: str,
+    ) -> tuple[list, list]:
+        """Return (same_bucket_nodes, cross_bucket_nodes)."""
+        same: list = []
+        cross: list = []
+        seen_paths: set[str] = set()
+
+        key_hit = self._find_by_stable_key(stable_key, bucket)
+        if key_hit is not None:
+            node = self._node_from_path(key_hit, score=1.0)
+            if node is not None:
+                same.append(node)
+                seen_paths.add(str(key_hit.resolve()))
+
+        hits: list = []
+        if self.node_search:
+            hits = _dedupe_by_path(
+                self.node_search.search(query=name, bucket=None, limit=10),
+                self.node_search.search(query=summary or name, bucket=None, limit=10),
+            )
+
+        for node in hits:
+            fm = node.frontmatter if hasattr(node, "frontmatter") else {}
+            if isinstance(fm, dict) and fm.get("status") == "archived":
+                continue
+            node_path = str(getattr(node, "path", ""))
+            try:
+                resolved = str(Path(node_path).resolve())
+            except OSError:
+                resolved = node_path
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+
+            node_bucket = ""
+            if isinstance(fm, dict):
+                node_bucket = str(fm.get("bucket") or "")
+            if not node_bucket:
+                node_bucket = str(getattr(node, "bucket", "") or "")
+            node_bucket = normalize_bucket(node_bucket) if node_bucket else bucket
+
+            if node_bucket == bucket:
+                same.append(node)
+            else:
+                cross.append(node)
+
+        return same[:5], cross[:5]
+
+    def _write_create(
+        self,
+        *,
+        name: str,
+        summary: str,
+        tags: list[str],
+        importance: float,
+        bucket: str,
+        stable_key: str,
+        today: str,
+        body: str,
+        agent_id: str | None,
+    ) -> str:
+        fm = MemoryFrontmatter(
+            name=name,
+            description=summary,
+            tags=tags[:10],
+            importance=importance,
+            bucket=bucket,
+            status="active",
+            created_at=today,
+            updated_at=today,
+            source="auto_dream",
+            stable_key=stable_key,
+        )
+        filepath = self.workspace.digest_path(bucket, name, agent_id=agent_id)
+        write_markdown(filepath, fm, body)
+        logger.info("auto_dream CREATE: %s → %s", name, filepath)
+        if self.file_catalog:
+            self.file_catalog.upsert(str(filepath), bucket=bucket)
+        return "created"
+
+    def _write_update(
+        self,
+        *,
+        top_path: Path,
+        action: str,
+        name: str,
+        tags: list[str],
+        importance: float,
+        stable_key: str,
+        today: str,
+        final_content: str,
+        bucket: str,
+    ) -> str:
+        mem = read_markdown(top_path)
+        if mem is None:
+            return "skipped"
+        if mem.frontmatter.status == "archived":
+            return "skipped"
+
+        updated_content = final_content
+        if action in ("CORROBORATE", "REFINE"):
+            update_count = mem.body.count("## Update (")
+            if update_count >= 3:
+                logger.info(
+                    "auto_dream %s: skip append — %s already has %d updates",
+                    action,
+                    name,
+                    update_count,
+                )
+                updated_content = mem.body
+            elif final_content not in mem.body:
+                updated_content = (
+                    mem.body.rstrip()
+                    + f"\n\n---\n## Update ({today})\n\n{final_content}"
+                )
+            else:
+                updated_content = mem.body
+
+        if name != mem.frontmatter.name:
+            updated_content = add_wikilink(
+                updated_content, name, predicate="relates_to"
+            )
+
+        mem.frontmatter.importance = max(mem.frontmatter.importance, importance)
+        mem.frontmatter.tags = list(dict.fromkeys(mem.frontmatter.tags + tags))[:10]
+        mem.frontmatter.updated_at = today
+        if not mem.frontmatter.stable_key:
+            mem.frontmatter.stable_key = stable_key
+
+        write_markdown(top_path, mem.frontmatter, updated_content)
+        logger.info("auto_dream %s: %s → %s", action, name, top_path)
+        if self.file_catalog:
+            self.file_catalog.upsert(str(top_path), bucket=bucket)
+        return action.lower()
 
     async def _dream_integrate(self, unit: dict) -> str:
-        """Integrate a single extracted unit: node_search → per-bucket LLM → write.
-
-        Returns the action taken: 'created', 'updated', 'refined', 'corrected', or 'skipped'.
-        """
+        """Integrate one unit: stable_key merge → per-bucket LLM → write."""
         name = str(unit.get("name", "")).strip()
         if not name:
             return "skipped"
 
-        bucket = str(unit.get("bucket", "wiki")).strip()
-        if bucket not in ("procedure", "personal", "wiki"):
-            bucket = "wiki"
-
+        bucket = normalize_bucket(str(unit.get("bucket", "wiki")))
         summary = str(unit.get("summary", "")).strip()
         content = str(unit.get("content", "")).strip()
         tags = [str(t) for t in (unit.get("tags") or []) if t]
         importance = float(unit.get("importance", 0.5) or 0.5)
-        source_paths = unit.get("source_paths", [])
+        root_str = str(self.workspace.root.resolve())
+        source_paths = [
+            to_relative_memory_path(str(p), workspace_root=root_str)
+            for p in (unit.get("source_paths") or [])
+        ]
+        stable_key = str(unit.get("stable_key") or "").strip() or make_stable_key(
+            bucket, name
+        )
         today = date.today().isoformat()
+        agent_id = unit.get("agent_id")
 
-        # Use node_search for digest recall (falls back to HybridSearch)
-        existing_nodes: list = []
-        if self.node_search:
-            # Two-round search: name (exact) + summary (semantic expansion)
-            hits_1 = self.node_search.search(query=name, bucket=bucket, limit=10)
-            hits_2 = self.node_search.search(query=summary, bucket=bucket, limit=10)
-            existing_nodes = _dedupe_by_path(hits_1, hits_2)
-        else:
-            # Fallback to HybridSearch (single query)
-            existing = await self.search.search(query=name, top_k=3, bucket=bucket)
-            existing_nodes = existing
+        same_nodes, cross_nodes = self._collect_related_nodes(
+            name=name, summary=summary, bucket=bucket, stable_key=stable_key
+        )
+        # Deterministic merge target: stable_key path wins
+        merge_path = self._find_by_stable_key(stable_key, bucket)
 
-        # Filter out archived nodes
-        active_nodes = []
-        for node in existing_nodes:
-            # NodeSearchResult has frontmatter dict; SearchResult has frontmatter dict
-            fm = node.frontmatter if hasattr(node, 'frontmatter') else {}
-            if isinstance(fm, dict) and fm.get("status") == "archived":
-                logger.info("auto_dream: skipping archived node %s", getattr(node, 'name', ''))
-                continue
-            active_nodes.append(node)
-
-        # Select per-bucket prompt
         if bucket == "procedure":
             system_prompt = _INTEGRATE_SYSTEM_PROMPT_PROCEDURE
         elif bucket == "personal":
@@ -513,34 +750,56 @@ class AutoDream:
         else:
             system_prompt = _INTEGRATE_SYSTEM_PROMPT_WIKI
 
-        # Build existing context for LLM
-        existing_context = ""
-        if active_nodes:
-            context_parts = []
-            for node in active_nodes:
-                node_name = getattr(node, 'name', '')
-                node_path = getattr(node, 'path', '')
-                node_content = getattr(node, 'content', '')[:500]
-                context_parts.append(f"### {node_name}\nPath: {node_path}\nContent: {node_content}")
-            existing_context = "\n---\n".join(context_parts)
+        context_parts: list[str] = []
+        for node in same_nodes:
+            context_parts.append(
+                f"### {getattr(node, 'name', '')}\n"
+                f"Path: {getattr(node, 'path', '')}\nBucket: {bucket}\n"
+                f"Content: {getattr(node, 'content', '')[:500]}"
+            )
+        for node in cross_nodes:
+            nb = getattr(node, "bucket", "") or (
+                node.frontmatter.get("bucket")
+                if isinstance(getattr(node, "frontmatter", None), dict)
+                else ""
+            )
+            context_parts.append(
+                f"### [OTHER BUCKET] {getattr(node, 'name', '')}\n"
+                f"Path: {getattr(node, 'path', '')}\nBucket: {nb}\n"
+                f"Content: {getattr(node, 'content', '')[:300]}\n"
+                f"(Do NOT copy body; add relates_to only)"
+            )
+        existing_context = "\n---\n".join(context_parts)
 
-        # Build provenance wikilinks from source paths
-        provenance_links = []
-        for src in source_paths[:3]:
-            provenance_links.append(f"derived_from:: [[{src}]]")
+        provenance_links = [
+            f"derived_from:: [[{src}]]" for src in source_paths[:3] if src
+        ]
+        relate_hints = []
+        for node in cross_nodes[:3]:
+            rel = to_relative_memory_path(
+                str(getattr(node, "path", "")), workspace_root=root_str
+            )
+            if rel:
+                relate_hints.append(f"relates_to:: [[{rel}]]")
 
         prompt = (
             f"## New Memory Unit\n"
-            f"Name: {name}\n"
-            f"Bucket: {bucket}\n"
-            f"Summary: {summary}\n"
-            f"Content: {content}\n"
+            f"Name: {name}\nBucket: {bucket}\nStable key: {stable_key}\n"
+            f"Summary: {summary}\nContent: {content}\n"
             f"Source paths: {', '.join(source_paths[:5])}\n"
-            f"Suggested provenance: {chr(10).join(provenance_links)}\n\n"
+            f"Suggested provenance: {chr(10).join(provenance_links)}\n"
         )
+        if relate_hints:
+            prompt += (
+                f"Suggested relates_to (cross-bucket): {chr(10).join(relate_hints)}\n"
+            )
+        prompt += "\n"
         if existing_context:
             prompt += f"## Existing Memory Files\n{existing_context}\n\n"
-        prompt += "Decide the action and provide the final content with wikilinks."
+        prompt += (
+            "Decide the action and provide final content with wikilinks. "
+            "Merge same-bucket/stable_key matches; never copy cross-bucket bodies."
+        )
 
         try:
             raw = await asyncio.to_thread(self._generate_fn, system_prompt, prompt)
@@ -552,106 +811,71 @@ class AutoDream:
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
-            logger.debug("auto_dream integrate: LLM output not valid JSON: %s", raw[:200])
+            logger.debug(
+                "auto_dream integrate: LLM output not valid JSON: %s", raw[:200]
+            )
             return "skipped"
-
         if not isinstance(parsed, dict):
             return "skipped"
 
         action = str(parsed.get("action", "CREATE")).strip().upper()
         final_content = str(parsed.get("content", content)).strip() or content
 
-        # Validate provenance: warn if no derived_from wikilink
         if "derived_from::" not in final_content:
-            # Auto-append provenance links
             for link in provenance_links:
                 if link not in final_content:
                     final_content = final_content.rstrip() + f"\n{link}"
-            logger.debug("auto_dream: auto-appended provenance wikilinks to %s", name)
 
-        if action == "CREATE" or not active_nodes:
-            fm = MemoryFrontmatter(
+        if bucket == "personal":
+            for link in relate_hints:
+                if link not in final_content:
+                    final_content = final_content.rstrip() + f"\n{link}"
+
+        # stable_key hit always merges, even if LLM says CREATE
+        if merge_path is not None:
+            if action == "CREATE":
+                action = "REFINE"
+            result = self._write_update(
+                top_path=merge_path,
+                action=action,
                 name=name,
-                description=summary,
-                tags=tags[:10],
+                tags=tags,
                 importance=importance,
+                stable_key=stable_key,
+                today=today,
+                final_content=final_content,
                 bucket=bucket,
-                status="active",
-                created_at=today,
-                updated_at=today,
-                source="auto_dream",
             )
-            filepath = self.workspace.digest_path(bucket, name, agent_id=unit.get("agent_id"))
-            write_markdown(filepath, fm, final_content)
-            logger.info("auto_dream CREATE: %s → %s", name, filepath)
+            if result != "skipped":
+                return result
 
-            # Update file catalog
-            if self.file_catalog:
-                self.file_catalog.upsert(str(filepath), bucket=bucket)
-
-            return "created"
-
-        # CORROBORATE / REFINE / CORRECT → update the top match
-        top_match = active_nodes[0]
-        top_path = Path(top_match.path)
-        mem = read_markdown(top_path)
-        if mem is None:
-            return "skipped"
-
-        # Check if archived — skip update
-        if mem.frontmatter.status == "archived":
-            logger.info("auto_dream: skipping archived node %s", name)
-            # Create new instead
-            fm = MemoryFrontmatter(
+        if action != "CREATE" and same_nodes:
+            top_path = Path(same_nodes[0].path)
+            result = self._write_update(
+                top_path=top_path,
+                action=action,
                 name=name,
-                description=summary,
-                tags=tags[:10],
+                tags=tags,
                 importance=importance,
+                stable_key=stable_key,
+                today=today,
+                final_content=final_content,
                 bucket=bucket,
-                status="active",
-                created_at=today,
-                updated_at=today,
-                source="auto_dream",
             )
-            filepath = self.workspace.digest_path(bucket, name, agent_id=unit.get("agent_id"))
-            write_markdown(filepath, fm, final_content)
-            if self.file_catalog:
-                self.file_catalog.upsert(str(filepath), bucket=bucket)
-            return "created"
+            if result != "skipped":
+                return result
 
-        # Merge content
-        updated_content = final_content
-        if action in ("CORROBORATE", "REFINE"):
-            update_count = mem.body.count("## Update (")
-            if update_count >= 3:
-                logger.info(
-                    "auto_dream %s: skipping append — %s already has %d updates (max 3)",
-                    action, name, update_count,
-                )
-                updated_content = mem.body
-            elif final_content not in mem.body:
-                updated_content = mem.body.rstrip() + f"\n\n---\n## Update ({today})\n\n{final_content}"
-            else:
-                logger.info("auto_dream %s: content duplicate in %s, skipping append", action, name)
-                updated_content = mem.body
-
-        # Add wikilink from existing to new name
-        if name != mem.frontmatter.name:
-            updated_content = add_wikilink(updated_content, name, predicate="relates_to")
-
-        merged_tags = list(dict.fromkeys(mem.frontmatter.tags + tags))[:10]
-        mem.frontmatter.importance = max(mem.frontmatter.importance, importance)
-        mem.frontmatter.tags = merged_tags
-        mem.frontmatter.updated_at = today
-
-        write_markdown(top_path, mem.frontmatter, updated_content)
-        logger.info("auto_dream %s: %s → %s", action, name, top_path)
-
-        # Update file catalog
-        if self.file_catalog:
-            self.file_catalog.upsert(str(top_path), bucket=bucket)
-
-        return action.lower()
+        return self._write_create(
+            name=name,
+            summary=summary,
+            tags=tags,
+            importance=importance,
+            bucket=bucket,
+            stable_key=stable_key,
+            today=today,
+            body=final_content,
+            agent_id=agent_id,
+        )
 
     async def _dream_topics(
         self,

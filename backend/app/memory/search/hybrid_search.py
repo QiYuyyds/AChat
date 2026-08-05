@@ -91,12 +91,27 @@ class HybridSearch:
         bm25_hits = self.bm25.search(query, top_k=k * 2, agent_id=agent_id, bucket=bucket)
         bm25_ranked = {path: rank + 1 for rank, (path, _) in enumerate(bm25_hits)}
 
-        # Phase 2: Wikilink expansion from BM25 hits
+        # Phase 2: Wikilink expansion from BM25 hits.
+        # Skip provenance edges — derived_from only records lineage and often
+        # points at unrelated co-batched daily cards.
         seed_paths = [path for path, _ in bm25_hits]
-        expanded = self.expander.expand(seed_paths, max_hops=1)
-        wl_ranked = {path: rank + 1 for rank, path in enumerate(expanded)}
+        expanded = self.expander.expand(
+            seed_paths,
+            max_hops=1,
+            exclude_predicates={"derived_from"},
+        )
+        # Normalize expanded keys so absolute targets can fuse with relative BM25 keys.
+        expanded_norm: list[str] = []
+        seen_exp: set[str] = set()
+        for p in expanded:
+            key = self._to_rel(p)
+            if key not in seen_exp and key not in bm25_ranked:
+                seen_exp.add(key)
+                expanded_norm.append(key)
+        wl_ranked = {path: rank + 1 for rank, path in enumerate(expanded_norm)}
 
-        # Phase 3: RRF fusion
+        # Phase 3: RRF fusion — require BM25 hit, or a non-provenance wikilink neighbor.
+        # Pure provenance-only neighbors are already excluded above.
         all_paths = set(bm25_ranked.keys()) | set(wl_ranked.keys())
         rrf_scores: list[tuple[str, float, dict]] = []
         for path in all_paths:
@@ -107,7 +122,10 @@ class HybridSearch:
                 bm25_component = bm25_weight * (1.0 / (rrf_k + bm25_ranked[path]))
                 score += bm25_component
             if path in wl_ranked:
+                # Related neighbors without a keyword hit stay secondary.
                 wl_component = wl_weight * (1.0 / (rrf_k + wl_ranked[path]))
+                if path not in bm25_ranked:
+                    wl_component *= 0.5
                 score += wl_component
             rrf_scores.append((path, score, {
                 "bm25": round(bm25_component, 6),

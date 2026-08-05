@@ -14,6 +14,7 @@ opened via the files API without absolute path leakage.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from app.memory.file_store.file_catalog import FileCatalog
@@ -24,6 +25,22 @@ from app.memory.search.bm25_index import BM25Index
 from app.memory.search.wikilink_expander import WikilinkExpander
 
 logger = logging.getLogger(__name__)
+
+# Provenance / relation lines are useful as graph edges, but their path tokens
+# (especially absolute Windows paths) pollute BM25 keyword search.
+_PREDICATE_LINE_RE = re.compile(r"^\w+::\s*\[\[")
+
+
+def _indexable_body(body: str) -> str:
+    """Body text for BM25 — drop predicate wikilink lines."""
+    if not body:
+        return ""
+    kept: list[str] = []
+    for line in body.splitlines():
+        if _PREDICATE_LINE_RE.match(line.strip()):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 class AutoIndex:
@@ -42,11 +59,31 @@ class AutoIndex:
         self.file_catalog = file_catalog
 
     def _rel_path(self, filepath: Path) -> str:
-        """Store index keys as paths relative to the memory workspace root."""
+        """Store index keys as posix-relative paths under the memory workspace root."""
         try:
-            return str(filepath.resolve().relative_to(self.workspace.root.resolve()))
+            return filepath.resolve().relative_to(self.workspace.root.resolve()).as_posix()
         except ValueError:
-            return str(filepath)
+            return Path(filepath).as_posix()
+
+    def _normalize_link_target(self, target: str) -> str:
+        """Normalize wikilink targets to workspace-relative posix keys when possible."""
+        if not target:
+            return target
+        p = Path(target)
+        root = self.workspace.root.resolve()
+        try:
+            if p.is_absolute():
+                return p.resolve().relative_to(root).as_posix()
+            return (root / p).resolve().relative_to(root).as_posix()
+        except (ValueError, OSError):
+            return target.replace("\\", "/")
+
+    def _is_daily_file(self, filepath: Path) -> bool:
+        try:
+            filepath.resolve().relative_to(self.workspace.daily_dir.resolve())
+            return True
+        except ValueError:
+            return False
 
     def index_file(self, filepath: Path) -> None:
         """Index a single memory file (add/update in BM25 + wikilink graph + catalog)."""
@@ -55,14 +92,24 @@ class AutoIndex:
             return
 
         rel = self._rel_path(filepath)
+        is_daily = self._is_daily_file(filepath)
+        # Path wins over frontmatter: daily cards often keep a content bucket label.
+        bucket = "daily" if is_daily else (mem_file.frontmatter.bucket or "wiki")
 
-        # BM25 index
+        # BM25 index — exclude provenance path tokens from searchable text.
+        index_text = "\n".join(
+            p for p in (
+                mem_file.frontmatter.name,
+                mem_file.frontmatter.description,
+                _indexable_body(mem_file.body),
+            ) if p and p.strip()
+        )
         self.bm25.add(
             path=rel,
             name=mem_file.frontmatter.name,
-            content=mem_file.content,
+            content=index_text,
             agent_id=mem_file.frontmatter.agent_id,
-            bucket=mem_file.frontmatter.bucket,
+            bucket=bucket,
             tags=mem_file.frontmatter.tags,
         )
 
@@ -70,25 +117,21 @@ class AutoIndex:
         self.expander.remove_edges_for(rel)
         links = extract_wikilinks_detailed(mem_file.body)
         if links:
-            edge_list = [(link.target, link.predicate) for link in links]
+            edge_list = [
+                (self._normalize_link_target(link.target), link.predicate)
+                for link in links
+            ]
             self.expander.add_edges_detailed(rel, edge_list)
 
         # Broken link detection: check if targets exist
         for link in links:
-            target_path = Path(link.target)
-            if not target_path.is_absolute():
-                # Try resolving relative to workspace root
-                resolved = self.workspace.root / link.target
-            else:
-                resolved = target_path
+            norm = self._normalize_link_target(link.target)
+            resolved = self.workspace.root / norm
             if not resolved.exists():
                 logger.debug("Broken wikilink: %s → %s (target missing)", rel, link.target)
 
         # Update file catalog
         if self.file_catalog:
-            bucket = mem_file.frontmatter.bucket
-            if str(filepath).startswith(str(self.workspace.daily_dir)):
-                bucket = "daily"
             self.file_catalog.upsert(rel, bucket=bucket)
 
     def remove_file(self, filepath: Path) -> None:

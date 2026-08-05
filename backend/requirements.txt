@@ -37,6 +37,8 @@ nanoid>=2.0.0
 httpx>=0.28.0
 python-dotenv>=1.0.1
 pypdf>=5.1.0  # read_attachment PDF text extraction (replaces TS pdf-parse)
+python-frontmatter>=1.1.0  # file-native memory frontmatter
+jieba>=0.42.1  # Chinese tokenization for memory BM25/FTS5
 
 # Document Parser pipeline (ported from AGI-memory)
 pdfplumber>=0.9.0    # PDF parsing - first-choice extractor

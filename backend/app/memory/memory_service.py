@@ -190,8 +190,13 @@ class MemoryService:
             await self._safe_extract_preference(content, user_id=user_id)
 
     async def recall(
-        self, query: str, top_k: int | None = None, agent_id: str = "",
-        *, user_id: str | None = None,
+        self,
+        query: str,
+        top_k: int | None = None,
+        agent_id: str = "",
+        *,
+        bucket: str | None = None,
+        user_id: str | None = None,
     ) -> list[SearchResult]:
         """File-native memory recall via hybrid search."""
         from app.observability import start_span
@@ -201,9 +206,15 @@ class MemoryService:
                 logger.warning("recall: search not initialized")
                 return []
             results = await self._search.search(
-                query, top_k=k, agent_id=agent_id or None,
+                query,
+                top_k=k,
+                agent_id=agent_id or None,
+                bucket=bucket or None,
             )
-            logger.info("recall: query='%s' agent_id='%s' → %d results", query, agent_id, len(results))
+            logger.info(
+                "recall: query='%s' agent_id='%s' bucket=%s → %d results",
+                query, agent_id, bucket, len(results),
+            )
             for r in results[:3]:
                 logger.debug("  - %s (score=%.3f source=%s)", r.name, r.score, r.source)
             return results
@@ -212,6 +223,7 @@ class MemoryService:
         """Wikilink graph expansion from seed paths (1-hop BFS)."""
         if self._search is None:
             return []
+        # Keep provenance for explicit lineage walks; keyword search excludes it.
         return self.wikilink_expander.expand(seed_paths, max_hops=1)
 
     async def get_preference_context(self, *, user_id: str | None = None) -> str:

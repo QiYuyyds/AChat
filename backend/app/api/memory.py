@@ -19,6 +19,7 @@ from app.auth.dependencies import get_current_user
 from app.auth.ownership import verify_conversation_ownership
 from app.db.engine import get_local_db, get_remote_db
 from app.db.models import ContextSummary, Conversation, User, UserPreference
+from app.memory.buckets import DIGEST_BUCKETS
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,7 @@ async def list_memory_files(
     from app.memory.file_store.markdown_io import read_markdown
 
     # digest content buckets vs lifecycle stage "daily" (UI filter axis)
-    include_digest = bucket is None or bucket in ("procedure", "wiki")
+    include_digest = bucket is None or bucket in DIGEST_BUCKETS
     include_daily = bucket is None or bucket == "daily"
 
     if include_digest:
@@ -288,7 +289,12 @@ async def search_memory(
     if svc is None:
         return JSONResponse(status_code=503, content={"error": "MemoryService not initialized"})
 
-    results = await svc.recall(query, top_k=top_k, agent_id=agent_id or "")
+    results = await svc.recall(
+        query,
+        top_k=top_k,
+        agent_id=agent_id or "",
+        bucket=bucket or None,
+    )
     return JSONResponse({
         "items": [
             {

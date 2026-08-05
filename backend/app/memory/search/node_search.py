@@ -57,7 +57,7 @@ class NodeSearch:
 
         Args:
             query: Search query string.
-            bucket: Optional bucket filter ('procedure' or 'wiki').
+            bucket: Optional bucket filter ('procedure' | 'personal' | 'wiki'); None = all digest.
             limit: Maximum number of results.
 
         Returns:
@@ -67,23 +67,39 @@ class NodeSearch:
         # We use bucket filter but also need to ensure results are from digest/
         bm25_hits = self.bm25.search(query, top_k=limit * 3, bucket=bucket)
 
+        def _is_digest_path(path: str) -> bool:
+            p = path.replace("\\", "/")
+            if p.startswith("digest/"):
+                return True
+            abs_prefix = str(self.workspace.digest_dir.resolve()).replace("\\", "/")
+            return p.startswith(abs_prefix.rstrip("/") + "/") or p == abs_prefix
+
+        def _resolve_path(path: str) -> Path:
+            p = Path(path)
+            if p.is_absolute():
+                return p
+            return self.workspace.root / p
+
         # Filter to only digest/ paths and aggregate by path (take highest score)
-        digest_prefix = str(self.workspace.digest_dir)
         path_best: dict[str, float] = {}
         for path, score in bm25_hits:
-            if not path.startswith(digest_prefix):
+            if not _is_digest_path(path):
                 continue
             if path not in path_best or score > path_best[path]:
                 path_best[path] = score
 
         if not path_best:
-            # No direct digest hits — try wikilink expansion from ALL BM25 hits
-            # (including daily files) to find linked digest nodes
+            # No direct digest hits — expand from BM25 seeds (including daily),
+            # but skip provenance edges that only encode lineage noise.
             seed_paths = [path for path, _ in bm25_hits]
             if seed_paths:
-                expanded = self.expander.expand(seed_paths, max_hops=1)
+                expanded = self.expander.expand(
+                    seed_paths,
+                    max_hops=1,
+                    exclude_predicates={"derived_from"},
+                )
                 for p in expanded:
-                    if p.startswith(digest_prefix) and p not in path_best:
+                    if _is_digest_path(p) and p not in path_best:
                         path_best[p] = 0.1  # low score for expansion-only hits
 
         # Sort by score descending
@@ -92,7 +108,7 @@ class NodeSearch:
         # Build results with frontmatter
         results: list[NodeSearchResult] = []
         for path, score in sorted_paths:
-            mem_file = read_markdown(Path(path))
+            mem_file = read_markdown(_resolve_path(path))
             if mem_file is None:
                 continue
 
@@ -101,7 +117,7 @@ class NodeSearch:
                 continue
 
             results.append(NodeSearchResult(
-                path=path,
+                path=path.replace("\\", "/"),
                 name=mem_file.frontmatter.name,
                 description=mem_file.frontmatter.description,
                 content=mem_file.body,

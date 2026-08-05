@@ -4,7 +4,6 @@ import {
   Brain,
   CalendarDays,
   FileText,
-  Filter,
   Folder,
   Hash,
   Info,
@@ -42,8 +41,24 @@ import {
 import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 import { cn } from '@/lib/utils'
 
-const BUCKETS = ['all', 'procedure', 'wiki', 'daily'] as const
+const BUCKETS = ['all', 'procedure', 'personal', 'wiki', 'daily'] as const
 type BucketFilter = (typeof BUCKETS)[number]
+
+const BUCKET_CHIP_LABELS: Record<BucketFilter, string> = {
+  all: '全部',
+  procedure: '经验',
+  personal: '个人',
+  wiki: '知识',
+  daily: '日常',
+}
+
+/** Selected-state classes for type chips — aligned with interest-topic pills */
+const BUCKET_CHIP_SELECTED: Record<Exclude<BucketFilter, 'all'>, string> = {
+  procedure: 'border-blue-500/40 bg-blue-500/15 text-blue-700 dark:text-blue-300',
+  personal: 'border-violet-500/40 bg-violet-500/15 text-violet-700 dark:text-violet-300',
+  wiki: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+  daily: 'border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300',
+}
 
 const BUCKET_CONFIG: Record<
   string,
@@ -56,6 +71,14 @@ const BUCKET_CONFIG: Record<
     bar: 'bg-blue-500',
     border: 'border-blue-500/35',
     borderHover: 'hover:border-blue-500/60',
+  },
+  personal: {
+    label: '个人',
+    dot: 'bg-violet-500',
+    badge: 'bg-violet-500/10 text-violet-600 dark:text-violet-400',
+    bar: 'bg-violet-500',
+    border: 'border-violet-500/35',
+    borderHover: 'hover:border-violet-500/60',
   },
   wiki: {
     label: '知识',
@@ -160,11 +183,28 @@ function cardPreview(item: MemoryFileItem): string {
   return item.bodyPreview?.trim() || ''
 }
 
+/** Normalize path separators so Windows `\` and `/` collapse to one key. */
+function normalizeMemoryPath(path: string): string {
+  return path.replace(/\\/g, '/')
+}
+
+/** Keep first occurrence per path — guards against duplicate API rows / race merges. */
+function dedupeMemoryItems(items: MemoryFileItem[]): MemoryFileItem[] {
+  const seen = new Set<string>()
+  const out: MemoryFileItem[] = []
+  for (const item of items) {
+    const key = normalizeMemoryPath(item.path)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(item.path === key ? item : { ...item, path: key })
+  }
+  return out
+}
+
 export function LongTermMemoryPanel() {
   const [items, setItems] = useState<MemoryFileItem[]>([])
   const [loading, setLoading] = useState(false)
   const [filterBucket, setFilterBucket] = useState<BucketFilter>('all')
-  const [filterAgent, setFilterAgent] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [searchMode, setSearchMode] = useState(false)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
@@ -212,7 +252,7 @@ export function LongTermMemoryPanel() {
       if (searchMode && searchQuery.trim()) {
         const resp = await searchMemoryFiles({ query: searchQuery.trim() })
         const searchItems: MemoryFileItem[] = resp.items.map((r) => ({
-          path: r.path,
+          path: normalizeMemoryPath(r.path),
           name: r.name,
           description: '',
           bucket: (r.frontmatter.bucket as string) || 'wiki',
@@ -224,20 +264,19 @@ export function LongTermMemoryPanel() {
           source: r.source,
           bodyPreview: r.content.slice(0, 200),
         }))
-        setItems(searchItems)
+        setItems(dedupeMemoryItems(searchItems))
       } else {
         const resp = await fetchMemoryFiles({
           bucket: filterBucket === 'all' ? undefined : filterBucket,
-          agentId: filterAgent || undefined,
         })
-        setItems(resp.items)
+        setItems(dedupeMemoryItems(resp.items))
       }
     } catch (err) {
       console.error('[MemoryPanel] load failed', err)
     } finally {
       setLoading(false)
     }
-  }, [filterBucket, filterAgent, searchMode, searchQuery])
+  }, [filterBucket, searchMode, searchQuery])
 
   useEffect(() => {
     void load()
@@ -382,84 +421,90 @@ export function LongTermMemoryPanel() {
         </div>
       )}
 
-      {/* Filter bar */}
-      <div className="cognition-fade-up flex flex-wrap items-center gap-2 rounded-lg border bg-card/50 p-2.5 shadow-[var(--shadow-sm)]">
-        <div className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          <Filter className="size-3" />
-          筛选
-        </div>
-        <select
-          value={filterBucket}
-          onChange={(e) => {
-            setFilterBucket(e.target.value as BucketFilter)
-            setSearchMode(false)
-          }}
-          className="h-8 w-28 rounded-md border border-input bg-background px-2 text-xs outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/10"
-        >
-          {BUCKETS.map((b) => (
-            <option key={b} value={b}>
-              {b === 'all' ? '全部分类' : (BUCKET_CONFIG[b]?.label ?? b)}
-            </option>
-          ))}
-        </select>
-        <div className="relative">
-          <Input
-            placeholder="Agent ID"
-            value={filterAgent}
-            onChange={(e) => setFilterAgent(e.target.value)}
-            className="h-8 w-28 text-xs"
-          />
-        </div>
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="搜索记忆内容..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && searchQuery.trim()) {
-                setSearchMode(true)
-                void load()
-              }
-            }}
-            className="h-8 pl-7 text-xs"
-          />
-        </div>
-        {searchMode && (
+      {/* Toolbar: search + actions, then type chips */}
+      <div className="cognition-fade-up flex flex-col gap-2 rounded-lg border bg-card/50 p-2.5 shadow-[var(--shadow-sm)]">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[12rem] flex-1">
+            <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="搜索记忆内容..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && searchQuery.trim()) {
+                  setSearchMode(true)
+                  void load()
+                }
+              }}
+              className="h-8 pl-7 text-xs"
+            />
+          </div>
+          {searchMode && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 gap-1 text-xs"
+              onClick={() => {
+                setSearchMode(false)
+                setSearchQuery('')
+              }}
+            >
+              <X className="size-3" />
+              清除搜索
+            </Button>
+          )}
           <Button
             size="sm"
             variant="ghost"
+            onClick={() => void load()}
+            disabled={loading}
             className="h-8 gap-1 text-xs"
-            onClick={() => {
-              setSearchMode(false)
-              setSearchQuery('')
-              void load()
-            }}
           >
-            <X className="size-3" />
-            清除搜索
+            {loading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+            刷新
           </Button>
-        )}
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => void load()}
-          disabled={loading}
-          className="h-8 gap-1 text-xs"
-        >
-          {loading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-          刷新
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => void handleDream()}
-          disabled={dreaming}
-          className="h-8 gap-1 text-xs"
-        >
-          {dreaming ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
-          手动精炼
-        </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void handleDream()}
+            disabled={dreaming}
+            className="h-8 gap-1 text-xs"
+          >
+            {dreaming ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+            手动精炼
+          </Button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="记忆类型">
+          {BUCKETS.map((b) => {
+            const selected = filterBucket === b
+            const cfg = b === 'all' ? null : getBucketConfig(b)
+            return (
+              <button
+                key={b}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                onClick={() => {
+                  setFilterBucket(b)
+                  setSearchMode(false)
+                  setSearchQuery('')
+                }}
+                className={cn(
+                  'inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition-colors',
+                  selected
+                    ? b === 'all'
+                      ? 'border-primary/30 bg-primary/10 text-primary'
+                      : BUCKET_CHIP_SELECTED[b]
+                    : 'border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                )}
+              >
+                {cfg && <span className={cn('size-1.5 shrink-0 rounded-full', cfg.dot)} />}
+                {BUCKET_CHIP_LABELS[b]}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       {/* File list - Hybrid layout */}
@@ -539,8 +584,9 @@ interface MemoryHybridGridProps {
 }
 
 function MemoryHybridGrid({ items, openFile, getBucketConfig }: MemoryHybridGridProps) {
-  const featured = items.filter((item) => item.importance >= FEATURED_THRESHOLD)
-  const regular = items.filter((item) => item.importance < FEATURED_THRESHOLD)
+  const unique = dedupeMemoryItems(items)
+  const featured = unique.filter((item) => item.importance >= FEATURED_THRESHOLD)
+  const regular = unique.filter((item) => item.importance < FEATURED_THRESHOLD)
 
   return (
     <div className="flex flex-col gap-5">
@@ -806,7 +852,7 @@ interface MemoryDetailViewProps {
   }
   bucketCfg: { label: string; dot: string; badge: string }
   onStartEdit: () => void
-  onDeleteConfirm: (path: string) => void
+  onDeleteConfirm: (path: string | null) => void
   deleteConfirmPath: string | null
   onHandleDelete: (path: string) => Promise<void>
   onCancelEdit: () => void
