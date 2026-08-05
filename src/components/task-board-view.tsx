@@ -433,7 +433,7 @@ export function TaskBoardView() {
   // ─── Render ─────────────────────────────────────────
 
   return (
-    <div className="flex h-full min-h-0 overflow-hidden">
+    <div className="flex h-full min-h-0 overflow-hidden bg-background/85 backdrop-blur-2xl">
       {/* Main board area */}
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Toolbar — 按功能分组 */}

@@ -1,12 +1,30 @@
 'use client'
 
-import { CheckSquare } from 'lucide-react'
+import {
+  Ban,
+  CheckCircle2,
+  CheckSquare,
+  CircleDashed,
+  Eye,
+  Inbox,
+  Loader2,
+  type LucideIcon,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useSchedulerStatus, useAppStore } from '@/stores/app-store'
 import {
   TASK_BOARD_COLUMNS,
   TASK_COLUMN_ACCENTS,
 } from '@/shared/task-board-config'
+
+const COLUMN_ICONS: Record<string, LucideIcon> = {
+  backlog: Inbox,
+  todo: CircleDashed,
+  in_progress: Loader2,
+  in_review: Eye,
+  done: CheckCircle2,
+  blocked: Ban,
+}
 
 export function TaskSidebarNav() {
   const taskIdsByStatus = useAppStore((s) => s.taskIdsByStatus)
@@ -42,6 +60,7 @@ export function TaskSidebarNav() {
         {TASK_BOARD_COLUMNS.map((col) => {
           const count = taskIdsByStatus[col.status]?.length ?? 0
           const accent = TASK_COLUMN_ACCENTS[col.status]
+          const Icon = COLUMN_ICONS[col.status] ?? CircleDashed
           return (
             <div
               key={col.status}
@@ -49,7 +68,7 @@ export function TaskSidebarNav() {
             >
               <div className="flex items-center gap-2">
                 {accent && (
-                  <span className={cn('size-1.5 rounded-full', accent.dot)} />
+                  <Icon className={cn('size-3.5 shrink-0', accent.icon)} />
                 )}
                 <span className="text-muted-foreground">{col.label}</span>
               </div>

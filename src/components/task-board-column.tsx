@@ -1,7 +1,17 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { EyeOff, Plus } from 'lucide-react'
+import {
+  Ban,
+  CheckCircle2,
+  CircleDashed,
+  Eye,
+  EyeOff,
+  Inbox,
+  Loader2,
+  Plus,
+  type LucideIcon,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import type { TaskRow } from '@/shared/types'
@@ -9,6 +19,15 @@ import { TaskBoardCard } from '@/components/task-board-card'
 import { TASK_COLUMN_ACCENTS } from '@/shared/task-board-config'
 
 const ADD_ALLOWED_STATUSES = new Set(['backlog', 'todo'])
+
+const COLUMN_ICONS: Record<string, LucideIcon> = {
+  backlog: Inbox,
+  todo: CircleDashed,
+  in_progress: Loader2,
+  in_review: Eye,
+  done: CheckCircle2,
+  blocked: Ban,
+}
 
 interface TaskBoardColumnProps {
   status: string
@@ -36,6 +55,7 @@ export function TaskBoardColumn({
   const [dropBeforeId, setDropBeforeId] = useState<string | null>(null)
 
   const accent = TASK_COLUMN_ACCENTS[status] ?? TASK_COLUMN_ACCENTS.backlog
+  const Icon = COLUMN_ICONS[status] ?? CircleDashed
 
   const handleDragOver = useCallback(
     (e: React.DragEvent) => {
@@ -113,7 +133,7 @@ export function TaskBoardColumn({
         accent.headerBg,
       )}>
         <div className="flex items-center gap-2">
-          <span className={cn('size-2 rounded-full', accent.dot)} />
+          <Icon className={cn('size-3.5 shrink-0', accent.icon)} />
           <span className="text-xs font-semibold tracking-tight text-foreground">{label}</span>
           <span className="rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
             {tasks.length}

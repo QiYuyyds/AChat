@@ -85,6 +85,7 @@ export interface TaskColumnAccent {
   bar: string
   glow: string
   headerBg: string
+  icon: string
 }
 
 export const TASK_COLUMN_ACCENTS: Record<string, TaskColumnAccent> = {
@@ -93,36 +94,42 @@ export const TASK_COLUMN_ACCENTS: Record<string, TaskColumnAccent> = {
     bar: 'bg-zinc-300 dark:bg-zinc-600',
     glow: 'bg-zinc-500/5',
     headerBg: 'bg-zinc-500/[0.03]',
+    icon: 'text-zinc-400',
   },
   todo: {
     dot: 'bg-blue-400',
     bar: 'bg-blue-300 dark:bg-blue-600',
     glow: 'bg-blue-500/5',
     headerBg: 'bg-blue-500/[0.03]',
+    icon: 'text-blue-400',
   },
   in_progress: {
     dot: 'bg-amber-400',
     bar: 'bg-amber-300 dark:bg-amber-600',
     glow: 'bg-amber-500/5',
     headerBg: 'bg-amber-500/[0.04]',
+    icon: 'text-amber-400',
   },
   in_review: {
     dot: 'bg-violet-400',
     bar: 'bg-violet-300 dark:bg-violet-600',
     glow: 'bg-violet-500/5',
     headerBg: 'bg-violet-500/[0.03]',
+    icon: 'text-violet-400',
   },
   done: {
     dot: 'bg-emerald-400',
     bar: 'bg-emerald-300 dark:bg-emerald-600',
     glow: 'bg-emerald-500/5',
     headerBg: 'bg-emerald-500/[0.03]',
+    icon: 'text-emerald-400',
   },
   blocked: {
     dot: 'bg-red-400',
     bar: 'bg-red-300 dark:bg-red-600',
     glow: 'bg-red-500/5',
     headerBg: 'bg-red-500/[0.03]',
+    icon: 'text-red-400',
   },
 }
 

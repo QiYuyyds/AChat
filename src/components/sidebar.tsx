@@ -201,7 +201,7 @@ export function Sidebar() {
       {/* 单列侧边栏：桌面端 flex 内联；移动端固定左侧滑入/滑出 */}
       <div
         className={cn(
-          'flex w-[240px] shrink-0 flex-col overflow-hidden border-r bg-card',
+          'flex w-[240px] shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground',
           'max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:transition-transform max-md:duration-200',
           mobileOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full',
         )}

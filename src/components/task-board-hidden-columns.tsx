@@ -1,9 +1,27 @@
 'use client'
 
-import { Eye } from 'lucide-react'
+import {
+  Ban,
+  CheckCircle2,
+  CircleDashed,
+  Eye,
+  EyeOff,
+  Inbox,
+  Loader2,
+  type LucideIcon,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { TASK_STATUS_LABELS, TASK_COLUMN_ACCENTS } from '@/shared/task-board-config'
+
+const COLUMN_ICONS: Record<string, LucideIcon> = {
+  backlog: Inbox,
+  todo: CircleDashed,
+  in_progress: Loader2,
+  in_review: Eye,
+  done: CheckCircle2,
+  blocked: Ban,
+}
 
 interface TaskBoardHiddenColumnsProps {
   hiddenStatuses: string[]
@@ -24,6 +42,7 @@ export function TaskBoardHiddenColumns({
       <div className="h-3 w-px bg-border" />
       {hiddenStatuses.map((status) => {
         const accent = TASK_COLUMN_ACCENTS[status]
+        const Icon = COLUMN_ICONS[status] ?? CircleDashed
         return (
           <Button
             key={status}
@@ -32,12 +51,14 @@ export function TaskBoardHiddenColumns({
             onClick={() => onShowColumn(status)}
             className="h-6 gap-1.5"
           >
-            {accent && <span className={cn('size-1.5 rounded-full', accent.dot)} />}
+            {accent
+              ? <Icon className={cn('size-3 shrink-0', accent.icon)} />
+              : <CircleDashed className="size-3 shrink-0" />}
             {TASK_STATUS_LABELS[status] ?? status}
             <span className="text-[10px] tabular-nums text-muted-foreground">
               {taskCountsByStatus[status] ?? 0}
             </span>
-            <Eye className="size-3 text-muted-foreground" />
+            <EyeOff className="size-3 text-muted-foreground" />
           </Button>
         )
       })}
