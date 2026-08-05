@@ -67,7 +67,8 @@ class MemoryService:
         # Hybrid search (built after indexes are initialized)
         self._search: HybridSearch | None = None
 
-        # Preference extraction (PG-backed, preserved)
+        # Preference facade retained for callers that still touch .preference;
+        # runtime extract/recall always scopes by the real user_id argument.
         self.preference = Preference(user_id="default_user")
 
         # Session memory (context compaction, preserved)
@@ -82,7 +83,17 @@ class MemoryService:
         self._initialized = False
 
     def _build_search(self) -> HybridSearch:
-        return HybridSearch(self.settings, self.bm25, self.wikilink_expander)
+        return HybridSearch(
+            self.settings, self.bm25, self.wikilink_expander, self.workspace.root,
+        )
+
+    @staticmethod
+    def _pref_for(user_id: str | None) -> Preference | None:
+        """Build a Preference store scoped to the real user. None if missing."""
+        uid = (user_id or "").strip()
+        if not uid:
+            return None
+        return Preference(user_id=uid)
 
     def set_generate_fn(self, fn: Callable) -> None:
         """Inject LLM generate function for memory extraction and pipeline."""
@@ -120,17 +131,11 @@ class MemoryService:
         except Exception as e:
             logger.warning("Startup reindex failed: %s", e)
 
-        # Load preferences from PG
-        try:
-            await self.preference.load_from_storage()
-        except Exception as e:
-            logger.warning("Preference load failed: %s", e)
-
+        # Preferences are loaded per-user at extract/recall time; no global preload.
         self._initialized = True
         logger.info(
-            "MemoryService initialized: workspace=%s, prefs=%d, indexed=%d",
+            "MemoryService initialized: workspace=%s, indexed=%d",
             self.workspace.root,
-            len(self.preference.data),
             self.bm25.count(),
         )
 
@@ -178,11 +183,11 @@ class MemoryService:
         if conversation_id:
             self._last_user_msg[conversation_id] = content
 
-        # Preference extraction (runs in parallel with auto_memory)
+        # Preference extraction always scopes to the real conversation user.
         if self._generate_fn and not self._is_trivial_reply(content):
-            asyncio.create_task(self._safe_llm_extract_preference(content))
+            asyncio.create_task(self._safe_llm_extract_preference(content, user_id=user_id))
         else:
-            await self._safe_extract_preference(content)
+            await self._safe_extract_preference(content, user_id=user_id)
 
     async def recall(
         self, query: str, top_k: int | None = None, agent_id: str = "",
@@ -209,11 +214,17 @@ class MemoryService:
             return []
         return self.wikilink_expander.expand(seed_paths, max_hops=1)
 
-    def get_preference_context(self, *, user_id: str | None = None) -> str:
-        """Return preference block for prompt injection (PG-backed, unchanged)."""
-        if user_id is not None and user_id != self.preference.user_id:
+    async def get_preference_context(self, *, user_id: str | None = None) -> str:
+        """Return preference block for the given user (PG-backed)."""
+        pref = self._pref_for(user_id)
+        if pref is None:
             return ""
-        return self.preference.build_context()
+        try:
+            await pref.load_from_storage()
+        except Exception as e:
+            logger.warning("Preference load failed for user %s: %s", user_id, e)
+            return ""
+        return pref.build_context()
 
     def get_proactive_context(self) -> str:
         """Return proactive topics for prompt injection."""
@@ -282,24 +293,45 @@ class MemoryService:
         except Exception as e:
             logger.warning("auto_dream failed: %s", e)
 
-    async def _safe_extract_preference(self, content: str) -> None:
+    async def _safe_extract_preference(
+        self, content: str, *, user_id: str | None = None,
+    ) -> None:
+        pref = self._pref_for(user_id)
+        if pref is None:
+            logger.warning("Preference extraction skipped: missing user_id")
+            return
         try:
-            key, value, matched = await self.preference.extract_and_save(content)
+            key, value, matched = await pref.extract_and_save(content)
             if matched:
-                logger.info("Preference extracted: %s=%s", key, value)
+                logger.info("Preference extracted for %s: %s=%s", pref.user_id, key, value)
         except Exception as e:
             logger.warning("Preference extraction failed: %s", e)
 
-    async def _safe_llm_extract_preference(self, content: str) -> None:
+    async def _safe_llm_extract_preference(
+        self, content: str, *, user_id: str | None = None,
+    ) -> None:
+        pref = self._pref_for(user_id)
+        if pref is None:
+            logger.warning("LLM preference extraction skipped: missing user_id")
+            return
         try:
             from app.memory.memory_writer_compat import extract_preferences_compat
+
+            try:
+                await pref.load_from_storage()
+            except Exception as e:
+                logger.warning(
+                    "Preference preload failed for user %s: %s", pref.user_id, e,
+                )
             prefs = await extract_preferences_compat(
                 self._generate_fn, content,
-                existing_keys=list(self.preference.data.keys()),
+                existing_keys=list(pref.data.keys()),
             )
             if prefs:
-                await self.preference.save_batch(prefs, source="extracted")
-                logger.info("LLM preference overlay: %d keys", len(prefs))
+                await pref.save_batch(prefs, source="extracted")
+                logger.info(
+                    "LLM preference overlay for %s: %d keys", pref.user_id, len(prefs),
+                )
         except Exception as e:
             logger.warning("LLM preference extraction failed: %s", e)
 

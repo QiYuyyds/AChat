@@ -25,7 +25,8 @@ class Proactive:
     def get_topics(self, day: str | None = None) -> list[dict]:
         """Read today's (or specified day's) interests.yaml.
 
-        Returns a list of topic dicts with keys: title, reason, keywords, evidence.
+        Returns a list of topic dicts with keys:
+        title, reason, keywords, evidence, bucket.
         Returns empty list if no interests.yaml exists.
         """
         d = day or date.today().isoformat()
@@ -45,11 +46,15 @@ class Proactive:
         topics: list[dict] = []
         for item in data:
             if isinstance(item, dict):
+                bucket = str(item.get("bucket", "wiki")).strip()
+                if bucket not in ("procedure", "wiki", "daily"):
+                    bucket = "wiki"
                 topics.append({
                     "title": str(item.get("title", "")).strip(),
                     "reason": str(item.get("reason", "")).strip(),
                     "keywords": [str(k) for k in (item.get("keywords") or []) if k],
                     "evidence": str(item.get("evidence", "")).strip(),
+                    "bucket": bucket,
                 })
         return topics
 

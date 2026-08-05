@@ -156,7 +156,9 @@ async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
         from app.main import _memory_service  # type: ignore[attr-defined]
         if _memory_service is None:
             return err("Memory service not initialized")
-        results = await _memory_service.recall(query, top_k=top_k, agent_id=ctx.agent_id)
+        results = await _memory_service.recall(
+            query, top_k=top_k, agent_id=ctx.agent_id, user_id=ctx.user_id,
+        )
         memories = [
             {
                 "name": r.name,
@@ -167,8 +169,8 @@ async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
             }
             for r in results
         ]
-        # Also get preference context (PG-backed, preserved)
-        pref_context = _memory_service.get_preference_context()
+        # Preferences are scoped to the calling user (same as 沉淀 UI).
+        pref_context = await _memory_service.get_preference_context(user_id=ctx.user_id)
         return ok({"memories": memories, "preferences": pref_context})
     except Exception as e:
         return err(f"Memory recall failed: {e}")

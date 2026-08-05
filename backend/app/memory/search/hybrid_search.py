@@ -6,6 +6,8 @@ expansion, fused via Reciprocal Rank Fusion (RRF).
 Each SearchResult includes:
   - scores: per-component breakdown (bm25, wikilink, rrf)
   - expansion: outlinks + inlinks neighbor metadata (path, name, description)
+
+Result paths are workspace-relative so clients can open files via the files API.
 """
 
 from __future__ import annotations
@@ -39,10 +41,34 @@ class SearchResult:
 class HybridSearch:
     """Hybrid BM25 + wikilink search with RRF fusion."""
 
-    def __init__(self, settings: Settings, bm25: BM25Index, expander: WikilinkExpander):
+    def __init__(
+        self,
+        settings: Settings,
+        bm25: BM25Index,
+        expander: WikilinkExpander,
+        workspace_root: Path,
+    ):
         self.settings = settings
         self.bm25 = bm25
         self.expander = expander
+        self.workspace_root = Path(workspace_root)
+
+    def _resolve(self, path: str) -> Path:
+        """Resolve an index path (relative preferred, absolute tolerated)."""
+        p = Path(path)
+        if p.is_absolute():
+            return p
+        return self.workspace_root / p
+
+    def _to_rel(self, path: str) -> str:
+        """Normalize path to workspace-relative for API consumers."""
+        p = Path(path)
+        if not p.is_absolute():
+            return path
+        try:
+            return str(p.resolve().relative_to(self.workspace_root.resolve()))
+        except ValueError:
+            return path
 
     async def search(
         self,
@@ -91,7 +117,7 @@ class HybridSearch:
         # Load file content for results + build expansion meta
         results: list[SearchResult] = []
         for path, score, score_breakdown in top_paths:
-            mem_file = read_markdown(Path(path))
+            mem_file = read_markdown(self._resolve(path))
             if mem_file is None:
                 continue
 
@@ -114,7 +140,7 @@ class HybridSearch:
             expansion = self._build_expansion(path)
 
             results.append(SearchResult(
-                path=path,
+                path=self._to_rel(path),
                 name=mem_file.frontmatter.name,
                 content=mem_file.body,
                 score=score,
@@ -133,10 +159,10 @@ class HybridSearch:
 
         for ol in self.expander.get_outlinks(path):
             target_path = ol["target"]
-            target_mem = read_markdown(Path(target_path))
+            target_mem = read_markdown(self._resolve(target_path))
             if target_mem:
                 outlinks_meta.append({
-                    "path": target_path,
+                    "path": self._to_rel(target_path),
                     "name": target_mem.frontmatter.name,
                     "description": target_mem.frontmatter.description,
                     "predicate": ol.get("predicate"),
@@ -144,10 +170,10 @@ class HybridSearch:
 
         for il in self.expander.get_inlinks(path):
             source_path = il["source"]
-            source_mem = read_markdown(Path(source_path))
+            source_mem = read_markdown(self._resolve(source_path))
             if source_mem:
                 inlinks_meta.append({
-                    "path": source_path,
+                    "path": self._to_rel(source_path),
                     "name": source_mem.frontmatter.name,
                     "description": source_mem.frontmatter.description,
                     "predicate": il.get("predicate"),

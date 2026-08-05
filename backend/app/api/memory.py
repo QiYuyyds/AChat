@@ -70,43 +70,47 @@ async def list_memory_files(
         )
 
     files: list[dict[str, Any]] = []
-
-    # List digest files
     from app.memory.file_store.markdown_io import read_markdown
-    for f in svc.workspace.list_digest_files(bucket=bucket, agent_id=agent_id):
-        mem = read_markdown(f)
-        if mem:
-            files.append({
-                "path": str(f.relative_to(svc.workspace.root)),
-                "name": mem.frontmatter.name,
-                "description": mem.frontmatter.description,
-                "bucket": mem.frontmatter.bucket,
-                "agentId": mem.frontmatter.agent_id,
-                "tags": mem.frontmatter.tags,
-                "importance": mem.frontmatter.importance,
-                "createdAt": mem.frontmatter.created_at,
-                "updatedAt": mem.frontmatter.updated_at,
-                "source": mem.frontmatter.source,
-                "bodyPreview": mem.body[:200],
-            })
 
-    # Also list daily files
-    for f in svc.workspace.list_daily_files():
-        mem = read_markdown(f)
-        if mem:
-            files.append({
-                "path": str(f.relative_to(svc.workspace.root)),
-                "name": mem.frontmatter.name,
-                "description": mem.frontmatter.description,
-                "bucket": "daily",
-                "agentId": mem.frontmatter.agent_id,
-                "tags": mem.frontmatter.tags,
-                "importance": mem.frontmatter.importance,
-                "createdAt": mem.frontmatter.created_at,
-                "updatedAt": mem.frontmatter.updated_at,
-                "source": mem.frontmatter.source,
-                "bodyPreview": mem.body[:200],
-            })
+    # digest content buckets vs lifecycle stage "daily" (UI filter axis)
+    include_digest = bucket is None or bucket in ("procedure", "wiki")
+    include_daily = bucket is None or bucket == "daily"
+
+    if include_digest:
+        for f in svc.workspace.list_digest_files(bucket=bucket, agent_id=agent_id):
+            mem = read_markdown(f)
+            if mem:
+                files.append({
+                    "path": str(f.relative_to(svc.workspace.root)),
+                    "name": mem.frontmatter.name,
+                    "description": mem.frontmatter.description,
+                    "bucket": mem.frontmatter.bucket,
+                    "agentId": mem.frontmatter.agent_id,
+                    "tags": mem.frontmatter.tags,
+                    "importance": mem.frontmatter.importance,
+                    "createdAt": mem.frontmatter.created_at,
+                    "updatedAt": mem.frontmatter.updated_at,
+                    "source": mem.frontmatter.source,
+                    "bodyPreview": mem.body[:200],
+                })
+
+    if include_daily:
+        for f in svc.workspace.list_daily_files():
+            mem = read_markdown(f)
+            if mem:
+                files.append({
+                    "path": str(f.relative_to(svc.workspace.root)),
+                    "name": mem.frontmatter.name,
+                    "description": mem.frontmatter.description,
+                    "bucket": "daily",
+                    "agentId": mem.frontmatter.agent_id,
+                    "tags": mem.frontmatter.tags,
+                    "importance": mem.frontmatter.importance,
+                    "createdAt": mem.frontmatter.created_at,
+                    "updatedAt": mem.frontmatter.updated_at,
+                    "source": mem.frontmatter.source,
+                    "bodyPreview": mem.body[:200],
+                })
 
     return JSONResponse({"items": files, "total": len(files)})
 
@@ -259,6 +263,17 @@ async def move_memory_file(
     })
 
 
+def _rel_memory_path(svc, path: str) -> str:
+    """Normalize search hit path to workspace-relative (tolerates legacy absolute keys)."""
+    p = Path(path)
+    if not p.is_absolute():
+        return path
+    try:
+        return str(p.resolve().relative_to(svc.workspace.root.resolve()))
+    except ValueError:
+        return path
+
+
 @router.get("/api/memory/search")
 async def search_memory(
     query: str,
@@ -276,7 +291,7 @@ async def search_memory(
     return JSONResponse({
         "items": [
             {
-                "path": r.path,
+                "path": _rel_memory_path(svc, r.path),
                 "name": r.name,
                 "content": r.content[:500],
                 "score": r.score,

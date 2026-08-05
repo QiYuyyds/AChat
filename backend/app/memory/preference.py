@@ -107,6 +107,7 @@ class Preference:
             logger.warning("Preference save failed: %s", e)
         with self._lock:
             self.preferences[key] = value
+        await self._invalidate_cache()
 
     async def save_batch(self, kvs: dict[str, str], source: str = "extracted") -> None:
         for k, v in (kvs or {}).items():

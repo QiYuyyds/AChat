@@ -16,6 +16,7 @@ import {
   Sparkles,
   Star,
   Trash2,
+  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
@@ -29,6 +30,7 @@ import {
 import { Input } from '@/components/ui/input'
 import {
   type MemoryFileItem,
+  type ProactiveTopic,
   deleteMemoryFile,
   fetchMemoryFiles,
   fetchProactiveTopics,
@@ -43,30 +45,119 @@ import { cn } from '@/lib/utils'
 const BUCKETS = ['all', 'procedure', 'wiki', 'daily'] as const
 type BucketFilter = (typeof BUCKETS)[number]
 
-const BUCKET_CONFIG: Record<string, { label: string; dot: string; badge: string }> = {
+const BUCKET_CONFIG: Record<
+  string,
+  { label: string; dot: string; badge: string; bar: string; border: string; borderHover: string }
+> = {
   procedure: {
     label: '经验',
     dot: 'bg-blue-500',
     badge: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
+    bar: 'bg-blue-500',
+    border: 'border-blue-500/35',
+    borderHover: 'hover:border-blue-500/60',
   },
   wiki: {
     label: '知识',
     dot: 'bg-emerald-500',
     badge: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+    bar: 'bg-emerald-500',
+    border: 'border-emerald-500/35',
+    borderHover: 'hover:border-emerald-500/60',
   },
   daily: {
     label: '日常',
     dot: 'bg-amber-500',
     badge: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+    bar: 'bg-amber-500',
+    border: 'border-amber-500/35',
+    borderHover: 'hover:border-amber-500/60',
   },
 }
 
-function getBucketConfig(bucket: string) {
-  return BUCKET_CONFIG[bucket] ?? {
-    label: bucket,
-    dot: 'bg-zinc-400',
-    badge: 'bg-zinc-500/10 text-zinc-600 dark:text-zinc-400',
+type BucketCfg = {
+  label: string
+  dot: string
+  badge: string
+  bar: string
+  border: string
+  borderHover: string
+}
+
+function getBucketConfig(bucket: string): BucketCfg {
+  return (
+    BUCKET_CONFIG[bucket] ?? {
+      label: bucket,
+      dot: 'bg-zinc-400',
+      badge: 'bg-zinc-500/10 text-zinc-600 dark:text-zinc-400',
+      bar: 'bg-zinc-400',
+      border: 'border-border',
+      borderHover: 'hover:border-primary/30',
+    }
+  )
+}
+
+const MACHINE_NAME_RE = /^session_[A-Za-z0-9_-]+$/i
+const PLACEHOLDER_DESC_RE = /^(Memory from conversation\b|Memory card\b)/i
+
+/** 从正文预览里抽第一条可读事实（去掉 markdown 列表符） */
+function firstFactFromPreview(preview: string): string {
+  for (const raw of preview.split('\n')) {
+    const line = raw.trim()
+    if (!line) continue
+    if (line.startsWith('##')) continue
+    if (line.startsWith('---')) continue
+    if (line.startsWith('*Source') || line.startsWith('- *Source')) continue
+    const fact = line.replace(/^[-*]\s+/, '').trim()
+    if (fact) return fact
   }
+  return ''
+}
+
+function isMachineName(name: string): boolean {
+  return MACHINE_NAME_RE.test(name.trim())
+}
+
+function isPlaceholderDescription(description: string): boolean {
+  return PLACEHOLDER_DESC_RE.test(description.trim())
+}
+
+const TITLE_MAX = 18
+
+function shortTitle(text: string, max = TITLE_MAX): string {
+  const t = text.trim()
+  if (t.length <= max) return t
+  // 尽量在标点/空格处截断，避免生硬半句
+  const slice = t.slice(0, max)
+  const cut = Math.max(
+    slice.lastIndexOf('，'),
+    slice.lastIndexOf('。'),
+    slice.lastIndexOf('；'),
+    slice.lastIndexOf('、'),
+    slice.lastIndexOf(' '),
+    slice.lastIndexOf('：'),
+    slice.lastIndexOf(':'),
+  )
+  const base = cut >= Math.floor(max * 0.5) ? slice.slice(0, cut) : slice
+  return base.replace(/[，。；、:\s]+$/u, '')
+}
+
+/** 卡片标题：机器名时用正文首条事实兜底；统一短标题，避免省略号拖尾 */
+function cardTitle(item: MemoryFileItem): string {
+  const name = item.name?.trim() || ''
+  if (name && !isMachineName(name)) return shortTitle(name)
+  const fromBody = firstFactFromPreview(item.bodyPreview || '')
+  if (fromBody) return shortTitle(fromBody)
+  return shortTitle(name || '未命名记忆')
+}
+
+/** description 优先（跳过占位文案），否则 bodyPreview */
+function cardPreview(item: MemoryFileItem): string {
+  const desc = item.description?.trim()
+  if (desc && !isPlaceholderDescription(desc)) return desc
+  const fromBody = firstFactFromPreview(item.bodyPreview || '')
+  if (fromBody) return fromBody
+  return item.bodyPreview?.trim() || ''
 }
 
 export function LongTermMemoryPanel() {
@@ -95,9 +186,7 @@ export function LongTermMemoryPanel() {
   const [editBucket, setEditBucket] = useState('wiki')
   const [saving, setSaving] = useState(false)
   const [deleteConfirmPath, setDeleteConfirmPath] = useState<string | null>(null)
-  const [proactiveTopics, setProactiveTopics] = useState<
-    { topic: string; reason: string }[]
-  >([])
+  const [proactiveTopics, setProactiveTopics] = useState<ProactiveTopic[]>([])
   const [dreaming, setDreaming] = useState(false)
 
   const load = useCallback(async () => {
@@ -240,26 +329,34 @@ export function LongTermMemoryPanel() {
   // ─── List view (always visible) ───
   return (
     <div className="flex flex-col gap-4">
-      {/* Proactive topics strip (shown when topics exist) */}
+      {/* Proactive topics from daily/interests.yaml */}
       {proactiveTopics.length > 0 && (
         <div className="cognition-fade-up flex flex-col gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3">
           <div className="flex items-center gap-2">
             <Sparkles className="size-3.5 text-primary" />
             <span className="text-xs font-semibold text-primary">兴趣话题</span>
             <span className="text-[10px] text-muted-foreground">
-              由 auto_dream 从近期对话中提取
+              来自今日 interests.yaml
             </span>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {proactiveTopics.map((t, i) => (
-              <span
-                key={i}
-                className="rounded-md bg-background/60 px-2 py-1 text-[11px] text-foreground/80"
-                title={t.reason}
-              >
-                {t.topic}
-              </span>
-            ))}
+            {proactiveTopics.map((t, i) => {
+              const cfg = getBucketConfig(t.bucket || 'wiki')
+              return (
+                <span
+                  key={`${t.title}-${i}`}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px]',
+                    cfg.badge,
+                    cfg.border,
+                  )}
+                  title={t.reason || cfg.label}
+                >
+                  <span className={cn('size-1.5 shrink-0 rounded-full', cfg.dot)} />
+                  {t.title || '未命名话题'}
+                </span>
+              )
+            })}
           </div>
         </div>
       )}
@@ -417,7 +514,7 @@ const FEATURED_THRESHOLD = 0.9
 interface MemoryHybridGridProps {
   items: MemoryFileItem[]
   openFile: (path: string) => Promise<void>
-  getBucketConfig: (bucket: string) => { label: string; dot: string; badge: string }
+  getBucketConfig: (bucket: string) => BucketCfg
 }
 
 function MemoryHybridGrid({ items, openFile, getBucketConfig }: MemoryHybridGridProps) {
@@ -436,7 +533,7 @@ function MemoryHybridGrid({ items, openFile, getBucketConfig }: MemoryHybridGrid
               {featured.length}
             </span>
           </div>
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-3 [grid-auto-rows:minmax(160px,auto)]">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 [grid-auto-rows:minmax(140px,auto)]">
             {featured.map((item, index) => (
               <FeaturedCard
                 key={item.path}
@@ -462,7 +559,7 @@ function MemoryHybridGrid({ items, openFile, getBucketConfig }: MemoryHybridGrid
               </span>
             </div>
           )}
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-3 [grid-auto-rows:minmax(160px,auto)]">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 [grid-auto-rows:minmax(140px,auto)]">
             {regular.map((item, index) => (
               <CompactCard
                 key={item.path}
@@ -479,7 +576,7 @@ function MemoryHybridGrid({ items, openFile, getBucketConfig }: MemoryHybridGrid
   )
 }
 
-/** Featured grid card for importance >= 0.9 - compact square-ish card */
+/** Featured grid card for importance >= 0.9 */
 function FeaturedCard({
   item,
   bucketCfg,
@@ -487,28 +584,32 @@ function FeaturedCard({
   index,
 }: {
   item: MemoryFileItem
-  bucketCfg: { label: string; dot: string; badge: string }
+  bucketCfg: BucketCfg
   onClick: () => void
   index: number
 }) {
+  const preview = cardPreview(item)
+  const title = cardTitle(item)
+
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        'cognition-fade-up group flex flex-col overflow-hidden rounded-lg border bg-card text-left shadow-[var(--shadow-sm)] transition-all duration-200 hover:border-primary/30 hover:shadow-[var(--shadow-md)]',
-        'before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:opacity-70',
-        `before:${bucketCfg.dot}`,
-        'relative h-full p-3.5',
+        'cognition-fade-up group relative flex h-full flex-col overflow-hidden rounded-lg border border-amber-500/25 bg-gradient-to-br from-amber-500/[0.06] to-card p-3.5 text-left shadow-[var(--shadow-sm)] transition-all duration-200 ease-out',
+        'hover:-translate-y-1 hover:scale-[1.03] hover:border-amber-500/45 hover:shadow-[var(--shadow-md)] hover:z-10',
       )}
       style={{ animationDelay: `${index * 45}ms` }}
     >
       {/* Top: name + star badge */}
       <div className="flex items-start justify-between gap-2">
-        <h4 className="min-w-0 flex-1 text-[13px] font-semibold leading-5 text-foreground truncate" title={item.name}>
-          {item.name}
+        <h4
+          className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-5 text-foreground"
+          title={title}
+        >
+          {title}
         </h4>
-        <span className="shrink-0 inline-flex items-center gap-0.5 rounded-full bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400">
+        <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400">
           <Star className="size-2.5 fill-amber-500 text-amber-500" />
           {item.importance.toFixed(2)}
         </span>
@@ -516,43 +617,54 @@ function FeaturedCard({
 
       {/* Category badge */}
       <div className="mt-2">
-        <span className={cn('inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium', bucketCfg.badge)}>
+        <span
+          className={cn(
+            'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
+            bucketCfg.badge,
+          )}
+        >
           <span className={cn('size-1.5 rounded-full', bucketCfg.dot)} />
           {bucketCfg.label}
         </span>
       </div>
 
-      {/* Spacer to push footer down */}
-      <div className="min-w-0 flex-1" />
+      {/* Preview body — fills the card middle */}
+      {preview ? (
+        <p className="mt-2.5 line-clamp-3 flex-1 text-[11px] leading-relaxed text-muted-foreground">
+          {preview}
+        </p>
+      ) : (
+        <div className="min-h-0 flex-1" />
+      )}
 
       {/* Bottom: tags + date */}
       <div className="mt-3 flex items-end justify-between gap-2">
         <div className="min-w-0 flex-1 overflow-hidden">
           {item.tags.slice(0, 3).map((tag) => (
-            <span key={tag} className="mr-1 inline-block rounded-md bg-primary/6 border border-primary/12 px-1.5 py-px text-[10px] text-foreground/75 leading-tight">
+            <span
+              key={tag}
+              className="mr-1 inline-block rounded-md border border-primary/12 bg-primary/6 px-1.5 py-px text-[10px] leading-tight text-foreground/75"
+            >
               {tag}
             </span>
           ))}
           {item.tags.length > 3 && (
-            <span className="text-[9px] text-muted-foreground">+{item.tags.length - 3}</span>
+            <span className="text-[9px] text-muted-foreground">
+              +{item.tags.length - 3}
+            </span>
           )}
         </div>
         {item.createdAt && (
-          <span className="shrink-0 tabular-nums text-[9px] text-muted-foreground/40 leading-tight">
+          <span className="shrink-0 tabular-nums text-[9px] leading-tight text-muted-foreground/40">
             {item.createdAt.slice(5)}
           </span>
         )}
       </div>
-
-      {/* Subtle description tooltip area */}
-      {item.description && (
-        <p className="mt-2 line-clamp-2 text-[11px] leading-snug text-muted-foreground/80">{item.description}</p>
-      )}
     </button>
   )
 }
 
-/** Compact card for the bento grid - square-ish card */
+/** Compact card for the regular grid */
 function CompactCard({
   item,
   bucketCfg,
@@ -560,35 +672,51 @@ function CompactCard({
   index,
 }: {
   item: MemoryFileItem
-  bucketCfg: { label: string; dot: string; badge: string }
+  bucketCfg: BucketCfg
   onClick: () => void
   index: number
 }) {
+  const preview = cardPreview(item)
+  const title = cardTitle(item)
+
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        'cognition-fade-up group flex flex-col overflow-hidden rounded-lg border bg-card text-left shadow-[var(--shadow-sm)] transition-all duration-150 hover:border-primary/30 hover:shadow-[var(--shadow-md)]',
-        'before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:opacity-60',
-        `before:${bucketCfg.dot}`,
-        'relative h-full p-3',
+        'cognition-fade-up group relative flex h-full flex-col overflow-hidden rounded-lg border bg-card p-3 text-left shadow-[var(--shadow-sm)] transition-all duration-200 ease-out',
+        bucketCfg.border,
+        bucketCfg.borderHover,
+        'hover:-translate-y-1 hover:scale-[1.03] hover:shadow-[var(--shadow-md)] hover:z-10',
       )}
       style={{ animationDelay: `${Math.min(index * 35, 400)}ms` }}
     >
+      <span
+        className={cn('absolute inset-y-0 left-0 w-0.5 opacity-70', bucketCfg.bar)}
+        aria-hidden
+      />
+
       {/* Top: name + category badge */}
-      <div className="flex items-start justify-between gap-2">
-        <h4 className="min-w-0 flex-1 text-[13px] font-medium leading-5 text-foreground truncate" title={item.name}>
-          {item.name}
+      <div className="flex items-start justify-between gap-2 pl-1">
+        <h4
+          className="min-w-0 flex-1 truncate text-[13px] font-medium leading-5 text-foreground"
+          title={title}
+        >
+          {title}
         </h4>
-        <span className={cn('shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium', bucketCfg.badge)}>
+        <span
+          className={cn(
+            'inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
+            bucketCfg.badge,
+          )}
+        >
           <span className={cn('size-1.5 rounded-full', bucketCfg.dot)} />
           {bucketCfg.label}
         </span>
       </div>
 
       {/* Importance bar */}
-      <div className="mt-2.5 flex items-center gap-2">
+      <div className="mt-2 flex items-center gap-2 pl-1">
         <span className="relative inline-block h-1.5 w-10 shrink-0 overflow-hidden rounded-full bg-muted">
           <span
             className={cn(
@@ -607,32 +735,38 @@ function CompactCard({
         </span>
       </div>
 
-      {/* Spacer to push footer down */}
-      <div className="min-w-0 flex-1" />
+      {/* Preview — description or bodyPreview */}
+      {preview ? (
+        <p className="mt-2 line-clamp-2 flex-1 pl-1 text-[11px] leading-snug text-muted-foreground/80">
+          {preview}
+        </p>
+      ) : (
+        <div className="min-h-0 flex-1" />
+      )}
 
       {/* Bottom: tags + date */}
-      <div className="mt-auto flex items-end justify-between gap-2 pt-2">
+      <div className="mt-auto flex items-end justify-between gap-2 pt-2 pl-1">
         <div className="min-w-0 flex-1 overflow-hidden">
           {item.tags.slice(0, 3).map((tag) => (
-            <span key={tag} className="mr-1 inline-block rounded bg-muted/60 px-1 py-px text-[9px] text-muted-foreground leading-tight">
+            <span
+              key={tag}
+              className="mr-1 inline-block rounded bg-muted/60 px-1 py-px text-[9px] leading-tight text-muted-foreground"
+            >
               {tag}
             </span>
           ))}
           {item.tags.length > 3 && (
-            <span className="text-[9px] text-muted-foreground/50">+{item.tags.length - 3}</span>
+            <span className="text-[9px] text-muted-foreground/50">
+              +{item.tags.length - 3}
+            </span>
           )}
         </div>
         {item.createdAt && (
-          <span className="shrink-0 tabular-nums text-[9px] text-muted-foreground/40 leading-tight">
+          <span className="shrink-0 tabular-nums text-[9px] leading-tight text-muted-foreground/40">
             {item.createdAt.slice(5)}
           </span>
         )}
       </div>
-
-      {/* Optional: single-line description preview */}
-      {item.description && (
-        <p className="mt-2 line-clamp-1 text-[10px] leading-snug text-muted-foreground/70">{item.description}</p>
-      )}
     </button>
   )
 }
@@ -713,6 +847,20 @@ function MemoryDetailView({
     return fileDetail.body.replace(/\n?\*Source:.*$/m, '').replace(/\n?- \*Source:.*$/m, '').trim()
   }, [fileDetail.body])
 
+  const displayTitle = useMemo(() => {
+    const name = fileDetail.name?.trim() || ''
+    if (name && !isMachineName(name)) return shortTitle(name, 28)
+    const fromBody = firstFactFromPreview(cleanBody)
+    if (fromBody) return shortTitle(fromBody, 28)
+    return shortTitle(name || '未命名记忆', 28)
+  }, [fileDetail.name, cleanBody])
+
+  const displayDescription = useMemo(() => {
+    const desc = fileDetail.description?.trim() || ''
+    if (desc && !isPlaceholderDescription(desc)) return desc
+    return firstFactFromPreview(cleanBody)
+  }, [fileDetail.description, cleanBody])
+
   if (editing) {
     return (
       <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 shadow-[var(--shadow-sm)]">
@@ -750,7 +898,7 @@ function MemoryDetailView({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2.5">
           <FileText className="size-5 text-primary/70" />
-          <h3 className="text-base font-semibold text-foreground">{fileDetail.name}</h3>
+          <h3 className="text-base font-semibold text-foreground">{displayTitle}</h3>
           <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium', bucketCfg.badge)}>
             <span className={cn('size-1.5 rounded-full', bucketCfg.dot)} />
             {bucketCfg.label}
@@ -780,7 +928,7 @@ function MemoryDetailView({
       {/* Meta info strip */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
         <span className="flex items-center gap-1">
-          <Info className="size-3" /> {fileDetail.description || '无描述'}
+          <Info className="size-3" /> {displayDescription || '无描述'}
         </span>
         <span className="flex items-center gap-1">
           重要性

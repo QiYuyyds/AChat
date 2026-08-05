@@ -72,8 +72,11 @@ export interface MemorySearchResponse {
 // ─── Types: Proactive ──────────────────────────────────────────────────────
 
 export interface ProactiveTopic {
-  topic: string
+  title: string
   reason: string
+  keywords: string[]
+  evidence: string
+  bucket: 'procedure' | 'wiki' | 'daily' | string
 }
 
 export interface ProactiveResponse {

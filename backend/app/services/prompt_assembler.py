@@ -292,16 +292,15 @@ class ProfileSource(ContextSource):
         items: list[ContextItem] = []
         _pref_count = 0
 
-        # Resolve preferences: use in-memory provider only when the query
-        # targets the default user (the single-writer memory_service.preference).
-        # For any other user, query the UserPreference table directly so that
-        # multi-user deployments get each user's own profile data.
-        user_id = q.user_id or "default_user"
+        # Always scope preferences to the real conversation user. Never fall
+        # back to a shared default_user bucket — that caused 沉淀 UI and
+        # runtime recall to show different preference sets.
+        user_id = (q.user_id or "").strip()
         prefs: dict[str, str] = {}
 
-        if self._pref is not None and user_id == "default_user":
-            prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
-        elif user_id != "default_user":
+        if not user_id:
+            logger.warning("ProfileSource skipped: missing user_id")
+        else:
             try:
                 from app.infra.cache_helpers import get_user_preferences_cached
 
@@ -310,6 +309,9 @@ class ProfileSource(ContextSource):
                 logger.warning(
                     "ProfileSource DB query failed for user %s: %s", user_id, e
                 )
+                # Fallback only for the same user, never cross-user.
+                if self._pref is not None and getattr(self._pref, "user_id", None) == user_id:
+                    prefs = self._pref.get_all() if hasattr(self._pref, "get_all") else {}
 
         try:
             _pref_count = len(prefs)
@@ -339,7 +341,7 @@ class ProfileSource(ContextSource):
 
         logger.info(
             "[cache-debug] ProfileSource: user=%s pref=%d total=%d",
-            user_id, _pref_count, len(items),
+            user_id or "(none)", _pref_count, len(items),
         )
         return items
 

@@ -144,6 +144,13 @@ def _is_trivial(user_msg: str, assistant_msg: str) -> bool:
     return any(re.match(p, combined) for p in trivial_patterns)
 
 
+_MACHINE_NAME_RE = re.compile(r"^session_[A-Za-z0-9_-]+$")
+_PLACEHOLDER_DESC_RE = re.compile(
+    r"^(Memory from conversation\b|Memory card\b)",
+    re.IGNORECASE,
+)
+
+
 def _sanitize_name(name: str) -> str:
     """Sanitize a name for use as a filename: kebab-case, max 50 chars."""
     name = name.strip().lower()
@@ -161,6 +168,48 @@ def _append_hash_suffix(name: str, conversation_id: str) -> str:
         h = hashlib.md5(conversation_id.encode()).hexdigest()[:6]
         return f"{name}-{h}"
     return name
+
+
+def _clip(text: str, max_len: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"
+
+
+def _is_machine_name(name: str) -> bool:
+    return bool(_MACHINE_NAME_RE.match((name or "").strip()))
+
+
+def _is_placeholder_description(description: str) -> bool:
+    return bool(_PLACEHOLDER_DESC_RE.match((description or "").strip()))
+
+
+def _display_name(name: str, body: str = "") -> str:
+    """Prefer a human-readable card title over machine session_* names."""
+    cleaned = (name or "").strip()
+    if cleaned and not _is_machine_name(cleaned):
+        return _clip(cleaned, 48)
+    # Fall back to first non-empty body line
+    for line in (body or "").splitlines():
+        text = line.lstrip("#- ").strip()
+        if text:
+            return _clip(text, 48)
+    return cleaned or "会话记忆"
+
+
+def _display_description(description: str, body: str = "", conversation_id: str = "") -> str:
+    """Avoid placeholder descriptions like 'Memory from conversation ...'."""
+    cleaned = (description or "").strip()
+    if cleaned and not _is_placeholder_description(cleaned):
+        return _clip(cleaned, 160)
+    for line in (body or "").splitlines():
+        text = line.lstrip("#- ").strip()
+        if text:
+            return _clip(text, 160)
+    if conversation_id:
+        return f"会话记忆 {conversation_id[:8]}"
+    return "会话记忆"
 
 
 _TIMESTAMP_ALIASES = ("time_created", "timestamp", "createdAt", "timeCreated", "created_time")
@@ -363,14 +412,16 @@ class AutoMemory:
         importance = float(parsed.get("importance", 0.5) or 0.5)
         importance = max(0.0, min(1.0, importance))
 
-        # Sanitize name for filename
+        # Sanitize name for filename (keep uniqueness); frontmatter uses human title.
         safe_name = _sanitize_name(name)
         safe_name = _append_hash_suffix(safe_name, conversation_id)
         filepath = self.workspace.daily_file_path(safe_name, today)
+        display_name = _display_name(name, body)
+        display_description = _display_description(description, body, conversation_id)
 
         fm = MemoryFrontmatter(
-            name=name,
-            description=description or (f"Memory from conversation {conversation_id[:8]}" if conversation_id else "Memory card"),
+            name=display_name,
+            description=display_description,
             agent_id=agent_id or None,
             tags=tags[:10],
             importance=importance,
@@ -382,11 +433,15 @@ class AutoMemory:
         )
 
         write_markdown(filepath, fm, body)
-        logger.info("auto_memory: created daily card %s (name=%s)", filepath, name)
+        logger.info("auto_memory: created daily card %s (name=%s)", filepath, display_name)
 
         # Update file catalog
         if self.file_catalog:
-            self.file_catalog.upsert(str(filepath), bucket="daily")
+            try:
+                rel = str(filepath.resolve().relative_to(self.workspace.root.resolve()))
+            except ValueError:
+                rel = str(filepath)
+            self.file_catalog.upsert(rel, bucket="daily")
 
         return 1
 
@@ -453,33 +508,41 @@ class AutoMemory:
         # Optionally update name (but check if safe name actually differs from existing)
         new_name = str(parsed.get("name", "")).strip()
         safe_new_name = _sanitize_name(new_name) if new_name else existing_name
-        
+        if new_name:
+            # Keep human-readable title in frontmatter even when file stem changes
+            if _is_machine_name(fm.name) or not fm.name:
+                fm.name = _display_name(new_name, body)
+            elif new_name != fm.name and not _is_machine_name(new_name):
+                fm.name = _display_name(new_name, body)
+        if _is_placeholder_description(fm.description) or not fm.description:
+            fm.description = _display_description(fm.description, body, conversation_id)
+
         # Check if file renaming is needed (only if sanitized name is different)
         if new_name and safe_new_name != existing_name:
             # File rename required - implement retarget process
             new_filepath = self.workspace.daily_file_path(safe_new_name, today)
-            
+
             # Calculate relative paths for retargeting
             old_rel = filepath.relative_to(self.workspace.root)
             new_rel = new_filepath.relative_to(self.workspace.root)
-            
+
             # Write new file
             write_markdown(new_filepath, fm, body)
-            
+
             # Delete old file
             try:
                 filepath.unlink()
                 logger.info("auto_memory: deleted old file %s", filepath)
             except Exception as e:
                 logger.warning("auto_memory: failed to delete old file %s: %s", filepath, e)
-            
+
             # Retarget wikilinks in all .md files
             md_files = []
             if self.workspace.daily_dir.exists():
                 md_files.extend(self.workspace.daily_dir.rglob("*.md"))
             if self.workspace.digest_dir.exists():
                 md_files.extend(self.workspace.digest_dir.rglob("*.md"))
-            
+
             for f in md_files:
                 if f in (filepath, new_filepath):  # Skip old and new files
                     continue
@@ -491,7 +554,7 @@ class AutoMemory:
                         logger.debug("auto_memory: retargeted wikilinks in %s", f)
                 except Exception as e:
                     logger.warning("auto_memory: failed to retarget wikilinks in %s: %s", f, e)
-            
+
             # Update wikilink expander graph: remove old edges, rebuild for new path
             if self.wikilink_expander:
                 self.wikilink_expander.remove_all_for(str(old_rel))
@@ -504,21 +567,21 @@ class AutoMemory:
 
             # Update file catalog
             if self.file_catalog:
-                self.file_catalog.remove(str(filepath))
-                self.file_catalog.upsert(str(new_filepath), bucket="daily")
-            
+                self.file_catalog.remove(str(old_rel))
+                self.file_catalog.upsert(str(new_rel), bucket="daily")
+
             logger.info("auto_memory: renamed and retargeted %s → %s", filepath, new_filepath)
         else:
-            # Update frontmatter name if different
-            if new_name and new_name != fm.name:
-                fm.name = new_name
-            
             write_markdown(filepath, fm, body)
             logger.info("auto_memory: updated daily card %s", filepath)
 
             # Update file catalog
             if self.file_catalog:
-                self.file_catalog.upsert(str(filepath), bucket="daily")
+                try:
+                    rel = str(filepath.resolve().relative_to(self.workspace.root.resolve()))
+                except ValueError:
+                    rel = str(filepath)
+                self.file_catalog.upsert(rel, bucket="daily")
 
         return 1
 

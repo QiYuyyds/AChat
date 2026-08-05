@@ -6,6 +6,9 @@ after file writes (incremental update). Maintains:
   - Wikilink adjacency graph (with predicate column)
   - File catalog (path + st_mtime tracking)
   - Broken link detection (target file missing)
+
+Document keys are workspace-relative paths so search results can be
+opened via the files API without absolute path leakage.
 """
 
 from __future__ import annotations
@@ -38,17 +41,24 @@ class AutoIndex:
         self.expander = expander
         self.file_catalog = file_catalog
 
+    def _rel_path(self, filepath: Path) -> str:
+        """Store index keys as paths relative to the memory workspace root."""
+        try:
+            return str(filepath.resolve().relative_to(self.workspace.root.resolve()))
+        except ValueError:
+            return str(filepath)
+
     def index_file(self, filepath: Path) -> None:
         """Index a single memory file (add/update in BM25 + wikilink graph + catalog)."""
         mem_file = read_markdown(filepath)
         if mem_file is None:
             return
 
-        path_str = str(filepath)
+        rel = self._rel_path(filepath)
 
         # BM25 index
         self.bm25.add(
-            path=path_str,
+            path=rel,
             name=mem_file.frontmatter.name,
             content=mem_file.content,
             agent_id=mem_file.frontmatter.agent_id,
@@ -57,11 +67,11 @@ class AutoIndex:
         )
 
         # Wikilink graph — use detailed extraction for predicate support
-        self.expander.remove_edges_for(path_str)
+        self.expander.remove_edges_for(rel)
         links = extract_wikilinks_detailed(mem_file.body)
         if links:
             edge_list = [(link.target, link.predicate) for link in links]
-            self.expander.add_edges_detailed(path_str, edge_list)
+            self.expander.add_edges_detailed(rel, edge_list)
 
         # Broken link detection: check if targets exist
         for link in links:
@@ -72,22 +82,22 @@ class AutoIndex:
             else:
                 resolved = target_path
             if not resolved.exists():
-                logger.debug("Broken wikilink: %s → %s (target missing)", path_str, link.target)
+                logger.debug("Broken wikilink: %s → %s (target missing)", rel, link.target)
 
         # Update file catalog
         if self.file_catalog:
             bucket = mem_file.frontmatter.bucket
             if str(filepath).startswith(str(self.workspace.daily_dir)):
                 bucket = "daily"
-            self.file_catalog.upsert(path_str, bucket=bucket)
+            self.file_catalog.upsert(rel, bucket=bucket)
 
     def remove_file(self, filepath: Path) -> None:
         """Remove a file from all indexes."""
-        path_str = str(filepath)
-        self.bm25.remove(path_str)
-        self.expander.remove_all_for(path_str)
+        rel = self._rel_path(filepath)
+        self.bm25.remove(rel)
+        self.expander.remove_all_for(rel)
         if self.file_catalog:
-            self.file_catalog.remove(path_str)
+            self.file_catalog.remove(rel)
 
     def full_reindex(self) -> int:
         """Rebuild all indexes from scratch by scanning all memory files.
@@ -116,10 +126,10 @@ class AutoIndex:
                 count += 1
 
         # Clean broken wikilinks: targets that don't exist on disk
-        existing_paths = {str(f) for f in all_files}
-        # Also check targets that might use relative paths from workspace root
+        existing_paths = {self._rel_path(f) for f in all_files}
+        # Also keep absolute forms for legacy edges that may still use them
         for f in all_files:
-            existing_paths.add(str(f.relative_to(self.workspace.root)))
+            existing_paths.add(str(f))
         broken_count = self.expander.remove_broken_links(existing_paths)
         if broken_count:
             logger.info("Full reindex: removed %d broken wikilink entries", broken_count)
