@@ -7,13 +7,12 @@ Preferences (PG KV table) and session memory (context summaries) are preserved.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import and_, desc, select
+from sqlalchemy import select
 
 from app.auth.dependencies import get_current_user
 from app.auth.ownership import verify_conversation_ownership
@@ -46,6 +45,11 @@ class MemoryFileWriteRequest(BaseModel):
 
 class PreferenceUpdateRequest(BaseModel):
     value: str
+
+
+class MemoryFileMoveRequest(BaseModel):
+    src: str
+    dst: str
 
 
 # ─── Memory file endpoints ─────────────────────────────────────────────────
@@ -209,6 +213,52 @@ async def delete_memory_file(
     return JSONResponse({"ok": True})
 
 
+@router.post("/api/memory/move")
+async def move_memory_file(
+    body: MemoryFileMoveRequest,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """Move a memory file and retarget all inbound wikilinks."""
+    svc = _get_memory_service()
+    if svc is None:
+        return JSONResponse(status_code=503, content={"error": "MemoryService not initialized"})
+
+    from app.memory.file_store.markdown_io import move_file
+
+    src_path = svc.workspace.root / body.src
+    dst_path = svc.workspace.root / body.dst
+
+    # Security: ensure both paths are within workspace
+    try:
+        src_path.resolve().relative_to(svc.workspace.root.resolve())
+        dst_path.resolve().relative_to(svc.workspace.root.resolve())
+    except ValueError:
+        return JSONResponse(status_code=400, content={"error": "Invalid path"})
+
+    if not src_path.exists():
+        return JSONResponse(status_code=404, content={"error": f"Source file not found: {body.src}"})
+
+    try:
+        retargeted = move_file(src_path, dst_path, svc.workspace.root, retarget=True)
+    except Exception as e:
+        logger.warning("move_memory_file failed: %s", e)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+    # Reindex the moved file and all retargeted files
+    svc.auto_index.index_file(dst_path)
+    for f in retargeted:
+        svc.auto_index.index_file(f)
+
+    # Remove old path from index if it still exists (shouldn't, but cleanup)
+    svc.auto_index.remove_file(src_path)
+
+    return JSONResponse({
+        "ok": True,
+        "newPath": body.dst,
+        "retargetedFiles": len(retargeted),
+    })
+
+
 @router.get("/api/memory/search")
 async def search_memory(
     query: str,
@@ -232,6 +282,8 @@ async def search_memory(
                 "score": r.score,
                 "source": r.source,
                 "frontmatter": r.frontmatter,
+                "scores": r.scores,
+                "expansion": r.expansion,
             }
             for r in results
         ],

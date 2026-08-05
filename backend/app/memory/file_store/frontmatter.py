@@ -21,6 +21,7 @@ class MemoryFrontmatter:
     tags: list[str] = field(default_factory=list)
     importance: float = 0.5
     bucket: str = "wiki"  # procedure | wiki
+    status: str = "active"  # active | archived
     created_at: str = ""  # YYYY-MM-DD
     updated_at: str = ""  # YYYY-MM-DD
     source: str = ""  # relative path to source daily card
@@ -33,6 +34,7 @@ class MemoryFrontmatter:
             "tags": list(self.tags),
             "importance": self.importance,
             "bucket": self.bucket,
+            "status": self.status,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "source": self.source,
@@ -48,6 +50,7 @@ class MemoryFrontmatter:
             tags=[str(t) for t in (data.get("tags") or []) if t],
             importance=float(data.get("importance", 0.5) or 0.5),
             bucket=str(data.get("bucket", "wiki")).strip() or "wiki",
+            status=str(data.get("status", "active")).strip() or "active",
             created_at=str(data.get("created_at", today)).strip() or today,
             updated_at=str(data.get("updated_at", today)).strip() or today,
             source=str(data.get("source", "")).strip(),
@@ -60,6 +63,8 @@ class MemoryFrontmatter:
             errors.append("name is required")
         if self.bucket not in ("procedure", "wiki"):
             errors.append(f"bucket must be 'procedure' or 'wiki', got '{self.bucket}'")
+        if self.status not in ("active", "archived"):
+            errors.append(f"status must be 'active' or 'archived', got '{self.status}'")
         if not (0.0 <= self.importance <= 1.0):
             errors.append(f"importance must be 0-1, got {self.importance}")
         return errors

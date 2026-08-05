@@ -6,6 +6,7 @@ atomically: write to temp file then rename (POSIX) or delete+rename (Windows).
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sys
@@ -15,6 +16,7 @@ from pathlib import Path
 import frontmatter as fm_lib
 
 from app.memory.file_store.frontmatter import MemoryFrontmatter
+from app.memory.file_store.wikilinks import retarget_wikilinks
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +74,8 @@ def write_markdown(filepath: Path, fm: MemoryFrontmatter, body: str) -> None:
 
     if sys.platform == "win32":
         if filepath.exists():
-            try:
+            with contextlib.suppress(OSError):
                 filepath.unlink()
-            except OSError:
-                pass
         os.rename(str(tmp), str(filepath))
     else:
         os.replace(str(tmp), str(filepath))
@@ -91,3 +91,80 @@ def delete_markdown(filepath: Path) -> bool:
     except Exception as e:
         logger.warning("delete_markdown failed for %s: %s", filepath, e)
         return False
+
+
+def move_file(
+    src: Path,
+    dst: Path,
+    workspace_root: Path,
+    retarget: bool = True,
+) -> list[Path]:
+    """Move a memory file and optionally retarget all inbound wikilinks.
+
+    Args:
+        src: Source file path (absolute).
+        dst: Destination file path (absolute).
+        workspace_root: Memory workspace root for scanning retarget targets.
+        retarget: If True, scan all .md files in daily/ and digest/ and
+            rewrite `[[old]]` → `[[new]]` (including predicate wikilinks).
+
+    Returns:
+        List of files whose wikilinks were rewritten (excluding src/dst).
+    """
+    if not src.exists():
+        raise FileNotFoundError(f"Source file not found: {src}")
+
+    # Compute relative paths for retargeting
+    src_rel = str(src.relative_to(workspace_root)).replace("\\", "/")
+    dst_rel = str(dst.relative_to(workspace_root)).replace("\\", "/")
+
+    # Also handle absolute path forms that might appear in wikilinks
+    src_abs = str(src)
+    dst_abs = str(dst)
+
+    retargeted_files: list[Path] = []
+
+    if retarget:
+        # Scan all .md files in daily/ and digest/ for wikilink retargeting
+        scan_dirs = [
+            workspace_root / "daily",
+            workspace_root / "digest",
+        ]
+        for scan_dir in scan_dirs:
+            if not scan_dir.exists():
+                continue
+            for md_file in scan_dir.rglob("*.md"):
+                if md_file in (src, dst):
+                    continue
+                try:
+                    text = md_file.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+
+                # Retarget using both relative and absolute path forms
+                new_text = text
+                if src_rel in new_text:
+                    new_text = retarget_wikilinks(new_text, src_rel, dst_rel)
+                if src_abs in new_text and src_abs != src_rel:
+                    new_text = retarget_wikilinks(new_text, src_abs, dst_abs)
+
+                if new_text != text:
+                    md_file.write_text(new_text, encoding="utf-8")
+                    retargeted_files.append(md_file)
+                    logger.debug("move_file: retargeted wikilinks in %s", md_file)
+
+    # Move the file
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        if dst.exists():
+            with contextlib.suppress(OSError):
+                dst.unlink()
+        os.rename(str(src), str(dst))
+    else:
+        os.replace(str(src), str(dst))
+
+    logger.info(
+        "move_file: %s → %s (retargeted %d files)",
+        src_rel, dst_rel, len(retargeted_files),
+    )
+    return retargeted_files

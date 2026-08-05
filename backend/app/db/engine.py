@@ -95,6 +95,7 @@ async def init_db() -> None:
     # Local engine: create local tables
     if _local_engine is not None:
         async with _local_engine.begin() as conn:
+            await _rebuild_cross_db_fk_tables_sqlite(conn)
             await conn.run_sync(
                 lambda sync_conn: Base.metadata.create_all(
                     sync_conn, tables=local_tables, checkfirst=True
@@ -111,7 +112,7 @@ def _attach_sqlite_pragmas(engine: AsyncEngine) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
 
 
@@ -245,6 +246,27 @@ async def _migrate_columns_pg(conn) -> None:  # type: ignore[no-untyped-def]
     for stmt in _PG_MIGRATION_STATEMENTS:
         with contextlib.suppress(Exception):
             await conn.execute(text(stmt))
+
+
+async def _rebuild_cross_db_fk_tables_sqlite(conn) -> None:
+    """Drop local tables that have cross-DB FK constraints to remote tables.
+
+    In dual-DB mode, local SQLite tables cannot enforce FK constraints to
+    remote PostgreSQL tables (e.g. ``users``). If a table was previously
+    created with such a FK, it must be dropped and recreated by
+    ``create_all`` without the FK.
+    """
+    from sqlalchemy import text
+
+    await conn.execute(text("PRAGMA foreign_keys=OFF"))
+
+    for tbl in ("tasks", "task_comments"):
+        result = await conn.execute(text(f"PRAGMA foreign_key_list({tbl})"))
+        fks = result.fetchall()
+        if any(fk[2] == "users" for fk in fks):
+            await conn.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
+
+    await conn.execute(text("PRAGMA foreign_keys=ON"))
 
 
 async def _migrate_columns_sqlite(conn) -> None:  # type: ignore[no-untyped-def]

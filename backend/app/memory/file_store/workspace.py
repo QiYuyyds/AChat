@@ -30,7 +30,7 @@ class MemoryWorkspace:
         """Create the directory tree if it doesn't exist."""
         for d in [self.root, self.session_dir, self.daily_dir, self.digest_dir, self.metadata_dir]:
             d.mkdir(parents=True, exist_ok=True)
-        for bucket in ["procedure", "wiki"]:
+        for bucket in ["procedure", "personal", "wiki"]:
             (self.digest_dir / bucket).mkdir(parents=True, exist_ok=True)
             if bucket == "procedure":
                 (self.digest_dir / bucket / "shared").mkdir(parents=True, exist_ok=True)
@@ -79,6 +79,9 @@ class MemoryWorkspace:
             else:
                 d = self.digest_dir / "procedure" / "shared"
                 d.mkdir(parents=True, exist_ok=True)
+        elif bucket == "personal":
+            d = self.digest_dir / "personal"
+            d.mkdir(parents=True, exist_ok=True)
         else:
             d = self.digest_dir / "wiki"
             d.mkdir(parents=True, exist_ok=True)

@@ -19,6 +19,7 @@ from collections.abc import Callable
 from app.config import Settings
 from app.db.engine import get_db
 from app.db.models import ChatHistory
+from app.memory.file_store.file_catalog import FileCatalog
 from app.memory.file_store.workspace import MemoryWorkspace
 from app.memory.pipeline.auto_dream import AutoDream
 from app.memory.pipeline.auto_index import AutoIndex
@@ -27,6 +28,7 @@ from app.memory.pipeline.proactive import Proactive
 from app.memory.preference import Preference
 from app.memory.search.bm25_index import BM25Index
 from app.memory.search.hybrid_search import HybridSearch, SearchResult
+from app.memory.search.node_search import NodeSearch
 from app.memory.search.wikilink_expander import WikilinkExpander
 from app.memory.session_memory import SessionMemory
 
@@ -53,11 +55,13 @@ class MemoryService:
         # Search indexes
         self.bm25 = BM25Index(self.workspace.metadata_dir / "bm25.db")
         self.wikilink_expander = WikilinkExpander(self.workspace.metadata_dir / "wikilinks.db")
+        self.file_catalog = FileCatalog(self.workspace.metadata_dir / "catalog.db")
 
         # Pipeline components
-        self.auto_memory = AutoMemory(self.workspace)
-        self.auto_index = AutoIndex(self.workspace, self.bm25, self.wikilink_expander)
-        self.auto_dream = AutoDream(self.workspace, self._build_search())
+        self.auto_memory = AutoMemory(self.workspace, self.file_catalog, self.wikilink_expander)
+        self.auto_index = AutoIndex(self.workspace, self.bm25, self.wikilink_expander, self.file_catalog)
+        self.node_search = NodeSearch(self.bm25, self.wikilink_expander, self.workspace)
+        self.auto_dream = AutoDream(self.workspace, self._build_search(), self.node_search, self.file_catalog)
         self.proactive = Proactive(self.workspace)
 
         # Hybrid search (built after indexes are initialized)
@@ -98,6 +102,13 @@ class MemoryService:
         # Initialize SQLite indexes
         self.bm25.initialize()
         self.wikilink_expander.initialize()
+        self.file_catalog.initialize()
+
+        # Reconcile file catalog with filesystem
+        try:
+            self.file_catalog.reconcile(self.workspace.daily_dir, self.workspace.digest_dir)
+        except Exception as e:
+            logger.warning("FileCatalog reconcile failed: %s", e)
 
         # Build hybrid search (now that indexes are ready)
         self._search = self._build_search()
@@ -222,6 +233,7 @@ class MemoryService:
         """Clean shutdown."""
         self.bm25.close()
         self.wikilink_expander.close()
+        self.file_catalog.close()
         logger.info("MemoryService closed")
 
     # ─── Internal safe wrappers ───────────────────────────────────────────
@@ -230,19 +242,30 @@ class MemoryService:
         self, user_msg: str, assistant_msg: str, agent_id: str, conversation_id: str,
     ) -> None:
         try:
-            count = await self.auto_memory.run(
+            result = await self.auto_memory.run(
                 user_msg, assistant_msg,
                 conversation_id=conversation_id, agent_id=agent_id,
             )
-            if count > 0:
-                # Index the newly written daily card
+            if result > 0:
+                # Reindex the newly written/updated daily card
+                # Find it by source marker
                 from datetime import date
                 today = date.today().isoformat()
-                card_name = f"session_{conversation_id[:8]}" if conversation_id else ""
-                if card_name:
-                    filepath = self.workspace.daily_file_path(card_name, today)
-                    if filepath.exists():
-                        self.auto_index.index_file(filepath)
+                source_marker = f"session/{conversation_id}.jsonl"
+                today_dir = self.workspace.daily_dir / today
+                if today_dir.exists():
+                    from app.memory.file_store.markdown_io import read_markdown
+                    for f in sorted(today_dir.glob("*.md")):
+                        mem = read_markdown(f)
+                        if mem and source_marker in (mem.frontmatter.source or ""):
+                            self.auto_index.index_file(f)
+                            break
+                    else:
+                        # Fallback: try old naming convention
+                        old_name = f"session_{conversation_id[:8]}"
+                        old_path = self.workspace.daily_file_path(old_name, today)
+                        if old_path.exists():
+                            self.auto_index.index_file(old_path)
 
                 # Check auto_dream threshold
                 if self.check_auto_dream_threshold():

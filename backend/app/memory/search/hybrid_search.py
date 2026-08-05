@@ -2,6 +2,10 @@
 
 Combines SQLite FTS5 BM25 keyword matching with wikilink graph relation
 expansion, fused via Reciprocal Rank Fusion (RRF).
+
+Each SearchResult includes:
+  - scores: per-component breakdown (bm25, wikilink, rrf)
+  - expansion: outlinks + inlinks neighbor metadata (path, name, description)
 """
 
 from __future__ import annotations
@@ -10,10 +14,10 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.memory.file_store.markdown_io import MemoryFile, read_markdown
+from app.config import Settings
+from app.memory.file_store.markdown_io import read_markdown
 from app.memory.search.bm25_index import BM25Index
 from app.memory.search.wikilink_expander import WikilinkExpander
-from app.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,8 @@ class SearchResult:
     score: float
     source: str = "bm25"  # bm25 | wikilink | rrf
     frontmatter: dict = field(default_factory=dict)
+    scores: dict = field(default_factory=dict)  # {"bm25": float, "wikilink": float, "rrf": float}
+    expansion: dict = field(default_factory=dict)  # {"outlinks": [...], "inlinks": [...]}
 
 
 class HybridSearch:
@@ -62,29 +68,51 @@ class HybridSearch:
 
         # Phase 3: RRF fusion
         all_paths = set(bm25_ranked.keys()) | set(wl_ranked.keys())
-        rrf_scores: list[tuple[str, float]] = []
+        rrf_scores: list[tuple[str, float, dict]] = []
         for path in all_paths:
             score = 0.0
+            bm25_component = 0.0
+            wl_component = 0.0
             if path in bm25_ranked:
-                score += bm25_weight * (1.0 / (rrf_k + bm25_ranked[path]))
+                bm25_component = bm25_weight * (1.0 / (rrf_k + bm25_ranked[path]))
+                score += bm25_component
             if path in wl_ranked:
-                score += wl_weight * (1.0 / (rrf_k + wl_ranked[path]))
-            rrf_scores.append((path, score))
+                wl_component = wl_weight * (1.0 / (rrf_k + wl_ranked[path]))
+                score += wl_component
+            rrf_scores.append((path, score, {
+                "bm25": round(bm25_component, 6),
+                "wikilink": round(wl_component, 6),
+                "rrf": round(score, 6),
+            }))
 
         rrf_scores.sort(key=lambda x: x[1], reverse=True)
         top_paths = rrf_scores[:k]
 
-        # Load file content for results
+        # Load file content for results + build expansion meta
         results: list[SearchResult] = []
-        for path, score in top_paths:
+        for path, score, score_breakdown in top_paths:
             mem_file = read_markdown(Path(path))
             if mem_file is None:
                 continue
+
             source = "rrf"
             if path in bm25_ranked and path not in wl_ranked:
                 source = "bm25"
             elif path in wl_ranked and path not in bm25_ranked:
                 source = "wikilink"
+
+            # Apply archived status deprioritization (0.5x BM25 multiplier)
+            if mem_file.frontmatter.status == "archived":
+                score_breakdown = dict(score_breakdown)
+                score_breakdown["bm25"] = round(score_breakdown["bm25"] * 0.5, 6)
+                score_breakdown["rrf"] = round(
+                    score_breakdown["bm25"] + score_breakdown["wikilink"], 6
+                )
+                score = score_breakdown["rrf"]
+
+            # Build link expansion metadata
+            expansion = self._build_expansion(path)
+
             results.append(SearchResult(
                 path=path,
                 name=mem_file.frontmatter.name,
@@ -92,6 +120,37 @@ class HybridSearch:
                 score=score,
                 source=source,
                 frontmatter=mem_file.frontmatter.to_dict(),
+                scores=score_breakdown,
+                expansion=expansion,
             ))
 
         return results
+
+    def _build_expansion(self, path: str) -> dict:
+        """Build outlinks + inlinks expansion metadata for a search result."""
+        outlinks_meta: list[dict] = []
+        inlinks_meta: list[dict] = []
+
+        for ol in self.expander.get_outlinks(path):
+            target_path = ol["target"]
+            target_mem = read_markdown(Path(target_path))
+            if target_mem:
+                outlinks_meta.append({
+                    "path": target_path,
+                    "name": target_mem.frontmatter.name,
+                    "description": target_mem.frontmatter.description,
+                    "predicate": ol.get("predicate"),
+                })
+
+        for il in self.expander.get_inlinks(path):
+            source_path = il["source"]
+            source_mem = read_markdown(Path(source_path))
+            if source_mem:
+                inlinks_meta.append({
+                    "path": source_path,
+                    "name": source_mem.frontmatter.name,
+                    "description": source_mem.frontmatter.description,
+                    "predicate": il.get("predicate"),
+                })
+
+        return {"outlinks": outlinks_meta, "inlinks": inlinks_meta}

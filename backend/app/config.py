@@ -99,6 +99,8 @@ class Settings(BaseSettings):
     memory_auto_dream_threshold: int = 5
     memory_auto_dream_cron: str = "23:00"
     memory_auto_dream_max_units: int = 5
+    memory_dream_topic_count: int = 3
+    memory_dream_topic_diversity_days: int = 7
     memory_search_top_k: int = 10
     memory_bm25_weight: float = 0.7
     memory_wikilink_weight: float = 0.3

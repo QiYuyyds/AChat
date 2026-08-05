@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from sqlalchemy import Table
 
-# ─── Local SQLite tables (10) — conversation hot data + personal config ───
+# ─── Local SQLite tables (12) — conversation hot data + personal config + tasks ───
 LOCAL_TABLES: frozenset[str] = frozenset({
     "messages",
     "conversations",
@@ -25,6 +25,8 @@ LOCAL_TABLES: frozenset[str] = frozenset({
     "agents",
     "mcp_servers",
     "model_profiles",
+    "tasks",
+    "task_comments",
 })
 
 # ─── Remote PostgreSQL tables (9) — user system + knowledge/RAG ───
@@ -39,6 +41,10 @@ REMOTE_TABLES: frozenset[str] = frozenset({
     "documents",
     "document_versions",
 })
+
+# Tables that don't match either set are created on the local engine in
+# single-DB mode but silently ignored in dual-DB mode (they must be added to
+# the appropriate set above to participate in dual-DB routing).
 
 
 def get_local_table_objects() -> list[Table]:
