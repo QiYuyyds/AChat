@@ -102,9 +102,13 @@ class Settings(BaseSettings):
     memory_dream_topic_count: int = 3
     memory_dream_topic_diversity_days: int = 7
     memory_search_top_k: int = 10
-    memory_bm25_weight: float = 0.7
+    memory_bm25_weight: float = 0.3
+    memory_vector_weight: float = 0.7
+    # DEPRECATED: wikilink no longer participates in RRF ranking (post-processing only)
     memory_wikilink_weight: float = 0.3
     memory_rrf_k: int = 60
+    memory_chunk_size: int = 512
+    memory_chunk_min_size: int = 100
 
     @property
     def memory_workspace_path(self) -> Path:

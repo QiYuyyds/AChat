@@ -27,8 +27,10 @@ from app.memory.pipeline.auto_memory import AutoMemory
 from app.memory.pipeline.proactive import Proactive
 from app.memory.preference import Preference
 from app.memory.search.bm25_index import BM25Index
+from app.memory.search.chunker import MarkdownChunker
 from app.memory.search.hybrid_search import HybridSearch, SearchResult
 from app.memory.search.node_search import NodeSearch
+from app.memory.search.vector_index import VectorIndex
 from app.memory.search.wikilink_expander import WikilinkExpander
 from app.memory.session_memory import SessionMemory
 
@@ -56,10 +58,19 @@ class MemoryService:
         self.bm25 = BM25Index(self.workspace.metadata_dir / "bm25.db")
         self.wikilink_expander = WikilinkExpander(self.workspace.metadata_dir / "wikilinks.db")
         self.file_catalog = FileCatalog(self.workspace.metadata_dir / "catalog.db")
+        self.vector_index = VectorIndex(self.workspace.metadata_dir / "vectors.db")
+        self.chunker = MarkdownChunker(
+            chunk_size=settings.memory_chunk_size,
+            min_chunk_size=settings.memory_chunk_min_size,
+        )
 
         # Pipeline components
         self.auto_memory = AutoMemory(self.workspace, self.file_catalog, self.wikilink_expander)
-        self.auto_index = AutoIndex(self.workspace, self.bm25, self.wikilink_expander, self.file_catalog)
+        self.auto_index = AutoIndex(
+            self.workspace, self.bm25, self.wikilink_expander, self.file_catalog,
+            vector_index=self.vector_index,
+            chunker=self.chunker,
+        )
         self.node_search = NodeSearch(self.bm25, self.wikilink_expander, self.workspace)
         self.auto_dream = AutoDream(self.workspace, self._build_search(), self.node_search, self.file_catalog)
         self.proactive = Proactive(self.workspace)
@@ -85,6 +96,7 @@ class MemoryService:
     def _build_search(self) -> HybridSearch:
         return HybridSearch(
             self.settings, self.bm25, self.wikilink_expander, self.workspace.root,
+            vector_index=self.vector_index,
         )
 
     @staticmethod
@@ -94,6 +106,12 @@ class MemoryService:
         if not uid:
             return None
         return Preference(user_id=uid)
+
+    def set_embed_fn(self, fn: Callable[[str], list[float]] | None) -> None:
+        """Inject embedding function for vector search and indexing."""
+        if self._search:
+            self._search.set_embed_fn(fn)
+        self.auto_index.set_embed_fn(fn)
 
     def set_generate_fn(self, fn: Callable) -> None:
         """Inject LLM generate function for memory extraction and pipeline."""
@@ -114,6 +132,7 @@ class MemoryService:
         self.bm25.initialize()
         self.wikilink_expander.initialize()
         self.file_catalog.initialize()
+        self.vector_index.initialize()
 
         # Reconcile file catalog with filesystem
         try:
@@ -257,6 +276,7 @@ class MemoryService:
         self.bm25.close()
         self.wikilink_expander.close()
         self.file_catalog.close()
+        self.vector_index.close()
         logger.info("MemoryService closed")
 
     # ─── Internal safe wrappers ───────────────────────────────────────────

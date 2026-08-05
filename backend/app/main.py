@@ -143,6 +143,13 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             _memory_service.set_generate_fn(generate_fn)
             logger.info("Memory: generate_fn injected")
 
+        # Inject embed_fn into MemoryService for vector search + indexing
+        if embed_fn and _memory_service:
+            _memory_service.set_embed_fn(embed_fn)
+            logger.info("Memory: embed_fn injected (model=%s)", settings.embedding_model)
+        else:
+            logger.warning("Memory: embed_fn not available (EMBEDDING_API_KEY not set)")
+
         # Wire KG backend if Neo4j driver and LLM are both available (KGStore belongs to RAG, independent of memory system)
         if _infrastructure and _infrastructure.neo4j_driver and generate_fn:
             _wire_kg_to_rag(_rag_service, _infrastructure.neo4j_driver, settings, generate_fn)

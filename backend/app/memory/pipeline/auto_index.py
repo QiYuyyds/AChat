@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from app.memory.file_store.file_catalog import FileCatalog
@@ -22,6 +23,8 @@ from app.memory.file_store.markdown_io import read_markdown
 from app.memory.file_store.wikilinks import extract_wikilinks_detailed
 from app.memory.file_store.workspace import MemoryWorkspace
 from app.memory.search.bm25_index import BM25Index
+from app.memory.search.chunker import MarkdownChunker
+from app.memory.search.vector_index import VectorIndex
 from app.memory.search.wikilink_expander import WikilinkExpander
 
 logger = logging.getLogger(__name__)
@@ -44,7 +47,7 @@ def _indexable_body(body: str) -> str:
 
 
 class AutoIndex:
-    """Index maintenance for BM25 + wikilink graphs + file catalog."""
+    """Index maintenance for BM25 + wikilink graphs + vector index + file catalog."""
 
     def __init__(
         self,
@@ -52,11 +55,21 @@ class AutoIndex:
         bm25: BM25Index,
         expander: WikilinkExpander,
         file_catalog: FileCatalog | None = None,
+        vector_index: VectorIndex | None = None,
+        chunker: MarkdownChunker | None = None,
+        embed_fn: Callable[[str], list[float]] | None = None,
     ):
         self.workspace = workspace
         self.bm25 = bm25
         self.expander = expander
         self.file_catalog = file_catalog
+        self.vector_index = vector_index
+        self.chunker = chunker
+        self._embed_fn = embed_fn
+
+    def set_embed_fn(self, fn: Callable[[str], list[float]] | None) -> None:
+        """Inject or update embedding function at runtime."""
+        self._embed_fn = fn
 
     def _rel_path(self, filepath: Path) -> str:
         """Store index keys as posix-relative paths under the memory workspace root."""
@@ -134,11 +147,33 @@ class AutoIndex:
         if self.file_catalog:
             self.file_catalog.upsert(rel, bucket=bucket)
 
+        # Vector index — chunk + embed + store
+        if self.vector_index and self.chunker and self._embed_fn:
+            self.vector_index.remove(rel)
+            try:
+                chunks = self.chunker.chunk(mem_file)
+            except Exception as e:
+                logger.warning("Chunking failed for %s: %s", rel, e)
+                chunks = []
+            for idx, chunk in enumerate(chunks):
+                try:
+                    emb = self._embed_fn(chunk.text)
+                    self.vector_index.add(
+                        rel, idx, chunk.text, emb,
+                        agent_id=mem_file.frontmatter.agent_id or "",
+                        bucket=bucket,
+                    )
+                except Exception as e:
+                    logger.warning("Embedding failed for %s chunk %d: %s", rel, idx, e)
+                    break
+
     def remove_file(self, filepath: Path) -> None:
         """Remove a file from all indexes."""
         rel = self._rel_path(filepath)
         self.bm25.remove(rel)
         self.expander.remove_all_for(rel)
+        if self.vector_index:
+            self.vector_index.remove(rel)
         if self.file_catalog:
             self.file_catalog.remove(rel)
 
@@ -150,6 +185,8 @@ class AutoIndex:
         """
         self.bm25.clear()
         self.expander.clear()
+        if self.vector_index:
+            self.vector_index.clear()
 
         count = 0
         all_files: list[Path] = []
