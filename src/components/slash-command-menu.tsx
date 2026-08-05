@@ -29,7 +29,7 @@ export function SlashCommandMenu({
   if (commands.length === 0) return null
 
   return (
-    <div className="absolute bottom-full left-3 right-3 mb-2 max-h-64 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+    <div className="absolute bottom-full left-2 right-2 z-20 mx-auto mb-2 max-h-64 max-w-3xl overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
       {commands.map((command, index) => {
         const Icon = command.icon
         return (
