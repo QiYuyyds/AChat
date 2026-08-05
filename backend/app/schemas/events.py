@@ -22,6 +22,7 @@ from app.schemas.messages import (
     RunUsage,
 )
 from app.schemas.plan import PlanComplexity, PlanStep
+from app.schemas.task import TaskCommentRow, TaskRow
 
 
 # ─── Base Event ─────────────────────────────────────
@@ -571,9 +572,70 @@ class GuideSideEffectEvent(BaseEvent):
     """
 
     type: Literal["guide_side_effect"] = "guide_side_effect"
-    target: Literal["agents", "skills", "mcp", "documents", "memory", "profile", "conversations"]
+    target: Literal["agents", "skills", "mcp", "documents", "memory", "profile", "conversations", "tasks"]
     action: Literal["create", "update", "delete", "refresh", "optimize", "consolidate", "upload"]
     payload: dict | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+# ─── Task Board Events ─────────────────────────────────────
+
+
+class TaskCreatedEvent(BaseEvent):
+    """Event when a new Task is created (via API or Agent tool)."""
+
+    type: Literal["task.created"] = "task.created"
+    task: TaskRow
+
+
+class TaskUpdatedEvent(BaseEvent):
+    """Event when a Task's non-status fields are updated."""
+
+    type: Literal["task.updated"] = "task.updated"
+    task: TaskRow
+
+
+class TaskMovedEvent(BaseEvent):
+    """Event when a Task's status changes."""
+
+    type: Literal["task.moved"] = "task.moved"
+    task_id: str = Field(alias="taskId")
+    from_status: str = Field(alias="fromStatus")
+    to_status: str = Field(alias="toStatus")
+    task: TaskRow
+
+    model_config = {"populate_by_name": True}
+
+
+class TaskCommentedEvent(BaseEvent):
+    """Event when a new comment is added to a Task."""
+
+    type: Literal["task.commented"] = "task.commented"
+    task_id: str = Field(alias="taskId")
+    comment: TaskCommentRow
+
+    model_config = {"populate_by_name": True}
+
+
+class TaskAssignedEvent(BaseEvent):
+    """Event when a Task's assignee changes."""
+
+    type: Literal["task.assigned"] = "task.assigned"
+    task_id: str = Field(alias="taskId")
+    agent_id: str | None = Field(default=None, alias="agentId")
+    task: TaskRow
+
+    model_config = {"populate_by_name": True}
+
+
+class SchedulerStatusEvent(BaseEvent):
+    """Event when the TaskSchedulerService state changes."""
+
+    type: Literal["scheduler.status"] = "scheduler.status"
+    running: bool
+    pending_count: int = Field(alias="pendingCount")
+    active_count: int = Field(alias="activeCount")
 
     model_config = {"populate_by_name": True}
 
@@ -642,6 +704,13 @@ StreamEvent = Annotated[
         WorkspaceEnvStatusEvent,
         # Guide side effect events
         GuideSideEffectEvent,
+        # Task board events
+        TaskCreatedEvent,
+        TaskUpdatedEvent,
+        TaskMovedEvent,
+        TaskCommentedEvent,
+        TaskAssignedEvent,
+        SchedulerStatusEvent,
     ],
     Field(discriminator="type"),
 ]

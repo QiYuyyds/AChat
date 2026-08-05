@@ -18,6 +18,8 @@ import type {
   PendingWrite,
   PlanStep,
   StreamEvent,
+  TaskCommentRow,
+  TaskRow,
   TurnMetricData,
 } from '@/shared/types'
 import type { PendingMergeConflict } from '@/lib/api'
@@ -39,6 +41,7 @@ export type SidebarMode =
   | 'resources'
   | 'cognition'
   | 'extensions'
+  | 'tasks'
 
 export type MemoryTab = 'long-term' | 'preferences' | 'session'
 
@@ -75,6 +78,12 @@ export interface DispatchState {
   }>
 }
 
+/** Undo stack entry — stores a message and an async undo function. */
+export interface UndoEntry {
+  message: string
+  undo: () => Promise<void>
+}
+
 /** Run state in store — extends DB row with in-memory turn metrics. */
 export interface RunState extends AgentRunRow {
   turnMetrics?: Record<number, TurnMetricData>
@@ -94,6 +103,15 @@ interface AppState {
   selectedProfileIdByConv: Record<string, string | null>
   messages: Record<string, MessageRow>
   artifacts: Record<string, ArtifactRow>
+
+  // ─── Task Board ────────────────────────────────────
+  tasks: Record<string, TaskRow>
+  taskIdsByStatus: Record<string, string[]>
+  taskComments: Record<string, TaskCommentRow[]>
+  schedulerRunning: boolean
+  schedulerPendingCount: number
+  schedulerActiveCount: number
+  undoStack: UndoEntry[]
 
   // ─── 关系（按 conversationId 分桶）───────────────
   messageIdsByConv: Record<string, string[]>
@@ -292,6 +310,17 @@ interface AppState {
   }): void
   replaceLocalMessageId(tempId: string, realId: string): void
 
+  // ─── Task Board actions ───────────────────────────
+  setTasks(tasks: TaskRow[]): void
+  upsertTask(task: TaskRow): void
+  removeTask(taskId: string): void
+  setTaskComments(taskId: string, comments: TaskCommentRow[]): void
+  addTaskComment(taskId: string, comment: TaskCommentRow): void
+  setSchedulerStatus(running: boolean, pendingCount: number, activeCount: number): void
+  pushUndo(message: string, undo: () => Promise<void>): void
+  popUndo(): void
+  clearUndoStack(): void
+
   applyEvent(event: StreamEvent): void
 }
 
@@ -340,6 +369,15 @@ export const useAppStore = create<AppState>()(
     streamConnected: false,
     userId: null,
 
+    // ─── Task Board initial state ─────────────────────
+    tasks: {},
+    taskIdsByStatus: {},
+    taskComments: {},
+    schedulerRunning: false,
+    schedulerPendingCount: 0,
+    schedulerActiveCount: 0,
+    undoStack: [],
+
     setGuideConversationId: (id) =>
       set((s) => {
         s.guideConversationId = id
@@ -363,6 +401,97 @@ export const useAppStore = create<AppState>()(
     setUserId: (userId) =>
       set((s) => {
         s.userId = userId
+      }),
+
+    // ─── Task Board actions ───────────────────────────
+    setTasks: (taskList) =>
+      set((s) => {
+        s.tasks = {}
+        s.taskIdsByStatus = {}
+        for (const t of taskList) {
+          s.tasks[t.id] = t
+          const bucket = (s.taskIdsByStatus[t.status] ??= [])
+          bucket.push(t.id)
+        }
+        // Sort each bucket by sortOrder ascending
+        for (const status of Object.keys(s.taskIdsByStatus)) {
+          s.taskIdsByStatus[status].sort(
+            (a, b) => (s.tasks[a]?.sortOrder ?? 0) - (s.tasks[b]?.sortOrder ?? 0),
+          )
+        }
+      }),
+
+    upsertTask: (task) =>
+      set((s) => {
+        const prev = s.tasks[task.id]
+        s.tasks[task.id] = task
+        // Remove from old status bucket if status changed
+        if (prev && prev.status !== task.status) {
+          const oldBucket = s.taskIdsByStatus[prev.status]
+          if (oldBucket) {
+            s.taskIdsByStatus[prev.status] = oldBucket.filter((id) => id !== task.id)
+            if (s.taskIdsByStatus[prev.status].length === 0) delete s.taskIdsByStatus[prev.status]
+          }
+        }
+        // Add to new status bucket if not already there
+        const bucket = (s.taskIdsByStatus[task.status] ??= [])
+        if (!bucket.includes(task.id)) {
+          bucket.push(task.id)
+          bucket.sort((a, b) => (s.tasks[a]?.sortOrder ?? 0) - (s.tasks[b]?.sortOrder ?? 0))
+        }
+      }),
+
+    removeTask: (taskId) =>
+      set((s) => {
+        const task = s.tasks[taskId]
+        if (!task) return
+        delete s.tasks[taskId]
+        const bucket = s.taskIdsByStatus[task.status]
+        if (bucket) {
+          s.taskIdsByStatus[task.status] = bucket.filter((id) => id !== taskId)
+          if (s.taskIdsByStatus[task.status].length === 0) delete s.taskIdsByStatus[task.status]
+        }
+        delete s.taskComments[taskId]
+      }),
+
+    setTaskComments: (taskId, comments) =>
+      set((s) => {
+        if (comments.length === 0) delete s.taskComments[taskId]
+        else s.taskComments[taskId] = comments
+      }),
+
+    addTaskComment: (taskId, comment) =>
+      set((s) => {
+        const list = s.taskComments[taskId] ?? []
+        if (!list.some((c) => c.id === comment.id)) {
+          s.taskComments[taskId] = [...list, comment]
+        }
+      }),
+
+    setSchedulerStatus: (running, pendingCount, activeCount) =>
+      set((s) => {
+        s.schedulerRunning = running
+        s.schedulerPendingCount = pendingCount
+        s.schedulerActiveCount = activeCount
+      }),
+
+    pushUndo: (message, undo) =>
+      set((s) => {
+        s.undoStack.push({ message, undo })
+        if (s.undoStack.length > 20) s.undoStack.shift()
+      }),
+
+    popUndo: () => {
+      let entry: UndoEntry | undefined
+      set((s) => {
+        entry = s.undoStack.pop()
+      })
+      if (entry) void entry.undo()
+    },
+
+    clearUndoStack: () =>
+      set((s) => {
+        s.undoStack = []
       }),
 
     setConversations: (list) =>
@@ -790,6 +919,64 @@ export const useAppStore = create<AppState>()(
         switch (event.type) {
           case 'heartbeat':
             return
+
+          // ─── Task Board events (early return, no conversation bucketing) ──
+          case 'task.created':
+          case 'task.updated':
+          case 'task.assigned': {
+            const t = (event as { task: TaskRow }).task
+            const prev = s.tasks[t.id]
+            s.tasks[t.id] = t
+            if (prev && prev.status !== t.status) {
+              const oldBucket = s.taskIdsByStatus[prev.status]
+              if (oldBucket) {
+                s.taskIdsByStatus[prev.status] = oldBucket.filter((id) => id !== t.id)
+                if (s.taskIdsByStatus[prev.status].length === 0) delete s.taskIdsByStatus[prev.status]
+              }
+            }
+            const bucket = (s.taskIdsByStatus[t.status] ??= [])
+            if (!bucket.includes(t.id)) {
+              bucket.push(t.id)
+              bucket.sort((a, b) => (s.tasks[a]?.sortOrder ?? 0) - (s.tasks[b]?.sortOrder ?? 0))
+            }
+            return
+          }
+
+          case 'task.moved': {
+            const ev = event as { taskId: string; fromStatus: string; toStatus: string; task: TaskRow }
+            const prev = s.tasks[ev.taskId]
+            if (prev) {
+              const oldBucket = s.taskIdsByStatus[prev.status]
+              if (oldBucket) {
+                s.taskIdsByStatus[prev.status] = oldBucket.filter((id) => id !== ev.taskId)
+                if (s.taskIdsByStatus[prev.status].length === 0) delete s.taskIdsByStatus[prev.status]
+              }
+            }
+            s.tasks[ev.taskId] = ev.task
+            const newBucket = (s.taskIdsByStatus[ev.task.status] ??= [])
+            if (!newBucket.includes(ev.taskId)) {
+              newBucket.push(ev.taskId)
+              newBucket.sort((a, b) => (s.tasks[a]?.sortOrder ?? 0) - (s.tasks[b]?.sortOrder ?? 0))
+            }
+            return
+          }
+
+          case 'task.commented': {
+            const ev = event as { taskId: string; comment: TaskCommentRow }
+            const list = s.taskComments[ev.taskId] ?? []
+            if (!list.some((c) => c.id === ev.comment.id)) {
+              s.taskComments[ev.taskId] = [...list, ev.comment]
+            }
+            return
+          }
+
+          case 'scheduler.status': {
+            const ev = event as { running: boolean; pendingCount: number; activeCount: number }
+            s.schedulerRunning = ev.running
+            s.schedulerPendingCount = ev.pendingCount
+            s.schedulerActiveCount = ev.activeCount
+            return
+          }
 
           case 'run.queued': {
             s.runsByConv[event.conversationId] ??= {}
@@ -2133,3 +2320,53 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
     return result
   }, [runs, messageIds, messages, agents, ctxOverride])
 }
+
+// ─── Task Board derived hooks ────────────────────────
+
+/** All tasks as a flat array (sorted by sortOrder within each status). */
+export const useAllTasks = () =>
+  useAppStore(
+    useShallow((s) =>
+      Object.values(s.tasks).sort((a, b) => {
+        if (a.status !== b.status) return a.status.localeCompare(b.status)
+        return a.sortOrder - b.sortOrder
+      }),
+    ),
+  )
+
+/** Task ids grouped by status, for Kanban column rendering. */
+export const useTaskIdsByStatus = () =>
+  useAppStore(useShallow((s) => s.taskIdsByStatus))
+
+/** Tasks for a specific status column. */
+export const useTasksForStatus = (status: string) =>
+  useAppStore(
+    useShallow((s) => {
+      const ids = s.taskIdsByStatus[status] ?? []
+      return ids.map((id) => s.tasks[id]).filter(Boolean)
+    }),
+  )
+
+/** Single task by id. */
+export const useTask = (taskId: string | null) =>
+  useAppStore((s) => (taskId ? s.tasks[taskId] ?? null : null))
+
+/** Comments for a specific task. */
+export const useTaskComments = (taskId: string | null) =>
+  useAppStore(
+    useShallow((s) => (taskId ? s.taskComments[taskId] ?? [] : [])),
+  )
+
+/** Scheduler status. */
+export const useSchedulerStatus = () =>
+  useAppStore(
+    useShallow((s) => ({
+      running: s.schedulerRunning,
+      pendingCount: s.schedulerPendingCount,
+      activeCount: s.schedulerActiveCount,
+    })),
+  )
+
+/** Undo stack (newest first for display). */
+export const useUndoStack = () =>
+  useAppStore(useShallow((s) => [...s.undoStack].reverse()))

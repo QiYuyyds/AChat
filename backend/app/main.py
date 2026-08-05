@@ -41,12 +41,13 @@ _app_ref = None
 _document_service = None
 _obsidian_sync_service = None
 _kg_wired = False
+_task_scheduler = None
 
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
-    global _memory_service, _rag_service, _infrastructure, _app_ref, _document_service, _obsidian_sync_service, _kg_wired
+    global _memory_service, _rag_service, _infrastructure, _app_ref, _document_service, _obsidian_sync_service, _kg_wired, _task_scheduler
     _app_ref = app_instance
 
     # Startup
@@ -61,6 +62,11 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     # ─── Migrate baked-in agent model config to model_profiles ───
     await _migrate_agent_model_profiles()
+
+    # ─── Init TaskSchedulerService ───
+    from app.services.task_scheduler import TaskSchedulerService
+
+    _task_scheduler = TaskSchedulerService.get_instance()
 
     settings = get_settings()
 
@@ -333,6 +339,7 @@ async def _seed_guide_agent() -> None:
                     "manage_memory",
                     "manage_profile",
                     "manage_conversations",
+                    "manage_tasks",
                 ],
                 is_builtin=True,
                 is_guide=True,
@@ -872,6 +879,7 @@ def create_app() -> FastAPI:
         runs_misc,
         skills,
         stream,
+        tasks,
         workspaces,
     )
     from app.api import (
@@ -903,6 +911,7 @@ def create_app() -> FastAPI:
     app.include_router(skills.router, prefix="/api", tags=["skills"])
     app.include_router(mcp.router, prefix="/api", tags=["mcp"])
     app.include_router(workspaces.router, prefix="/api", tags=["workspaces"])
+    app.include_router(tasks.router, prefix="/api", tags=["tasks"])
     # deployment preview assets served at root /deployments/{id}/... (no /api prefix);
     # the previewPath the agent emits is /deployments/{id}. Frontend proxies via rewrite.
     app.include_router(deployments.router, tags=["deployments"])

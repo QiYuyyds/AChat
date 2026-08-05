@@ -947,3 +947,123 @@ class DocumentVersion(Base):
         Index("idx_doc_versions_doc_id", "document_id", "version"),
         UniqueConstraint("document_id", "version"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Task Board models (global task pool — persistent, user-scoped)
+# ---------------------------------------------------------------------------
+
+
+class Task(Base):
+    """Persistent task in the global task pool.
+
+    Independent of any Conversation but may bind to one when an Agent claims it.
+    Uses optimistic concurrency control via the ``version`` column.
+    """
+
+    __tablename__ = "tasks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, name="user_id", nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="backlog"
+    )
+    priority: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="none"
+    )
+    labels: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+    assignee_agent_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("agents.id"), name="assignee_agent_id", nullable=True
+    )
+
+    creator_type: Mapped[str] = mapped_column(
+        String(16), name="creator_type", nullable=False, default="user"
+    )
+    creator_id: Mapped[str] = mapped_column(
+        String, name="creator_id", nullable=False, default=""
+    )
+    creator_name: Mapped[str] = mapped_column(
+        String, name="creator_name", nullable=False, default=""
+    )
+
+    conversation_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("conversations.id"), name="conversation_id", nullable=True
+    )
+
+    workspace_mode: Mapped[str | None] = mapped_column(
+        String(16), name="workspace_mode", nullable=True, default=None
+    )
+    workspace_path: Mapped[str | None] = mapped_column(
+        String(1024), name="workspace_path", nullable=True, default=None
+    )
+
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    failure_count: Mapped[int] = mapped_column(
+        Integer, name="failure_count", nullable=False, default=0
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer, name="sort_order", nullable=False, default=0
+    )
+    due_date: Mapped[str | None] = mapped_column(
+        String, name="due_date", nullable=True, default=None
+    )
+
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+    completed_at: Mapped[int | None] = mapped_column(
+        BigInteger, name="completed_at", nullable=True, default=None
+    )
+
+    # Relationships
+    comments: Mapped[list["TaskComment"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("idx_tasks_user_status", "user_id", "status"),
+        Index("idx_tasks_user_updated", "user_id", "updated_at"),
+    )
+
+
+class TaskComment(Base):
+    """Comment on a Task — authored by user or Agent."""
+
+    __tablename__ = "task_comments"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        name="task_id",
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String, name="user_id", nullable=False
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+    author_type: Mapped[str] = mapped_column(
+        String(16), name="author_type", nullable=False, default="user"
+    )
+    author_id: Mapped[str] = mapped_column(
+        String, name="author_id", nullable=False, default=""
+    )
+    author_name: Mapped[str] = mapped_column(
+        String, name="author_name", nullable=False, default=""
+    )
+
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+
+    # Relationships
+    task: Mapped["Task"] = relationship(back_populates="comments")
+
+    __table_args__ = (
+        Index("idx_task_comments_task", "task_id", "created_at"),
+    )

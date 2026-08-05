@@ -598,9 +598,20 @@ export type StreamEvent = BaseEvent &
       }
     | {
         type: 'guide_side_effect'
-        target: 'agents' | 'skills' | 'mcp' | 'documents' | 'memory' | 'profile' | 'conversations'
+        target: 'agents' | 'skills' | 'mcp' | 'documents' | 'memory' | 'profile' | 'conversations' | 'tasks'
         action: 'create' | 'update' | 'delete' | 'refresh'
         payload?: unknown
+      }
+    | { type: 'task.created'; task: TaskRow }
+    | { type: 'task.updated'; task: TaskRow }
+    | { type: 'task.moved'; taskId: string; fromStatus: string; toStatus: string; task: TaskRow }
+    | { type: 'task.commented'; taskId: string; comment: TaskCommentRow }
+    | { type: 'task.assigned'; taskId: string; agentId: string | null; task: TaskRow }
+    | {
+        type: 'scheduler.status'
+        running: boolean
+        pendingCount: number
+        activeCount: number
       }
   )
 
@@ -803,4 +814,113 @@ export interface SyncStatus {
   totalMdFiles: number
   lastSyncAt: number | null
   lastSyncSummary: SyncReport | null
+}
+
+// ─── Task Board Types ─────────────────────────────────
+
+export type TaskStatus =
+  | 'backlog'
+  | 'todo'
+  | 'in_progress'
+  | 'in_review'
+  | 'done'
+  | 'blocked'
+  | 'canceled'
+
+export type TaskPriority = 'none' | 'urgent' | 'high' | 'medium' | 'low'
+
+export type TaskCreatorType = 'user' | 'agent'
+
+export type TaskCommentAuthorType = 'user' | 'agent'
+
+export type TaskWorkspaceMode = 'sandbox' | 'local' | null
+
+export interface TaskRow {
+  id: string
+  userId: string
+  title: string
+  description: string
+  status: TaskStatus
+  priority: TaskPriority
+  labels: string[]
+  assigneeAgentId: string | null
+  creatorType: TaskCreatorType
+  creatorId: string
+  creatorName: string
+  conversationId: string | null
+  workspaceMode: TaskWorkspaceMode
+  workspacePath: string | null
+  version: number
+  failureCount: number
+  sortOrder: number
+  dueDate: string | null
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+  comments?: TaskCommentRow[]
+}
+
+export interface TaskCommentRow {
+  id: string
+  taskId: string
+  userId: string
+  body: string
+  authorType: TaskCommentAuthorType
+  authorId: string
+  authorName: string
+  version: number
+  createdAt: number
+  updatedAt: number
+}
+
+// ─── Task SSE Events ─────────────────────────────────
+
+export interface TaskCreatedEvent {
+  type: 'task.created'
+  conversationId: ''
+  timestamp: number
+  task: TaskRow
+}
+
+export interface TaskUpdatedEvent {
+  type: 'task.updated'
+  conversationId: ''
+  timestamp: number
+  task: TaskRow
+}
+
+export interface TaskMovedEvent {
+  type: 'task.moved'
+  conversationId: ''
+  timestamp: number
+  taskId: string
+  fromStatus: string
+  toStatus: string
+  task: TaskRow
+}
+
+export interface TaskCommentedEvent {
+  type: 'task.commented'
+  conversationId: ''
+  timestamp: number
+  taskId: string
+  comment: TaskCommentRow
+}
+
+export interface TaskAssignedEvent {
+  type: 'task.assigned'
+  conversationId: ''
+  timestamp: number
+  taskId: string
+  agentId: string | null
+  task: TaskRow
+}
+
+export interface SchedulerStatusEvent {
+  type: 'scheduler.status'
+  conversationId: ''
+  timestamp: number
+  running: boolean
+  pendingCount: number
+  activeCount: number
 }

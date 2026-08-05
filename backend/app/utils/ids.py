@@ -119,3 +119,13 @@ def new_pending_merge_conflict_id() -> str:
 def new_model_profile_id() -> str:
     """Generate model profile ID: mp_<nanoid>"""
     return _gen_id("mp_")
+
+
+def new_task_id() -> str:
+    """Generate task ID: task_<nanoid>"""
+    return _gen_id("task_")
+
+
+def new_task_comment_id() -> str:
+    """Generate task comment ID: tc_<nanoid>"""
+    return _gen_id("tc_")

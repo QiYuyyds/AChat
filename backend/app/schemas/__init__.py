@@ -61,7 +61,13 @@ from app.schemas.events import (
     PartStartEvent,
     RunEndEvent,
     RunStartEvent,
+    SchedulerStatusEvent,
     StreamEvent,
+    TaskAssignedEvent,
+    TaskCommentedEvent,
+    TaskCreatedEvent,
+    TaskMovedEvent,
+    TaskUpdatedEvent,
     ToolCallEvent,
     ToolResultEvent,
     WorkspaceEnvHintEvent,
@@ -78,6 +84,16 @@ from app.schemas.messages import (
     ThinkingPart,
     ToolResultPart,
     ToolUsePart,
+)
+from app.schemas.task import (
+    AddTaskCommentRequest,
+    AssignTaskRequest,
+    CreateTaskRequest,
+    MoveTaskRequest,
+    SchedulerStartRequest,
+    TaskCommentRow,
+    TaskRow,
+    UpdateTaskRequest,
 )
 from app.schemas.requests import (
     AgentResponse,
@@ -171,6 +187,13 @@ __all__ = [
     "HeartbeatEvent",
     "WorkspaceEnvHintEvent",
     "WorkspaceEnvStatusEvent",
+    # Task board events
+    "TaskCreatedEvent",
+    "TaskUpdatedEvent",
+    "TaskMovedEvent",
+    "TaskCommentedEvent",
+    "TaskAssignedEvent",
+    "SchedulerStatusEvent",
     # Messages
     "MessagePart",
     "MessageUsage",
@@ -255,4 +278,13 @@ __all__ = [
     "DocumentFlatListResponse",
     "FolderNode",
     "FileNode",
+    # Tasks
+    "TaskRow",
+    "TaskCommentRow",
+    "CreateTaskRequest",
+    "UpdateTaskRequest",
+    "MoveTaskRequest",
+    "AssignTaskRequest",
+    "AddTaskCommentRequest",
+    "SchedulerStartRequest",
 ]

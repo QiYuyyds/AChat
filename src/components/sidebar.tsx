@@ -1,6 +1,6 @@
 'use client'
 
-import { Archive, ArchiveRestore, Brain, ChevronDown, ChevronRight, Cpu, Ellipsis, GitBranch, LogOut, MessagesSquare, Moon, Package, Pencil, Pin, PinOff, Plus, Puzzle, Search, Settings as SettingsIcon, Sun, Trash2, User, Users, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Brain, CheckSquare, ChevronDown, ChevronRight, Cpu, Ellipsis, GitBranch, LogOut, MessagesSquare, Moon, Package, Pencil, Pin, PinOff, Plus, Puzzle, Search, Settings as SettingsIcon, Sun, Trash2, User, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
 
@@ -10,6 +10,7 @@ import { GlobalSearchTrigger } from '@/components/global-search-trigger'
 import { ArtifactSidebarNav } from '@/components/artifact-sidebar-nav'
 import { CognitionSidebarNav } from '@/components/cognition-sidebar-nav'
 import { ExtensionSidebarNav } from '@/components/extension-sidebar-nav'
+import { TaskSidebarNav } from '@/components/task-sidebar-nav'
 import { ResourcesSidebarNav } from '@/components/resources-sidebar-nav'
 import { NewConversationDialog } from '@/components/new-conversation-dialog'
 import { ProfileDialog } from '@/components/profile-dialog'
@@ -216,6 +217,7 @@ export function Sidebar() {
           <RailButton mode={mode} self="conversations" onClick={() => pickMode('conversations')} icon={<MessagesSquare className="size-5" />} label="对话" />
           <RailButton mode={mode} self="artifacts" onClick={() => pickMode('artifacts')} icon={<Package className="size-5" />} label="产物库" />
           <RailButton mode={mode} self="agents" onClick={() => pickMode('agents')} icon={<Users className="size-5" />} label="联系人" />
+          <RailButton mode={mode} self="tasks" onClick={() => pickMode('tasks')} icon={<CheckSquare className="size-5" />} label="任务" />
           <span className="my-0.5 h-px w-8 shrink-0 self-center bg-border" aria-hidden="true" />
           <RailButton mode={mode} self="resources" onClick={() => pickMode('resources')} icon={<Cpu className="size-5" />} label="配额" />
           <RailButton mode={mode} self="cognition" onClick={() => pickMode('cognition')} icon={<Brain className="size-5" />} label="沉淀" />
@@ -362,6 +364,8 @@ export function Sidebar() {
             <CognitionSidebarNav />
           ) : mode === 'resources' ? (
             <ResourcesSidebarNav />
+          ) : mode === 'tasks' ? (
+            <TaskSidebarNav />
           ) : null}
         </div>
 

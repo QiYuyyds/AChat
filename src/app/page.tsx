@@ -13,6 +13,7 @@ import { MessageHighlightLayer } from '@/components/message-highlight-layer'
 import { ResourcesMainPanel } from '@/components/resources-main-panel'
 import { SelectionPopover } from '@/components/selection-popover'
 import { Sidebar } from '@/components/sidebar'
+import { TaskBoardView } from '@/components/task-board-view'
 import { TaskDetailPanel } from '@/components/task-detail-panel'
 import { WelcomeScreen } from '@/components/welcome-screen'
 import { WorkspaceBackground } from '@/components/workspace-background'
@@ -39,6 +40,8 @@ export default function Home() {
         <ExtensionMainPanel />
       ) : sidebarMode === 'resources' ? (
         <ResourcesMainPanel />
+      ) : sidebarMode === 'tasks' ? (
+        <TaskBoardView />
       ) : (
         <ChatPanel />
       )}

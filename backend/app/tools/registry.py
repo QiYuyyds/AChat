@@ -43,6 +43,7 @@ from app.tools.manage_mcp import manage_mcp_tool
 from app.tools.manage_memory import manage_memory_tool
 from app.tools.manage_profile import manage_profile_tool
 from app.tools.manage_skills import manage_skills_tool
+from app.tools.manage_tasks import manage_tasks_tool
 from app.tools.memory_rag import (
     rag_delete_document_tool,
     rag_ingest_tool,
@@ -58,6 +59,15 @@ from app.tools.read_artifact import read_artifact_tool
 from app.tools.read_attachment import read_attachment_tool
 from app.tools.skills import load_skill_tool, write_skill_tool
 from app.tools.task_dispatch import task_dispatch_tool
+from app.tools.task_tools import (
+    task_claim_tool,
+    task_comment_tool,
+    task_complete_tool,
+    task_create_tool,
+    task_get_tool,
+    task_list_tool,
+    task_move_tool,
+)
 from app.tools.update_artifact import update_artifact_tool
 from app.tools.web_search import web_search_tool
 from app.tools.write_artifact import write_artifact_tool
@@ -240,6 +250,15 @@ def _build_registry() -> ToolRegistry:
     reg.register(manage_memory_tool)
     reg.register(manage_profile_tool)
     reg.register(manage_conversations_tool)
+    reg.register(manage_tasks_tool)
+    # Task board tools (opt-in for Custom Agents)
+    reg.register(task_list_tool)
+    reg.register(task_get_tool)
+    reg.register(task_create_tool)
+    reg.register(task_claim_tool)
+    reg.register(task_complete_tool)
+    reg.register(task_move_tool)
+    reg.register(task_comment_tool)
     return reg
 
 

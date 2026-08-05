@@ -23,6 +23,8 @@ import type {
   PendingMcpCall,
   PendingQuestion,
   PendingWrite,
+  TaskCommentRow,
+  TaskRow,
   UpdateModelProfileBody,
   UploadResult,
   VersionRow,
@@ -1480,4 +1482,141 @@ export async function fetchWorkspaceEnvStatus(
   return authJson<WorkspaceEnvStatus>(
     `${API_BASE_URL}/api/workspaces/${conversationId}/env-status`,
   )
+}
+
+// ─── Tasks API ──────────────────────────────────────────────────
+
+export async function fetchTasks(params?: {
+  status?: string
+  priority?: string
+  assigneeAgentId?: string
+}): Promise<TaskRow[]> {
+  const qs = new URLSearchParams()
+  if (params?.status) qs.set('status', params.status)
+  if (params?.priority) qs.set('priority', params.priority)
+  if (params?.assigneeAgentId) qs.set('assigneeAgentId', params.assigneeAgentId)
+  const q = qs.toString()
+  const data = await authJson<{ tasks: TaskRow[] }>(
+    `${API_BASE_URL}/api/tasks${q ? `?${q}` : ''}`,
+  )
+  return data.tasks
+}
+
+export async function fetchTask(taskId: string): Promise<TaskRow> {
+  return authJson<TaskRow>(`${API_BASE_URL}/api/tasks/${taskId}`)
+}
+
+export async function createTask(body: {
+  title: string
+  description?: string
+  status?: string
+  priority?: string
+  labels?: string[]
+  assigneeAgentId?: string | null
+  workspaceMode?: string | null
+  workspacePath?: string | null
+  dueDate?: string | null
+}): Promise<TaskRow> {
+  return authJson<TaskRow>(`${API_BASE_URL}/api/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function updateTask(
+  taskId: string,
+  body: {
+    title?: string
+    description?: string
+    priority?: string
+    labels?: string[]
+    dueDate?: string | null
+    ifVersion: number
+  },
+): Promise<TaskRow> {
+  return authJson<TaskRow>(`${API_BASE_URL}/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function moveTask(
+  taskId: string,
+  body: { status: string; ifVersion: number; sortOrder?: number },
+): Promise<TaskRow> {
+  return authJson<TaskRow>(`${API_BASE_URL}/api/tasks/${taskId}/move`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function assignTask(
+  taskId: string,
+  body: { agentId: string | null; ifVersion: number },
+): Promise<TaskRow> {
+  return authJson<TaskRow>(`${API_BASE_URL}/api/tasks/${taskId}/assign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function deleteTask(taskId: string): Promise<void> {
+  await authFetch(`${API_BASE_URL}/api/tasks/${taskId}`, { method: 'DELETE' })
+}
+
+export async function fetchTaskComments(
+  taskId: string,
+): Promise<TaskCommentRow[]> {
+  const data = await authJson<{ comments: TaskCommentRow[] }>(
+    `${API_BASE_URL}/api/tasks/${taskId}/comments`,
+  )
+  return data.comments
+}
+
+export async function addTaskComment(
+  taskId: string,
+  body: { body: string },
+): Promise<TaskCommentRow> {
+  return authJson<TaskCommentRow>(
+    `${API_BASE_URL}/api/tasks/${taskId}/comments`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )
+}
+
+export async function startScheduler(body: {
+  agentId?: string | null
+  intervalMinutes?: number
+  maxConcurrent?: number
+}): Promise<{ running: boolean }> {
+  return authJson<{ running: boolean }>(
+    `${API_BASE_URL}/api/tasks/scheduler/start`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )
+}
+
+export async function stopScheduler(): Promise<{ running: boolean }> {
+  return authJson<{ running: boolean }>(
+    `${API_BASE_URL}/api/tasks/scheduler/stop`,
+    { method: 'POST' },
+  )
+}
+
+export async function getSchedulerStatus(): Promise<{
+  running: boolean
+  pendingCount: number
+  activeCount: number
+}> {
+  return authJson(`${API_BASE_URL}/api/tasks/scheduler/status`)
 }

@@ -598,6 +598,20 @@ _MANAGEMENT_TOOL_NAMES: frozenset[str] = frozenset({
     "manage_memory",
     "manage_profile",
     "manage_conversations",
+    "manage_tasks",
+})
+
+# Task tools are only injected by the TaskScheduler via override_tool_names.
+# They are filtered from normal conversations even if agent.tool_names
+# mistakenly lists them (e.g. from a prior version when they were UI-selectable).
+_TASK_TOOL_NAMES: frozenset[str] = frozenset({
+    "task_list",
+    "task_get",
+    "task_create",
+    "task_claim",
+    "task_complete",
+    "task_move",
+    "task_comment",
 })
 
 # Deprecated product default removed: Custom loop ends on model-done / budget /
@@ -2100,6 +2114,19 @@ async def execute_simple_run(
             removed = set(base_tool_names) - set(filtered)
             logger.warning(
                 "[AgentRunner] Filtered management tools from non-guide agent %s: %s",
+                args.agent_id, removed,
+            )
+        base_tool_names = filtered
+
+    # Task tools are only available when the scheduler injects them via
+    # override_tool_names. In normal conversations, strip them even if they
+    # linger in agent.tool_names (e.g. migrated from a prior UI-selectable era).
+    if args.override_tool_names is None:
+        filtered = [t for t in base_tool_names if t not in _TASK_TOOL_NAMES]
+        if len(filtered) != len(base_tool_names):
+            removed = set(base_tool_names) - set(filtered)
+            logger.info(
+                "[AgentRunner] Filtered task tools from normal run of agent %s: %s",
                 args.agent_id, removed,
             )
         base_tool_names = filtered
