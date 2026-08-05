@@ -17,6 +17,7 @@ import {
   Play,
   User,
   Clock,
+  BellRing,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -33,6 +34,9 @@ import type { TaskCommentRow, TaskRow } from '@/shared/types'
 import {
   useAppStore,
   useTaskComments,
+  usePendingWrites,
+  usePendingBashCommands,
+  usePendingQuestions,
 } from '@/stores/app-store'
 import {
   fetchTaskComments,
@@ -58,9 +62,17 @@ export function TaskBoardDetail({ taskId, onClose, onEdit }: TaskBoardDetailProp
   const upsertTask = useAppStore((s) => s.upsertTask)
   const pushUndo = useAppStore((s) => s.pushUndo)
   const setActiveConversation = useAppStore((s) => s.setActiveConversation)
+  const setSidebarMode = useAppStore((s) => s.setSidebarMode)
 
   const [commentText, setCommentText] = useState('')
   const [loadingComments, setLoadingComments] = useState(false)
+
+  const convId = task?.conversationId ?? null
+  const pendingWrites = usePendingWrites(convId)
+  const pendingBash = usePendingBashCommands(convId)
+  const pendingQuestions = usePendingQuestions(convId)
+  const pendingCount =
+    pendingWrites.length + pendingBash.length + pendingQuestions.length
 
   useEffect(() => {
     if (!taskId) return
@@ -125,8 +137,9 @@ export function TaskBoardDetail({ taskId, onClose, onEdit }: TaskBoardDetailProp
   const handleOpenConversation = useCallback(() => {
     if (task?.conversationId) {
       setActiveConversation(task.conversationId)
+      setSidebarMode('conversations')
     }
-  }, [task?.conversationId, setActiveConversation])
+  }, [task?.conversationId, setActiveConversation, setSidebarMode])
 
   if (!task) return null
 
@@ -324,16 +337,37 @@ export function TaskBoardDetail({ taskId, onClose, onEdit }: TaskBoardDetailProp
           </div>
         </div>
 
+        {/* 待审批提醒 */}
+        {task.conversationId && pendingCount > 0 && (
+          <div
+            className="mt-3 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5"
+            role="alert"
+          >
+            <BellRing className="size-3.5 shrink-0 animate-pulse text-amber-600" />
+            <div className="flex-1">
+              <p className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                有 {pendingCount} 项待处理审批/提问
+              </p>
+              <p className="text-[10px] text-amber-600/70 dark:text-amber-500/70">
+                Agent 正在等待你的响应
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* 执行对话链接 */}
         {task.conversationId && (
           <Button
-            variant="outline"
+            variant={pendingCount > 0 ? 'default' : 'outline'}
             size="sm"
-            className="mt-3 h-8 gap-1.5"
+            className={cn(
+              'mt-3 h-8 gap-1.5',
+              pendingCount > 0 && 'animate-pulse',
+            )}
             onClick={handleOpenConversation}
           >
             <Play className="size-3 text-primary" />
-            查看执行对话
+            {pendingCount > 0 ? `处理待审批 (${pendingCount})` : '查看执行对话'}
             <ExternalLink className="size-3" />
           </Button>
         )}

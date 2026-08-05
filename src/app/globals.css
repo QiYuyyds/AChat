@@ -798,6 +798,27 @@
 }
 .task-detail-enter { animation: task-detail-slide-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 
+/* 执行中卡片：顶部扫描线扫过 */
+@keyframes task-scan-line {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+.animate-scan-line { animation: task-scan-line 2.5s ease-in-out infinite; }
+
+/* 执行中卡片：整体呼吸辉光 */
+@keyframes task-card-glow {
+  0%, 100% {
+    box-shadow:
+      0 1px 3px 0 oklch(0 0 0 / 0.03),
+      0 0 12px -2px color-mix(in oklch, var(--warning) 10%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 2px 6px -1px oklch(0 0 0 / 0.05),
+      0 0 20px -2px color-mix(in oklch, var(--warning) 22%, transparent);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .task-fade-up,
   .task-fade-up-delay-1,

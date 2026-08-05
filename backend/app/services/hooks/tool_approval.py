@@ -54,6 +54,11 @@ async def _pre_tool_use(ctx: HookContext) -> HookResult | None:
             if workspace is None:
                 return HookResult(action="deny", data="Workspace not found")
 
+            # Sandbox workspaces are isolated (directory + quota limits), so
+            # skip the interactive approval gate and let the agent run unattended.
+            if workspace.mode == "sandbox":
+                return None
+
             cwd = get_effective_cwd(workspace)
             if isinstance(ctx.args, dict) and ctx.args.get("cwd"):
                 from app.utils.workspace_utils import assert_path_within_workspace

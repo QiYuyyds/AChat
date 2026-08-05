@@ -18,6 +18,7 @@ import {
   TASK_PRIORITIES,
   TASK_STATUS_LABELS,
   TASK_PRIORITY_LABELS,
+  NO_DROP_STATUSES,
 } from '@/shared/task-board-config'
 
 interface TaskBoardContextMenuProps {
@@ -96,7 +97,7 @@ export function TaskBoardContextMenu({
               <DropdownMenuItem
                 key={col.status}
                 onClick={() => handleMove(col.status)}
-                disabled={col.status === task.status}
+                disabled={col.status === task.status || NO_DROP_STATUSES.has(col.status)}
               >
                 {TASK_STATUS_LABELS[col.status]}
               </DropdownMenuItem>

@@ -31,8 +31,24 @@ _TASK_TOOLS: tuple[str, ...] = (
 )
 
 
-def build_task_prompt(task: Task) -> str:
-    """Build the trigger prompt for a dispatched task."""
+def build_task_prompt(task: Task, comments: list[str] | None = None) -> str:
+    """Build the trigger prompt for a dispatched task.
+
+    When ``comments`` is non-empty (user review feedback from a prior round),
+    a focused re-dispatch prompt is generated that tells the agent to build on
+    prior work rather than starting from scratch.
+    """
+    if comments:
+        comments_text = "\n".join(f"- {c}" for c in comments)
+        return f"""用户评审了任务「{task.title}」的执行结果，要求以下修改/补充：
+
+{comments_text}
+
+请在之前对话中已完成工作的基础上，根据上述反馈进行修改和补充。不要重复执行已经完成的步骤。
+
+完成后，调用 task_complete(taskId="{task.id}", ifVersion={task.version}, summary="<本次修改的摘要>")
+"""
+
     labels_str = ", ".join(task.labels) if task.labels else "无"
     if task.workspace_mode == "local" and task.workspace_path:
         workspace_desc = f"本地项目目录 {task.workspace_path}"
@@ -209,7 +225,12 @@ class TaskSchedulerService:
         from app.db.engine import get_local_db
         from app.db.models import Message
         from app.infra.cache_helpers import get_agent_cached
-        from app.schemas.events import MessageAddedEvent, MessageRecord
+        from app.schemas.events import (
+            ConversationCreatedEvent,
+            ConversationRecord,
+            MessageAddedEvent,
+            MessageRecord,
+        )
         from app.services.agent_runner import RunArgs, run_with_args
         from app.services.conversation_service import create_conversation
         from app.services.event_bus import event_bus
@@ -243,15 +264,72 @@ class TaskSchedulerService:
         if task.workspace_mode == "local" and task.workspace_path:
             bound_path = task.workspace_path
 
-        conv = await create_conversation(
-            mode="single",
-            agent_ids=[agent_id],
-            title=f"任务: {task.title[:60]}",
-            bound_path=bound_path,
-            user_id=state.user_id,
+        # Fetch user comments so the prompt can include review feedback
+        # when the task is re-dispatched after user review.
+        # Only user-authored comments are included; agent summaries are excluded
+        # because they are not actionable feedback.
+        comment_rows = await task_service.list_comments(state.user_id, task.id)
+        comment_texts = (
+            [c.body for c in comment_rows if c.author_type == "user"]
+            if comment_rows
+            else None
         )
 
-        prompt = build_task_prompt(task)
+        # Reuse the existing conversation if the task was previously dispatched
+        # (e.g. user moved it back to todo after review). This gives the agent
+        # full context of prior work instead of starting from scratch.
+        reuse_conv_id = task.conversation_id
+
+        if reuse_conv_id:
+            conv_id = reuse_conv_id
+            logger.info(
+                "[TaskScheduler] Re-dispatching task %s in existing conversation %s",
+                task.id, conv_id,
+            )
+        else:
+            # Sandbox workspaces are isolated (directory + quota limits), so
+            # auto-approve file writes to let the agent run unattended. Local
+            # workspaces bind to the user's real project, so keep review mode.
+            approval_mode = "auto" if not bound_path else "review"
+            conv = await create_conversation(
+                mode="single",
+                agent_ids=[agent_id],
+                title=f"任务: {task.title[:60]}",
+                bound_path=bound_path,
+                user_id=state.user_id,
+                fs_write_approval_mode=approval_mode,
+            )
+            conv_id = conv.id
+
+            event_bus.publish(
+                ConversationCreatedEvent(
+                    conversation_id=conv_id,
+                    timestamp=now_ms(),
+                    conversation=ConversationRecord(
+                        id=conv.id,
+                        title=conv.title,
+                        mode=conv.mode,
+                        agent_ids=conv.agent_ids,
+                        pinned_message_ids=conv.pinned_message_ids,
+                        bookmarked_message_ids=conv.bookmarked_message_ids,
+                        archived=conv.archived,
+                        pinned_at=conv.pinned_at,
+                        fs_write_approval_mode=conv.fs_write_approval_mode,
+                        summary=conv.summary,
+                        dispatch_mode=conv.dispatch_mode,
+                        parent_conversation_id=conv.parent_conversation_id,
+                        fork_point_message_id=conv.fork_point_message_id,
+                        created_at=conv.created_at,
+                        updated_at=conv.updated_at,
+                        workspace_mode=conv.workspace_mode,
+                        workspace_bound_path=conv.workspace_bound_path,
+                        workspace_env_preference=conv.workspace_env_preference,
+                    ),
+                ),
+                user_id=state.user_id,
+            )
+
+        prompt = build_task_prompt(task, comments=comment_texts)
         now = now_ms()
         message_id = new_message_id()
         parts = [{"type": "text", "content": prompt}]
@@ -259,7 +337,7 @@ class TaskSchedulerService:
         async with get_local_db() as db:
             msg = Message(
                 id=message_id,
-                conversation_id=conv.id,
+                conversation_id=conv_id,
                 role="user",
                 status="complete",
                 created_at=now,
@@ -271,11 +349,11 @@ class TaskSchedulerService:
 
         event_bus.publish(
             MessageAddedEvent(
-                conversation_id=conv.id,
+                conversation_id=conv_id,
                 timestamp=now,
                 message=MessageRecord(
                     id=message_id,
-                    conversation_id=conv.id,
+                    conversation_id=conv_id,
                     role="user",
                     agent_id=None,
                     parts=parts,
@@ -293,14 +371,14 @@ class TaskSchedulerService:
         await task_service.bind_conversation(
             state.user_id,
             task.id,
-            conversation_id=conv.id,
+            conversation_id=conv_id,
             agent_id=agent_id,
             if_version=task.version,
         )
 
         args = RunArgs(
             agent_id=agent_id,
-            conversation_id=conv.id,
+            conversation_id=conv_id,
             trigger_message_id=message_id,
             override_tool_names=override_tools,
             user_id=state.user_id,

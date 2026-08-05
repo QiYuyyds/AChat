@@ -978,6 +978,14 @@ export const useAppStore = create<AppState>()(
             return
           }
 
+          case 'conversation.created': {
+            const ev = event as { conversation: ConversationWithMeta }
+            if (!s.conversations[ev.conversation.id]) {
+              s.conversations[ev.conversation.id] = ev.conversation
+            }
+            return
+          }
+
           case 'run.queued': {
             s.runsByConv[event.conversationId] ??= {}
             s.runsByConv[event.conversationId][event.runId] = {

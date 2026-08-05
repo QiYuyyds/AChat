@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import type { TaskRow } from '@/shared/types'
 import { TaskBoardCard } from '@/components/task-board-card'
-import { TASK_COLUMN_ACCENTS } from '@/shared/task-board-config'
+import { TASK_COLUMN_ACCENTS, NO_DROP_STATUSES } from '@/shared/task-board-config'
 
 const ADD_ALLOWED_STATUSES = new Set(['backlog', 'todo'])
 
@@ -57,8 +57,11 @@ export function TaskBoardColumn({
   const accent = TASK_COLUMN_ACCENTS[status] ?? TASK_COLUMN_ACCENTS.backlog
   const Icon = COLUMN_ICONS[status] ?? CircleDashed
 
+  const noDrop = NO_DROP_STATUSES.has(status)
+
   const handleDragOver = useCallback(
     (e: React.DragEvent) => {
+      if (noDrop) return
       e.preventDefault()
       e.dataTransfer.dropEffect = 'move'
       if (!isDragOver) setIsDragOver(true)
@@ -88,7 +91,7 @@ export function TaskBoardColumn({
       setDropPosition(position)
       setDropBeforeId(foundBefore)
     },
-    [isDragOver],
+    [isDragOver, noDrop],
   )
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
@@ -101,6 +104,7 @@ export function TaskBoardColumn({
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
+      if (noDrop) return
       e.preventDefault()
       const taskId = e.dataTransfer.getData('text/task-id')
       if (taskId) {
@@ -110,7 +114,7 @@ export function TaskBoardColumn({
       setDropPosition(null)
       setDropBeforeId(null)
     },
-    [status, dropBeforeId, onDropTask],
+    [status, dropBeforeId, onDropTask, noDrop],
   )
 
   return (

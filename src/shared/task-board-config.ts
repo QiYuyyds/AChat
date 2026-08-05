@@ -133,6 +133,9 @@ export const TASK_COLUMN_ACCENTS: Record<string, TaskColumnAccent> = {
   },
 }
 
+/** 禁止手动拖入的状态：这些状态由调度器 / agent 自动流转，用户不能手动拖入 */
+export const NO_DROP_STATUSES = new Set(['in_progress', 'blocked'])
+
 export const TASK_BOARD_COLUMNS: { status: string; label: string }[] = [
   { status: 'backlog', label: '待办池' },
   { status: 'todo', label: '待办' },

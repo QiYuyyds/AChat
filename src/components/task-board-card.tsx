@@ -1,7 +1,13 @@
 'use client'
 
 import { useCallback, useState } from 'react'
-import { MessageSquare, Paperclip, AlertTriangle } from 'lucide-react'
+import {
+  MessageSquare,
+  Paperclip,
+  AlertTriangle,
+  BellRing,
+  Loader2,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { TaskRow } from '@/shared/types'
 import {
@@ -9,7 +15,12 @@ import {
   TASK_PRIORITY_DOT_COLORS,
   TASK_PRIORITY_LABELS,
 } from '@/shared/task-board-config'
-import { useAppStore } from '@/stores/app-store'
+import {
+  useAppStore,
+  usePendingWrites,
+  usePendingBashCommands,
+  usePendingQuestions,
+} from '@/stores/app-store'
 import { AgentAvatar } from '@/components/agent-avatar'
 
 interface TaskBoardCardProps {
@@ -23,8 +34,17 @@ export function TaskBoardCard({ task, onClick, onContextMenu }: TaskBoardCardPro
   const commentCount = useAppStore(
     (s) => (s.taskComments[task.id]?.length ?? 0),
   )
+  const setActiveConversation = useAppStore((s) => s.setActiveConversation)
+  const setSidebarMode = useAppStore((s) => s.setSidebarMode)
   const [isDragging, setIsDragging] = useState(false)
 
+  const convId = task.conversationId ?? null
+  const pendingWrites = usePendingWrites(convId)
+  const pendingBash = usePendingBashCommands(convId)
+  const pendingQuestions = usePendingQuestions(convId)
+  const pendingCount = pendingWrites.length + pendingBash.length + pendingQuestions.length
+
+  const isRunning = task.status === 'in_progress'
   const assignee = task.assigneeAgentId ? agents[task.assigneeAgentId] : null
 
   const handleDragStart = useCallback(
@@ -41,6 +61,17 @@ export function TaskBoardCard({ task, onClick, onContextMenu }: TaskBoardCardPro
     setIsDragging(false)
   }, [])
 
+  const handleOpenConversation = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation()
+      if (task.conversationId) {
+        setActiveConversation(task.conversationId)
+        setSidebarMode('conversations')
+      }
+    },
+    [task.conversationId, setActiveConversation, setSidebarMode],
+  )
+
   return (
     <div
       draggable
@@ -52,20 +83,68 @@ export function TaskBoardCard({ task, onClick, onContextMenu }: TaskBoardCardPro
         onContextMenu(e, task.id)
       }}
       className={cn(
-        'group relative cursor-pointer overflow-hidden rounded-xl border border-border/50 bg-card p-3',
+        'group relative cursor-pointer overflow-hidden rounded-xl border bg-card p-3',
         'shadow-[var(--shadow-sm)] transition-all duration-200',
-        'hover:border-border hover:shadow-[var(--shadow-md)] hover:-translate-y-px',
-        'active:translate-y-0 active:scale-[0.99]',
+        // 默认状态
+        !isRunning && [
+          'border-border/50',
+          'hover:border-border hover:shadow-[var(--shadow-md)] hover:-translate-y-px',
+          'active:translate-y-0 active:scale-[0.99]',
+        ],
+        // 执行中状态
+        isRunning && [
+          'border-amber-500/40',
+          'bg-gradient-to-b from-amber-500/[0.04] to-transparent',
+          'animate-[task-card-glow_2s_ease-in-out_infinite]',
+          'hover:border-amber-500/60',
+        ],
         isDragging && 'opacity-40',
       )}
     >
+      {/* 执行中：顶部扫描线动画 */}
+      {isRunning && (
+        <div
+          className="absolute inset-x-0 top-0 h-px overflow-hidden"
+          aria-hidden
+        >
+          <div className="h-full w-full animate-scan-line bg-gradient-to-r from-transparent via-amber-400 to-transparent" />
+        </div>
+      )}
+
       {/* 优先级顶部色条 */}
       <div
         className={cn(
-          'absolute inset-x-0 top-0 h-0.5',
+          'absolute inset-x-0 top-0 h-0.5 transition-colors duration-300',
           TASK_PRIORITY_BAR_COLORS[task.priority] ?? 'bg-transparent',
+          isRunning && 'animate-pulse',
         )}
       />
+
+      {/* 待审批提醒 badge — 优先级高于执行中指示器 */}
+      {pendingCount > 0 && (
+        <button
+          onClick={handleOpenConversation}
+          title={`有 ${pendingCount} 项待处理审批/提问，点击查看`}
+          className={cn(
+            'absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 rounded-full px-1.5 py-0.5',
+            'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+            'ring-1 ring-amber-500/30 transition-all hover:bg-amber-500/25',
+          )}
+        >
+          <BellRing className="size-2.5 animate-pulse" />
+          <span className="text-[10px] font-semibold tabular-nums">{pendingCount}</span>
+        </button>
+      )}
+
+      {/* 执行中状态指示器 — 无待审批时显示 */}
+      {isRunning && pendingCount === 0 && (
+        <div
+          className="absolute right-1.5 top-1.5 z-10 flex items-center gap-0.5 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-400"
+          title="正在执行中..."
+        >
+          <Loader2 className="size-2.5 animate-spin" />
+        </div>
+      )}
 
       {/* 标题 */}
       <p className="line-clamp-2 text-[13px] font-medium leading-5 text-foreground">
@@ -132,8 +211,8 @@ export function TaskBoardCard({ task, onClick, onContextMenu }: TaskBoardCardPro
         )}
       </div>
 
-      {/* 对话链接指示器 */}
-      {task.conversationId && (
+      {/* 对话链接指示器 — 待审批或执行中时不显示，避免和 badge 重叠 */}
+      {task.conversationId && pendingCount === 0 && !isRunning && (
         <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
           <Paperclip className="size-3 text-muted-foreground" />
         </div>

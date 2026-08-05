@@ -640,6 +640,46 @@ class SchedulerStatusEvent(BaseEvent):
     model_config = {"populate_by_name": True}
 
 
+# ─── Conversation Created Event ─────────────────────────────────────
+
+
+class ConversationRecord(BaseModel):
+    """Full conversation record for events (mirrors ConversationResponse)."""
+
+    id: str
+    title: str
+    mode: Literal["single", "group", "guide"]
+    agent_ids: list[str] = Field(alias="agentIds")
+    pinned_message_ids: list[str] = Field(alias="pinnedMessageIds")
+    bookmarked_message_ids: list[str] = Field(alias="bookmarkedMessageIds")
+    archived: bool
+    pinned_at: int | None = Field(default=None, alias="pinnedAt")
+    fs_write_approval_mode: Literal["auto", "review"] = Field(alias="fsWriteApprovalMode")
+    summary: str | None = None
+    dispatch_mode: str = Field(default="solo", alias="dispatchMode")
+    parent_conversation_id: str | None = Field(default=None, alias="parentConversationId")
+    fork_point_message_id: str | None = Field(default=None, alias="forkPointMessageId")
+    created_at: int = Field(alias="createdAt")
+    updated_at: int = Field(alias="updatedAt")
+    workspace_mode: Literal["sandbox", "local"] = Field(alias="workspaceMode")
+    workspace_bound_path: str | None = Field(default=None, alias="workspaceBoundPath")
+    workspace_env_preference: str | None = Field(default=None, alias="workspaceEnvPreference")
+
+    model_config = {"populate_by_name": True}
+
+
+class ConversationCreatedEvent(BaseEvent):
+    """Event when a new conversation is created (e.g. by the task scheduler).
+
+    The frontend uses this to upsert the conversation into its store so that
+    navigation to the conversation (e.g. via "查看执行对话") works without
+    needing a full fetchConversations refresh.
+    """
+
+    type: Literal["conversation.created"] = "conversation.created"
+    conversation: ConversationRecord
+
+
 # ─── Union Type ─────────────────────────────────────
 StreamEvent = Annotated[
     Union[  # noqa: UP007 - keep Union[] for the Pydantic discriminated union
@@ -711,6 +751,8 @@ StreamEvent = Annotated[
         TaskCommentedEvent,
         TaskAssignedEvent,
         SchedulerStatusEvent,
+        # Conversation events
+        ConversationCreatedEvent,
     ],
     Field(discriminator="type"),
 ]

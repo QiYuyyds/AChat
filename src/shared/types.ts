@@ -464,6 +464,28 @@ export interface PendingMcpCall {
   createdAt: number
 }
 
+/** Conversation record carried by the conversation.created SSE event. */
+export interface ConversationRecord {
+  id: string
+  title: string
+  mode: 'single' | 'group' | 'guide'
+  agentIds: string[]
+  pinnedMessageIds: string[]
+  bookmarkedMessageIds: string[]
+  archived: boolean
+  pinnedAt: number | null
+  fsWriteApprovalMode: 'auto' | 'review'
+  summary: string | null
+  dispatchMode?: string
+  parentConversationId: string | null
+  forkPointMessageId: string | null
+  createdAt: number
+  updatedAt: number
+  workspaceMode: 'sandbox' | 'local'
+  workspaceBoundPath: string | null
+  workspaceEnvPreference: 'venv_created' | 'skip' | 'system_python' | null
+}
+
 // ─── StreamEvent 联合 ─────────────────────────────────────
 interface BaseEvent {
   conversationId: string
@@ -613,6 +635,7 @@ export type StreamEvent = BaseEvent &
         pendingCount: number
         activeCount: number
       }
+    | { type: 'conversation.created'; conversation: ConversationRecord }
   )
 
 /** RunUsage 事件 payload。与 db/schema.ts 的 RunUsage 同形，重复定义避开 client/server 边界 import。 */
