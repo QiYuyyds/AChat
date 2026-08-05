@@ -189,6 +189,23 @@ export function LongTermMemoryPanel() {
   const [proactiveTopics, setProactiveTopics] = useState<ProactiveTopic[]>([])
   const [dreaming, setDreaming] = useState(false)
 
+  // Group same-color pills: 经验 → 知识 → 日常; keep yaml order within each bucket
+  const sortedProactiveTopics = useMemo(() => {
+    const rank = (bucket: string | undefined) => {
+      if (bucket === 'procedure') return 0
+      if (bucket === 'wiki') return 1
+      if (bucket === 'daily') return 2
+      return 3
+    }
+    return proactiveTopics
+      .map((t, index) => ({ t, index }))
+      .sort((a, b) => {
+        const d = rank(a.t.bucket) - rank(b.t.bucket)
+        return d !== 0 ? d : a.index - b.index
+      })
+      .map(({ t }) => t)
+  }, [proactiveTopics])
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -335,22 +352,26 @@ export function LongTermMemoryPanel() {
           <div className="flex items-center gap-2">
             <Sparkles className="size-3.5 text-primary" />
             <span className="text-xs font-semibold text-primary">兴趣话题</span>
-            <span className="text-[10px] text-muted-foreground">
-              来自今日 interests.yaml
-            </span>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {proactiveTopics.map((t, i) => {
-              const cfg = getBucketConfig(t.bucket || 'wiki')
+            {sortedProactiveTopics.map((t, i) => {
+              const bucket = t.bucket || 'wiki'
+              const cfg = getBucketConfig(bucket)
+              // Stronger fills so 经验/知识/日常 read clearly on the pill
+              const pillTone =
+                bucket === 'procedure'
+                  ? 'border-blue-500/40 bg-blue-500/15 text-blue-700 dark:text-blue-300'
+                  : bucket === 'daily'
+                    ? 'border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                    : 'border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
               return (
                 <span
                   key={`${t.title}-${i}`}
                   className={cn(
-                    'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px]',
-                    cfg.badge,
-                    cfg.border,
+                    'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium',
+                    pillTone,
                   )}
-                  title={t.reason || cfg.label}
+                  title={t.reason ? `${cfg.label} · ${t.reason}` : cfg.label}
                 >
                   <span className={cn('size-1.5 shrink-0 rounded-full', cfg.dot)} />
                   {t.title || '未命名话题'}

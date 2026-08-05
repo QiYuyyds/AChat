@@ -46,24 +46,28 @@ class HybridSearch:
         settings: Settings,
         bm25: BM25Index,
         expander: WikilinkExpander,
-        workspace_root: Path,
+        workspace_root: Path | None = None,
     ):
         self.settings = settings
         self.bm25 = bm25
         self.expander = expander
-        self.workspace_root = Path(workspace_root)
+        # Optional: when provided, relative index keys resolve against it.
+        # Absolute keys (legacy / direct bm25.add) still work without it.
+        self.workspace_root = Path(workspace_root) if workspace_root is not None else None
 
     def _resolve(self, path: str) -> Path:
-        """Resolve an index path (relative preferred, absolute tolerated)."""
+        """Resolve an index path (absolute tolerated; relative needs workspace_root)."""
         p = Path(path)
-        if p.is_absolute():
+        if p.is_absolute() or self.workspace_root is None:
             return p
         return self.workspace_root / p
 
     def _to_rel(self, path: str) -> str:
-        """Normalize path to workspace-relative for API consumers."""
+        """Normalize path to workspace-relative for API consumers when possible."""
         p = Path(path)
         if not p.is_absolute():
+            return path
+        if self.workspace_root is None:
             return path
         try:
             return str(p.resolve().relative_to(self.workspace_root.resolve()))

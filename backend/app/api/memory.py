@@ -7,6 +7,7 @@ Preferences (PG KV table) and session memory (context summaries) are preserved.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends

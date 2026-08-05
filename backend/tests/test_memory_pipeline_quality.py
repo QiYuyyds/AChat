@@ -51,7 +51,7 @@ def _setup_workspace():
     expander.initialize()
     catalog.initialize()
     node_search = NodeSearch(bm25, expander, workspace)
-    search = HybridSearch(settings, bm25, expander)
+    search = HybridSearch(settings, bm25, expander, workspace.root)
     return workspace, bm25, expander, catalog, node_search, search, tmpdir
 
 
