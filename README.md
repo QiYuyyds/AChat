@@ -34,6 +34,7 @@ AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的
   - [多 Agent 支持](#多-agent-支持)
   - [小A 全局悬浮助手](#小a-全局悬浮助手)
   - [Orchestrator 与任务调度](#orchestrator-与任务调度)
+  - [全局任务看板](#全局任务看板task-board)
   - [RAG 混合检索与知识库](#rag-混合检索与知识库)
   - [分层记忆系统](#分层记忆系统)
   - [Workspace 文件与审批](#workspace-文件与审批)
@@ -93,7 +94,7 @@ AChat 正是为这套工作流而生。它默认本地运行，采用双 DB 架�
 ### 用户认证与多用户隔离
 
 - **注册 / 登录**：密码用 bcrypt（cost factor 12）哈希存储，JWT 分 access token（1h）和 refresh token（7d），存在 HttpOnly cookie 中。
-- **多用户隔离**：所有用户数据表通过 `user_id` 列隔离（Agent / Conversation / Document / McpServer / LongTermMemory / UserSettings / UserPreference 等）。builtin agent 的 `user_id IS NULL`，所有用户共享。
+- **多用户隔离**：所有用户数据表通过 `user_id` 列隔离（Agent / Conversation / Document / McpServer / LongTermMemory / UserSettings / UserPreference / Task / TaskComment 等）。builtin agent 的 `user_id IS NULL`，所有用户共享。
 - **CSRF 防护**：POST / PATCH / DELETE 请求必须携带匹配的 `Origin` header。
 - **SSE 认证**：同源时自动携带 cookie；跨域 dev 时 SSE 连接通过 `?token=` query param 认证。
 - **个人资料管理**：用户可以设置显示名称和头像。
@@ -107,12 +108,12 @@ AChat 正是为这套工作流而生。它默认本地运行，采用双 DB 架�
 | Claude Code | CLI 子进程 | 拉起本机 `claude` CLI（stream-json 协议），CLI 自带工具、沙箱与审批；AChat 通过 MCP bridge 补充平台工具。 |
 | Codex | CLI 子进程 | 拉起本机 `codex app-server`（JSON-RPC 2.0），代码就绪，端到端联调中。 |
 | Custom Agent | SDK | 兼容 OpenAI Chat Completions 的 provider，如 OpenAI、DeepSeek、火山方舟、OpenRouter、SiliconFlow 等。 |
-| 小A Guide Agent | SDK (builtin) | ★ 全局悬浮助手，builtin + `is_guide=True`，走 custom adapter SDK 路线，仅注入 7 个管理工具 + `ask_user`，开箱即用（默认 DeepSeek 兜底）。 |
+| 小A Guide Agent | SDK (builtin) | ★ 全局悬浮助手，builtin + `is_guide=True`，走 custom adapter SDK 路线，仅注入 8 个管理工具 + `ask_user`，开箱即用（默认 DeepSeek 兜底）。 |
 | Mock | 脚本 | 本地开发用，不消耗 token。 |
 
 > Claude Code 与 Codex 走 **CLI 子进程路线**：工具执行、沙箱、审批由 CLI 自管，AChat 只翻译事件流。后续还规划接入 Hermes、OpenClaw、OpenCode 等 CLI agent。迁移方案见 `openspec/changes/migrate-claude-codex-to-cli/`。
 
-你可以在 UI 里创建自定义 Agent，自带模型、provider、system prompt、base URL、API key、工具集和 Skills。Custom Agent 提供 4 种角色预设（程序员 / 调研员 / 协调者 / 写作），每种预设自带匹配的 system prompt 和工具推荐。所有 custom agent 自带 9 个基础工具（文件读写、bash、ask_user 等），另可从 6 个可选工具中勾选（产物创建、部署、web 搜索、知识库检索等）。
+你可以在 UI 里创建自定义 Agent，自带模型、provider、system prompt、base URL、API key、工具集和 Skills。Custom Agent 提供 4 种角色预设（程序员 / 调研员 / 协调者 / 写作），每种预设自带匹配的 system prompt 和工具推荐。所有 custom agent 自带 9 个基础工具（文件读写、bash、ask_user 等），另可从 14 个可选工具中勾选（产物创建、部署、web 搜索、知识库检索、任务管理等）。Agent 的模型配置通过 ModelProfile 管理（独立于 Agent 实体，可复用）。
 
 ### 小A 全局悬浮助手
 
@@ -120,11 +121,11 @@ AChat 内置一个名为「小A」的 Guide Agent，作为系统的「门面引�
 
 - **开箱即用**：小A 是 builtin agent（`ag_guide_builtin`），后端启动时幂等种子创建。默认走 DeepSeek provider，配 `DEEPSEEK_API_KEY` 即可用；也支持通过 `GUIDE_AGENT_*` 环境变量切换 provider/model/key。
 - **自然语言驱动管理**：用户用自然语言就能完成建/改 Agent、管 Skill/MCP/知识库、整理记忆/偏好、改画像、查看会话与活动等操作，无需手动点 UI。
-- **7 个管理工具**：`manage_agents` / `manage_skills` / `manage_mcp` / `manage_documents` / `manage_memory` / `manage_profile` / `manage_conversations`，仅对 guide agent 注入；非 guide agent 即使误配也会被过滤。
+- **8 个管理工具**：`manage_agents` / `manage_skills` / `manage_mcp` / `manage_documents` / `manage_memory` / `manage_profile` / `manage_conversations` / `manage_tasks`，仅对 guide agent 注入；非 guide agent 即使误配也会被过滤。
 - **智能记忆整理**：`manage_memory(action=optimize)` 走 LLM 驱动的智能整理（删除垃圾 + 合并重复 + 提炼升华 + 重新生成 embedding），与现有算法驱动 `consolidate()` 互补。
 - **双活跃会话模型**：工作会话（主聊天面板）和 guide 会话（悬浮面板）并行运行，互不干扰。guide 会话 (`mode='guide'`) 不出现在会话列表、不可删除、不出现在全局搜索。
 - **悬浮面板 UX**：`GuideFloatingPanel` 组件支持拖拽、缩放、收起/展开、`Ctrl/Cmd+G` 快捷键唤起，位置和尺寸存 localStorage；移动端全屏覆盖。精简 MessageList 只渲染 text / tool_use / ask_user 三种 part。
-- **副作用事件刷新**：管理工具执行成功后发送 `guide_side_effect` SSE 事件，前端按 target 刷新对应面板（Agents / Skills / MCP / 知识库 / 记忆 / Profile / 会话列表）。
+- **副作用事件刷新**：管理工具执行成功后发送 `guide_side_effect` SSE 事件，前端按 target 刷新对应面板（Agents / Skills / MCP / 知识库 / 记忆 / Profile / 会话列表 / 任务看板）。
 - **边界铁律**：小A 只做管理，不写代码、不编辑文件、不跑命令、不产产物、不派发子任务。不能修改/删除 builtin Agent，不能改自己。创建 Agent 只支持 Custom Agent（SDK 路线）。
 
 ### Orchestrator 与任务调度
@@ -146,6 +147,16 @@ Orchestrator 可以：
 
 没有旧三阶段流程的验证门禁、重试 harness 或 LLM judge——Agent 根据子任务返回结果自行决策。
 
+### 全局任务看板（Task Board）
+
+AChat 内置一个持久化的全局任务看板，独立于会话但可绑定会话：
+
+- **Kanban UI**：7 个状态列（backlog → todo → in_progress → in_review → done，另有 blocked / canceled），支持拖拽、筛选、隐藏列、右键菜单、撤销提示。
+- **乐观并发控制**：每个任务带 `version` 列，更新时做 `if_version` 前置检查，冲突返回 409。
+- **Agent 工具（7 个 opt-in）**：`task_list` / `task_get` / `task_create` / `task_claim` / `task_complete` / `task_move` / `task_comment`，Agent 可在对话中创建、领取、完成、评论任务。
+- **asyncio 后台调度器**：`TaskSchedulerService` 定期扫描 `todo` 状态任务，自动派发给指派 Agent（通过 `run_agent_loop(mode='solo')`），用户级 start/stop 控制。
+- **Guide 管理工具**：小A 可通过 `manage_tasks` 管理任务（list / create / update / move / assign / delete / scheduler 控制）。
+
 ### RAG 混合检索与知识库
 
 AChat 集成了完整的 RAG（检索增强生成）管线：
@@ -162,10 +173,9 @@ Agent 拥有跨会话的记忆能力：
 
 - **短期记忆（STM）**：滑动窗口内的对话历史。
 - **会话记忆（SessionMemory）**：跨 run 的会话级上下文。
-- **长期记忆（LTM）**：embedding 语义召回，带重要性评分。★ 结构化记忆增强：新增 `summary` / `keywords` / `content_scope` 三字段，embedding 从 `embed(content)` 改为 `embed(summary)`，recall 改为双路打分（`semantic_sim*0.5 + keyword*0.2 + importance*0.3`）。新增 case 类型记忆（TTL=90天，独立生命周期参数）。
-- **用户偏好（Preference）**：从对话中提取的 KV 偏好。
-- **图谱记忆（GraphMemory）**：Neo4j 存储记忆节点与关系。
-- **自动固化与衰减**：记忆按触发阈值固化，按时间衰减，自动去重清理（合并时同步结构化字段）。
+- **长期记忆（LTM）**：文件原生架构（Markdown + frontmatter + wikilinks），三级生命周期（session → daily → digest）。检索走 SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合 + wikilink 后处理扩展。★ 结构化记忆增强：新增 `summary` / `keywords` / `content_scope` 三字段，embedding 从 `embed(content)` 改为 `embed(summary)`。
+- **用户偏好（Preference）**：从对话中提取的 KV 偏好（PG 表）。
+- **自动固化与衰减**：`auto_memory` pipeline（对话→daily 卡片）+ `auto_dream` pipeline（daily→digest 精炼），按触发阈值固化，自动去重清理。
 - **PromptAssembler**：将偏好、召回记忆、约束规则组装注入 Agent 的 system prompt。
 
 ### Workspace 文件与审批
@@ -266,9 +276,9 @@ AChat 集成了基于 OpenTelemetry 的全链路追踪和评测系统：
 
 ### 基础设施（Docker Compose，可降级）
 - PostgreSQL 16 — 关系型主库（远端）
-- Milvus v2.4.17 — 向量检索（RAG / LTM）
+- Milvus v2.4.17 — 向量检索（RAG）
 - Elasticsearch 8.14 — 全文检索（RAG BM25）
-- Neo4j 5 — 知识图谱（KGStore / GraphMemory）
+- Neo4j 5 — 知识图谱（RAG KGStore）
 - Kafka（可选）— 事件总线增强
 - ~~Redis 7~~ — ~~元数据缓存 + 异步 DB 写入~~ **已移除**，双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代
 - Phoenix — Agent 可观测性后端（OpenTelemetry Trace + Eval 评分，:6006 Web UI）
@@ -372,7 +382,7 @@ http://localhost:8000/docs
 
 首次启动时，后端会自动建表并 seed 内置 Agent。启动后查看后端终端的 **Startup Status** 面板，确认各服务连接状态。首次访问需要注册一个账号。
 
-API key 既可以配在 `backend/.env`，也可以在应用的设置面板里配（存入 `user_settings` 表，按用户隔离）。Agent 级别的 key 会覆盖用户级设置。
+API key 既可以配在 `backend/.env`，也可以在应用的设置面板里配（存入 `user_settings` 表，按用户隔离）。SDK (Custom) Agent 的 key 从 ModelProfile 解析（显式选中的 profile 或用户默认 profile）；CLI Agent 走 CLI 自带认证。详见 [CLAUDE.md](./CLAUDE.md) §5.4。
 
 > 更详细的启动指南见 [QUICKSTART.md](./QUICKSTART.md)。
 
@@ -400,14 +410,14 @@ docker compose -f docker-compose.infra.yml ps
 docker compose -f docker-compose.infra.yml down
 ```
 
-**降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op；Phoenix 不可达 → OTel 缓冲后静默丢弃，不阻断主链路。不配任何基础设施（仅 PostgreSQL）时，核心对话功能完全正常。
+**降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → KGStore no-op；Phoenix 不可达 → OTel 缓冲后静默丢弃，不阻断主链路。不配任何基础设施（仅 PostgreSQL）时，核心对话功能完全正常。
 
 | 服务 | 端口 | 不配时的影响 |
 |---|---|---|
 | PostgreSQL | 5432 | **必需**，后端无法启动 |
-| Milvus | 19530 | RAG 向量检索退化；LTM 退化为 TF cosine |
+| Milvus | 19530 | RAG 向量检索退化 |
 | Elasticsearch | 9200 | RAG 无全文检索 |
-| Neo4j | 7474/7687 | GraphMemory no-op；RAG 无图谱检索 |
+| Neo4j | 7474/7687 | KGStore no-op；RAG 无图谱检索 |
 | ~~Redis~~ | ~~6379~~ | ~~**已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代~~ |
 | Phoenix | 6006 / 4317 | 可观测性关闭（`trace_enabled=false`）；OTel 埋点 no-op，无 Trace/Eval 数据 |
 
@@ -553,7 +563,7 @@ AChat 采用前后端分离架构：
 └──────────────────────────────────────────┘
 ```
 
-核心契约是 `StreamEvent`。适配器输出、工具活动、产物创建、待审批、调度状态、用量更新，都先汇入这个事件模型，再通过 SSE 到达前端 UI。工具执行经过 `HookRegistry` 拦截（pre/post），支持审批拦截、自动压缩、检查点保存等可插拔 Hook。SDK Agent 运行时自动合并 9 个 baseline 工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment），确保所有 custom agent 都具备基础文件操作能力；另有 6 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search/rag_search）按需勾选。
+核心契约是 `StreamEvent`。适配器输出、工具活动、产物创建、待审批、调度状态、用量更新，都先汇入这个事件模型，再通过 SSE 到达前端 UI。工具执行经过 `HookRegistry` 拦截（pre/post），支持审批拦截、自动压缩、检查点保存等可插拔 Hook。SDK Agent 运行时自动合并 9 个 baseline 工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment），确保所有 custom agent 都具备基础文件操作能力；另有 14 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search/rag_search/memory_proactive/task_list/task_get/task_create/task_claim/task_complete/task_move/task_comment）按需勾选。工具注册表共 45 个工具。
 
 关键文档：
 

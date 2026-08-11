@@ -77,8 +77,17 @@ next-env.d.ts
 # 待融合项目
 /待融合项目/
 /eval/CRUD_RAG-main/
-/eval_memory/
 /md_sys/
 
+# AI 工具配置与本地资源（不上传）
+/skills/
+/resources/
+/eval_memory/
+/.superpowers/
+/.impeccable/
+/.codex/
+/.claude/
+/.catpaw/
 
-/.claude
+# Backend one-off scripts (never commit temp/ops scripts with real credentials)
+backend/_*.py

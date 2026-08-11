@@ -27,6 +27,7 @@
 - **Obsidian 知识同步**（vault 同步 + 预处理 + RAG 入库）
 - **代码图谱智能**（CodeGraph 本地运行时 + code_explore 工具 + 索引管理）
 - **执行计划工具**（create_plan / plan_step / add_plan_steps 结构化计划卡片）
+- **全局任务看板**（Task Board · 持久化任务池 · Kanban UI · asyncio 后台调度器自动派发 todo 任务给 Agent）
 - **外部 MCP 接入**（MCP Server 配置管理 + client_manager + 调用审批）
 - **Run 内压缩**（五阶段递进压缩 pipeline，纯结构化裁剪无 LLM）
 - ~~**Redis 元数据缓存 + 异步 DB 写入**~~（**已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代）
@@ -142,7 +143,6 @@ bitdance-agenthub-main/
 ├── .agenthub-data/       运行时数据 (workspaces + deployments + skills + worktrees)
 ├── docker-compose.yml            全栈容器化 (前后端 + 基基础设施)
 ├── docker-compose.infra.yml      仅基础设施 (本机跑前后端, 远端跑 PG/Milvus/ES/Neo4j)
-├── docker-compose.redis.yml     ~~Redis~~ 已废弃 (双 DB 迁移移除了 Redis 依赖)
 ├── CLAUDE.md             ★ AI 协作规则 (怎么做 / 不做什么)
 ├── OVERVIEW.md           代码地图 (做了什么 / 在哪)
 └── ARCHITECTURE.md       本文档
@@ -170,11 +170,11 @@ backend/
 │   │   └── ownership.py      资源所有权检查 (user_id 隔离)
 │   │
 │   ├── db/ (3)             【L1 持久化】
-│   │   ├── models.py        22 张表 SQLAlchemy 模型 (14 核心 + 6 AGI-memory + 2 Document)
-│   │   ├── table_routing.py ★ 双 DB 表路由 (10 张本地 SQLite + 12 张远端 PG)
+│   │   ├── models.py        22 张表 SQLAlchemy 模型 (核心域 + ModelProfile + AGI-memory + Document + Task Board)
+│   │   ├── table_routing.py ★ 双 DB 表路由 (13 张本地 SQLite + 9 张远端 PG)
 │   │   └── engine.py        ★ 双引擎: 本地 SQLite[WAL] + 远端 PostgreSQL (连接池)
 │   │
-│   ├── schemas/ (8)        【类型契约 Pydantic】
+│   ├── schemas/ (10)       【类型契约 Pydantic】
 │   │   ├── events.py        30+ StreamEvent (SSE 协议, snake_case + camelCase 别名)
 │   │   ├── messages.py      MessagePart (parts 数组)
 │   │   ├── artifacts.py     Artifact 内容类型
@@ -182,9 +182,11 @@ backend/
 │   │   ├── document.py      Document / DocumentVersion
 │   │   ├── plan.py          ★ 执行计划 (PlanStep / PlanState / PlanComplexity)
 │   │   ├── obsidian.py      ★ Obsidian 同步配置
+│   │   ├── model_profile.py ★ ModelProfile 配置
+│   │   ├── task.py          ★ Task Board (CreateTask / MoveTask / SchedulerStart ...)
 │   │   └── requests.py      API 请求 / 响应模型
 │   │
-│   ├── services/ (40+)     【L3 业务逻辑 —— 核心大头】
+│   ├── services/ (42+)     【L3 业务逻辑 —— 核心大头】
 │   │   ├── agent_runner.py        ★ 执行器 (execute_run 路由 + execute_simple_run ReAct loop
 │   │   │                          + baseline 工具合并 + build_adapter_input)
 │   │   ├── agent_loop.py          ★ 统一 Agent Loop (run_agent_loop: solo/coordinated/subagent)
@@ -227,6 +229,8 @@ backend/
 │   │   ├── plan_usage_service.py  ★ 计划用量统计
 │   │   ├── project_artifact.py    项目产物管理
 │   │   ├── agent_load_tracker.py  Agent 负载追踪
+│   │   ├── task_service.py       ★ Task CRUD + 乐观并发控制 (version 列)
+│   │   ├── task_scheduler.py     ★ asyncio 后台调度器 (定期扫描 todo → dispatch 给 Agent)
 │   │   ├── network_hints.py       移动端网络发现
 │   │   ├── bash_command_approval.py bash 命令审批逻辑
 │   │   ├── hooks/                 ★ 内置 Hook 实现 (7 个)
@@ -268,7 +272,7 @@ backend/
 │   │
 │   ├── mcp_bridge.py      ★ AChat MCP Bridge: stdio MCP Server, 把 write_artifact/ask_user/task_dispatch 等平台工具暴露给 CLI agent
 │   │
-│   ├── tools/ (33)         【工具系统】36 个内置工具
+│   ├── tools/ (35)         【工具系统】45 个内置工具
 │   │   ├── base.py / registry.py  ToolContext (asyncio.Event 取消) + 注册表
 │   │   ├── write_artifact / read_artifact / update_artifact (★ 增量更新)
 │   │   ├── deploy_artifact / deploy_workspace
@@ -281,11 +285,13 @@ backend/
 │   │   ├── web_search (Tavily API)
 │   │   ├── memory_rag (memory_recall + rag_search/ingest/list/delete)
 │   │   ├── memory_store (★ 主动记忆存储，支持结构化字段 summary/keywords/content_scope)
+│   │   ├── memory_proactive (★ 主动记忆拉取)
 │   │   ├── skills (load_skill / write_skill)
 │   │   ├── ★ manage_base (管理工具公共基类)
 │   │   ├── ★ manage_agents / manage_skills / manage_mcp / manage_documents
-│   │   │  / manage_memory / manage_profile / manage_conversations
-│   │   │  (7 个 guide agent 专用管理工具, 仅对 is_guide=True 的 Agent 注入)
+│   │   │  / manage_memory / manage_profile / manage_conversations / manage_tasks
+│   │   │  (8 个 guide agent 专用管理工具, 仅对 is_guide=True 的 Agent 注入)
+│   │   ├── ★ task_tools (7 个 opt-in task 工具: task_list/get/create/claim/complete/move/comment)
 │   │   └── rate_limiter.py
 │   │
 │   ├── rag/ (6)            【RAG 引擎】
@@ -319,12 +325,13 @@ backend/
 │   │   ├── cache_metrics.py 嵌入缓存命中率指标
 │   │   └── status.py        基础设施连接状态面板 + 可观测性状态
 │   │
-│   ├── api/ (23)           【API 路由】
+│   ├── api/ (25)           【API 路由】
 │   │   ├── conversations / messages / agents / artifacts / attachments
 │   │   ├── fs / pending / settings / runs_misc / stream (SSE)
 │   │   ├── documents / skills / deployments / **auth** / **eval**
 │   │   ├── **code_intelligence** / **mcp** / **memory** / **obsidian**
 │   │   ├── **plan_usage** / **profile** / **workspaces**
+│   │   ├── **model_profiles** / **tasks**
 │   │   └── mobile/routes
 │   │
 │   ├── observability/ (7)   【Agent 可观测性与评测】★ OTel + Phoenix
@@ -381,13 +388,14 @@ backend/
 | `conversation_context_summaries` | 上下文压缩摘要 | 本地 SQLite |
 | `app_settings` | 全局设置单行表（各 provider API key + 部署配置 + companion） | 远端 PG |
 
-### 设置域（3 张）
+### 设置域（4 张）
 
 | 表 | 说明 | 路由 |
 |---|---|---|
 | `global_settings` | 全局部署配置（deployment_publish_enabled / deployment_publish_dir / deployment_public_base_url） | 远端 PG |
 | `user_settings` | 用户级设置（user_id / 各 provider API key / companion_mode / mobile_device_token） | 远端 PG |
 | `mcp_servers` | MCP Server 配置（user_id / name / command / args / env / transport_type） | 本地 SQLite |
+| `model_profiles` | ★ ModelProfile 用户级模型配置（user_id / provider / model_id / api_key / api_base_url / supports_vision / is_default） | 本地 SQLite |
 
 ### AGI-memory 新增（6 张）
 
@@ -403,6 +411,13 @@ backend/
 |---|---|---|
 | `documents` | 全局知识库文档（title / doc_type / source / status / latest_version_id） | 远端 PG |
 | `document_versions` | 文档版本（document_id / version / content_md / summary / metadata） | 远端 PG |
+
+### Task Board（2 张）★
+
+| 表 | 说明 | 路由 |
+|---|---|---|
+| `tasks` | 全局任务池（id / user_id / title / description / status / priority / labels / assignee_agent_id / creator_type / conversation_id / workspace_mode / version 乐观并发 / failure_count / sort_order / due_date） | 本地 SQLite |
+| `task_comments` | 任务评论（task_id / user_id / body / author_type / author_id / author_name / version / created_at） | 本地 SQLite |
 
 ---
 
@@ -460,7 +475,7 @@ backend/
   ├─ 主聊天面板                              ├─ GuideFloatingPanel 悬浮组件
   ├─ 完整 MessageList + MessageInput         ├─ 精简 MessageList (text + tool_use + ask_user)
   ├─ 附件 / 斜杠命令 / @mention              ├─ 无附件 / 无斜杠命令 / 固定 mentionedAgentIds
-  └─ 完整工具集 (baseline + optional)        └─ 7 个管理工具 + ask_user (无 baseline)
+  └─ 完整工具集 (baseline + optional)        └─ 8 个管理工具 + ask_user (无 baseline)
 
 小A 管理操作副作用:
   └─ manage_* 工具执行成功
@@ -554,7 +569,7 @@ Agent 启动 (ON_RUN_START)
 
 Agent 运行时注入 (PromptAssembler):
   ProfileSource (UserPreference)  → 用户偏好
-  RecallSource (file-native hybrid search) → BM25 + wikilink 召回相关记忆
+  RecallSource (file-native hybrid search) → BM25 + Vector cosine 召回相关记忆
   ConstraintsSource               → 约束规则
   → 组装为 system prompt 补充段
 ```
@@ -586,7 +601,7 @@ SDK ReAct loop 每轮迭代后:
 | 目录 | 内容 |
 |---|---|
 | `app/` | `layout.tsx` / `page.tsx`（挂载 StreamProvider + AuthGate + 主界面） · `login/page.tsx` · `register/page.tsx` |
-| `components/` (80+) | ChatPanel / MessageList / MessageParts / ArtifactPreviewPanel / ArtifactCodeEditor / AgentLibrary / AgentCreateWizard / CreateAgentDialog / DispatchPlanCard / KnowledgeLibrary / DocumentDetail / UploadDocumentDialog / SkillLibrary / GlobalSearch / SettingsDialog / TurnTimeline / MessageHighlightLayer / WaveColumnHeader / **AuthGate / AuthBrandPanel / ProfileDialog / MemoryLibrary / CodeIntelligenceControl / McpServerLibrary / PendingMcpCallCard / WorkspaceEnvHintCard / DiffBlock** ... |
+| `components/` (90+) | ChatPanel / MessageList / MessageParts / ArtifactPreviewPanel / ArtifactCodeEditor / AgentLibrary / AgentCreateWizard / CreateAgentDialog / DispatchPlanCard / KnowledgeLibrary / DocumentDetail / UploadDocumentDialog / SkillLibrary / GlobalSearch / SettingsDialog / TurnTimeline / MessageHighlightLayer / WaveColumnHeader / **AuthGate / LoginDialog / AuthLogo / ProfileDialog / MemoryLibrary / CodeIntelligenceControl / McpServerLibrary / PendingMcpCallCard / WorkspaceEnvHintCard / DiffBlock / MergeConflictPanel / DispatchDagGraph / ModelConfigTab** · ★ **TaskBoardView / TaskBoardCard / TaskBoardColumn / TaskBoardDetail / TaskBoardEditor / TaskDetailPanel** (任务看板) · 6 个 sidebar-nav 组件 (Agent/Artifact/Task/Resources/Cognition/Extension) ... |
 | `lib/` | `api.ts`（REST 客户端，统一 `API_BASE_URL` 前缀）· `config.ts`（读 `NEXT_PUBLIC_API_BASE_URL`）· `api/memory.ts`（记忆管理 API）· `code-intelligence.ts`（代码图谱 API）· `artifact-groups.ts` · `tool-display.ts` · `wave-utils.ts` · `use-elapsed-timer.ts`（耗时 UI） · 工具 |
 | `stores/` | `app-store.ts`（会话 / 消息 / 事件 reducer）· `search-store.ts` · **`auth-store.ts`**（认证状态 / 用户信息 / token 刷新） |
 | `shared/` (18) | StreamEvent / MessagePart / Artifact 等**前后端共享类型**（纯类型，无逻辑） · `agent-builder-config.ts`（★ 4 角色预设 + baseline 工具配置） · `codex-compat.ts` · `model-registry.ts` · `ppt-theme.ts` · `usage.ts` ... |
@@ -647,9 +662,11 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"; pnpm dev
 
 ### API Key 优先级
 
-1. **`agents.api_key`** — per-agent override（最高优先级）
-2. **`user_settings.<provider>_api_key`** — 用户在「设置」面板全局自填，存 `user_settings` 表（按 `user_id` 分行）
+1. **`ModelProfile.api_key`** — SDK (Custom) agent 的 API key 从 ModelProfile 解析（显式选中的 profile 或用户默认 profile）
+2. **`user_settings.<provider>_api_key`** — 用户在「设置」面板全局自填，存 `user_settings` 表（按 `user_id` 分行）；用于 RAG / 记忆等非 agent 子系统
 3. **`backend/.env`** — 环境变量兜底（dev / CI 友好；`config.py` 的 `apply_env_overrides()` 桥接到 `os.environ`）
+
+> CLI 适配器（Claude Code / Codex）走 CLI 自带认证（OAuth / 环境变量），跳过 API key 解析与工具注入。详见 [CLAUDE.md](./CLAUDE.md) §5.4。
 
 ```env
 # backend/.env
@@ -694,4 +711,4 @@ EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge (默认关闭)
 
 ---
 
-*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-08-04 · 文件原生记忆系统迁移（Markdown + SQLite FTS5 + auto_memory/auto_dream pipeline）、移除 long_term_memory/memory_nodes/memory_edges 表、Neo4j 仅保留 RAG KGStore。*
+*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-08-05 · 同步全局任务看板（Task Board + Kanban UI + 调度器）、记忆向量检索（SQLite BLOB vector + RRF 融合）、ModelProfile、工具数 45、DB 表 22 张 + 路由 13+9、侧栏 7 panel 重构、API Key 优先级修正等。*

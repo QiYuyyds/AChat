@@ -14,7 +14,7 @@
 
 > 把多 Agent 协作做成 IM 群聊体验 —— Agent 是「联系人」，对话是「工作空间」，Orchestrator 是「群里的项目经理」。
 
-前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus + ES + Neo4j）、**文件原生记忆系统**（auto_memory / auto_dream pipeline + SQLite FTS5 混合检索）、**Document + Version 知识库**、**代码图谱智能**、**执行计划工具**、**Obsidian 知识同步**、**外部 MCP 接入**、**Run 内压缩**，并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
+前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus + ES + Neo4j）、**文件原生记忆系统**（auto_memory / auto_dream pipeline + SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合）、**Document + Version 知识库**、**代码图谱智能**、**执行计划工具**、**全局任务看板**（Task Board + Kanban UI + asyncio 调度器）、**Obsidian 知识同步**、**外部 MCP 接入**、**Run 内压缩**，并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
 
 ### 2. 五层架构 + 数据流
 
@@ -60,8 +60,8 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 - **Artifact 独立于 Message**，有自己的生命周期与版本链（`specs/04`）。
 - **所有 Agent 走统一 Agent Loop**（`specs/19`）：solo / coordinated / subagent 三种模式共用 `run_agent_loop`，任何 Agent 都能通过 `task_dispatch` 克隆自己处理子任务，Orchestrator 额外拥有 `dispatch_plan`（DAG 派发）。旧三阶段流程（plan_tasks / report_task_result / verify gate）已删除。
 - **工具执行经 HookRegistry 拦截**：`execute_with_hooks` 在 pre/post 阶段分发 Hook，支持 deny/modify/inject/allow 控制流。Agent 通过 `hook_names` 字段启用特定 Hook 组。
-- **Custom Agent 工具架构**：9 个 baseline 工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment）对所有 custom agent 必备且不可选；6 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search/rag_search）由 `agent.tool_names` 增量配置。运行时合并：`baseline + tool_names + 自动注入`。
-- **Guide Agent（小A）隔离**：`is_guide=True` 的 Agent 跳过 baseline 合并，只注入 7 个管理工具 + `ask_user`；非 guide agent 即使 `tool_names` 误配管理工具也会被过滤。`mode='guide'` 会话不出现在 `list_conversations`、不可删除、不出现在全局搜索。
+- **Custom Agent 工具架构**：9 个 baseline 工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment）对所有 custom agent 必备且不可选；14 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search/rag_search/memory_proactive/task_list/task_get/task_create/task_claim/task_complete/task_move/task_comment）由 `agent.tool_names` 增量配置。运行时合并：`baseline + tool_names + 自动注入`。工具注册表共 45 个工具。
+- **Guide Agent（小A）隔离**：`is_guide=True` 的 Agent 跳过 baseline 合并，只注入 8 个管理工具（含 manage_tasks）+ `ask_user`；非 guide agent 即使 `tool_names` 误配管理工具也会被过滤。`mode='guide'` 会话不出现在 `list_conversations`、不可删除、不出现在全局搜索。
 
 ### 3. 功能现状矩阵
 
@@ -73,10 +73,10 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | CodexCLIAdapter | 🔧 | `spawn codex app-server --listen stdio://`，JSON-RPC 2.0；代码就绪，端到端验证待完成 |
 | CustomAgentAdapter | ✅ | OpenAI 兼容（DeepSeek/OpenAI/火山方舟）+ 自驱 tool loop（SDK 路线） |
 | MockAdapter | ✅ | 开发期不烧 token |
-| 自建 Agent | ✅ | 4 角色预设（coder/researcher/orchestrator/writer）· 9 baseline + 6 可选工具 · 表单/对话式创建 |
-| **小A Guide Agent** | ✅ | ★ 全局悬浮助手· builtin + `is_guide=True` · 7 个管理工具 · mode='guide' 隐藏会话 · 双活跃会话模型 · 开箱即用（DEEPSEEK 兜底） |
+| 自建 Agent | ✅ | 4 角色预设（coder/researcher/orchestrator/writer）· 9 baseline + 14 可选工具 · 表单/对话式创建 |
+| **小A Guide Agent** | ✅ | ★ 全局悬浮助手· builtin + `is_guide=True` · 8 个管理工具（含 manage_tasks）· mode='guide' 隐藏会话 · 双活跃会话模型 · 开箱即用（DEEPSEEK 兜底） |
 | Orchestrator 编排 | ✅ | 统一 Agent Loop（solo/coordinated/subagent）· `task_dispatch` 克隆派发 · `dispatch_plan` DAG 调度 · 递归深度限制 · 可选计划审批 |
-| 工具系统（36 个） | ✅ | write/read/update_artifact · deploy_artifact/deploy_workspace · read_attachment · fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash · code_explore · task_dispatch/dispatch_plan · create_plan/plan_step/add_plan_steps · ask_user · web_search · memory_recall/memory_store · rag_search/ingest/list/delete · load_skill/write_skill · ★ manage_agents/manage_skills/manage_mcp/manage_documents/manage_memory/manage_profile/manage_conversations（仅 guide agent） |
+| 工具系统（45 个） | ✅ | write/read/update_artifact · deploy_artifact/deploy_workspace · read_attachment · fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash · code_explore · task_dispatch/dispatch_plan · create_plan/plan_step/add_plan_steps · ask_user · web_search · memory_recall/memory_store/memory_proactive · rag_search/ingest/list/delete · load_skill/write_skill · ★ manage_agents/manage_skills/manage_mcp/manage_documents/manage_memory/manage_profile/manage_conversations/manage_tasks（仅 guide agent）· ★ task_list/task_get/task_create/task_claim/task_complete/task_move/task_comment（opt-in task 工具） |
 | Agent Skills | ✅ | custom agent 装备 skill · 渐进式披露 · `load_skill` 按需读正文 |
 | Artifact 预览/编辑 | ✅ | web_app / document / image / ppt(真 .pptx 导出) / code_file / diff · 版本链 · 选区改写 · 面板内编辑 · update_artifact 增量更新 |
 | Workspace 沙箱 | ✅ | sandbox/local 双模式 · fs_write 审批 · 双平台 Bash 黑名单 |
@@ -90,7 +90,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **执行计划工具** | ✅ | create_plan / plan_step / add_plan_steps · 结构化计划卡片 UI · 步骤状态实时更新 |
 | **代码图谱智能** | ✅ | CodeGraph 本地运行时 · code_explore 工具 · 索引管理 · 后台同步 · 状态机 |
 | **RAG 混合检索** | ✅ | Milvus(向量) + ES(全文) + Neo4j(KGStore) + RRF 融合 + Query Rewrite + Rerank |
-| **文件原生记忆系统** | ✅ | auto_memory（对话→daily 卡片）+ auto_dream（daily→digest 精炼）+ SQLite FTS5 BM25 + wikilink 扩展 + RRF 融合检索 + Preference（PG KV）+ SessionMemory（会话压缩） |
+| **文件原生记忆系统** | ✅ | auto_memory（对话→daily 卡片）+ auto_dream（daily→digest 精炼）+ SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合检索 + wikilink 后处理扩展 + Preference（PG KV）+ SessionMemory（会话压缩） |
 | **Document + Version 知识库** | ✅ | 全局文档版本化 · 解析入库(pdfplumber→PyPDF2→pdftotext) · 按需召回 · 版本刷新 |
 | **Obsidian 知识同步** | ✅ | vault 同步 · obsidian_preprocessor 预处理 · RAG 入库 |
 | **外部 MCP 接入** | ✅ | MCP Server 配置管理 · client_manager · 调用审批 · mcp_bridge 暴露平台工具给 CLI agent |
@@ -101,6 +101,8 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **双活跃会话模型** | ✅ | ★ 工作会话（activeConversationId）+ guide 会话（guideConversationId）并行 · GuideFloatingPanel 悬浮组件 · 拖拽/缩放/收起/快捷键 · localStorage 持久化 · 移动端全屏 |
 | **Checkpoint 检查点** | ✅ | SDK Agent turn 级检查点保存与恢复（`agent_run_checkpoints` 表）|
 | **统一转录渲染** | ✅ | transcript_renderer 统一消息流渲染逻辑 |
+| **全局任务看板** | ✅ | ★ Task Board · 持久化任务池（tasks + task_comments 表）· Kanban UI（7 状态列）· 乐观并发控制（version 列）· asyncio 后台调度器自动派发 todo 任务给 Agent · 7 个 opt-in task 工具 + manage_tasks guide 管理工具 |
+| **ModelProfile** | ✅ | ★ 用户级模型配置（独立于 Agent 实体）· 运行时解析（显式 → 默认 → 拒绝）· 连通性测试 · 迁移机制 |
 | Electron 桌面版 | ⚠️ | 打包脚本就绪；内嵌 Next 已无后端，需改启 Python |
 | 移动端伴随 App | ⏳ | 响应式 Web 已适配；Capacitor 原生壳脚手架已建，配对通信待打通 |
 | **用户认证与多用户隔离** | ✅ | JWT(access 1h + refresh 7d) + bcrypt · 登录/注册页 · auth-gate · 个人资料弹窗 · VIP 快捷登录 · CSRF 防护 · 所有用户数据表 `user_id` 隔离 |
@@ -126,12 +128,13 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 前端状态总线（Zustand+Immer） | `src/stores/app-store.ts` |
 | API base 配置 | `src/lib/config.ts`（读 `NEXT_PUBLIC_API_BASE_URL`） |
 | REST 客户端 | `src/lib/api.ts` · `src/lib/api/memory.ts` |
+| 登录对话框 | `login-dialog.tsx` |
 | 主题 | `src/components/theme-provider.tsx` · `theme-toggle.tsx` |
 
 ### L5 UI 组件（`src/components/`）
 | 区域 | 文件 |
 |---|---|
-| 侧栏（会话/产物库/Agents/知识库/Skills/分析 Tab） | `sidebar.tsx` |
+| 侧栏（会话/产物库/联系人/任务/配额/沉淀/扩展 7 panel） | `sidebar.tsx` · `agent-sidebar-nav.tsx` · `artifact-sidebar-nav.tsx` · `task-sidebar-nav.tsx` · `resources-sidebar-nav.tsx` · `cognition-sidebar-nav.tsx` · `extension-sidebar-nav.tsx` |
 | 聊天主面板 | `chat-panel.tsx` · `message-list.tsx` · `message-item.tsx` · `message-parts.tsx` · `message-highlight-layer.tsx` · `turn-timeline.tsx` · `wave-column-header.tsx` |
 | 输入框（附件/审批/选区引用/斜杠命令） | `message-input.tsx` · `edit-message-input.tsx` |
 | Orchestrator 调度卡 | `dispatch-plan-card.tsx` |
@@ -150,10 +153,11 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 导航辅助 | `pinned-messages-bar.tsx` · `conversation-outline.tsx` |
 | Agent 库 / 创建 | `agent-library.tsx` · `create-agent-dialog.tsx` · `add-agent-dialog.tsx` · `agent-create-wizard.tsx` · `agent-avatar.tsx` · `agent-info-popover.tsx` · `agent-working-indicator.tsx` |
 | 会话创建 / 目录选择 | `new-conversation-dialog.tsx` · `dir-picker-dialog.tsx` |
+| ★ 任务看板 | `task-board-view.tsx` · `task-board-card.tsx` · `task-board-column.tsx` · `task-board-detail.tsx` · `task-board-editor.tsx` · `task-board-context-menu.tsx` · `task-board-filter-menu.tsx` · `task-board-hidden-columns.tsx` · `task-board-undo-toast.tsx` · `task-detail-panel.tsx` |
 | ★ 小A 全局悬浮助手 | `guide-floating-panel.tsx`（拖拽/缩放/收起/快捷键 · 精简 MessageList + MessageInput · ask_user 内联渲染 · 移动端全屏） |
 | 设置面板 | `settings-dialog.tsx` |
 | 个人资料 | `profile-dialog.tsx` |
-| 认证品牌面板 | `auth-brand-panel.tsx` · `particle-background.tsx` |
+| 认证品牌 | `AuthLogo.tsx` · `particle-background.tsx` · `login-dialog.tsx` |
 | 记忆管理 | `memory-library.tsx` · `settings/memory-management/long-term-memory-panel.tsx` · `settings/memory-management/preference-panel.tsx` · `settings/memory-management/session-memory-panel.tsx` |
 | 斜杠命令 | `slash-command-menu.tsx` · `slash-command-help-dialog.tsx` |
 | Workspace 环境提示 | `workspace-env-hint-card.tsx` |
@@ -173,6 +177,8 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `settings.py` | 全局设置 / API key |
 | `auth.py` | ★ 用户认证（注册/登录/刷新/登出 · JWT HttpOnly cookie · VIP 快捷登录） |
 | `profile.py` | ★ 用户资料管理（显示名称/头像） |
+| `model_profiles.py` | ★ ModelProfile CRUD + 连通性测试 |
+| `tasks.py` | ★ Task Board CRUD + move/assign + comments + scheduler 控制 |
 | `runs_misc.py` | run 中止 / usage summary |
 | `documents.py` | ★ Document + Version 知识库 CRUD |
 | `skills.py` | Skills 上传 / 列表 / 加载 |
@@ -227,6 +233,8 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 执行计划 | `plan_registry.py` · `plan_dispatch_mapping.py` · `plan_usage_service.py` | ★ 计划注册/查询 · 计划→派发映射 · 计划用量统计 |
 | 项目产物 | `project_artifact.py` | 项目级产物管理 |
 | Agent 负载 | `agent_load_tracker.py` | Agent 负载追踪 |
+| ★ 任务服务 | `task_service.py` | ★ Task CRUD + 乐观并发控制（version 列）+ 评论 |
+| ★ 任务调度器 | `task_scheduler.py` | ★ asyncio 后台调度器（定期扫描 todo 任务 → dispatch 给 Agent）|
 
 ### L2 适配器（`backend/app/adapters/`）
 | 文件 | 说明 |
@@ -271,7 +279,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `client_manager.py` | ★ 外部 MCP Server 连接管理（stdio/SSE 传输 · 工具发现 · 调用代理） |
 
 ### 工具系统（`backend/app/tools/`）
-`base.py`（ToolContext + ToolDef） · `registry.py`（注册 36 个工具） · `write_artifact.py` · `read_artifact.py` · `update_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_edit.py` · `fs_list.py` · `fs_glob.py` · `fs_grep.py` · `bash.py` · `code_explore.py`（代码图谱探索） · `task_dispatch.py`（子 Agent 派发） · `dispatch_plan.py`（DAG 派发） · `execution_plan.py`（create_plan/plan_step/add_plan_steps 执行计划） · `ask_user.py` · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `memory_store.py`（主动记忆存储） · `skills.py`（load_skill/write_skill） · ★ `manage_base.py`（管理工具公共基类） · ★ `manage_agents.py` / `manage_skills.py` / `manage_mcp.py` / `manage_documents.py` / `manage_memory.py` / `manage_profile.py` / `manage_conversations.py`（7 个 guide agent 专用管理工具） · `rate_limiter.py`。详见 `specs/07`。
+`base.py`（ToolContext + ToolDef） · `registry.py`（注册 45 个工具） · `write_artifact.py` · `read_artifact.py` · `update_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_edit.py` · `fs_list.py` · `fs_glob.py` · `fs_grep.py` · `bash.py` · `code_explore.py`（代码图谱探索） · `task_dispatch.py`（子 Agent 派发） · `dispatch_plan.py`（DAG 派发） · `execution_plan.py`（create_plan/plan_step/add_plan_steps 执行计划） · `ask_user.py` · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `memory_store.py`（主动记忆存储） · `skills.py`（load_skill/write_skill） · ★ `manage_base.py`（管理工具公共基类） · ★ `manage_agents.py` / `manage_skills.py` / `manage_mcp.py` / `manage_documents.py` / `manage_memory.py` / `manage_profile.py` / `manage_conversations.py` / `manage_tasks.py`（8 个 guide agent 专用管理工具） · ★ `task_tools.py`（7 个 opt-in task 工具：task_list/get/create/claim/complete/move/comment） · `rate_limiter.py`。详见 `specs/07`。
 
 ### RAG 引擎（`backend/app/rag/`）
 | 文件 | 职责 |
@@ -288,7 +296,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 |---|---|
 | `memory_service.py` | ★ 门面：file-native pipeline (auto_memory + auto_index + auto_dream + proactive) + Preference + SessionMemory |
 | `file_store/` | Markdown 文件读写 + frontmatter + wikilinks + workspace 目录管理 |
-| `search/` | SQLite FTS5 BM25 + wikilink 图扩展 + RRF 融合检索 |
+| `search/` | SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合 + wikilink 后处理扩展（`bm25_index.py` + `vector_index.py` + `hybrid_search.py` + `wikilink_expander.py` + `chunker.py`） |
 | `pipeline/` | auto_memory + auto_index + auto_dream + proactive |
 | `preference.py` | 用户偏好（PG KV 表，保留不动） |
 | `session_memory.py` | 会话摘要（上下文压缩，保留不动） |
@@ -323,8 +331,8 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 ### L1 持久化（`backend/app/db/`）
 | 文件 | 说明 |
 |---|---|
-| `models.py` | **19 张表**：14 核心（users/agents/conversations/messages/artifacts/workspaces/attachments/agent_runs/agent_run_checkpoints/context_summaries/app_settings/global_settings/user_settings/mcp_servers）+ 3 AGI-memory（user_preferences/rag_chunks/chat_history）+ 2 Document（documents/document_versions）。记忆系统已迁移到文件原生（Markdown + SQLite FTS5），不再使用 long_term_memory/memory_nodes/memory_edges 表 |
-| `table_routing.py` | ★ 双 DB 表路由（10 张本地 SQLite + 12 张远端 PG） |
+| `models.py` | **22 张表**：核心域（users/agents/conversations/messages/artifacts/workspaces/attachments/agent_runs/agent_run_checkpoints/context_summaries/app_settings/global_settings/user_settings/mcp_servers）+ ModelProfile（model_profiles）+ AGI-memory（user_preferences/rag_chunks/chat_history）+ Document（documents/document_versions）+ Task Board（tasks/task_comments）。记忆系统已迁移到文件原生（Markdown + SQLite FTS5），不再使用 long_term_memory/memory_nodes/memory_edges 表 |
+| `table_routing.py` | ★ 双 DB 表路由（13 张本地 SQLite + 9 张远端 PG） |
 | `engine.py` | ★ 双引擎：本地 SQLite[WAL] + 远端 PostgreSQL（连接池） |
 | `__init__.py` | 模块导出 |
 
@@ -346,7 +354,10 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 ## 附 · 当前现状（易过时，以 git 为准）
 
 ### ✅ 近期完成
-- **★ 小A Guide Agent（全局悬浮助手）**：builtin + `is_guide=True` Agent（`ag_guide_builtin`）· 启动种子机制（幂等）· `guide_prompt.py` 约束管理边界 · 7 个管理工具（manage_agents/skills/mcp/documents/memory/profile/conversations）· `manage_memory(action=optimize)` LLM 驱动智能记忆整理 · `mode='guide'` 隐藏会话（不出现在 list/搜索/不可删）· `GuideSideEffectEvent` 副作用事件 · `GuideFloatingPanel` 悬浮组件（拖拽/缩放/收起/`Ctrl/Cmd+G` 快捷键/移动端全屏）· 双活跃会话模型（工作 + guide 并行）· 开箱即用（`GUIDE_AGENT_*` 环境变量配置，默认 deepseek 兜底）
+- **★ 全局任务看板（Task Board）**：持久化任务池（`tasks` + `task_comments` 表）· Kanban UI（7 状态列：backlog/todo/in_progress/in_review/done/blocked/canceled）· 乐观并发控制（version 列 + if_version 前置检查）· asyncio 后台调度器（`TaskSchedulerService` 定期扫描 todo → dispatch 给 Agent）· 7 个 opt-in task 工具 + `manage_tasks` guide 管理工具 · 侧栏新增 `'tasks'` mode
+- **★ 记忆向量检索**：`vector_index.py` SQLite BLOB 向量存储 + 暴力 cosine 相似度搜索 · `hybrid_search.py` 升级为 BM25 + Vector 双路召回 + RRF 融合 + wikilink 后处理
+- **★ 小A Guide Agent（全局悬浮助手）**：builtin + `is_guide=True` Agent（`ag_guide_builtin`）· 启动种子机制（幂等）· `guide_prompt.py` 约束管理边界 · 8 个管理工具（manage_agents/skills/mcp/documents/memory/profile/conversations/tasks）· `manage_memory(action=optimize)` LLM 驱动智能记忆整理 · `mode='guide'` 隐藏会话（不出现在 list/搜索/不可删）· `GuideSideEffectEvent` 副作用事件 · `GuideFloatingPanel` 悬浮组件（拖拽/缩放/收起/`Ctrl/Cmd+G` 快捷键/移动端全屏）· 双活跃会话模型（工作 + guide 并行）· 开箱即用（`GUIDE_AGENT_*` 环境变量配置，默认 deepseek 兜底）
+- **★ ModelProfile**：用户级模型配置（独立于 Agent 实体）· 运行时解析（显式 → 默认 → 拒绝）· 连通性测试（`POST /api/model-profiles/{id}/test`）· 迁移机制（`_migrate_agent_model_profiles`）
 - **Agent 角色预设重设**：9 个预设推翻重设为 4 个（coder/researcher/orchestrator/writer）· 引入 `BASELINE_AGENT_TOOLS`（9 个工具对所有 custom agent 必备，UI 不可选）· UI 可选工具从 14 个缩减为 5 个 · systemPromptTemplate 职责收窄 · 修复 `_build_agent_hub_tool_guidance` 的 has_file_tools 块 bug
 - **代码图谱智能系统**：CodeGraph 本地运行时管理 · `code_explore` 工具 · 索引管理（启用/同步/重建）· 后台异步编排 + 防抖同步 · 状态机 · 前端控制开关
 - **执行计划工具**：`create_plan` / `plan_step` / `add_plan_steps` 三个工具 · 结构化计划卡片 UI · 步骤状态实时更新 · plan_registry/plan_dispatch_mapping/plan_usage_service 服务支撑
@@ -371,7 +382,7 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 - **生命周期 Hooks 系统**：7 个内置 Hook · 10 个生命周期事件 · Agent 按 `hook_names` 启用
 - **Checkpoint 检查点**：SDK Agent turn 级检查点保存与恢复
 - **RAG 混合检索系统**：Milvus(向量) + Elasticsearch(全文) + Neo4j(KGStore) 三路召回 + RRF 融合 + Query Rewrite + Rerank
-- **文件原生记忆系统**：auto_memory + auto_dream pipeline + SQLite FTS5 BM25 + wikilink 扩展 + RRF 融合 + Preference(PG KV) + SessionMemory
+- **文件原生记忆系统**：auto_memory + auto_dream pipeline + SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合 + wikilink 后处理扩展 + Preference(PG KV) + SessionMemory
 - **Document + Version 知识库**：全局文档版本化 · 解析入库 · 按需召回 · 版本刷新三能力
 - **PromptAssembler**：Profile + Recall + Constraints 上下文组装
 - **PostgreSQL 迁移**：从 SQLite 迁移到 PostgreSQL 16（asyncpg），22 张表
@@ -394,6 +405,7 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 - OpenSpec 主 specs 同步（orchestrator / tools / stream-events / persistence / core-domain 需更新以反映统一 Agent Loop）
 - OpenSpec 主 specs 同步（persistence / platform-security / frontend 需更新以反映用户认证与多用户隔离）
 - OpenSpec 主 specs 同步（persistence 需更新以反映双 DB 架构 + Redis 移除）
+- ★ Task Board OpenSpec spec 建立（代码已落地，spec 尚未建立）
 - Electron 桌面版改为启动 Python 后端（当前内嵌 Next 已无后端）
 - 移动端伴随 App 配对通信打通
 - E2E 测试补充（产物预览/导出 + 群聊调度，需测试假 adapter）
@@ -410,4 +422,4 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 
 ---
 
-*最后更新：2026-07-30 · 同步小A Guide Agent（全局悬浮助手 + 7 个管理工具 + 双活跃会话模型）、Agent 角色预设重设、代码图谱智能、执行计划工具、Run 内压缩五阶段 pipeline、Worktree 隔离、Obsidian 同步、外部 MCP 接入、统一转录渲染等近期功能。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*
+*最后更新：2026-08-05 · 同步全局任务看板（Task Board + Kanban UI + 调度器）、记忆向量检索（SQLite BLOB vector + RRF 融合）、ModelProfile、Guide Agent 8 个管理工具、工具数 45、DB 表 22 张 + 路由 13+9、侧栏 7 panel 重构等近期功能。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*

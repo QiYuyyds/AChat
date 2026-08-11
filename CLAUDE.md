@@ -30,6 +30,7 @@
 - **外部 MCP 接入**（MCP Server 配置管理 + client_manager + 调用审批）
 - **Run 内压缩**（五阶段递进压缩 pipeline，纯结构化裁剪无 LLM）
 - **Worktree 隔离**（DAG 波调度并行任务用 git worktree 隔离）
+- **全局任务看板**（Task Board · 持久化任务池 · Kanban UI · asyncio 后台调度器自动派发 todo 任务给 Agent）
 
 ### 运行形态
 
@@ -153,10 +154,11 @@ message.parts = [
 Custom agent（SDK 路线）的工具分两层：
 
 - **Baseline 工具（9 个，必备不可选）**：`read_attachment` / `ask_user` / `fs_list` / `fs_read` / `fs_write` / `fs_edit` / `fs_grep` / `fs_glob` / `bash`。这些工具在运行时由 `agent_runner.execute_simple_run` 自动合并，**不存入 `agent.tool_names`**。
-- **可选工具（6 个，UI 勾选）**：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `web_search` / `rag_search`。这些存入 `agent.tool_names`。
+- **可选工具（14 个，UI 勾选）**：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `web_search` / `rag_search` / `memory_proactive` / `task_list` / `task_get` / `task_create` / `task_claim` / `task_complete` / `task_move` / `task_comment`。这些存入 `agent.tool_names`。
 - 运行时合并：`effective_tools = BASELINE_AGENT_TOOLS + agent.tool_names + 自动注入工具`
 - CLI agent（Claude Code / Codex）**不参与** baseline 合并，使用各自 CLI 内置工具集
 - 前端 `src/shared/agent-builder-config.ts` 与后端 `backend/app/api/agents.py` 的 `_BASELINE_AGENT_TOOLS` 必须保持一致
+- 工具注册表共 **45 个**工具（含 baseline + optional + guide 管理 + task 工具 + 派发 + 计划等），定义在 `backend/app/tools/registry.py`
 
 ### 3.8 RAG 是可选增强；记忆是文件原生
 
@@ -166,7 +168,10 @@ RAG 混合检索通过 `PromptAssembler` 注入 Agent 上下文，**降级时不
 - 记忆内容以 Markdown 文件 + frontmatter + wikilinks 存储（`<DATA_DIR>/memory/`），用户可直接查看/编辑/版本化
 - 三级生命周期：`session/`（原始对话 jsonl）→ `daily/`（每日卡片）→ `digest/`（精炼长期记忆）
 - pipeline：`auto_memory`（对话结束 → LLM 提取事实 → daily 卡片）→ `auto_index`（文件变更 → SQLite FTS5 + wikilink 索引更新）→ `auto_dream`（阈值触发 → daily 精炼到 digest）→ `proactive`（interests.yaml → Agent 主动拉取）
-- 检索：SQLite FTS5 BM25 + wikilink 图扩展 + RRF 融合（`HybridSearch`）
+- 检索：SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合 + wikilink 后处理扩展（`HybridSearch`）
+  - 向量存储：`vector_index.py` — 将 embedding 以 packed float32 BLOB 存入 `<metadata>/vectors.db`，暴力 cosine 相似度搜索（适用于 <10k chunks 的记忆规模）
+  - BM25：`bm25_index.py` — SQLite FTS5 全文索引，支持中文分词
+  - RRF 融合：BM25 + Vector 双路召回，Reciprocal Rank Fusion 加权融合
 - **Preference 系统**保留 PG KV 表不动（`user_preferences` 表 + `Preference` 类 + `ProfileSource` 注入）
 - 代码在 `backend/app/memory/`（`file_store/` + `search/` + `pipeline/` + `memory_service.py`）
 
@@ -178,7 +183,7 @@ OpenTelemetry 全链路追踪和评测系统通过 `@traced` 装饰器包裹关�
 
 小A 是 builtin + `is_guide=True` 的 Agent（`ag_guide_builtin`），作为系统管理门面常驻，走 custom adapter SDK 路线 + `run_agent_loop(mode='solo')`。**不要**为小A 写独立服务路径。
 
-- **工具隔离**：`is_guide=True` 的 Agent **跳过 baseline 合并**，只注入 7 个管理工具（`manage_agents` / `manage_skills` / `manage_mcp` / `manage_documents` / `manage_memory` / `manage_profile` / `manage_conversations`）+ `ask_user`；非 guide agent 即使 `tool_names` 误配管理工具也会被过滤
+- **工具隔离**：`is_guide=True` 的 Agent **跳过 baseline 合并**，只注入 8 个管理工具（`manage_agents` / `manage_skills` / `manage_mcp` / `manage_documents` / `manage_memory` / `manage_profile` / `manage_conversations` / `manage_tasks`）+ `ask_user`；非 guide agent 即使 `tool_names` 误配管理工具也会被过滤
 - **会话隔离**：`mode='guide'` 会话**不出现在 `list_conversations`、不可删除、不出现在全局搜索**；guide 会话跳过 agent 数量校验，创建空 sandbox workspace
 - **双活跃会话模型**：工作会话（`activeConversationId`）+ guide 会话（`guideConversationId`）并行，前端 `GuideFloatingPanel` 悬浮组件独立渲染，不干扰主聊天面板
 - **种子机制**：后端启动时幂等种子创建小A（`_seed_guide_agent`），不重复创建；种子失败不阻断启动
@@ -198,6 +203,20 @@ ModelProfile 是 user-scoped 的可复用模型配置（provider / model_id / ap
 - **连通性测试**：`POST /api/model-profiles/{id}/test` 发送 `max_tokens=1` 的最小 Chat Completions 请求，返回 ok/fail + 延迟，限流 3s/次
 - **迁移**：`_migrate_agent_model_profiles` 将旧 Agent 的 baked-in model config 迁移到 ModelProfile，按 `(user_id, provider, model_id)` 去重
 - 详见 `openspec/specs/model-profiles/spec.md`
+
+### 3.12 全局任务看板（Task Board）
+
+Task Board 是持久化的全局任务池，独立于会话但可绑定会话。用户在 Kanban UI 中创建/拖拽任务，Agent 通过 task 工具或 manage_tasks 管理，asyncio 后台调度器自动将 `todo` 任务派发给指派 Agent。
+
+- **数据模型**：`tasks` 表（id / title / description / status / priority / labels / assignee_agent_id / creator_type / conversation_id / workspace_mode / version 乐观并发 / failure_count / sort_order / due_date）+ `task_comments` 表（评论）。两张表路由到**本地 SQLite**
+- **状态流转**：`backlog` → `todo` → `in_progress` → `in_review` → `done`；另有 `blocked` / `canceled` 终态
+- **乐观并发控制**：`version` 列 + `if_version` 前置检查，冲突返回 409
+- **Agent 工具（7 个 opt-in）**：`task_list` / `task_get` / `task_create` / `task_claim` / `task_complete` / `task_move` / `task_comment`。存入 `agent.tool_names`，非 baseline
+- **Guide 管理工具**：`manage_tasks`（第 8 个管理工具，仅 guide agent）
+- **调度器**：`TaskSchedulerService` — asyncio 后台任务，定期扫描 `todo` 状态任务，通过 `run_with_args` → `execute_run` → `run_agent_loop(mode='solo')` 派发给指派 Agent；自动注入 5 个 task 工具（task_complete/comment/list/get/move）；用户级 start/stop 控制
+- **API**：`backend/app/api/tasks.py`（CRUD + move/assign + comments + scheduler 控制）
+- **前端**：Kanban UI（`task-board-view.tsx` + 9 个子组件）+ `task-sidebar-nav.tsx` 侧栏导航
+- **侧栏 mode**：`SidebarMode` 新增 `'tasks'`（7 个 mode 之一）
 
 ---
 
@@ -307,7 +326,7 @@ Key 来源按优先级（详见 `backend/app/services/agent_runner.py:build_adap
 - `GET` 请求不需要 CSRF 检查（JWT 在 HttpOnly cookie 中，不会被 CSRF 读取）
 
 **数据隔离**：
-- 所有用户数据表通过 `user_id` 列隔离（`Agent` / `Conversation` / `Document` / `McpServer` / `LongTermMemory` / `MemoryNode` / `ChatHistory` / `RagChunk` / `UserSettings` / `UserPreference`）
+- 所有用户数据表通过 `user_id` 列隔离（`Agent` / `Conversation` / `Document` / `McpServer` / `LongTermMemory` / `MemoryNode` / `ChatHistory` / `RagChunk` / `UserSettings` / `UserPreference` / `Task` / `TaskComment`）
 - builtin agent 的 `user_id IS NULL`，所有用户可见
 - RAG / 记忆系统通过 `user_id` 过滤 Milvus / ES / Neo4j 查询
 - Workspace 路径包含 `users/{user_id}/workspaces/` 段
@@ -420,11 +439,13 @@ Key 来源按优先级（详见 `backend/app/services/agent_runner.py:build_adap
 - `specs/mobile-companion/spec.md` — 移动伴随 App
 - `specs/user-auth/spec.md` — 用户认证与多用户隔离
 - `specs/run-internal-compaction/spec.md` — ReAct loop 内压缩（五阶段 pipeline）
-- `specs/guide-agent/spec.md` — ★ 小A Guide Agent（全局悬浮助手 + 7 个管理工具 + 双活跃会话模型）
+- `specs/guide-agent/spec.md` — ★ 小A Guide Agent（全局悬浮助手 + 8 个管理工具 + 双活跃会话模型）
 - `specs/model-profiles/spec.md` — ★ ModelProfile 用户级模型配置（独立于 Agent 实体 + 运行时解析 + 连通性测试 + 迁移）
 - `specs/worktree-conflict-resolution/spec.md` — Worktree 三层递进冲突解决（Auto → LLM → Human）
 
 > ⚠️ 可观测性与评测代码已在 `backend/app/observability/` 落地，但 OpenSpec 主 spec 尚未建立（见 `openspec/changes/add-agent-observability/` 与 `add-rag-evaluation/`）。用户资料管理（profile）代码在 `backend/app/api/profile.py`，但未单独建立 OpenSpec capability。
+>
+> ⚠️ Task Board（全局任务看板）代码已落地（`backend/app/api/tasks.py` + `backend/app/services/task_service.py` + `backend/app/services/task_scheduler.py` + `backend/app/tools/task_tools.py` + 前端 Kanban UI），但 OpenSpec spec 尚未建立。
 >
 > ⚠️ `rag_search` 迁移为 Agent 级工具的 OpenSpec change 尚在 `openspec/changes/` 未 archive（见 `move-rag-to-agent-tool/`）。
 
