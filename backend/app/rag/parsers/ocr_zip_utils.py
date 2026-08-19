@@ -4,8 +4,6 @@ When OCR engines (MinerU, MinerU Official) return ZIP archives containing
 ``full.md`` + ``images/`` directory, this module extracts the markdown content,
 saves images to the workspace file system, and rewrites image links.
 
-This is adapted from Fidi-Intelli's ``zip_utils.py``, replacing MinIO with
-local file system storage (AChat has no MinIO).
 """
 
 from __future__ import annotations

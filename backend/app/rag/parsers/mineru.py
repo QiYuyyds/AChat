@@ -7,7 +7,6 @@ This parser calls the ``/file_parse`` endpoint (not ``/ocr``) which returns
 a ZIP with the full Markdown content and extracted images. The ZIP is then
 processed to extract the markdown and save images to the workspace.
 
-Adapted from Fidi-Intelli's ``mineru.py``.
 """
 
 from __future__ import annotations

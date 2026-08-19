@@ -8,7 +8,6 @@ This parser calls a PaddleX service via HTTP (not local import), so
 no ``paddleocr`` Python package is needed. The service URL is configured
 via ``OCR_PP_STRUCTURE_URL`` env var (default: ``http://localhost:8080``).
 
-Adapted from Fidi-Intelli's ``pp_structure_v3.py``.
 """
 
 from __future__ import annotations
