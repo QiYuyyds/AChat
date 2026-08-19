@@ -1,4 +1,5 @@
 # extractor — 通过 LLM 从文本中抽取实体和关系
+import asyncio
 import json
 import logging
 from collections.abc import Callable
@@ -11,6 +12,7 @@ from .types import (
     ENTITY_PERSON,
     ENTITY_PRODUCT,
     ENTITY_UNKNOWN,
+    ChunkRef,
     Entity,
     ExtractResult,
     Relation,
@@ -141,3 +143,28 @@ class Extractor:
             ))
 
         return cleaned
+
+    async def extract_batch(
+        self,
+        chunks: list[ChunkRef],
+        *,
+        concurrency: int = 5,
+    ) -> list[ExtractResult]:
+        """批量并发抽取多个 chunk 的实体关系。
+
+        内部循环调用 extract()，用 asyncio.Semaphore 控制并发。
+        单个 chunk 抽取失败返回空 ExtractResult（不中断其他 chunk）。
+        """
+        if not chunks:
+            return []
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def _extract_one(chunk: ChunkRef) -> ExtractResult:
+            async with sem:
+                return self.extract(chunk.content)
+
+        results = await asyncio.gather(
+            *(_extract_one(c) for c in chunks),
+            return_exceptions=False,
+        )
+        return list(results)

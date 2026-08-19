@@ -26,13 +26,8 @@ from app.schemas.dispatch import (
     PendingQuestion,
     PendingWrite,
 )
-from app.schemas.model_profile import (
-    CreateModelProfileRequest,
-    ModelProfileOut,
-    ModelProfileTestResult,
-    UpdateModelProfileRequest,
-)
 from app.schemas.document import (
+    CreateFolderRequest,
     DeleteDocumentResponse,
     DocumentDetailResponse,
     DocumentFlatListResponse,
@@ -44,6 +39,8 @@ from app.schemas.document import (
     FolderNode,
     IngestResultResponse,
     IngestVersionRequest,
+    MoveDocumentRequest,
+    PreviewResponse,
     UploadDocumentResponse,
     VersionListResponse,
     VersionResponse,
@@ -85,15 +82,18 @@ from app.schemas.messages import (
     ToolResultPart,
     ToolUsePart,
 )
-from app.schemas.task import (
-    AddTaskCommentRequest,
-    AssignTaskRequest,
-    CreateTaskRequest,
-    MoveTaskRequest,
-    SchedulerStartRequest,
-    TaskCommentRow,
-    TaskRow,
-    UpdateTaskRequest,
+from app.schemas.model_profile import (
+    CreateModelProfileRequest,
+    ModelProfileOut,
+    ModelProfileTestResult,
+    UpdateModelProfileRequest,
+)
+from app.schemas.rag_task import (
+    CreateRagTaskRequest,
+    RagTaskListResponse,
+    RagTaskResponse,
+    RagTaskStatus,
+    RagTaskType,
 )
 from app.schemas.requests import (
     AgentResponse,
@@ -144,6 +144,16 @@ from app.schemas.requests import (
     UsageTopConversation,
     VipLoginRequest,
     WorkspaceEnvStatusResponse,
+)
+from app.schemas.task import (
+    AddTaskCommentRequest,
+    AssignTaskRequest,
+    CreateTaskRequest,
+    MoveTaskRequest,
+    SchedulerStartRequest,
+    TaskCommentRow,
+    TaskRow,
+    UpdateTaskRequest,
 )
 
 __all__ = [
@@ -278,6 +288,9 @@ __all__ = [
     "DocumentFlatListResponse",
     "FolderNode",
     "FileNode",
+    "PreviewResponse",
+    "CreateFolderRequest",
+    "MoveDocumentRequest",
     # Tasks
     "TaskRow",
     "TaskCommentRow",
@@ -287,4 +300,10 @@ __all__ = [
     "AssignTaskRequest",
     "AddTaskCommentRequest",
     "SchedulerStartRequest",
+    # Rag Tasks
+    "RagTaskResponse",
+    "RagTaskListResponse",
+    "CreateRagTaskRequest",
+    "RagTaskType",
+    "RagTaskStatus",
 ]

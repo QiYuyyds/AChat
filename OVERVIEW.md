@@ -14,7 +14,7 @@
 
 > 把多 Agent 协作做成 IM 群聊体验 —— Agent 是「联系人」，对话是「工作空间」，Orchestrator 是「群里的项目经理」。
 
-前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus + ES + Neo4j）、**文件原生记忆系统**（auto_memory / auto_dream pipeline + SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合）、**Document + Version 知识库**、**代码图谱智能**、**执行计划工具**、**全局任务看板**（Task Board + Kanban UI + asyncio 调度器）、**Obsidian 知识同步**、**外部 MCP 接入**、**Run 内压缩**，并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
+前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus dense+sparse BM25 + Neo4j PPR + entity/triple 向量 + RRF 融合）、**RAG 文件生命周期**（11 状态状态机 + 异步任务队列 + 乐观并发 + 虚拟目录树）、**RAG 评测系统**（dataset CRUD + benchmark 自动生成 + LLM-as-Judge + 独立 eval LLM）、**OCR 引擎注册表**（7 种引擎 + auto 模式）、**RAG 分块预设**（general / qa / semantic / separator 四种策略 + 用户级配置）、**文件原生记忆系统**（auto_memory / auto_dream pipeline + SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合）、**Document + Version 知识库**、**代码图谱智能**、**执行计划工具**、**全局任务看板**（Task Board + Kanban UI + asyncio 调度器）、**Obsidian 知识同步**、**外部 MCP 接入**、**Run 内压缩**，并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
 
 ### 2. 五层架构 + 数据流
 
@@ -47,7 +47,7 @@ L2 Agent Platform Adapters              backend/app/adapters/
 L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQL） + workspace 文件系统
    ↑↓
 ─── 基础设施层（可选, 独立降级） ───
-   Milvus(向量) · Elasticsearch(全文) · Neo4j(图谱) · Kafka(事件)
+   Milvus(向量+BM25) · Neo4j(图谱) · Kafka(事件)
    backend/app/infra/ + rag/ + memory/ + graph/ + code_intelligence/
 ```
 
@@ -89,7 +89,13 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 斜杠命令菜单 | ✅ | 输入 `/` 弹命令浮层 |
 | **执行计划工具** | ✅ | create_plan / plan_step / add_plan_steps · 结构化计划卡片 UI · 步骤状态实时更新 |
 | **代码图谱智能** | ✅ | CodeGraph 本地运行时 · code_explore 工具 · 索引管理 · 后台同步 · 状态机 |
-| **RAG 混合检索** | ✅ | Milvus(向量) + ES(全文) + Neo4j(KGStore) + RRF 融合 + Query Rewrite + Rerank |
+| **RAG 混合检索** | ✅ | ★ Milvus dense vector (COSINE) + Milvus sparse BM25 + Neo4j KGStore (PPR + entity/triple vector) 三路召回 + RRF 融合 + Rerank；ES 已移除，全文检索由 Milvus 原生 BM25 替代 |
+| **RAG 文件生命周期** | ✅ | ★ 11 状态状态机（uploading → parsing → parsed → indexing → indexed → active / error / deleted / archived + 独立 graph_status 流转）+ 乐观并发控制 + 虚拟目录树（parent_id / is_folder）|
+| **RAG 任务队列** | ✅ | ★ `rag_tasks` 表（本地 SQLite）+ `RagTaskWorker` asyncio 后台轮询（parse / ingest / graph_build / delete_cleanup 四种任务类型，自动重试 + stale recovery）|
+| **RAG 评测系统** | ✅ | ★ dataset CRUD + benchmark 自动生成 + LLM-as-Judge 评测 + 独立 eval LLM 配置（`EVAL_LLM_*`）+ 4 张表路由到远端 PG |
+| **RAG 分块预设** | ✅ | ★ 4 种分块策略（general 递归分隔符 / qa 问答结构 / semantic 嵌入聚类 / separator 严格分隔）+ 用户级配置 |
+| **OCR 引擎注册表** | ✅ | ★ 7 种引擎（RapidOCR / MinerU / MinerU Official / PP-StructureV3 / DeepSeek OCR / PaddleOCR VL / PaddleOCR PP-OCRv6）+ auto 模式按优先级自动选择 |
+| **RAG 图谱增强** | ✅ | ★ `graph_build_task.py` 异步图谱构建（分批 extract → 并发 Neo4j MERGE）· `graph_retrieval.py` PPR + entity/triple vector 检索 · `milvus_graph_vector_store.py` 图谱 entity/triple 的 Milvus 向量存储 |
 | **文件原生记忆系统** | ✅ | auto_memory（对话→daily 卡片）+ auto_dream（daily→digest 精炼）+ SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合检索 + wikilink 后处理扩展 + Preference（PG KV）+ SessionMemory（会话压缩） |
 | **Document + Version 知识库** | ✅ | 全局文档版本化 · 解析入库(pdfplumber→PyPDF2→pdftotext) · 按需召回 · 版本刷新 |
 | **Obsidian 知识同步** | ✅ | vault 同步 · obsidian_preprocessor 预处理 · RAG 入库 |
@@ -179,6 +185,9 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `profile.py` | ★ 用户资料管理（显示名称/头像） |
 | `model_profiles.py` | ★ ModelProfile CRUD + 连通性测试 |
 | `tasks.py` | ★ Task Board CRUD + move/assign + comments + scheduler 控制 |
+| `rag_config.py` | ★ RAG 配置查询（分块预设 + OCR 引擎状态）|
+| `rag_eval.py` | ★ RAG 评测（dataset CRUD + eval run + results）|
+| `rag_tasks.py` | ★ RAG 任务队列（list / detail / retry）|
 | `runs_misc.py` | run 中止 / usage summary |
 | `documents.py` | ★ Document + Version 知识库 CRUD |
 | `skills.py` | Skills 上传 / 列表 / 加载 |
@@ -235,6 +244,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | Agent 负载 | `agent_load_tracker.py` | Agent 负载追踪 |
 | ★ 任务服务 | `task_service.py` | ★ Task CRUD + 乐观并发控制（version 列）+ 评论 |
 | ★ 任务调度器 | `task_scheduler.py` | ★ asyncio 后台调度器（定期扫描 todo 任务 → dispatch 给 Agent）|
+| ★ RAG 任务队列 | `rag_task_worker.py` | ★ asyncio 后台 worker（轮询 rag_tasks 表 → parse / ingest / graph_build / delete_cleanup）|
 
 ### L2 适配器（`backend/app/adapters/`）
 | 文件 | 说明 |
@@ -284,12 +294,23 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 ### RAG 引擎（`backend/app/rag/`）
 | 文件 | 职责 |
 |---|---|
-| `rag_engine.py` | HybridStore：向量(Milvus) + 全文(ES) + 图谱(KG) + RRF 融合 |
-| `parser.py` | 文档解析（pdfplumber → PyPDF2 → pdftotext 三级降级） |
-| `splitter.py` | 文档分块（chunk_size / overlap 可配） |
-| `rewriter.py` | Query Rewriting（LLM 生成扩展查询） |
-| `reranker.py` | Reranking（LLM 打分重排） |
-| `obsidian_preprocessor.py` | ★ Obsidian vault 预处理（wikilink 解析 · frontmatter 提取） |
+| `rag_engine.py` | HybridStore：Milvus dense vector (COSINE) + Milvus sparse BM25 + Neo4j KGStore (PPR + entity/triple vector) 三路召回 + RRF 融合 |
+| `parser.py` | 文档解析（pdfplumber → PyPDF2 → pdftotext 三级降级）+ OCR 引擎 dispatch |
+| `parser_registry.py` | ★ OCR 引擎注册表（7 种引擎 lazy import + auto 模式优先级选择 + 健康状态查询）|
+| `parsers/` | ★ OCR 引擎实现（`base.py` 接口 + `rapid_ocr` / `mineru` / `mineru_official` / `pp_structure_v3` / `deepseek_ocr` / `paddleocr_api` / `unified`）|
+| `splitter.py` | 文档分块（chunk_size / overlap 可配）|
+| `chunking/` | ★ 分块预设模块（`presets.py` 4 种策略 + `dispatcher.py` 路由 + `nlp.py` 中文分词 + `parsers/` 各策略实现 + `utils/` 工具）|
+| `file_lifecycle.py` | ★ 文件生命周期状态机（11 状态 + 乐观并发 + Document.status + Document.graph_status）|
+| `graph_build_task.py` | ★ 异步图谱构建任务（分批 extract → 并发 Neo4j MERGE → 状态机管理 + 重试）|
+| `graph_retrieval.py` | ★ 图谱检索增强（PPR + entity/triple vector search → 种子→扩散→返回 pg_id）|
+| `milvus_graph_vector_store.py` | ★ 图谱 entity/triple Milvus 向量存储（独立 Collection + dense + sparse BM25）|
+| `eval/` | ★ RAG 评测模块（`service.py` 门面 + `evaluator.py` 评测执行 + `metrics.py` 指标 + `benchmark_generation.py` 自动生成）|
+| `reranker.py` | Reranking（LLM 打分重排）|
+| `obsidian_preprocessor.py` | ★ Obsidian vault 预处理（wikilink 解析 · frontmatter 提取）|
+| `__init__.py` | 模块导出 |
+
+> **已移除**：`rewriter.py`（Query Rewriting 已删除）
+> **已移除**：Elasticsearch 全文检索（由 Milvus 原生 BM25 sparse vector 替代）
 
 ### 记忆系统（`backend/app/memory/`）
 | 文件 | 职责 |
@@ -331,12 +352,13 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 ### L1 持久化（`backend/app/db/`）
 | 文件 | 说明 |
 |---|---|
-| `models.py` | **22 张表**：核心域（users/agents/conversations/messages/artifacts/workspaces/attachments/agent_runs/agent_run_checkpoints/context_summaries/app_settings/global_settings/user_settings/mcp_servers）+ ModelProfile（model_profiles）+ AGI-memory（user_preferences/rag_chunks/chat_history）+ Document（documents/document_versions）+ Task Board（tasks/task_comments）。记忆系统已迁移到文件原生（Markdown + SQLite FTS5），不再使用 long_term_memory/memory_nodes/memory_edges 表 |
-| `table_routing.py` | ★ 双 DB 表路由（13 张本地 SQLite + 9 张远端 PG） |
-| `engine.py` | ★ 双引擎：本地 SQLite[WAL] + 远端 PostgreSQL（连接池） |
+| `models.py` | **27 张表**：核心域（users/agents/conversations/messages/artifacts/workspaces/attachments/agent_runs/agent_run_checkpoints/context_summaries/app_settings/global_settings/user_settings/mcp_servers）+ ModelProfile（model_profiles）+ AGI-memory（user_preferences/rag_chunks/chat_history）+ Document（documents/document_versions）+ Task Board（tasks/task_comments）+ RAG Task Queue（rag_tasks）+ RAG Eval（eval_datasets/eval_dataset_items/eval_runs/eval_run_items）。记忆系统已迁移到文件原生（Markdown + SQLite FTS5），不再使用 long_term_memory/memory_nodes/memory_edges 表。Document 新增 `chunk_preset` / `graph_status` / `parent_id` / `is_folder` 字段。RagChunk 新增 `chunk_token_count` / `start_char_pos` / `end_char_pos` 字段。UserSettings 新增 `rag_chunk_preset` / `rag_chunk_size` / `rag_chunk_overlap` / `ocr_engine` 字段 |
+| `table_routing.py` | ★ 双 DB 表路由（14 张本地 SQLite + 13 张远端 PG）|
+| `engine.py` | ★ 双引擎：本地 SQLite[WAL] + 远端 PostgreSQL（连接池）|
+| `migrations/` | ★ DB schema 迁移脚本（`rag_overhaul_migration.py` RAG 大重构 + `user_settings_rag_config.py` 用户 RAG 配置）|
 | `__init__.py` | 模块导出 |
 
-DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 PostgreSQL 承载用户系统与知识/RAG 数据，`docker-compose.infra.yml` 启动 PG）；workspace：`.agenthub-data/users/<user_id>/workspaces/<conv_xxx>/`（多用户隔离）。
+DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 PostgreSQL 承载用户系统与知识/RAG/eval 数据，`docker-compose.infra.yml` 启动 PG）；workspace：`.agenthub-data/users/<user_id>/workspaces/<conv_xxx>/`（多用户隔离）。
 
 ### 共享类型（`src/shared/`）
 `types.ts`（**`StreamEvent` / `MessagePart` 等跨层类型，改动牵一发动全身**） · `constants.ts` · `model-registry.ts` · `ppt-theme.ts` · `codex-compat.ts` · `openai-compatible.ts` · `agent-builder-config.ts`（★ 4 角色预设 + baseline 工具配置） · `agent-icons.ts` · `artifact-version-diff.ts` · `mermaid-normalize.ts` · `ppt-normalize.ts` · `usage.ts` 等 18 个文件。前端纯类型，与后端 `backend/app/schemas/` 保持 camelCase 兼容。
@@ -354,6 +376,7 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 ## 附 · 当前现状（易过时，以 git 为准）
 
 ### ✅ 近期完成
+- **★ RAG 大重构**：ES 全文检索移除 → Milvus 原生 BM25 sparse vector 替代 · `rewriter.py` 移除 · `parser_registry.py` OCR 引擎注册表（7 种引擎 + auto 模式）· `parsers/` 目录 OCR 引擎实现 · `chunking/` 4 种分块预设（general/qa/semantic/separator）· `file_lifecycle.py` 11 状态状态机 + 乐观并发 · `graph_build_task.py` 异步图谱构建 · `graph_retrieval.py` PPR + entity/triple vector 检索 · `milvus_graph_vector_store.py` 图谱 entity/triple Milvus 向量存储 · `rag_tasks` 表 + `RagTaskWorker` asyncio 后台任务队列 · `eval/` RAG 评测系统（dataset CRUD + benchmark 自动生成 + LLM-as-Judge + 独立 eval LLM）· `db/migrations/` schema 迁移脚本 · DB 22→27 张表 + 路由 13+9→14+13 · `MEMORY_ENABLED` 环境变量开关
 - **★ 全局任务看板（Task Board）**：持久化任务池（`tasks` + `task_comments` 表）· Kanban UI（7 状态列：backlog/todo/in_progress/in_review/done/blocked/canceled）· 乐观并发控制（version 列 + if_version 前置检查）· asyncio 后台调度器（`TaskSchedulerService` 定期扫描 todo → dispatch 给 Agent）· 7 个 opt-in task 工具 + `manage_tasks` guide 管理工具 · 侧栏新增 `'tasks'` mode
 - **★ 记忆向量检索**：`vector_index.py` SQLite BLOB 向量存储 + 暴力 cosine 相似度搜索 · `hybrid_search.py` 升级为 BM25 + Vector 双路召回 + RRF 融合 + wikilink 后处理
 - **★ 小A Guide Agent（全局悬浮助手）**：builtin + `is_guide=True` Agent（`ag_guide_builtin`）· 启动种子机制（幂等）· `guide_prompt.py` 约束管理边界 · 8 个管理工具（manage_agents/skills/mcp/documents/memory/profile/conversations/tasks）· `manage_memory(action=optimize)` LLM 驱动智能记忆整理 · `mode='guide'` 隐藏会话（不出现在 list/搜索/不可删）· `GuideSideEffectEvent` 副作用事件 · `GuideFloatingPanel` 悬浮组件（拖拽/缩放/收起/`Ctrl/Cmd+G` 快捷键/移动端全屏）· 双活跃会话模型（工作 + guide 并行）· 开箱即用（`GUIDE_AGENT_*` 环境变量配置，默认 deepseek 兜底）
@@ -381,11 +404,11 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 - **DAG 派发计划**：`dispatch_plan` 工具声明结构化 DAG，`dag_executor.py` 做拓扑排序 + 波调度 + 并行执行 + 级联跳过，可选计划审批
 - **生命周期 Hooks 系统**：7 个内置 Hook · 10 个生命周期事件 · Agent 按 `hook_names` 启用
 - **Checkpoint 检查点**：SDK Agent turn 级检查点保存与恢复
-- **RAG 混合检索系统**：Milvus(向量) + Elasticsearch(全文) + Neo4j(KGStore) 三路召回 + RRF 融合 + Query Rewrite + Rerank
+- **RAG 混合检索系统**：Milvus dense vector (COSINE) + Milvus sparse BM25 + Neo4j KGStore (PPR + entity/triple vector) 三路召回 + RRF 融合 + Rerank（ES 已移除）
 - **文件原生记忆系统**：auto_memory + auto_dream pipeline + SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合 + wikilink 后处理扩展 + Preference(PG KV) + SessionMemory
 - **Document + Version 知识库**：全局文档版本化 · 解析入库 · 按需召回 · 版本刷新三能力
 - **PromptAssembler**：Profile + Recall + Constraints 上下文组装
-- **PostgreSQL 迁移**：从 SQLite 迁移到 PostgreSQL 16（asyncpg），22 张表
+- **PostgreSQL 迁移**：从 SQLite 迁移到 PostgreSQL 16（asyncpg），27 张表
 - **PPT 产物**：ppt 类型 + 真 .pptx 导出 + 完整 theme token
 
 ### 🔧 适配器接入路线图
@@ -402,10 +425,13 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 > 迁移方案见 `openspec/changes/migrate-claude-codex-to-cli/`。CLI 路线将厂商 CLI 作为子进程拉起，工具执行/沙箱/审批由 CLI 自管，AChat 仅翻译事件流。
 
 ### 📋 待办
-- OpenSpec 主 specs 同步（orchestrator / tools / stream-events / persistence / core-domain 需更新以反映统一 Agent Loop）
+- OpenSpec 主 specs 同步（persistence 需更新以反映 RAG 大重构：27 张表 + 路由 14+13 + ES 移除 + Milvus BM25 + 新增 rag_tasks/eval 表 + Document 新字段）
+- OpenSpec 主 specs 同步（orchestrator / tools / stream-events / core-domain 需更新以反映统一 Agent Loop）
 - OpenSpec 主 specs 同步（persistence / platform-security / frontend 需更新以反映用户认证与多用户隔离）
 - OpenSpec 主 specs 同步（persistence 需更新以反映双 DB 架构 + Redis 移除）
+- ★ RAG 大重构相关 OpenSpec changes archive（12 个 change 尚在 `openspec/changes/` 未 archive）
 - ★ Task Board OpenSpec spec 建立（代码已落地，spec 尚未建立）
+- ★ RAG 评测系统 OpenSpec spec 建立（代码已落地，spec 尚未建立）
 - Electron 桌面版改为启动 Python 后端（当前内嵌 Next 已无后端）
 - 移动端伴随 App 配对通信打通
 - E2E 测试补充（产物预览/导出 + 群聊调度，需测试假 adapter）
@@ -422,4 +448,4 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 
 ---
 
-*最后更新：2026-08-05 · 同步全局任务看板（Task Board + Kanban UI + 调度器）、记忆向量检索（SQLite BLOB vector + RRF 融合）、ModelProfile、Guide Agent 8 个管理工具、工具数 45、DB 表 22 张 + 路由 13+9、侧栏 7 panel 重构等近期功能。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*
+*最后更新：2026-08-19 · 同步 RAG 大重构（ES 移除 → Milvus BM25、OCR 引擎注册表、分块预设、文件生命周期、任务队列、图谱 v2、评测系统、DB 22→27 张表 + 路由 14+13）、MEMORY_ENABLED 环境变量等。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*

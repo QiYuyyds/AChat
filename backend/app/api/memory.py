@@ -316,6 +316,22 @@ async def search_memory(
 # ─── Proactive & auto_dream endpoints ──────────────────────────────────────
 
 
+@router.get("/api/memory/graph")
+async def get_memory_graph(
+    bucket: str | None = None,
+    agent_id: str | None = None,
+    min_degree: int = 0,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """Return full wikilink graph data (nodes + edges) for visualization."""
+    svc = _get_memory_service()
+    if svc is None:
+        return JSONResponse(status_code=503, content={"error": "MemoryService not initialized"})
+
+    result = svc.get_graph_data(bucket=bucket, agent_id=agent_id, min_degree=min_degree)
+    return JSONResponse(result)
+
+
 @router.get("/api/memory/proactive")
 async def get_proactive_topics(
     user: User = Depends(get_current_user),

@@ -23,7 +23,11 @@
 - 每个会话独立 workspace，Agent 可读写文件、跑命令
 - **代码图谱智能**（CodeGraph 本地运行时 + `code_explore` 工具）
 - **执行计划工具**（`create_plan` / `plan_step` / `add_plan_steps` 结构化计划卡片）
-- **RAG 混合检索**（Milvus 向量 + Elasticsearch 全文 + Neo4j 知识图谱）
+- **RAG 混合检索**（Milvus 向量 + 原生 BM25 全文 + Neo4j 知识图谱 PPR + entity/triple 向量召回 + RRF 融合）
+- **RAG 文件生命周期**（11 状态状态机 + 异步任务队列 + 乐观并发 + 虚拟目录树）
+- **RAG 评测系统**（dataset CRUD + benchmark 自动生成 + LLM-as-Judge + 独立 eval LLM 配置）
+- **RAG 分块预设**（general / qa / semantic / separator 四种策略 + 用户级配置）
+- **OCR 引擎注册表**（7 种引擎：RapidOCR / MinerU / PP-StructureV3 / DeepSeek OCR / PaddleOCR VL/PP-OCRv6 + auto 模式）
 - **文件原生记忆系统**（Markdown 文件 + frontmatter + wikilinks + auto_memory/auto_dream pipeline + 混合检索）
 - **Document + Version 知识库**（全局文档版本化、解析入库、按需召回）
 - **Obsidian 知识同步**（vault 同步 + 预处理 + RAG 入库）
@@ -34,7 +38,7 @@
 
 ### 运行形态
 
-前后端分离本地运行。前端 Next.js（:3000），后端 Python FastAPI（:8000）；基础设施（PostgreSQL / Milvus / ES / Neo4j）通过 Docker Compose 启动，可全部容器化也可仅远端部署基础设施。所有基础设施服务支持独立降级。
+前后端分离本地运行。前端 Next.js（:3000），后端 Python FastAPI（:8000）；基础设施（PostgreSQL / Milvus / Neo4j）通过 Docker Compose 启动，可全部容器化也可仅远端部署基础设施。所有基础设施服务支持独立降级。
 
 ---
 
@@ -72,9 +76,9 @@
 | 服务 | 用途 | 不配时 |
 |---|---|---|
 | PostgreSQL 16 | 关系型主库 | **必需**，后端无法启动 |
-| Milvus v2.4.17 | 向量检索（RAG） | 退化为 TF cosine |
-| Elasticsearch 8.14 | 全文检索（RAG BM25） | 无全文检索 |
-| Neo4j 5 | 知识图谱（RAG KGStore） | KGStore no-op，RAG 退化为向量+全文 |
+| Milvus v2.4.17 | 向量检索（RAG dense + sparse BM25）+ 图谱 entity/triple 向量存储 | 退化为 TF cosine；图谱向量召回不可用 |
+| Neo4j 5 | 知识图谱（RAG KGStore · PPR 检索 + entity/triple 子图遍历） | KGStore no-op，RAG 退化为向量+全文 |
+| ~~Elasticsearch 8.14~~ | ~~全文检索（RAG BM25）~~ | **已移除** — Milvus 原生 BM25 sparse vector 替代 |
 | Kafka | 事件总线增强（可选） | 用 in-process EventBus |
 | ~~Redis 7~~ | ~~元数据缓存 + 异步 DB 写入~~ | **已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代 |
 | Phoenix | Agent 可观测性后端（OTel Trace + Eval 评分 · :6006 Web UI · :4317 OTLP gRPC） | OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路 |
@@ -95,14 +99,14 @@ L3 Application Services        backend/app/services/ (AgentRunner · AgentLoop �
 L2 Agent Platform Adapters     backend/app/adapters/ (ClaudeCLI / CodexCLI / Custom / Mock) + mcp_bridge.py
 L1 Persistence                 backend/app/db/ (SQLAlchemy 双引擎：本地 SQLite[WAL] + 远端 PostgreSQL + workspace 文件系统)
 ─── 基础设施层 (可选, 独立降级) ───
-   Milvus · Elasticsearch · Neo4j · Kafka · Phoenix   backend/app/infra/ + rag/ + memory/ + graph/ + code_intelligence/ + observability/
+   Milvus · Neo4j · Kafka · Phoenix   backend/app/infra/ + rag/ + memory/ + graph/ + code_intelligence/ + observability/
 ```
 
 **铁律**：
 - UI **永远不**直接调 LLM SDK，必须经过 L3
 - Adapter **永远不**写 DB，它只负责事件流翻译
 - 工具执行（ToolExecutor）属 L3，不是 Adapter 的事
-- 基础设施服务（Milvus/ES/Neo4j）**永远不**在 L3 服务里直接 new 客户端，必须经过 `infra/factory.py` 统一构建并注入
+- 基础设施服务（Milvus/Neo4j）**永远不**在 L3 服务里直接 new 客户端，必须经过 `infra/factory.py` 统一构建并注入
 
 ### 3.2 八个核心实体（详见 `specs/01-core-entities.md`）
 
@@ -164,6 +168,16 @@ Custom agent（SDK 路线）的工具分两层：
 
 RAG 混合检索通过 `PromptAssembler` 注入 Agent 上下文，**降级时不应阻断核心对话流**。基础设施不可用时，Agent 仍能正常对话（只是没有知识增强）。
 
+RAG 子系统架构（`backend/app/rag/`）：
+- **解析层**：`parser_registry.py` 注册 7 种 OCR 引擎（RapidOCR / MinerU / MinerU Official / PP-StructureV3 / DeepSeek OCR / PaddleOCR VL / PaddleOCR PP-OCRv6），支持 `auto` 模式按优先级自动选择；`parsers/` 目录下各引擎实现 `BaseDocumentProcessor` 接口
+- **分块层**：`chunking/` 模块提供 4 种分块预设（general 递归分隔符 / qa 问答结构 / semantic 嵌入聚类 / separator 严格分隔），用户级配置存 `user_settings` 表
+- **检索层**：`rag_engine.py` HybridStore — Milvus dense vector (COSINE) + Milvus sparse BM25 + Neo4j KGStore (PPR + entity/triple vector) 三路召回 + RRF 融合；`rewriter.py` 已移除
+- **图谱增强**：`graph_build_task.py` 异步图谱构建（分批 extract → 并发 Neo4j MERGE → 状态机管理）；`graph_retrieval.py` PPR + entity/triple vector 检索；`milvus_graph_vector_store.py` 图谱 entity/triple 的 Milvus 向量存储
+- **文件生命周期**：`file_lifecycle.py` 11 状态状态机（uploading → parsing → parsed → indexing → indexed → active / error / deleted / archived + 独立 graph_status 流转）+ 乐观并发控制
+- **任务队列**：`rag_tasks` 表（本地 SQLite）+ `RagTaskWorker` asyncio 后台轮询（parse / ingest / graph_build / delete_cleanup 四种任务类型，自动重试 + stale recovery）
+- **评测系统**：`eval/` 模块（dataset CRUD + benchmark 自动生成 + LLM-as-Judge 评测 + 独立 eval LLM 配置 `EVAL_LLM_*`）；4 张表路由到远端 PG
+- **DB 迁移**：`db/migrations/` 目录存放 schema 迁移脚本，启动时自动执行
+
 记忆系统是 **file-native** 架构：
 - 记忆内容以 Markdown 文件 + frontmatter + wikilinks 存储（`<DATA_DIR>/memory/`），用户可直接查看/编辑/版本化
 - 三级生命周期：`session/`（原始对话 jsonl）→ `daily/`（每日卡片）→ `digest/`（精炼长期记忆）
@@ -173,6 +187,7 @@ RAG 混合检索通过 `PromptAssembler` 注入 Agent 上下文，**降级时不
   - BM25：`bm25_index.py` — SQLite FTS5 全文索引，支持中文分词
   - RRF 融合：BM25 + Vector 双路召回，Reciprocal Rank Fusion 加权融合
 - **Preference 系统**保留 PG KV 表不动（`user_preferences` 表 + `Preference` 类 + `ProfileSource` 注入）
+- `MEMORY_ENABLED=false` 环境变量可关闭记忆 pipeline（节省 API 调用，用于 RAG 测试场景）
 - 代码在 `backend/app/memory/`（`file_store/` + `search/` + `pipeline/` + `memory_service.py`）
 
 ### 3.9 可观测性是可选增强，不是硬依赖
@@ -309,7 +324,7 @@ Key 来源按优先级（详见 `backend/app/services/agent_runner.py:build_adap
 - **不引入** keychain / safeStorage / 第三方加密存储 —— 本地运行场景，DB 文件系统权限已经够
 - 缺失 key 时，由 adapter 在 SDK 内抛错（不要在启动时拒绝服务，因为用户可能只用其中某些 provider）
 - **CLI 适配器**（Claude Code / Codex）走 CLI 自带认证（OAuth / 环境变量），`build_adapter_input` 对 CLI agent 跳过 API key 解析与工具注入；仅当 agent 显式设了 `api_key` 时才注入 `extra_env`
-- RAG / 记忆系统另有 `EMBEDDING_API_KEY` 和 `LLM_API_KEY` 配置（见 `backend/.env.example`）
+- RAG / 记忆系统另有 `EMBEDDING_API_KEY` 和 `LLM_API_KEY` 配置；RAG 评测系统有独立的 `EVAL_LLM_API_KEY` / `EVAL_DATASET_LLM_API_KEY` 配置（见 `backend/.env.example`）
 
 ### 5.5 用户认证与数据隔离
 
@@ -328,7 +343,7 @@ Key 来源按优先级（详见 `backend/app/services/agent_runner.py:build_adap
 **数据隔离**：
 - 所有用户数据表通过 `user_id` 列隔离（`Agent` / `Conversation` / `Document` / `McpServer` / `LongTermMemory` / `MemoryNode` / `ChatHistory` / `RagChunk` / `UserSettings` / `UserPreference` / `Task` / `TaskComment`）
 - builtin agent 的 `user_id IS NULL`，所有用户可见
-- RAG / 记忆系统通过 `user_id` 过滤 Milvus / ES / Neo4j 查询
+- RAG / 记忆系统通过 `user_id` 过滤 Milvus / Neo4j 查询
 - Workspace 路径包含 `users/{user_id}/workspaces/` 段
 
 **CLI Agent 隔离**：
@@ -443,11 +458,13 @@ Key 来源按优先级（详见 `backend/app/services/agent_runner.py:build_adap
 - `specs/model-profiles/spec.md` — ★ ModelProfile 用户级模型配置（独立于 Agent 实体 + 运行时解析 + 连通性测试 + 迁移）
 - `specs/worktree-conflict-resolution/spec.md` — Worktree 三层递进冲突解决（Auto → LLM → Human）
 
-> ⚠️ 可观测性与评测代码已在 `backend/app/observability/` 落地，但 OpenSpec 主 spec 尚未建立（见 `openspec/changes/add-agent-observability/` 与 `add-rag-evaluation/`）。用户资料管理（profile）代码在 `backend/app/api/profile.py`，但未单独建立 OpenSpec capability。
+> ⚠️ 可观测性与评测代码已在 `backend/app/observability/` 落地，但 OpenSpec 主 spec 尚未建立（见 `openspec/changes/add-agent-observability/`）。用户资料管理（profile）代码在 `backend/app/api/profile.py`，但未单独建立 OpenSpec capability。
 >
 > ⚠️ Task Board（全局任务看板）代码已落地（`backend/app/api/tasks.py` + `backend/app/services/task_service.py` + `backend/app/services/task_scheduler.py` + `backend/app/tools/task_tools.py` + 前端 Kanban UI），但 OpenSpec spec 尚未建立。
 >
 > ⚠️ `rag_search` 迁移为 Agent 级工具的 OpenSpec change 尚在 `openspec/changes/` 未 archive（见 `move-rag-to-agent-tool/`）。
+>
+> ⚠️ RAG 大重构相关 change 尚在 `openspec/changes/` 未 archive（见 `rag-overhaul-foundation/` / `rag-parser-registry/` / `rag-chunking-presets/` / `rag-graph-v2/` / `rag-eval-system/` / `rag-task-queue/` / `rag-file-lifecycle/` / `rag-milvus-bm25-migration/` / `rag-retrieval-enhancement/` / `rag-retrieval-v2/` / `rag-frontend-strategy-controls/` / `rag-graph-build-task/`）。
 
 ### `specs/`（编号版详细规格）
 

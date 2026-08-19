@@ -175,6 +175,14 @@ _PG_MIGRATION_STATEMENTS = [
     "ALTER TABLE agents DROP COLUMN IF EXISTS api_key",
     "ALTER TABLE agents DROP COLUMN IF EXISTS api_base_url",
     "ALTER TABLE agents DROP COLUMN IF EXISTS supports_vision",
+    # ─── RAG overhaul foundation: documents + rag_chunks column additions ───
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_preset VARCHAR(32) NOT NULL DEFAULT 'general'",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS graph_status VARCHAR(16)",
+    "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS chunk_token_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS start_char_pos INTEGER",
+    "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS end_char_pos INTEGER",
+    "UPDATE documents SET chunk_preset = 'general' WHERE chunk_preset IS NULL",
+    "UPDATE documents SET graph_status = 'graph_indexed' WHERE status = 'active' AND graph_status IS NULL",
 ]
 
 # ── SQLite-compatible migration statements ────────────────────────────
@@ -236,6 +244,12 @@ _SQLITE_MIGRATION_STATEMENTS = [
     "ALTER TABLE agents DROP COLUMN api_key",
     "ALTER TABLE agents DROP COLUMN api_base_url",
     "ALTER TABLE agents DROP COLUMN supports_vision",
+    # ─── RAG overhaul foundation: documents + rag_chunks column additions ───
+    "ALTER TABLE documents ADD COLUMN chunk_preset VARCHAR(32) NOT NULL DEFAULT 'general'",
+    "ALTER TABLE documents ADD COLUMN graph_status VARCHAR(16)",
+    "ALTER TABLE rag_chunks ADD COLUMN chunk_token_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE rag_chunks ADD COLUMN start_char_pos INTEGER",
+    "ALTER TABLE rag_chunks ADD COLUMN end_char_pos INTEGER",
 ]
 
 
@@ -260,10 +274,11 @@ async def _rebuild_cross_db_fk_tables_sqlite(conn) -> None:
 
     await conn.execute(text("PRAGMA foreign_keys=OFF"))
 
-    for tbl in ("tasks", "task_comments"):
+    for tbl in ("tasks", "task_comments", "rag_tasks"):
         result = await conn.execute(text(f"PRAGMA foreign_key_list({tbl})"))
         fks = result.fetchall()
-        if any(fk[2] == "users" for fk in fks):
+        remote_refs = {"users", "documents", "document_versions"}
+        if any(fk[2] in remote_refs for fk in fks):
             await conn.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
 
     await conn.execute(text("PRAGMA foreign_keys=ON"))

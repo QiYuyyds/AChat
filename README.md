@@ -16,7 +16,7 @@
 
 AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的多 Agent 协作工作空间，把 AI 协作做成 IM 群聊式的体验。
 
-它不把每次 agent 运行当成一段孤立的终端记录，而是围绕「会话」来组织工作：Agent 是联系人，会话是工作空间，文件与产物是共享上下文，Orchestrator 还能把一项工作拆给多个 Agent 并行完成。同时集成了用户认证与多用户隔离、双 DB 架构（本地 SQLite + 远端 PostgreSQL）、RAG 混合检索、分层记忆系统（含结构化记忆增强）和 Document 知识库，让 Agent 拥有跨会话的知识与记忆能力。
+它不把每次 agent 运行当成一段孤立的终端记录，而是围绕「会话」来组织工作：Agent 是联系人，会话是工作空间，文件与产物是共享上下文，Orchestrator 还能把一项工作拆给多个 Agent 并行完成。同时集成了用户认证与多用户隔离、双 DB 架构（本地 SQLite + 远端 PostgreSQL）、RAG 混合检索（Milvus dense + sparse BM25 + Neo4j 知识图谱 PPR + entity/triple 向量召回 + RRF 融合）、RAG 文件生命周期（11 状态状态机 + 异步任务队列）、RAG 评测系统（LLM-as-Judge + 独立 eval LLM 配置）、OCR 引擎注册表（7 种引擎 + auto 模式）、RAG 分块预设（4 种策略）、分层记忆系统（含结构化记忆增强）和 Document 知识库，让 Agent 拥有跨会话的知识与记忆能力。
 
 <p align="center">
     <img src="docs/AChat封面.gif" alt="AChat 封面" width="100%" />
@@ -72,7 +72,7 @@ AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的
 - 把文档灌入知识库，让 Agent 按需检索
 - 在桌面端继续工作，未来还能用手机监看
 
-AChat 正是为这套工作流而生。它默认本地运行，采用双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 PostgreSQL 承载用户系统与知识/RAG 数据），并把 Agent 的执行保留在你自己的机器上。
+AChat 正是为这套工作流而生。它默认本地运行，采用双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 PostgreSQL 承载用户系统与知识/RAG/评测数据），并把 Agent 的执行保留在你自己的机器上。
 
 ### 功能演示
 
@@ -159,13 +159,47 @@ AChat 内置一个持久化的全局任务看板，独立于会话但可绑定�
 
 ### RAG 混合检索与知识库
 
-AChat 集成了完整的 RAG（检索增强生成）管线：
+AChat 集成了完整的 RAG（检索增强生成）子系统（`backend/app/rag/`）：
 
-- **三路混合检索**：Milvus（向量语义）+ Elasticsearch（全文 BM25）+ Neo4j（知识图谱子图遍历），通过 RRF 融合排序。
-- **Query Rewriting**：LLM 生成扩展查询，提升召回率。
+#### 文件生命周期 + 任务队列
+
+- **11 状态状态机**：`uploading → parsing → parsed → indexing → indexed → active / error / deleted / archived` + 独立 `graph_status` 流转，乐观并发控制（`UPDATE ... WHERE id=? AND status=?`，非法转换被拒绝）。
+- **异步任务队列**：`rag_tasks` 表（本地 SQLite）+ `RagTaskWorker` asyncio 后台轮询，4 种任务类型：
+  - `parse`：OCR 引擎 dispatch → 解析为 Markdown → 分块
+  - `ingest`：embedding API → 向量 → 写入 rag_chunks + Milvus dense + sparse
+  - `graph_build`：异步图谱构建（fire-and-forget）
+  - `delete_cleanup`：级联删除 chunks + Milvus + Neo4j 数据
+- 自动重试 + stale recovery。
+
+#### 三路混合检索
+
+- **Milvus dense vector**（COSINE 语义相似度）+ **Milvus sparse BM25**（全文匹配）+ **Neo4j KGStore**（PPR + entity/triple vector search）三路并行召回，通过 RRF 融合排序。
 - **Reranking**：LLM 对结果重排，提升精度。
-- **Document + Version 知识库**：全局文档版本化管理，支持上传/Agent 生成，按需召回。文档解析支持 PDF（pdfplumber → PyPDF2 → pdftotext 三级降级）、Markdown 等。
-- **会话级开关**：每个会话可独立开启/关闭 RAG 注入。★ `rag_search` 已迁移为 Agent 级可选工具，在 Agent 创建/编辑时勾选。
+- **已移除**：Elasticsearch 全文检索（由 Milvus 原生 BM25 sparse vector 替代）；Query Rewriting（`rewriter.py` 已删除）。
+
+#### OCR 引擎注册表
+
+- 7 种 OCR 引擎：RapidOCR / MinerU / MinerU Official / PP-StructureV3 / DeepSeek OCR / PaddleOCR VL / PaddleOCR PP-OCRv6，支持 `auto` 模式按优先级自动选择。
+
+#### 分块预设
+
+- 4 种分块策略：`general`（递归分隔符）/ `qa`（问答结构）/ `semantic`（嵌入聚类）/ `separator`（严格分隔），用户级配置存 `user_settings` 表。
+
+#### 图谱增强
+
+- `graph_build_task.py` 异步图谱构建（分批 extract → 并发 Neo4j MERGE → 状态机管理 + 重试）。
+- `graph_retrieval.py` PPR + entity/triple vector 检索（种子→扩散→返回 pg_id）。
+- `milvus_graph_vector_store.py` 图谱 entity/triple 的 Milvus 向量存储（独立 Collection + dense + sparse BM25）。
+
+#### RAG 评测系统
+
+- `eval/` 模块：dataset CRUD + benchmark 自动生成 + LLM-as-Judge 评测 + 独立 eval LLM 配置（`EVAL_LLM_*`）。
+- 4 张表（`eval_datasets` / `eval_dataset_items` / `eval_runs` / `eval_run_items`）路由到远端 PG。
+
+#### Document + Version 知识库
+
+- 全局文档版本化管理，支持上传/Agent 生成，按需召回。文档解析支持 PDF（pdfplumber → PyPDF2 → pdftotext 三级降级）、Markdown 等。
+- 会话级开关：每个会话可独立开启/关闭 RAG 注入。★ `rag_search` 已迁移为 Agent 级可选工具，在 Agent 创建/编辑时勾选。
 
 ### 分层记忆系统
 
@@ -175,7 +209,7 @@ Agent 拥有跨会话的记忆能力：
 - **会话记忆（SessionMemory）**：跨 run 的会话级上下文。
 - **长期记忆（LTM）**：文件原生架构（Markdown + frontmatter + wikilinks），三级生命周期（session → daily → digest）。检索走 SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合 + wikilink 后处理扩展。★ 结构化记忆增强：新增 `summary` / `keywords` / `content_scope` 三字段，embedding 从 `embed(content)` 改为 `embed(summary)`。
 - **用户偏好（Preference）**：从对话中提取的 KV 偏好（PG 表）。
-- **自动固化与衰减**：`auto_memory` pipeline（对话→daily 卡片）+ `auto_dream` pipeline（daily→digest 精炼），按触发阈值固化，自动去重清理。
+- **自动固化与衰减**：`auto_memory` pipeline（对话→daily 卡片）+ `auto_dream` pipeline（daily→digest 精炼），按触发阈值固化，自动去重清理。★ `MEMORY_ENABLED=false` 环境变量可关闭记忆 pipeline（节省 API 调用，用于 RAG 测试场景）。
 - **PromptAssembler**：将偏好、召回记忆、约束规则组装注入 Agent 的 system prompt。
 
 ### Workspace 文件与审批
@@ -276,16 +310,16 @@ AChat 集成了基于 OpenTelemetry 的全链路追踪和评测系统：
 
 ### 基础设施（Docker Compose，可降级）
 - PostgreSQL 16 — 关系型主库（远端）
-- Milvus v2.4.17 — 向量检索（RAG）
-- Elasticsearch 8.14 — 全文检索（RAG BM25）
-- Neo4j 5 — 知识图谱（RAG KGStore）
+- Milvus v2.4.17 — 向量检索（RAG dense + sparse BM25 + 图谱 entity/triple 向量）
+- Neo4j 5 — 知识图谱（RAG KGStore · PPR + entity/triple 子图遍历）
 - Kafka（可选）— 事件总线增强
+- ~~Elasticsearch 8.14~~ — ~~全文检索~~ **已移除**，Milvus 原生 BM25 sparse vector 替代
 - ~~Redis 7~~ — ~~元数据缓存 + 异步 DB 写入~~ **已移除**，双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代
 - Phoenix — Agent 可观测性后端（OpenTelemetry Trace + Eval 评分，:6006 Web UI）
 
 Next.js 锁定在 `16.2.6`。如果你要改动框架层的行为，先读 `node_modules/next/dist/docs/` 下的本地 Next 文档。
 
-后端 Python 依赖分两层管理：核心依赖在 `backend/pyproject.toml`，基础设施相关依赖（pymilvus / elasticsearch / neo4j / pdfplumber 等）在 `backend/requirements.txt`。
+后端 Python 依赖分两层管理：核心依赖在 `backend/pyproject.toml`，基础设施相关依赖（pymilvus / neo4j / pdfplumber 等）在 `backend/requirements.txt`。
 
 ---
 
@@ -304,6 +338,7 @@ Next.js 锁定在 `16.2.6`。如果你要改动框架层的行为，先读 `node
 - Anthropic、OpenAI、DeepSeek、火山方舟，或自定义 OpenAI 兼容 provider 的 API key
 - Tavily API key（Web 搜索工具）
 - Embedding API key（RAG / 记忆语义检索）
+- RAG 评测系统独立 LLM 配置（`EVAL_LLM_API_KEY` / `EVAL_DATASET_LLM_API_KEY`，见 `backend/.env.example`）
 
 ---
 
@@ -321,7 +356,7 @@ pnpm install
 docker compose -f docker-compose.infra.yml up -d
 ```
 
-这会启动 PostgreSQL、Milvus、Elasticsearch、Neo4j、Phoenix。如果暂时不需要 RAG / 记忆 / 知识图谱，可以只启动 PostgreSQL：
+这会启动 PostgreSQL、Milvus、Neo4j、Phoenix。如果暂时不需要 RAG / 记忆 / 知识图谱，可以只启动 PostgreSQL：
 
 ```powershell
 docker compose -f docker-compose.infra.yml up -d postgres
@@ -394,7 +429,7 @@ AChat 的基础设施服务通过 Docker Compose 管理，提供两种编排文�
 
 | 文件 | 用途 |
 |---|---|
-| `docker-compose.infra.yml` | 仅基础设施（PG/Milvus/ES/Neo4j/**Phoenix**），前后端在本机运行 |
+| `docker-compose.infra.yml` | 仅基础设施（PG/Milvus/Neo4j/**Phoenix**），前后端在本机运行 |
 | `docker-compose.yml` | 全栈容器化（前后端 + 基础设施） |
 
 常用命令：
@@ -410,13 +445,13 @@ docker compose -f docker-compose.infra.yml ps
 docker compose -f docker-compose.infra.yml down
 ```
 
-**降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → KGStore no-op；Phoenix 不可达 → OTel 缓冲后静默丢弃，不阻断主链路。不配任何基础设施（仅 PostgreSQL）时，核心对话功能完全正常。
+**降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；Neo4j 挂 → KGStore no-op，RAG 退化为向量+全文；Phoenix 不可达 → OTel 缓冲后静默丢弃，不阻断主链路。不配任何基础设施（仅 PostgreSQL）时，核心对话功能完全正常。
 
 | 服务 | 端口 | 不配时的影响 |
 |---|---|---|
 | PostgreSQL | 5432 | **必需**，后端无法启动 |
-| Milvus | 19530 | RAG 向量检索退化 |
-| Elasticsearch | 9200 | RAG 无全文检索 |
+| Milvus | 19530 | RAG 向量+全文检索退化；图谱向量召回不可用 |
+| ~~Elasticsearch~~ | ~~9200~~ | ~~**已移除** — Milvus 原生 BM25 sparse vector 替代~~ |
 | Neo4j | 7474/7687 | KGStore no-op；RAG 无图谱检索 |
 | ~~Redis~~ | ~~6379~~ | ~~**已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代~~ |
 | Phoenix | 6006 / 4317 | 可观测性关闭（`trace_enabled=false`）；OTel 埋点 no-op，无 Trace/Eval 数据 |
@@ -553,12 +588,12 @@ AChat 采用前后端分离架构：
 │  L2 Agent Platform Adapters               │
 │    ClaudeCLI、CodexCLI、Custom、Mock       │
 │  L1 Persistence                           │
-│    ★ 双 DB: SQLite[WAL] + PostgreSQL(22表) + workspace FS │
+│    ★ 双 DB: SQLite[WAL] + PostgreSQL(27表) + workspace FS │
 ├──────────────────────────────────────────┤
 │  Infrastructure (可选, 独立降级)            │
-│    Milvus(向量) · ES(全文) · Neo4j(图谱)   │
+│    Milvus(向量+BM25+图谱向量) · Neo4j(图谱)  │
 │    Phoenix(可观测性)                       │
-│    Kafka(事件) · RAG混合检索 · 分层记忆     │
+│    Kafka(事件) · RAG混合检索 · 分层记忆      │
 │    知识图谱 · Agent 可观测性与评测           │
 └──────────────────────────────────────────┘
 ```
@@ -606,7 +641,7 @@ AChat 假定 LLM 的输出是不可信输入。
 - Claude / Codex CLI 自带工具层可直接写文件；sandbox 配额只对 AChat 托管的文件工具生效。
 - Codex CLI 适配器代码就绪，端到端联调与测试待补；Hermes / OpenClaw / OpenCode 适配器待接入。
 - 移动端是伴随客户端，不是独立的 Agent 运行时。
-- 基础设施服务（Milvus / ES / Neo4j）不配时功能降级，但不影响核心对话。
+- 基础设施服务（Milvus / Neo4j）不配时功能降级，但不影响核心对话。
 - Hooks 系统的 `tool_approval` Hook 对 CLI 自带工具不生效（CLI 自管审批），仅拦截 AChat 托管工具。
 
 ---

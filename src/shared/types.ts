@@ -733,6 +733,8 @@ export interface DocumentRow {
   latestVersionId: string
   sourcePath?: string
   contentHash?: string | null
+  parentId?: string | null
+  isFolder?: boolean
   latestMetadata?: {
     filename?: string
     parser?: string
@@ -742,6 +744,7 @@ export interface DocumentRow {
   }
   latestContentChars?: number
   latestParser?: string
+  chunkPreset?: string
 }
 
 export interface VersionRow {
@@ -797,6 +800,22 @@ export interface UploadResult {
   version?: VersionRow
   success: boolean
   message?: string
+  ragTaskId?: string
+}
+
+// ─── RAG Preset / OCR Engine Types ───────────────────────────────
+
+export interface RagPreset {
+  id: string
+  label: string
+  description: string
+}
+
+export interface OcrEngineStatus {
+  id: string
+  label: string
+  available: boolean
+  status: 'ok' | 'not_installed' | 'not_configured' | 'unreachable'
 }
 
 // ─── Obsidian Sync Types ──────────────────────────────────────
@@ -814,12 +833,23 @@ export interface FileNode {
   docType: string
   source: string
   updatedAt: number
+  isFolder?: boolean
+  parentId?: string | null
 }
 
 export interface DocumentTree {
   currentPath: string
   folders: FolderNode[]
   files: FileNode[]
+}
+
+export interface DocumentPreview {
+  documentId: string
+  versionId: string
+  contentMd: string
+  images: Array<{ filename: string; path: string; content_type: string }>
+  parser?: string | null
+  pages?: number | null
 }
 
 export interface SyncReport {

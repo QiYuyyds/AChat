@@ -15,6 +15,7 @@ from .types import (
     ChunkRef,
     Entity,
     Relation,
+    get_entity_type_weight,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,9 +139,10 @@ class KGStore:
 
     # ─────────────────────────────── 图检索 ────────────────────────────────
 
-    async def search(self, query_text: str, top_k: int) -> list[dict]:
+    async def search(self, query_text: str, top_k: int, *, expand_depth: int = 0) -> list[dict]:
         """根据查询文本抽取实体，执行 1~2 跳子图遍历，返回关联的 pg_id 列表。
 
+        expand_depth > 0 时优先尝试 PPR 检索（GDS/APOC），失败降级为普通遍历。
         返回格式对齐 HybridStore 期望：List[dict] with pg_id, content, score, entities 键。
         """
         if not self.available():
@@ -154,6 +156,13 @@ class KGStore:
         # 构建实体名列表
         names = [e.name for e in extracted.entities]
 
+        # PPR 优先（当 expand_depth > 0）
+        if expand_depth > 0:
+            ppr_results = await self.search_with_ppr(names, top_k, expand_depth)
+            if ppr_results:
+                return ppr_results
+            # PPR 不可用时降级为普通子图遍历
+
         # 每跳权重递减（直接命中 > 1跳 > 2跳）
         hops = self.max_hops
         if hops <= 0:
@@ -162,19 +171,19 @@ class KGStore:
             hops = 3
 
         query = """
-	MATCH (e:Entity) WHERE e.name IN $names
-	CALL apoc.path.subgraphNodes(e, {
-	  maxLevel: $hops,
-	  relationshipFilter: "RELATES_TO|PART_OF|CAUSES|DESCRIBES|MENTIONS|WORKS_FOR|LOCATED_IN"
-	})
-	YIELD node AS neighbor
-	WHERE neighbor:Entity AND neighbor.chunk_id IS NOT NULL
-	WITH e.name AS seed, neighbor.name AS nb, neighbor.chunk_id AS cid,
-	     COALESCE(neighbor.pg_id, 0) AS pgid,
-	     toInteger(apoc.node.degree(neighbor)) AS degree
-	RETURN cid, pgid, collect(DISTINCT seed) AS seeds, collect(DISTINCT nb) AS neighbors, max(degree) AS deg
-	ORDER BY size(seeds) DESC, deg DESC
-	LIMIT $limit"""
+        MATCH (e:Entity) WHERE e.name IN $names
+        CALL apoc.path.subgraphNodes(e, {
+          maxLevel: $hops,
+          relationshipFilter: "RELATES_TO|PART_OF|CAUSES|DESCRIBES|MENTIONS|WORKS_FOR|LOCATED_IN"
+        })
+        YIELD node AS neighbor
+        WHERE neighbor:Entity AND neighbor.chunk_id IS NOT NULL
+        WITH e.name AS seed, neighbor.name AS nb, neighbor.chunk_id AS cid,
+             COALESCE(neighbor.pg_id, 0) AS pgid,
+             toInteger(apoc.node.degree(neighbor)) AS degree
+        RETURN cid, pgid, collect(DISTINCT seed) AS seeds, collect(DISTINCT nb) AS neighbors, max(degree) AS deg
+        ORDER BY size(seeds) DESC, deg DESC
+        LIMIT $limit"""
 
         try:
             records = await self._run_cypher(query, {
@@ -221,6 +230,248 @@ class KGStore:
             results = results[:top_k]
         return results
 
+    async def search_with_ppr(
+        self,
+        query_entities: list[str],
+        top_k: int,
+        expand_depth: int,
+        *,
+        seed_weights: list[float] | None = None,
+        entity_types: list[str] | None = None,
+        weight_by_type: bool = True,
+    ) -> list[dict]:
+        """PPR (Personalized PageRank) 检索：从查询实体出发，通过 PageRank 打分返回关联 pg_id。
+
+        优先尝试 Neo4j GDS 库 gds.pageRank.stream；GDS 不可用降级为
+        APOC apoc.path.subgraphNodes + 手动 scoring（基于命中种子数和节点度）。
+        返回格式对齐 HybridStore 期望：List[dict] with pg_id, content, score, entities 键。
+
+        Args:
+            seed_weights: Per-seed weight (type_weight * recall_score). If None, equal weights.
+            entity_types: Per-seed entity type string (for type-weighted scoring in APOC fallback).
+            weight_by_type: If True, apply entity type weighting in APOC fallback scoring.
+        """
+        if not self.available() or not query_entities:
+            return []
+
+        depth = max(1, min(expand_depth, 3))
+
+        # ── 方案 1: GDS pageRank.stream ──
+        try:
+            results = await self._ppr_via_gds(
+                query_entities, top_k, depth,
+                seed_weights=seed_weights,
+            )
+            if results is not None:
+                return results
+        except Exception as e:
+            logger.debug("GDS pageRank not available, falling back to APOC: %s", e)
+
+        # ── 方案 2: APOC subgraphNodes + 手动 scoring ──
+        try:
+            return await self._ppr_via_apoc(
+                query_entities, top_k, depth,
+                seed_weights=seed_weights,
+                entity_types=entity_types,
+                weight_by_type=weight_by_type,
+            )
+        except Exception as e:
+            logger.warning("PPR retrieval failed (APOC fallback also failed): %s", e)
+            return []
+
+    async def _ppr_via_gds(
+        self,
+        query_entities: list[str],
+        top_k: int,
+        depth: int,
+        *,
+        seed_weights: list[float] | None = None,
+    ) -> list[dict] | None:
+        """尝试用 Neo4j GDS pageRank.stream 执行 PPR。GDS 不可用返回 None。
+
+        When seed_weights is provided, uses sourceNodeWeights (GDS >= 2.0).
+        Falls back to sourceNodes (equal weights) if GDS rejects sourceNodeWeights.
+        """
+        has_weights = seed_weights is not None and len(seed_weights) == len(query_entities)
+
+        if has_weights:
+            gds_query = """
+            MATCH (e:Entity) WHERE e.name IN $names
+            WITH collect(DISTINCT e) AS seedNodes
+            UNWIND seedNodes AS seed
+            WITH collect(DISTINCT seed) AS allSeeds, collect(DISTINCT id(seed)) AS seedIds
+            WITH allSeeds, seedIds
+            CALL gds.pageRank.stream('entityGraph', {
+              maxIterations: $maxIter,
+              dampingFactor: 0.85,
+              sourceNodes: allSeeds,
+              sourceNodeWeights: $seedWeights
+            })
+            YIELD nodeId, score
+            WITH gds.util.asNode(nodeId) AS neighbor, score
+            WHERE neighbor:Entity AND neighbor.pg_id IS NOT NULL AND neighbor.pg_id > 0
+            RETURN neighbor.chunk_id AS cid,
+                   neighbor.pg_id AS pgid,
+                   neighbor.name AS nb,
+                   score,
+                   collect(DISTINCT seed.name) AS seeds
+            ORDER BY score DESC
+            LIMIT $limit"""
+            try:
+                records = await self._run_cypher(gds_query, {
+                    "names": query_entities,
+                    "maxIter": 20,
+                    "seedWeights": list(seed_weights),
+                    "limit": int(top_k * 2),
+                })
+            except Exception as e:
+                err_msg = str(e).lower()
+                # GDS may not support sourceNodeWeights; retry with equal weights
+                if "sourcenodeweights" in err_msg or "weight" in err_msg:
+                    logger.debug("GDS does not support sourceNodeWeights, retrying with sourceNodes")
+                    return await self._ppr_via_gds(query_entities, top_k, depth, seed_weights=None)
+                if "gds" in err_msg or "no such procedure" in err_msg or "unknown" in err_msg:
+                    return None
+                logger.debug("GDS pageRank query error: %s", e)
+                return None
+        else:
+            gds_query = """
+            MATCH (e:Entity) WHERE e.name IN $names
+            WITH collect(DISTINCT e) AS seedNodes
+            UNWIND seedNodes AS seed
+            WITH seed, collect(DISTINCT seed) AS allSeeds
+            CALL gds.pageRank.stream('entityGraph', {
+              maxIterations: $maxIter,
+              dampingFactor: 0.85,
+              sourceNodes: allSeeds
+            })
+            YIELD nodeId, score
+            WITH gds.util.asNode(nodeId) AS neighbor, score
+            WHERE neighbor:Entity AND neighbor.pg_id IS NOT NULL AND neighbor.pg_id > 0
+            RETURN neighbor.chunk_id AS cid,
+                   neighbor.pg_id AS pgid,
+                   neighbor.name AS nb,
+                   score,
+                   collect(DISTINCT seed.name) AS seeds
+            ORDER BY score DESC
+            LIMIT $limit"""
+            try:
+                records = await self._run_cypher(gds_query, {
+                    "names": query_entities,
+                    "maxIter": 20,
+                    "limit": int(top_k * 2),
+                })
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "gds" in err_msg or "no such procedure" in err_msg or "unknown" in err_msg:
+                    return None
+                logger.debug("GDS pageRank query error: %s", e)
+                return None
+
+        if not records:
+            return []
+
+        seen: set = set()
+        results: list[dict] = []
+        for rec in records:
+            pg_id = _to_int64(rec.get("pgid"))
+            if pg_id == 0 or pg_id in seen:
+                continue
+            seen.add(pg_id)
+            results.append({
+                "pg_id": pg_id,
+                "content": "",
+                "score": float(rec.get("score", 0.0)),
+                "entities": _to_string_list(rec.get("seeds")),
+            })
+        if len(results) > top_k:
+            results = results[:top_k]
+        return results
+
+    async def _ppr_via_apoc(
+        self,
+        query_entities: list[str],
+        top_k: int,
+        depth: int,
+        *,
+        seed_weights: list[float] | None = None,
+        entity_types: list[str] | None = None,
+        weight_by_type: bool = True,
+    ) -> list[dict]:
+        """APOC subgraphNodes 遍历 + 手动 PPR-style scoring（降级方案）。
+
+        手动 scoring 模拟 PPR：种子节点得分高，按跳数衰减，乘以节点度数归一化。
+        When seed_weights + entity_types are provided, scoring uses type-weighted seeds
+        instead of raw seed count.
+        """
+        apoc_query = """
+        MATCH (e:Entity) WHERE e.name IN $names
+        CALL apoc.path.subgraphNodes(e, {
+          maxLevel: $depth,
+          relationshipFilter: "RELATES_TO|PART_OF|CAUSES|DESCRIBES|MENTIONS|WORKS_FOR|LOCATED_IN"
+        })
+        YIELD node AS neighbor
+        WHERE neighbor:Entity AND neighbor.chunk_id IS NOT NULL
+        WITH neighbor,
+             collect(DISTINCT e.name) AS seeds,
+             toInteger(apoc.node.degree(neighbor)) AS degree
+        RETURN neighbor.chunk_id AS cid,
+               COALESCE(neighbor.pg_id, 0) AS pgid,
+               neighbor.name AS nb,
+               seeds,
+               degree
+        LIMIT $limit"""
+
+        records = await self._run_cypher(apoc_query, {
+            "names": query_entities,
+            "depth": int(depth),
+            "limit": int(top_k * 3),
+        })
+
+        if not records:
+            return []
+
+        has_weights = seed_weights is not None and len(seed_weights) == len(query_entities)
+        has_types = entity_types is not None and len(entity_types) == len(query_entities)
+
+        # Build seed name → weight map for type-weighted scoring
+        seed_weight_map: dict[str, float] = {}
+        if has_weights and has_types:
+            for i, name in enumerate(query_entities):
+                tw = get_entity_type_weight(entity_types[i]) if weight_by_type else 1.0
+                seed_weight_map[name] = seed_weights[i] * tw
+        elif has_weights:
+            for i, name in enumerate(query_entities):
+                seed_weight_map[name] = seed_weights[i]
+        elif has_types and weight_by_type:
+            for i, name in enumerate(query_entities):
+                seed_weight_map[name] = get_entity_type_weight(entity_types[i])
+
+        seen: set = set()
+        results: list[dict] = []
+        for rec in records:
+            pg_id = _to_int64(rec.get("pgid"))
+            if pg_id == 0 or pg_id in seen:
+                continue
+            seen.add(pg_id)
+            seeds = _to_string_list(rec.get("seeds"))
+            degree = _to_int64(rec.get("degree"))
+            if seed_weight_map:
+                type_weighted = sum(seed_weight_map.get(s, 1.0) for s in seeds)
+                score = type_weighted * 0.6 + float(degree) * 0.01
+            else:
+                score = float(len(seeds)) * 0.6 + float(degree) * 0.01
+            results.append({
+                "pg_id": pg_id,
+                "content": "",
+                "score": score,
+                "entities": seeds,
+            })
+        results.sort(key=lambda x: x["score"], reverse=True)
+        if len(results) > top_k:
+            results = results[:top_k]
+        return results
+
     async def _search_direct(self, names: list[str], top_k: int) -> list[dict]:
         """APOC 不可用时的降级版本：直接匹配实体所在 chunk"""
         try:
@@ -236,7 +487,6 @@ class KGStore:
         seen: set = set()
         results: list[dict] = []
         for rec in records or []:
-            cid = _to_int(rec.get("cid"))
             pg_id = _to_int64(rec.get("pgid"))
             name = _to_string(rec.get("name"))
             if pg_id == 0 or pg_id in seen:

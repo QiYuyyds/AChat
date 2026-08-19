@@ -43,7 +43,7 @@ export type SidebarMode =
   | 'extensions'
   | 'tasks'
 
-export type MemoryTab = 'long-term' | 'preferences' | 'session'
+export type MemoryTab = 'long-term' | 'graph' | 'preferences' | 'session'
 
 export type CognitionTab = 'knowledge' | 'memory'
 

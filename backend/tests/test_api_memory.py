@@ -347,3 +347,73 @@ async def test_list_session_memories_empty(memory_svc, api_client):
     resp = await api_client.get("/api/memory/sessions")
     assert resp.status_code == 200
     assert resp.json()["total"] == 0
+
+
+# ─── Graph: GET /api/memory/graph ─────────────────────────────────────────
+
+
+def _seed_graph_memories(memory_svc) -> None:
+    """Seed memory files with wikilinks for graph API testing."""
+    from app.memory.file_store.frontmatter import MemoryFrontmatter
+    from app.memory.file_store.markdown_io import write_markdown
+
+    ws = memory_svc.workspace
+    write_markdown(
+        ws.digest_path("wiki", "python"),
+        MemoryFrontmatter(name="Python", description="Python language", bucket="wiki", tags=["python"], importance=0.8),
+        "Python is a language. [[asyncio]] [[threading]]",
+    )
+    write_markdown(
+        ws.digest_path("wiki", "asyncio"),
+        MemoryFrontmatter(name="AsyncIO", description="Async IO", bucket="wiki", tags=["async"], importance=0.7),
+        "AsyncIO module. [[python]]",
+    )
+    write_markdown(
+        ws.digest_path("procedure", "deploy"),
+        MemoryFrontmatter(name="Deploy", description="Deploy steps", bucket="procedure", tags=["deploy"], importance=0.9),
+        "Deploy steps. [[python]]",
+    )
+    memory_svc.auto_index.full_reindex()
+
+
+async def test_graph_empty(memory_svc, api_client):
+    resp = await api_client.get("/api/memory/graph")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"nodes": [], "edges": []}
+
+
+async def test_graph_full(memory_svc, api_client):
+    _seed_graph_memories(memory_svc)
+    resp = await api_client.get("/api/memory/graph")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["nodes"]) == 3
+    assert len(body["edges"]) >= 3
+    node = body["nodes"][0]
+    assert "path" in node
+    assert "name" in node
+    assert "bucket" in node
+    assert "degree" in node
+    edge = body["edges"][0]
+    assert "source" in edge
+    assert "target" in edge
+    assert "predicate" in edge
+
+
+async def test_graph_bucket_filter(memory_svc, api_client):
+    _seed_graph_memories(memory_svc)
+    resp = await api_client.get("/api/memory/graph?bucket=wiki")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert all(n["bucket"] == "wiki" for n in body["nodes"])
+    assert not any("procedure" in n["path"] for n in body["nodes"])
+
+
+async def test_graph_503_when_uninitialized(api_client):
+    """When MemoryService is not wired, the endpoint returns 503."""
+    from unittest.mock import patch
+
+    with patch("app.main._memory_service", None):
+        resp = await api_client.get("/api/memory/graph")
+        assert resp.status_code == 503

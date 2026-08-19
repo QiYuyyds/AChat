@@ -49,9 +49,6 @@ class Settings(BaseSettings):
     milvus_host: str = ""
     milvus_port: int = 19530
 
-    # ─── Elasticsearch ───
-    es_addresses: str = ""  # comma-separated
-
     # ─── Neo4j ───
     neo4j_uri: str = ""
     neo4j_user: str = ""
@@ -80,14 +77,53 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 200
     rag_chunk_overlap: int = 50
     rag_top_k: int = 3
-    rag_rrf_constant_k: int = 30
-    rag_semantic_weight: float = 0.5
-    rag_keyword_weight: float = 0.5
+    rag_rrf_constant_k: int = 60
+    rag_semantic_weight: float = 0.7
+    rag_keyword_weight: float = 0.3
     rag_milvus_dim: int = 1024
-    rag_rewrite_enabled: bool = True
-    rag_rewrite_num_queries: int = 3
     rag_rerank_enabled: bool = True
     rag_rerank_preview_len: int = 200
+
+    # ─── RAG: Image extraction ───
+    rag_extract_images: bool = True
+
+    # ─── RAG: Chunking presets ───
+    rag_chunk_preset: str = "general"
+    rag_chunk_parser_config: str = ""  # JSON string for per-parser overrides
+
+    # ─── RAG: Concurrency control ───
+    rag_embed_concurrency: int = 5
+    rag_search_concurrency: int = 8
+    rag_graph_concurrency: int = 5
+    rag_graph_neo4j_concurrency: int = 8
+    milvus_bm25_drop_ratio_search: float = 0.0
+
+    # ─── RAG: Graph auto-build ───
+    rag_graph_auto_build: bool = True
+    rag_graph_max_extraction_attempts: int = 3
+    rag_graph_retry_delays: str = "2.0,10.0"  # comma-separated seconds
+
+    # ─── RAG Task Queue ───
+    rag_task_worker_interval: int = 5
+    rag_task_max_retries: int = 3
+    rag_task_worker_enabled: bool = True
+
+    # ─── OCR engines ───
+    ocr_engine: str = "auto"  # 'auto' | 'none' | 'rapidocr' | 'mineru' | 'deepseek-ocr' | 'paddleocr' | ...
+    ocr_rapid_ocr_path: str = ""
+    ocr_mineru_url: str = ""
+    ocr_mineru_official_key: str = ""
+    ocr_deepseek_ocr_key: str = ""
+    ocr_pp_structure_url: str = ""  # PaddleX service URL for PP-Structure-V3
+    ocr_paddleocr_key: str = ""  # PaddleOCR cloud API token
+
+    # ─── Eval LLM (independent from RAG LLM) ───
+    eval_llm_api_key: str | None = None
+    eval_llm_api_url: str | None = None
+    eval_llm_model: str | None = None
+    eval_dataset_llm_api_key: str | None = None
+    eval_dataset_llm_api_url: str | None = None
+    eval_dataset_llm_model: str | None = None
 
     # ─── Session Metadata (custom_adapter prompt injection) ───
     default_language: str = "zh-CN"

@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertCircle, CheckCircle2, FileUp, Loader2, Upload } from 'lucide-react'
+import { AlertCircle, CheckCircle2, FileUp, Loader2, ScanText, Upload } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
@@ -13,9 +13,9 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { uploadDocument } from '@/lib/api'
+import { fetchOcrEngines, fetchRagPresets, uploadDocument } from '@/lib/api'
 import { cn } from '@/lib/utils'
-import type { UploadResult } from '@/shared/types'
+import type { OcrEngineStatus, RagPreset, UploadResult } from '@/shared/types'
 
 const DOC_TYPES = [
   { value: 'note', label: '笔记' },
@@ -53,6 +53,9 @@ export function UploadDocumentDialog({
   const [result, setResult] = useState<UploadResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [presets, setPresets] = useState<RagPreset[]>([])
+  const [presetId, setPresetId] = useState('')
+  const [ocrEngines, setOcrEngines] = useState<OcrEngineStatus[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
 
   // Pre-fill title and doc type when entering new-version mode
@@ -63,6 +66,26 @@ export function UploadDocumentDialog({
     }
   }, [open, isVersionMode, defaultTitle, defaultDocType])
 
+  // Load RAG presets when dialog opens
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    fetchRagPresets()
+      .then((data) => {
+        if (!cancelled) setPresets(data.presets)
+      })
+      .catch((err) => console.error('[UploadDialog] fetchRagPresets failed', err))
+    return () => { cancelled = true }
+  }, [open])
+
+  // Load OCR engine status when needs_ocr is detected
+  useEffect(() => {
+    if (!result?.needsOcr) return
+    fetchOcrEngines()
+      .then((data) => setOcrEngines(data.engines))
+      .catch((err) => console.error('[UploadDialog] fetchOcrEngines failed', err))
+  }, [result?.needsOcr])
+
   const reset = () => {
     setFile(null)
     if (!isVersionMode) {
@@ -72,6 +95,8 @@ export function UploadDocumentDialog({
     setAutoIngest(true)
     setResult(null)
     setError(null)
+    setPresetId('')
+    setOcrEngines([])
   }
 
   const handleFileSelect = useCallback((f: File | null) => {
@@ -103,6 +128,7 @@ export function UploadDocumentDialog({
         documentId: documentId,
         title: title || undefined,
         docType: docType || undefined,
+        presetId: presetId || undefined,
       })
       setResult(res)
       if (res.success && onUploaded) {
@@ -212,6 +238,24 @@ export function UploadDocumentDialog({
           <span>上传后自动入库到 RAG</span>
         </label>
 
+        {/* Chunking preset selector */}
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium">分块策略</label>
+          <select
+            value={presetId}
+            onChange={(e) => setPresetId(e.target.value)}
+            className="h-8 w-full rounded-md border bg-background px-2 text-xs outline-none focus:border-foreground/30"
+          >
+            <option value="">跟随默认</option>
+            {presets.map((p) => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
+          </select>
+          {presetId === 'semantic' && (
+            <p className="text-[10px] text-muted-foreground">需要嵌入模型，处理较慢</p>
+          )}
+        </div>
+
         {/* Result display */}
         {result && (
           <div className={cn(
@@ -228,7 +272,37 @@ export function UploadDocumentDialog({
             {result.pages != null && <div className="text-[10px]">页数: {result.pages}</div>}
             {result.textChars != null && <div className="text-[10px]">字数: {result.textChars}</div>}
             {result.chunkCount != null && <div className="text-[10px]">分块数: {result.chunkCount}</div>}
-            {result.needsOcr && <div className="text-[10px] text-warning">需要 OCR</div>}
+            {result.needsOcr && (
+              <div className="mt-2 space-y-1.5">
+                <div className="flex items-center gap-1.5 text-[10px] text-warning">
+                  <ScanText className="size-3" />
+                  检测到扫描件，需要 OCR
+                </div>
+                {ocrEngines.length > 0 ? (
+                  <div className="space-y-0.5">
+                    {ocrEngines.map((eng) => (
+                      <div key={eng.id} className="flex items-center gap-1.5 text-[10px]">
+                        <span className={cn('size-1.5 rounded-full', eng.available ? 'bg-success' : 'bg-muted-foreground/40')} />
+                        <span className="font-medium">{eng.label}</span>
+                        <span className="text-muted-foreground">
+                          {eng.status === 'ok' ? '可用' :
+                           eng.status === 'not_installed' ? '未安装' :
+                           eng.status === 'not_configured' ? '未配置 Key' :
+                           '服务不可达'}
+                        </span>
+                      </div>
+                    ))}
+                    {ocrEngines.some((e) => e.available) ? (
+                      <p className="text-[10px] text-success">已使用可用引擎自动解析</p>
+                    ) : (
+                      <p className="text-[10px] text-warning">无可用 OCR 引擎，请前往设置配置</p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-muted-foreground">正在检查 OCR 引擎状态...</p>
+                )}
+              </div>
+            )}
             {result.message && <div className="mt-0.5 text-[10px]">{result.message}</div>}
           </div>
         )}

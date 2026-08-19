@@ -42,7 +42,7 @@ class WikilinkExpander:
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.executescript(_CREATE_TABLE_SQL)
         self._ensure_predicate_column()
         self._conn.executescript(_CREATE_INDEX_SQL)
@@ -208,6 +208,22 @@ class WikilinkExpander:
                 (path,),
             )
         return [{"source": row[0], "predicate": row[1]} for row in cursor.fetchall()]
+
+    def get_all_edges(self) -> list[dict[str, str | None]]:
+        """Return all wikilink edges in the adjacency graph.
+
+        Returns a list of {"source": str, "target": str, "predicate": str | None}.
+        Returns empty list when SQLite connection is unavailable.
+        """
+        if not self._conn:
+            return []
+        cursor = self._conn.execute(
+            "SELECT source_path, target_path, predicate FROM wikilinks"
+        )
+        return [
+            {"source": row[0], "target": row[1], "predicate": row[2]}
+            for row in cursor.fetchall()
+        ]
 
     def remove_broken_links(self, existing_paths: set[str]) -> int:
         """Remove adjacency entries where target_path doesn't exist on disk.

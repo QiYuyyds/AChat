@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -28,7 +29,7 @@ logging.basicConfig(
     force=True,
 )
 # Suppress noisy third-party library logs
-for _noisy in ("pymilvus", "elastic_transport", "kafka", "sqlalchemy", "neo4j.notifications"):
+for _noisy in ("pymilvus", "kafka", "sqlalchemy", "neo4j.notifications", "httpx", "httpcore"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
@@ -36,18 +37,20 @@ logger = logging.getLogger(__name__)
 # Module-level service references (accessed by tool handlers)
 _memory_service = None
 _rag_service = None
+_rag_eval_service = None
 _infrastructure = None
 _app_ref = None
 _document_service = None
 _obsidian_sync_service = None
 _kg_wired = False
 _task_scheduler = None
+_rag_task_worker = None
 
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager."""
-    global _memory_service, _rag_service, _infrastructure, _app_ref, _document_service, _obsidian_sync_service, _kg_wired, _task_scheduler
+    global _memory_service, _rag_service, _rag_eval_service, _infrastructure, _app_ref, _document_service, _obsidian_sync_service, _kg_wired, _task_scheduler, _rag_task_worker
     _app_ref = app_instance
 
     # Startup
@@ -114,6 +117,20 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         logger.warning("MemoryService init failed: %s", e)
         _memory_service = None
 
+    # ─── RAG overhaul schema migration (before RAGService init) ───
+    try:
+        from app.db.migrations.rag_overhaul_migration import migrate_rag_overhaul
+        await migrate_rag_overhaul()
+    except Exception as e:
+        logger.warning("RAG overhaul migration failed: %s", e)
+
+    # ─── user_settings RAG config migration ───
+    try:
+        from app.db.migrations.user_settings_rag_config import migrate_user_settings_rag_config
+        await migrate_user_settings_rag_config()
+    except Exception as e:
+        logger.warning("user_settings RAG config migration failed: %s", e)
+
     # ─── RAGService ───
     try:
         from app.services.rag_service import RAGService
@@ -121,8 +138,6 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         # Wire infrastructure backends into RAG
         if _infrastructure and _infrastructure.milvus_client:
             _wire_milvus_to_rag(_rag_service, _infrastructure.milvus_client, settings)
-        if _infrastructure and _infrastructure.es_client:
-            _wire_es_to_rag(_rag_service, _infrastructure.es_client)
         # Inject embed_fn and generate_fn for RAG search/rewrite/rerank
         embed_fn = _make_embed_fn(settings)
         if embed_fn:
@@ -139,26 +154,50 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
             logger.warning("RAG: generate_fn not available (no LLM API key)")
 
         # Inject generate_fn into MemoryService for auto_memory + auto_dream
-        if generate_fn and _memory_service:
+        # Set MEMORY_ENABLED=false in .env to disable memory pipeline (saves API calls during RAG testing)
+        _memory_enabled = os.environ.get("MEMORY_ENABLED", "true").lower() not in ("false", "0", "no", "")
+        if generate_fn and _memory_service and _memory_enabled:
             _memory_service.set_generate_fn(generate_fn)
             logger.info("Memory: generate_fn injected")
+        elif not _memory_enabled:
+            logger.info("Memory: pipeline disabled (MEMORY_ENABLED=false)")
 
         # Inject embed_fn into MemoryService for vector search + indexing
-        if embed_fn and _memory_service:
+        if embed_fn and _memory_service and _memory_enabled:
             _memory_service.set_embed_fn(embed_fn)
             logger.info("Memory: embed_fn injected (model=%s)", settings.embedding_model)
-        else:
-            logger.warning("Memory: embed_fn not available (EMBEDDING_API_KEY not set)")
+        elif not _memory_enabled:
+            logger.info("Memory: embed_fn skipped (MEMORY_ENABLED=false)")
 
         # Wire KG backend if Neo4j driver and LLM are both available (KGStore belongs to RAG, independent of memory system)
         if _infrastructure and _infrastructure.neo4j_driver and generate_fn:
-            _wire_kg_to_rag(_rag_service, _infrastructure.neo4j_driver, settings, generate_fn)
+            _wire_kg_to_rag(
+                _rag_service, _infrastructure.neo4j_driver, settings, generate_fn,
+                milvus_client=_infrastructure.milvus_client,
+                embed_fn=embed_fn,
+            )
             _kg_wired = True
 
         await _rag_service.initialize()
     except Exception as e:
         logger.warning("RAGService init failed: %s", e)
         _rag_service = None
+
+    # ─── RAGEvalService ───
+    try:
+        from app.rag.eval.service import RAGEvalService
+        _rag_eval_service = RAGEvalService(settings, _rag_service)
+        if _rag_eval_service.eval_llm_available():
+            logger.info("RAGEvalService initialized (eval LLM: %s)", settings.eval_llm_model or "default")
+        else:
+            logger.warning("RAGEvalService: eval LLM not configured (EVAL_LLM_API_KEY required for eval runs)")
+        if _rag_eval_service.dataset_llm_available():
+            logger.info("RAGEvalService: dataset generation LLM available (%s)", settings.eval_dataset_llm_model or "default")
+        else:
+            logger.warning("RAGEvalService: dataset generation LLM not configured (EVAL_DATASET_LLM_API_KEY required for auto-generation)")
+    except Exception as e:
+        logger.warning("RAGEvalService init failed: %s", e)
+        _rag_eval_service = None
 
     # ─── PromptAssembler ───
     try:
@@ -260,6 +299,20 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         logger.warning("DocumentService init failed: %s", e)
         _document_service = None
 
+    # ─── RagTaskWorker ───
+    global _rag_task_worker
+    if settings.rag_task_worker_enabled and _document_service:
+        try:
+            from app.services.rag_task_worker import RagTaskWorker
+            _rag_task_worker = RagTaskWorker.get_instance()
+            _rag_task_worker.set_document_service(_document_service)
+            await _rag_task_worker.start(interval_seconds=settings.rag_task_worker_interval)
+        except Exception as e:
+            logger.warning("RagTaskWorker init failed: %s", e)
+            _rag_task_worker = None
+    elif not settings.rag_task_worker_enabled:
+        logger.info("RagTaskWorker disabled (rag_task_worker_enabled=False) — degraded sync mode")
+
     # ─── ObsidianSyncService ───
     try:
         from app.services.obsidian_sync_service import ObsidianSyncService
@@ -286,6 +339,11 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     yield
 
     # Shutdown
+    if _rag_task_worker:
+        try:
+            await _rag_task_worker.stop()
+        except Exception:
+            pass
     try:
         from app.code_intelligence.service import shutdown_code_intelligence_service
         await shutdown_code_intelligence_service()
@@ -516,10 +574,6 @@ def _log_startup_dashboard(settings) -> None:
             infra_status.append("✓ Milvus")
         else:
             infra_status.append("✗ Milvus (degraded)")
-        if _infrastructure.es_client:
-            infra_status.append("✓ Elasticsearch")
-        else:
-            infra_status.append("✗ Elasticsearch (degraded)")
         if _infrastructure.neo4j_driver:
             infra_status.append("✓ Neo4j")
         else:
@@ -567,6 +621,9 @@ def _log_startup_dashboard(settings) -> None:
     has_assembler = bool(getattr(_app_ref.state, "prompt_assembler", None)) if _app_ref else False
     assembler_status = "✓ PromptAssembler" if has_assembler else "✗ PromptAssembler not initialized"
     logger.info("Prompt Asmblr:   %s", assembler_status)
+
+    rag_worker_status = "✓ RagTaskWorker" if _rag_task_worker else "✗ RagTaskWorker not initialized"
+    logger.info("RAG Worker:     %s", rag_worker_status)
 
     # Document service
     doc_status = "✓ DocumentService" if _document_service else "✗ DocumentService not initialized"
@@ -646,9 +703,89 @@ def _make_generate_fn(settings):
 
 
 def _wire_milvus_to_rag(rag_service, milvus_client, settings):
-    """Wire MilvusClient into RAGService's HybridStore via callback functions."""
+    """Wire MilvusClient into RAGService's HybridStore via callback functions.
+
+    Collection schema: dense embedding (FLOAT_VECTOR + COSINE + IVF_FLAT)
+    + BM25 sparse (content VARCHAR with chinese analyzer + content_sparse
+    SPARSE_FLOAT_VECTOR + Function(BM25) + SPARSE_INVERTED_INDEX + DAAT_MAXSCORE).
+    """
     collection_name = "rag_embeddings"
     dim = settings.rag_milvus_dim
+
+    def _ensure_collection():
+        """Drop + recreate if old schema lacks content_sparse; create if missing."""
+        from pymilvus import DataType, Function, FunctionType
+
+        if not milvus_client.has_collection(collection_name):
+            schema = milvus_client.create_schema(auto_id=False, enable_dynamic_field=False)
+            schema.add_field("id", DataType.INT64, is_primary=True)
+            schema.add_field(
+                "content", DataType.VARCHAR, max_length=65535,
+                enable_analyzer=True, analyzer_params={"type": "chinese"},
+            )
+            schema.add_field("chunk_id", DataType.VARCHAR, max_length=64)
+            schema.add_field("file_id", DataType.VARCHAR, max_length=64)
+            schema.add_field("chunk_index", DataType.INT64)
+            schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=dim)
+            schema.add_field("content_sparse", DataType.SPARSE_FLOAT_VECTOR)
+            schema.add_field("user_id", DataType.VARCHAR, max_length=64, default_value="")
+
+            schema.add_function(Function(
+                name="content_bm25",
+                input_field_names=["content"],
+                output_field_names=["content_sparse"],
+                function_type=FunctionType.BM25,
+            ))
+
+            milvus_client.create_collection(
+                collection_name, schema=schema, metric_type="COSINE",
+            )
+
+            index_params = milvus_client.prepare_index_params()
+            index_params.add_index(
+                field_name="embedding",
+                index_type="IVF_FLAT",
+                metric_type="COSINE",
+                params={"nlist": 128},
+            )
+            index_params.add_index(
+                field_name="content_sparse",
+                index_type="SPARSE_INVERTED_INDEX",
+                metric_type="BM25",
+            )
+            milvus_client.create_index(collection_name, index_params)
+            logger.info("RAG: Milvus collection '%s' created with BM25 sparse schema", collection_name)
+        else:
+            # Check if old schema has content_sparse; if not, drop + recreate
+            try:
+                desc = milvus_client.describe_collection(collection_name)
+                field_names = {f["name"] for f in desc.get("fields", [])}
+                if "content_sparse" not in field_names:
+                    logger.warning("RAG: Milvus collection has old schema (no content_sparse), dropping + recreating")
+                    milvus_client.drop_collection(collection_name)
+                    # Recursively call to recreate
+                    _ensure_collection()
+            except Exception as e:
+                logger.warning("RAG: Milvus collection schema check failed: %s", e)
+
+    # Check Milvus version >= 2.5 for native BM25 Function support
+    try:
+        version_info = milvus_client.get_server_version()
+        version_str = str(version_info)
+        major_minor = version_str.split(".")[:2]
+        major = int(major_minor[0]) if major_minor[0].isdigit() else 0
+        minor = int(major_minor[1]) if len(major_minor) > 1 and major_minor[1].isdigit() else 0
+        if major < 2 or (major == 2 and minor < 5):
+            logger.warning(
+                "RAG: Milvus version %s < 2.5, native BM25 Function not supported. "
+                "Collection schema changes aborted, system will use PG fallback.",
+                version_str,
+            )
+            return
+    except Exception as e:
+        logger.warning("RAG: Milvus version check failed: %s", e)
+
+    _ensure_collection()
 
     def milvus_search(embedding, k, user_id=None):
         try:
@@ -672,29 +809,85 @@ def _wire_milvus_to_rag(rag_service, milvus_client, settings):
             logger.warning("Milvus search error: %s", e)
             return []
 
+    def milvus_bm25_search(query_text, k, drop_ratio=0.0, user_id=None):
+        """Milvus native BM25 search."""
+        try:
+            if not milvus_client.has_collection(collection_name):
+                return []
+            milvus_client.load_collection(collection_name)
+            search_kwargs = {
+                "collection_name": collection_name,
+                "data": [query_text],
+                "anns_field": "content_sparse",
+                "limit": k,
+                "output_fields": ["content", "chunk_id", "file_id", "chunk_index"],
+                "search_params": {"metric_type": "BM25", "params": {"drop_ratio_search": drop_ratio}},
+            }
+            if user_id:
+                search_kwargs["filter"] = f'user_id == "{user_id}"'
+            results = milvus_client.search(**search_kwargs)
+            return [
+                {"pg_id": hit["id"], "content": hit["entity"].get("content", ""), "score": hit["distance"]}
+                for hit in results[0]
+            ]
+        except Exception as e:
+            logger.warning("Milvus BM25 search error: %s", e)
+            return []
+
+    def milvus_hybrid_search(query_text, query_embedding, k, vector_weight=0.7, bm25_weight=0.3, drop_ratio=0.0, user_id=None):
+        """Milvus hybrid_search with WeightedRanker for dense + BM25 fusion."""
+        try:
+            from pymilvus import AnnSearchRequest, WeightedRanker
+
+            if not milvus_client.has_collection(collection_name):
+                return []
+            milvus_client.load_collection(collection_name)
+
+            vector_req = AnnSearchRequest(
+                data=[query_embedding],
+                anns_field="embedding",
+                param={"metric_type": "COSINE", "params": {"nprobe": 10}},
+                limit=k,
+            )
+            bm25_req = AnnSearchRequest(
+                data=[query_text],
+                anns_field="content_sparse",
+                param={"metric_type": "BM25", "params": {"drop_ratio_search": drop_ratio}},
+                limit=k,
+            )
+            reranker = WeightedRanker(vector_weight, bm25_weight)
+            results = milvus_client.hybrid_search(
+                collection_name=collection_name,
+                reqs=[vector_req, bm25_req],
+                ranker=reranker,
+                limit=k,
+                output_fields=["content", "chunk_id", "file_id", "chunk_index"],
+            )
+            return [
+                {"pg_id": hit["id"], "content": hit["entity"].get("content", ""), "score": hit["distance"]}
+                for hit in results[0]
+            ]
+        except Exception as e:
+            logger.warning("Milvus hybrid search error: %s", e)
+            return []
+
     def milvus_insert(ids, contents, embeddings, user_id=None):
         try:
             if not milvus_client.has_collection(collection_name):
-                from pymilvus import DataType
-                schema = milvus_client.create_schema(auto_id=False, enable_dynamic_field=False)
-                schema.add_field("id", DataType.INT64, is_primary=True)
-                schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=dim)
-                schema.add_field("content", DataType.VARCHAR, max_length=65535)
-                schema.add_field("user_id", DataType.VARCHAR, max_length=64, default_value="")
-                milvus_client.create_collection(
-                    collection_name, schema=schema, metric_type="COSINE",
-                )
-                index_params = milvus_client.prepare_index_params()
-                index_params.add_index(
-                    field_name="embedding",
-                    index_type="IVF_FLAT",
-                    metric_type="COSINE",
-                    params={"nlist": 128},
-                )
-                milvus_client.create_index(collection_name, index_params)
+                _ensure_collection()
             data = [
-                {"id": int(i), "embedding": emb, "content": txt, "user_id": user_id or ""}
-                for i, txt, emb in zip(ids, contents, embeddings)
+                {
+                    "id": int(i),
+                    "embedding": emb,
+                    "content": txt,
+                    "user_id": user_id or "",
+                    "chunk_id": str(i),
+                    "file_id": "",
+                    "chunk_index": idx,
+                }
+                for idx, (i, txt, emb) in enumerate(
+                    zip(ids, contents, embeddings, strict=False)
+                )
             ]
             milvus_client.insert(collection_name, data)
         except Exception as e:
@@ -710,99 +903,45 @@ def _wire_milvus_to_rag(rag_service, milvus_client, settings):
         except Exception as e:
             logger.warning("Milvus delete error: %s", e)
 
-    rag_service.set_milvus_backend(milvus_search, milvus_insert)
+    rag_service.set_milvus_backend(
+        milvus_search, milvus_insert,
+        bm25_search_fn=milvus_bm25_search,
+        hybrid_search_fn=milvus_hybrid_search,
+    )
     rag_service.set_milvus_delete_fn(milvus_delete)
-    logger.info("RAG: Milvus backend wired")
+    logger.info("RAG: Milvus backend wired (dense + BM25 sparse + WeightedRanker)")
 
 
-def _wire_es_to_rag(rag_service, es_client):
-    """Wire AsyncElasticsearch into RAGService's HybridStore via callback functions."""
-    index_name = "rag_chunks"
-
-    async def _ensure_index():
-        try:
-            exists = await es_client.indices.exists(index=index_name)
-            if not exists:
-                await es_client.indices.create(
-                    index=index_name,
-                    body={
-                        "mappings": {
-                            "properties": {
-                                "content": {"type": "text"},
-                                "doc_hash": {"type": "keyword"},
-                                "chunk_idx": {"type": "integer"},
-                                "user_id": {"type": "keyword"},
-                            }
-                        }
-                    },
-                )
-                logger.info("RAG: ES index '%s' created with user_id mapping", index_name)
-        except Exception as e:
-            logger.warning("RAG: ES ensure index error: %s", e)
-
-    async def es_search(query_text, k, user_id=None):
-        try:
-            query_body: dict = {"query": {"match": {"content": query_text}}, "size": k}
-            if user_id:
-                query_body = {
-                    "query": {
-                        "bool": {
-                            "must": [{"match": {"content": query_text}}],
-                            "filter": [{"term": {"user_id.keyword": user_id}}],
-                        }
-                    },
-                    "size": k,
-                }
-            resp = await es_client.search(
-                index=index_name,
-                body=query_body,
-            )
-            return [
-                {"pg_id": int(hit["_id"]), "content": hit["_source"].get("content", ""), "score": hit["_score"]}
-                for hit in resp["hits"]["hits"]
-            ]
-        except Exception as e:
-            logger.warning("ES search error: %s", e)
-            return []
-
-    async def es_index(pg_id, content, doc_hash, chunk_idx, user_id=None):
-        try:
-            await es_client.index(
-                index=index_name,
-                id=str(pg_id),
-                body={
-                    "content": content,
-                    "doc_hash": doc_hash,
-                    "chunk_idx": chunk_idx,
-                    "user_id": user_id or "",
-                },
-            )
-        except Exception as e:
-            logger.warning("ES index error: %s", e)
-
-    async def es_delete(ids):
-        try:
-            for pg_id in ids:
-                await es_client.delete(index=index_name, id=str(pg_id), ignore=(404,))
-        except Exception as e:
-            logger.warning("ES delete error: %s", e)
-
-    rag_service.set_es_backend(es_search, es_index)
-    rag_service.set_es_delete_fn(es_delete)
-
-    import asyncio
-    asyncio.ensure_future(_ensure_index())
-
-    logger.info("RAG: Elasticsearch backend wired")
-
-
-def _wire_kg_to_rag(rag_service, neo4j_driver, settings, generate_fn):
-    """Wire KGStore into RAGService's HybridStore for KG search/index/delete."""
+def _wire_kg_to_rag(rag_service, neo4j_driver, settings, generate_fn, *, milvus_client=None, embed_fn=None):
+    """Wire KGStore into RAGService's HybridStore for KG search/index/delete.
+    Also inject KGStore + Extractor into GraphBuildTask and GraphRetrieval.
+    If milvus_client + embed_fn available, inject MilvusGraphVectorStore too.
+    """
     from app.graph.extractor import Extractor
     from app.graph.kgstore import KGStore
+    from app.rag.graph_build_task import GraphBuildTask
+    from app.rag.graph_retrieval import GraphRetrieval
 
     extractor = Extractor(generate_fn)
     kg_store = KGStore(settings, neo4j_driver, extractor)
+
+    # Inject into GraphBuildTask and GraphRetrieval (class-level injection)
+    GraphBuildTask.set_kg_store(kg_store, extractor)
+    GraphRetrieval.set_kg_store(kg_store)
+
+    # Inject embed_fn into GraphBuildTask and GraphRetrieval (for MilvusGraphVectorStore)
+    if embed_fn:
+        GraphBuildTask.set_embed_fn(embed_fn)
+        GraphRetrieval.set_embed_fn(embed_fn)
+
+    # Inject MilvusGraphVectorStore if Milvus client is available
+    if milvus_client:
+        try:
+            from app.rag.milvus_graph_vector_store import MilvusGraphVectorStore
+            MilvusGraphVectorStore.set_client(milvus_client, settings.rag_milvus_dim)
+            logger.info("RAG: MilvusGraphVectorStore wired (entity + triple collections)")
+        except Exception as e:
+            logger.warning("RAG: MilvusGraphVectorStore wiring failed: %s", e)
 
     async def kg_search(query_text, k):
         return await kg_store.search(query_text, k)
@@ -816,7 +955,7 @@ def _wire_kg_to_rag(rag_service, neo4j_driver, settings, generate_fn):
     rag_service.set_kg_backend(kg_search)
     rag_service.set_kg_index_fn(kg_index)
     rag_service.set_kg_delete_fn(kg_delete)
-    logger.info("RAG: KG backend wired")
+    logger.info("RAG: KG backend wired (GraphBuildTask + GraphRetrieval injected)")
 
 
 def create_app() -> FastAPI:
@@ -883,6 +1022,9 @@ def create_app() -> FastAPI:
         pending,
         plan_usage,
         profile,
+        rag_config,
+        rag_eval,
+        rag_tasks,
         runs_misc,
         skills,
         stream,
@@ -919,6 +1061,9 @@ def create_app() -> FastAPI:
     app.include_router(mcp.router, prefix="/api", tags=["mcp"])
     app.include_router(workspaces.router, prefix="/api", tags=["workspaces"])
     app.include_router(tasks.router, prefix="/api", tags=["tasks"])
+    app.include_router(rag_eval.router, prefix="/api", tags=["rag-eval"])
+    app.include_router(rag_tasks.router, prefix="/api", tags=["rag-tasks"])
+    app.include_router(rag_config.router, prefix="/api", tags=["rag-config"])
     # deployment preview assets served at root /deployments/{id}/... (no /api prefix);
     # the previewPath the agent emits is /deployments/{id}. Frontend proxies via rewrite.
     app.include_router(deployments.router, tags=["deployments"])

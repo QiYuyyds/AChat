@@ -38,7 +38,7 @@ class FileCatalog:
 
     def initialize(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.execute(_CREATE_TABLE_SQL)
         self._conn.commit()
 

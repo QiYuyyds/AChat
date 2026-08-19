@@ -40,6 +40,10 @@ def _empty_user_settings(user_id: str) -> UserSettings:
         companion_mode="off",
         mobile_device_token=None,
         obsidian_vault_path=None,
+        rag_chunk_preset=None,
+        rag_chunk_size=None,
+        rag_chunk_overlap=None,
+        ocr_engine=None,
         updated_at=0,
     )
 
@@ -86,6 +90,10 @@ class UserSettingsPatch(TypedDict, total=False):
     companion_mode: CompanionMode
     mobile_device_token: str | None
     obsidian_vault_path: str | None
+    rag_chunk_preset: str | None
+    rag_chunk_size: int | None
+    rag_chunk_overlap: int | None
+    ocr_engine: str | None
 
 
 _USER_STRING_FIELDS = (
@@ -97,6 +105,13 @@ _USER_STRING_FIELDS = (
     "companion_mode",
     "mobile_device_token",
     "obsidian_vault_path",
+    "rag_chunk_preset",
+    "ocr_engine",
+)
+
+_USER_INT_FIELDS = (
+    "rag_chunk_size",
+    "rag_chunk_overlap",
 )
 
 
@@ -114,6 +129,10 @@ async def update_user_settings(user_id: str, patch: UserSettingsPatch) -> UserSe
         for field in _USER_STRING_FIELDS:
             if field in patch:
                 setattr(row, field, _normalize(patch[field]))  # type: ignore[literal-required]
+
+        for field in _USER_INT_FIELDS:
+            if field in patch:
+                setattr(row, field, patch[field])  # type: ignore[literal-required]
 
         if row.companion_mode is None:
             row.companion_mode = "off"
@@ -310,6 +329,9 @@ async def update_app_settings(patch: AppSettingsPatch) -> AppSettings:
         for field in _USER_STRING_FIELDS:
             if field in patch:
                 setattr(row, field, _normalize(patch[field]))  # type: ignore[literal-required]
+        for field in _USER_INT_FIELDS:
+            if field in patch:
+                setattr(row, field, patch[field])  # type: ignore[literal-required]
         if row.companion_mode is None:
             row.companion_mode = "off"
         if row.companion_mode != "off" and not row.mobile_device_token:

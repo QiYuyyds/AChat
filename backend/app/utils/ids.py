@@ -129,3 +129,8 @@ def new_task_id() -> str:
 def new_task_comment_id() -> str:
     """Generate task comment ID: tc_<nanoid>"""
     return _gen_id("tc_")
+
+
+def new_rag_task_id() -> str:
+    """Generate RAG task ID: ragt_<nanoid>"""
+    return _gen_id("ragt_")

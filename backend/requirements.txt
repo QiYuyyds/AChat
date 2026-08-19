@@ -18,7 +18,7 @@ anthropic>=0.40.0
 openai>=1.57.0
 
 # Milvus (vector search)
-pymilvus>=2.4.0
+pymilvus>=2.5.0
 
 # Elasticsearch (full-text search)
 elasticsearch[async]>=8.14.0,<9.0.0
@@ -43,6 +43,7 @@ jieba>=0.42.1  # Chinese tokenization for memory BM25/FTS5
 # Document Parser pipeline (ported from AGI-memory)
 pdfplumber>=0.9.0    # PDF parsing - first-choice extractor
 PyPDF2>=3.0.0        # PDF parsing - pure-Python fallback
+pypdfium2>=4.30.0    # PDF page rendering for OCR (DeepSeek-OCR / RapidOCR)
 
 # Observability (OpenTelemetry + Arize Phoenix)
 opentelemetry-api>=1.28.0

@@ -24,7 +24,18 @@ async def rag_search_handler(args: Any, ctx: ToolContext) -> ToolResult:
         answer, results = await _rag_service.search(query, user_id=ctx.user_id)
         return ok({
             "answer": answer,
-            "results": results[:5],  # Limit to top 5 for tool output
+            "results": [
+                {
+                    "content": r.get("content", ""),
+                    "score": r.get("score", 0.0),
+                    "source": r.get("source", ""),
+                    "documentId": (r.get("source_info") or {}).get("document_id"),
+                    "sourcePath": (r.get("source_info") or {}).get("source_path", ""),
+                    "title": (r.get("source_info") or {}).get("title", ""),
+                    "chunkIdx": (r.get("source_info") or {}).get("chunk_idx"),
+                }
+                for r in results[:5]
+            ],
         })
     except Exception as e:
         return err(f"RAG search failed: {e}")

@@ -4,14 +4,17 @@ Ported from AGI-memory ``internal/rag/rag.py``.
 Adaptation: async indexing/search; infrastructure backends injected.
 """
 
+import asyncio
 import hashlib
 import logging
 from collections.abc import Callable
 
 from app.config import Settings
-from app.infra.hybrid import HybridStore
+from app.infra.hybrid import HybridStore, RetrievalConfig
+from app.rag.chunking.dispatcher import chunk_markdown as dispatch_chunk
+from app.rag.chunking.nlp import count_tokens
+from app.rag.chunking.presets import normalize_chunk_preset_id
 from app.rag.reranker import LLMReranker
-from app.rag.rewriter import HistoryMessage, LLMRewriter
 from app.rag.splitter import Chunk, RecursiveSplitter
 
 logger = logging.getLogger(__name__)
@@ -28,7 +31,6 @@ class RAGEngine:
         self.child_splitter = RecursiveSplitter(settings.rag_chunk_size, settings.rag_chunk_overlap)
         self.loaded = False
         self._generate_fn: Callable[[str, str], str] | None = None
-        self._rewriter: LLMRewriter | None = None
         self._reranker: LLMReranker | None = None
         self._hybrid = hybrid
         self._embed_fn: Callable | None = None
@@ -41,9 +43,6 @@ class RAGEngine:
         if self._hybrid:
             self._hybrid.set_embed_fn(fn)
 
-    def set_rewriter(self, rewriter: LLMRewriter | None) -> None:
-        self._rewriter = rewriter
-
     def set_reranker(self, reranker: LLMReranker | None) -> None:
         self._reranker = reranker
         if self._hybrid:
@@ -54,18 +53,59 @@ class RAGEngine:
 
     # ─── Ingest ───────────────────────────────────────────────────────────
 
-    async def ingest(self, doc: str, *, user_id: str | None = None) -> int:
-        """Split document, embed, and index to PG/Milvus/ES."""
-        parents = self.parent_splitter.split(doc)
-        chunks: list[Chunk] = []
-        child_parents: list[str] = []
-        for parent in parents:
-            for child in self.child_splitter.split(parent.content):
-                child.id = len(chunks)
-                chunks.append(child)
-                child_parents.append(parent.content)
-        if not chunks:
+    async def ingest(
+        self,
+        doc: str,
+        *,
+        user_id: str | None = None,
+        preset_id: str = "",
+    ) -> int:
+        """Split document, embed, and index to PG/Milvus/ES.
+
+        Args:
+            doc: Document text content.
+            user_id: Optional user ID for data isolation.
+            preset_id: Chunking preset (general/qa/semantic/separator).
+                       Defaults to settings.rag_chunk_preset when empty.
+        """
+        pid = normalize_chunk_preset_id(preset_id or self.settings.rag_chunk_preset)
+        chunk_config = {
+            "chunk_size": self.settings.rag_chunk_size,
+            "chunk_overlap": self.settings.rag_chunk_overlap,
+            "_parser_config_json": self.settings.rag_chunk_parser_config,
+        }
+
+        # Parent split: use dispatcher with larger chunk size for parent context
+        parent_config = {
+            **chunk_config,
+            "chunk_size": max(self.settings.rag_chunk_size * 4, 600),
+            "chunk_overlap": self.settings.rag_chunk_overlap * 2,
+        }
+        parent_texts = dispatch_chunk(
+            doc, pid, parent_config, embed_fn=self._embed_fn
+        )
+        if not parent_texts:
             return 0
+
+        # Child split: for each parent, split into smaller chunks
+        child_parents: list[str] = []
+        chunk_contents: list[str] = []
+        for parent_text in parent_texts:
+            child_texts = dispatch_chunk(
+                parent_text, pid, chunk_config, embed_fn=self._embed_fn
+            )
+            if not child_texts:
+                child_texts = [parent_text]
+            for child_text in child_texts:
+                chunk_contents.append(child_text)
+                child_parents.append(parent_text)
+
+        if not chunk_contents:
+            return 0
+
+        chunks: list[Chunk] = [
+            Chunk(id=i, content=c) for i, c in enumerate(chunk_contents)
+        ]
 
         doc_hash = hashlib.sha256(doc.encode("utf-8")).hexdigest()[:16]
         contents = [chunk.content for chunk in chunks]
@@ -83,29 +123,41 @@ class RAGEngine:
         # Determine expected embedding dimension from settings
         expected_dim = self.settings.rag_milvus_dim
 
-        embeddings: list[list[float]] = []
-        cache_hit: list[bool] = []  # True = skip embed_fn and KG extraction
-        for i, chunk in enumerate(chunks):
+        embeddings: list[list[float]] = [None] * len(chunks)  # type: ignore[list-item]
+        cache_hit: list[bool] = [False] * len(chunks)
+        miss_indices: list[int] = []
+
+        for i, _chunk in enumerate(chunks):
             ch = content_hashes[i]
             cached_emb = cache_map.get(ch)
             if cached_emb is not None and (
                 expected_dim == 0 or len(cached_emb) == expected_dim
             ):
-                # Cache hit: reuse existing embedding, skip embed_fn + KG
-                embeddings.append(cached_emb)
-                cache_hit.append(True)
+                embeddings[i] = cached_emb
+                cache_hit[i] = True
             else:
-                # Cache miss (or dim mismatch): generate new embedding
-                embedding: list[float] = []
-                if self._embed_fn:
+                miss_indices.append(i)
+
+        if self._embed_fn and miss_indices:
+            sem = asyncio.Semaphore(self.settings.rag_embed_concurrency)
+
+            async def _embed_one(idx: int) -> tuple[int, list[float]]:
+                async with sem:
                     try:
-                        embedding = self._embed_fn(chunk.content)
+                        return idx, await asyncio.to_thread(self._embed_fn, chunks[idx].content)
                     except Exception as e:
-                        logger.warning(
-                            "Chunk vectorization failed (idx=%d): %s", i, e
-                        )
-                embeddings.append(embedding)
-                cache_hit.append(False)
+                        logger.warning("Chunk vectorization failed (idx=%d): %s", idx, e)
+                        return idx, []
+
+            embed_tasks = [_embed_one(i) for i in miss_indices]
+            results = await asyncio.gather(*embed_tasks)
+            for idx, emb in results:
+                embeddings[idx] = emb
+                cache_hit[idx] = False
+
+        # Compute per-chunk token counts and char positions for DB metadata
+        token_counts: list[int] = [count_tokens(c) for c in contents]
+        char_positions: list[tuple[int, int]] = _locate_chunks(doc, contents)
 
         if self._hybrid:
             await self._hybrid.index_chunks(
@@ -116,15 +168,18 @@ class RAGEngine:
                 content_hashes=content_hashes,
                 cache_hit=cache_hit,
                 user_id=user_id,
+                token_counts=token_counts,
+                char_positions=char_positions,
             )
         else:
             logger.warning("No hybrid store configured, chunks not indexed")
 
         self.loaded = True
         logger.info(
-            "Ingested %d chunks from %d parents (doc_hash=%s, cache_hits=%d)",
+            "Ingested %d chunks from %d parents (preset=%s, doc_hash=%s, cache_hits=%d)",
             len(chunks),
-            len(parents),
+            len(parent_texts),
+            pid,
             doc_hash,
             sum(cache_hit),
         )
@@ -171,15 +226,12 @@ class RAGEngine:
 
     # ─── Search ───────────────────────────────────────────────────────────
 
-    async def query(self, question: str, *, user_id: str | None = None) -> tuple[str, list[dict]]:
-        return await self.query_with_history(question, [], user_id=user_id)
-
-    async def query_with_history(
+    async def query(
         self,
         question: str,
-        history: list[HistoryMessage] | None = None,
         *,
         user_id: str | None = None,
+        retrieval_config: RetrievalConfig | None = None,
     ) -> tuple[str, list[dict]]:
         if not self.loaded:
             return "Knowledge base is empty. Please upload documents first.", []
@@ -187,15 +239,13 @@ class RAGEngine:
             return "Search infrastructure unavailable.", []
 
         top_k = max(1, self.settings.rag_top_k)
+        if retrieval_config and retrieval_config.final_top_k is not None:
+            top_k = max(1, retrieval_config.final_top_k)
         queries = [question]
-        if self._rewriter:
-            from app.observability import start_span
-            with start_span("rag.query_rewrite", original=question[:100]):
-                rewritten = self._rewriter.rewrite(question, history or [])
-            if rewritten:
-                queries = rewritten
 
-        hybrid_hits = await self._hybrid.search_multi(queries, top_k, user_id=user_id)
+        hybrid_hits = await self._hybrid.search_multi(
+            queries, top_k, user_id=user_id, retrieval_config=retrieval_config
+        )
         from app.observability import start_span
         with start_span("rag.rrf_fuse", final_count=len(hybrid_hits), fusion_method="rrf"):
             fused = [
@@ -204,11 +254,11 @@ class RAGEngine:
                     "content": h.parent or h.content,
                     "score": h.score,
                     "source": h.source,
+                    "source_info": h.source_info,
                 }
                 for h in hybrid_hits
             ]
-        ask_query = queries[0] if queries else question
-        return self._compose_answer(ask_query, fused)
+        return self._compose_answer(question, fused)
 
     def _compose_answer(self, question: str, fused: list[dict]) -> tuple[str, list[dict]]:
         fused = self._dedupe_results(fused)
@@ -240,3 +290,27 @@ class RAGEngine:
             seen.add(content)
             deduped.append(item)
         return deduped
+
+
+def _locate_chunks(source: str, chunks: list[str]) -> list[tuple[int, int]]:
+    """Locate each chunk's (start, end) char position in the source document.
+
+    Uses incremental search: each chunk is searched starting from the end of the
+    previous match. If a chunk is not found (e.g., overlap-modified content), the
+    position is (None, None).
+    """
+    positions: list[tuple[int, int]] = []
+    cursor = 0
+    for chunk in chunks:
+        idx = source.find(chunk, cursor)
+        if idx >= 0:
+            positions.append((idx, idx + len(chunk)))
+            cursor = idx + len(chunk)
+        else:
+            # Fallback: search from beginning (overlap may have shifted order)
+            idx = source.find(chunk)
+            if idx >= 0:
+                positions.append((idx, idx + len(chunk)))
+            else:
+                positions.append((None, None))
+    return positions

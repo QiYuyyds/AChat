@@ -44,7 +44,7 @@ class VectorIndex:
     def initialize(self) -> None:
         """Open SQLite connection and create table + indexes."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.executescript(_CREATE_TABLE_SQL)
         self._conn.commit()
         # Detect existing vector dimension from stored data

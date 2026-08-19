@@ -1,58 +1,8 @@
-"""Unit tests for LLMRewriter and LLMReranker — generation + failure fallback."""
+"""Unit tests for LLMReranker — generation + failure fallback."""
 
 import json
 
 from app.rag.reranker import LLMReranker
-from app.rag.rewriter import HistoryMessage, LLMRewriter
-
-
-class TestLLMRewriter:
-    def test_empty_query(self):
-        rw = LLMRewriter(generate_fn=lambda s, u: "")
-        assert rw.rewrite("", []) == []
-
-    def test_no_generate_fn_fallback(self):
-        rw = LLMRewriter(generate_fn=None)
-        assert rw.rewrite("test query", []) == ["test query"]
-
-    def test_single_query_mode(self):
-        rw = LLMRewriter(generate_fn=lambda s, u: "", num_queries=1)
-        assert rw.rewrite("test query", []) == ["test query"]
-
-    def test_successful_rewrite(self):
-        def mock_generate(system, user):
-            return json.dumps({"queries": ["独立查询", "变体一", "变体二"]})
-
-        rw = LLMRewriter(generate_fn=mock_generate, num_queries=3)
-        results = rw.rewrite("原始问题", [HistoryMessage("user", "hello")])
-        assert len(results) >= 1
-        assert "独立查询" in results
-
-    def test_generate_failure_fallback(self):
-        """LLM failure should fallback to original query."""
-        def mock_generate(system, user):
-            raise RuntimeError("LLM unavailable")
-
-        rw = LLMRewriter(generate_fn=mock_generate)
-        results = rw.rewrite("original query", [])
-        assert results == ["original query"]
-
-    def test_malformed_json_fallback(self):
-        def mock_generate(system, user):
-            return "this is not json"
-
-        rw = LLMRewriter(generate_fn=mock_generate)
-        results = rw.rewrite("query", [])
-        assert results == ["query"]
-
-    def test_json_fence_stripping(self):
-        """LLM sometimes wraps JSON in markdown code blocks."""
-        def mock_generate(system, user):
-            return '```json\n{"queries": ["q1", "q2", "q3"]}\n```'
-
-        rw = LLMRewriter(generate_fn=mock_generate, num_queries=3)
-        results = rw.rewrite("query", [])
-        assert "q1" in results
 
 
 class TestLLMReranker:

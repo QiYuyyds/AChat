@@ -143,9 +143,9 @@ class MemoryService:
         # Build hybrid search (now that indexes are ready)
         self._search = self._build_search()
 
-        # Full reindex on startup
+        # Full reindex on startup (in thread to avoid blocking event loop during startup)
         try:
-            count = self.auto_index.full_reindex()
+            count = await asyncio.to_thread(self.auto_index.full_reindex)
             logger.info("MemoryService startup reindex: %d files", count)
         except Exception as e:
             logger.warning("Startup reindex failed: %s", e)
@@ -279,6 +279,100 @@ class MemoryService:
         self.vector_index.close()
         logger.info("MemoryService closed")
 
+    # ─── Graph data ────────────────────────────────────────────────────
+
+    def get_graph_data(
+        self,
+        bucket: str | None = None,
+        agent_id: str | None = None,
+        min_degree: int = 0,
+    ) -> dict:
+        """Return full wikilink graph data (nodes + edges) for visualization.
+
+        Aggregates frontmatter metadata for each node and computes degree
+        (in + out edges). Supports optional filtering by bucket, agent_id,
+        and min_degree.
+        """
+        from app.memory.file_store.markdown_io import read_markdown
+
+        raw_edges = self.wikilink_expander.get_all_edges()
+
+        # Collect unique node paths from edges
+        node_paths: set[str] = set()
+        for edge in raw_edges:
+            node_paths.add(edge["source"])  # type: ignore[arg-type]
+            node_paths.add(edge["target"])  # type: ignore[arg-type]
+
+        # Compute degree for each node
+        degree_map: dict[str, int] = {p: 0 for p in node_paths}
+        for edge in raw_edges:
+            degree_map[edge["source"]] = degree_map.get(edge["source"], 0) + 1  # type: ignore[index]
+            degree_map[edge["target"]] = degree_map.get(edge["target"], 0) + 1  # type: ignore[index]
+
+        # Build node objects with frontmatter
+        nodes: list[dict] = []
+        for path in sorted(node_paths):
+            fm = self._read_frontmatter_for_graph(path, read_markdown)
+            degree = degree_map.get(path, 0)
+
+            # Apply agent_id filter
+            if agent_id and fm.get("agent_id") != agent_id:
+                continue
+
+            # Apply bucket filter
+            if bucket and fm.get("bucket") != bucket:
+                continue
+
+            # Apply min_degree filter
+            if degree < min_degree:
+                continue
+
+            nodes.append({
+                "path": path,
+                "name": fm.get("name", path),
+                "bucket": fm.get("bucket", "wiki"),
+                "importance": fm.get("importance", 0.5),
+                "tags": fm.get("tags", []),
+                "description": fm.get("description", ""),
+                "degree": degree,
+            })
+
+        # Filter edges: both endpoints must be in the returned node set
+        node_path_set = {n["path"] for n in nodes}
+        edges: list[dict] = [
+            {
+                "source": e["source"],
+                "target": e["target"],
+                "predicate": e["predicate"],
+            }
+            for e in raw_edges
+            if e["source"] in node_path_set and e["target"] in node_path_set
+        ]
+
+        return {"nodes": nodes, "edges": edges}
+
+    def _read_frontmatter_for_graph(self, path: str, read_fn) -> dict:
+        """Read frontmatter for a graph node by its workspace-relative path."""
+        filepath = self.workspace.root / path
+        try:
+            filepath.resolve().relative_to(self.workspace.root.resolve())
+        except (ValueError, OSError):
+            return {"name": path, "bucket": "wiki", "importance": 0.5, "tags": [], "description": "", "agent_id": None}
+
+        mem = read_fn(filepath)
+        if mem is None:
+            return {"name": path, "bucket": "wiki", "importance": 0.5, "tags": [], "description": "", "agent_id": None}
+
+        fm = mem.frontmatter
+        return {
+            "name": fm.name,
+            "bucket": fm.bucket,
+            "importance": fm.importance,
+            "tags": list(fm.tags),
+            "description": fm.description,
+            "agent_id": fm.agent_id,
+        }
+
     # ─── Internal safe wrappers ───────────────────────────────────────────
 
     async def _safe_auto_memory(
@@ -290,8 +384,7 @@ class MemoryService:
                 conversation_id=conversation_id, agent_id=agent_id,
             )
             if result > 0:
-                # Reindex the newly written/updated daily card
-                # Find it by source marker
+                # Reindex the newly written/updated daily card (in thread to avoid blocking event loop)
                 from datetime import date
                 today = date.today().isoformat()
                 source_marker = f"session/{conversation_id}.jsonl"
@@ -301,14 +394,14 @@ class MemoryService:
                     for f in sorted(today_dir.glob("*.md")):
                         mem = read_markdown(f)
                         if mem and source_marker in (mem.frontmatter.source or ""):
-                            self.auto_index.index_file(f)
+                            await asyncio.to_thread(self.auto_index.index_file, f)
                             break
                     else:
                         # Fallback: try old naming convention
                         old_name = f"session_{conversation_id[:8]}"
                         old_path = self.workspace.daily_file_path(old_name, today)
                         if old_path.exists():
-                            self.auto_index.index_file(old_path)
+                            await asyncio.to_thread(self.auto_index.index_file, old_path)
 
                 # Check auto_dream threshold
                 if self.check_auto_dream_threshold():
@@ -320,8 +413,8 @@ class MemoryService:
         try:
             result = await self.trigger_auto_dream()
             logger.info("auto_dream completed: %s", result)
-            # Reindex after dream
-            self.auto_index.full_reindex()
+            # Reindex after dream (in thread to avoid blocking event loop)
+            await asyncio.to_thread(self.auto_index.full_reindex)
         except Exception as e:
             logger.warning("auto_dream failed: %s", e)
 

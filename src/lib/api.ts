@@ -1101,17 +1101,21 @@ export async function fetchAppSettings(): Promise<AppSettingsRow> {
 }
 
 export interface AppSettingsPatchBody {
-  anthropicApiKey?: string | null
-  anthropicBaseUrl?: string | null
-  openaiApiKey?: string | null
-  deepseekApiKey?: string | null
-  arkApiKey?: string | null
-  companionMode?: 'off' | 'lan' | 'tailnet'
-  mobileDeviceToken?: string | null
-  deploymentPublishEnabled?: boolean
-  deploymentPublishDir?: string | null
-  deploymentPublicBaseUrl?: string | null
-  obsidianVaultPath?: string | null
+anthropicApiKey?: string | null
+anthropicBaseUrl?: string | null
+openaiApiKey?: string | null
+deepseekApiKey?: string | null
+arkApiKey?: string | null
+companionMode?: 'off' | 'lan' | 'tailnet'
+mobileDeviceToken?: string | null
+deploymentPublishEnabled?: boolean
+deploymentPublishDir?: string | null
+deploymentPublicBaseUrl?: string | null
+obsidianVaultPath?: string | null
+ragChunkPreset?: string | null
+ragChunkSize?: number | null
+ragChunkOverlap?: number | null
+ocrEngine?: string | null
 }
 
 export async function updateAppSettings(patch: AppSettingsPatchBody): Promise<AppSettingsRow> {
@@ -1187,25 +1191,28 @@ export async function deleteDocument(documentId: string): Promise<{ ok: boolean;
   )
 }
 
-export async function ingestDocument(documentId: string, versionId: string): Promise<IngestResult> {
-  return json<IngestResult>(
-    authFetch(`${API_BASE_URL}/api/documents/${documentId}/ingest`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ versionId }),
-    }),
-  )
+export async function ingestDocument(documentId: string, versionId: string, opts?: { presetId?: string }): Promise<IngestResult> {
+const body: Record<string, string> = { versionId }
+if (opts?.presetId) body.presetId = opts.presetId
+return json<IngestResult>(
+authFetch(`${API_BASE_URL}/api/documents/${documentId}/ingest`, {
+method: 'POST',
+headers: { 'Content-Type': 'application/json' },
+body: JSON.stringify(body),
+}),
+)
 }
 
 export async function uploadDocument(
-  file: File,
-  opts?: { documentId?: string; title?: string; docType?: string },
+file: File,
+opts?: { documentId?: string; title?: string; docType?: string; presetId?: string },
 ): Promise<UploadResult> {
-  const form = new FormData()
-  form.append('file', file)
-  if (opts?.documentId) form.append('document_id', opts.documentId)
-  if (opts?.title) form.append('title', opts.title)
-  if (opts?.docType) form.append('doc_type', opts.docType)
+const form = new FormData()
+form.append('file', file)
+if (opts?.documentId) form.append('document_id', opts.documentId)
+if (opts?.title) form.append('title', opts.title)
+if (opts?.docType) form.append('doc_type', opts.docType)
+if (opts?.presetId) form.append('preset_id', opts.presetId)
   const res = await authFetch(`${API_BASE_URL}/api/documents/upload`, {
     method: 'POST',
     body: form,
@@ -1217,9 +1224,26 @@ export async function uploadDocument(
   return res.json() as Promise<UploadResult>
 }
 
+// ─── RAG Config (presets + OCR engines) ─────────────────────────
+
+export async function fetchRagPresets(): Promise<{ presets: import('@/shared/types').RagPreset[]; default: string }> {
+return json<{ presets: import('@/shared/types').RagPreset[]; default: string }>(
+authFetch(API_BASE_URL + '/api/rag/presets'),
+)
+}
+
+export async function fetchOcrEngines(): Promise<{ engines: import('@/shared/types').OcrEngineStatus[]; current: string }> {
+return json<{ engines: import('@/shared/types').OcrEngineStatus[]; current: string }>(
+authFetch(API_BASE_URL + '/api/ocr-engines'),
+)
+}
+
 // ─── Obsidian Sync ──────────────────────────────────────────
-export async function fetchDocumentTree(path?: string): Promise<import('@/shared/types').DocumentTree> {
-  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+export async function fetchDocumentTree(path?: string, parentId?: string): Promise<import('@/shared/types').DocumentTree> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  if (parentId) params.set('parent_id', parentId)
+  const query = params.toString() ? `?${params.toString()}` : ''
   return json<import('@/shared/types').DocumentTree>(
     authFetch(API_BASE_URL + '/api/documents/tree' + query),
   )
@@ -1231,6 +1255,32 @@ export async function fetchDocumentFlat(sources?: string[]): Promise<DocumentRow
     authFetch(API_BASE_URL + '/api/documents/flat' + query),
   )
   return documents
+}
+
+export async function getDocumentPreview(documentId: string): Promise<import('@/shared/types').DocumentPreview> {
+  return json<import('@/shared/types').DocumentPreview>(
+    authFetch(`${API_BASE_URL}/api/documents/${documentId}/preview`),
+  )
+}
+
+export async function createFolder(name: string, parentId?: string): Promise<DocumentRow> {
+  return json<DocumentRow>(
+    authFetch(API_BASE_URL + '/api/documents/folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, parentId: parentId ?? null }),
+    }),
+  )
+}
+
+export async function moveDocument(documentId: string, targetParentId: string | null): Promise<DocumentRow> {
+  return json<DocumentRow>(
+    authFetch(`${API_BASE_URL}/api/documents/${documentId}/move`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetParentId }),
+    }),
+  )
 }
 
 export async function syncObsidian(): Promise<import('@/shared/types').SyncReport> {

@@ -236,3 +236,43 @@ export async function fetchSessionMemoryDetail(
     authFetch(`${API_BASE_URL}/api/memory/session/${conversationId}`),
   )
 }
+
+// ─── Types: Graph (memory wikilink visualization) ──────────────────────────
+
+export interface GraphNode {
+  path: string
+  name: string
+  bucket: string
+  importance: number
+  tags: string[]
+  description: string
+  degree: number
+}
+
+export interface GraphEdge {
+  source: string
+  target: string
+  predicate: string | null
+}
+
+export interface GraphData {
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+}
+
+// ─── Graph API ─────────────────────────────────────────────────────────────
+
+export async function fetchMemoryGraph(params: {
+  bucket?: string
+  agentId?: string
+  minDegree?: number
+}): Promise<GraphData> {
+  const search = new URLSearchParams()
+  if (params.bucket) search.set('bucket', params.bucket)
+  if (params.agentId) search.set('agent_id', params.agentId)
+  if (params.minDegree) search.set('min_degree', String(params.minDegree))
+  const qs = search.toString()
+  return json<GraphData>(
+    authFetch(`${API_BASE_URL}/api/memory/graph${qs ? '?' + qs : ''}`),
+  )
+}

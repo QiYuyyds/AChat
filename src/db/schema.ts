@@ -313,6 +313,10 @@ export const appSettings = sqliteTable('app_settings', {
     .default(false),
   deploymentPublishDir: text('deployment_publish_dir'),
   deploymentPublicBaseUrl: text('deployment_public_base_url'),
+  ragChunkPreset: text('rag_chunk_preset'),
+  ragChunkSize: integer('rag_chunk_size'),
+  ragChunkOverlap: integer('rag_chunk_overlap'),
+  ocrEngine: text('ocr_engine'),
   updatedAt: integer('updated_at').notNull(),
 })
 

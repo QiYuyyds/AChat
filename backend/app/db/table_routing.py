@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from sqlalchemy import Table
 
-# ─── Local SQLite tables (12) — conversation hot data + personal config + tasks ───
+# ─── Local SQLite tables (13) — conversation hot data + personal config + tasks ───
 LOCAL_TABLES: frozenset[str] = frozenset({
     "messages",
     "conversations",
@@ -27,9 +27,10 @@ LOCAL_TABLES: frozenset[str] = frozenset({
     "model_profiles",
     "tasks",
     "task_comments",
+    "rag_tasks",
 })
 
-# ─── Remote PostgreSQL tables (9) — user system + knowledge/RAG ───
+# ─── Remote PostgreSQL tables (13) — user system + knowledge/RAG + eval ───
 REMOTE_TABLES: frozenset[str] = frozenset({
     "users",
     "user_settings",
@@ -40,6 +41,10 @@ REMOTE_TABLES: frozenset[str] = frozenset({
     "chat_history",
     "documents",
     "document_versions",
+    "eval_datasets",
+    "eval_dataset_items",
+    "eval_runs",
+    "eval_run_items",
 })
 
 # Tables that don't match either set are created on the local engine in
