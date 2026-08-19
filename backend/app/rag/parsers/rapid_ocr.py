@@ -43,7 +43,7 @@ class RapidOCRParser(BaseDocumentProcessor):
         self._ocr = None
 
     def _get_model_params(self) -> dict[str, object]:
-        """Build RapidOCR model parameters following Fidi-Intelli's approach."""
+        """Build RapidOCR model parameters."""
         params: dict[str, object] = {
             "Det.box_thresh": self._det_box_thresh,
             "Cls.engine_type": "onnxruntime",
@@ -157,7 +157,7 @@ class RapidOCRParser(BaseDocumentProcessor):
 
             for page_idx in range(num_pages):
                 page = pdf[page_idx]
-                # Default zoom=2 (≈144 DPI), matching Fidi-Intelli
+                # Default zoom=2 (≈144 DPI)
                 pil_image = page.render(scale=2).to_pil()
                 text = self._ocr_image(pil_image)
                 if text:

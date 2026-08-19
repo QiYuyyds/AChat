@@ -1,8 +1,7 @@
 """MinerU Official parser — MinerU cloud API via HTTP.
 
 Calls the official MinerU cloud service using an API key. Unlike the
-previous version that tried to get text directly, this parser follows
-Fidi-Intelli's approach:
+previous version that tried to get text directly, this parser:
 
 1. Request an upload URL via ``POST /file-urls/batch``
 2. Upload the file to the returned URL via HTTP PUT

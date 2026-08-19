@@ -94,6 +94,9 @@ next-env.d.ts
 /eval/CRUD_RAG-main/
 /md_sys/
 
+# OpenSpec 变更与规格文档（本地工作区，不推送到远程）
+/openspec/
+
 # AI 工具配置与本地资源（不上传）
 /skills/
 /resources/

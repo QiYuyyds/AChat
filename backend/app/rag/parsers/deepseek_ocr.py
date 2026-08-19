@@ -5,7 +5,7 @@ The model converts document images to **Markdown** (not plain text),
 preserving headings, tables, lists, and other structural elements.
 
 For PDF files, each page is rendered to an image with pypdfium2, then
-sent to the API individually — matching Fidi-Intelli's approach.
+sent to the API individually.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ class DeepSeekOCRParser(BaseDocumentProcessor):
 
     Unlike the previous version that asked for "extracted text", this parser
     sends the prompt ``<image>\\n<|grounding|>Convert the document to markdown.``
-    — matching Fidi-Intelli's implementation. The model returns structured
+    . The model returns structured
     Markdown with headings, tables, and lists.
 
     For PDFs, each page is rendered to a PNG image (via pypdfium2) and sent
@@ -142,7 +142,7 @@ class DeepSeekOCRParser(BaseDocumentProcessor):
     def _call_api(self, data_bytes: bytes, mime_type: str) -> str:
         """Call SiliconFlow DeepSeek-OCR API with a single image.
 
-        The prompt follows Fidi-Intelli's approach:
+        The prompt uses:
         ``<image>\\n<|grounding|>Convert the document to markdown.``
 
         After getting the response, special grounding tags (``<|ref|>...<|/ref|>``,

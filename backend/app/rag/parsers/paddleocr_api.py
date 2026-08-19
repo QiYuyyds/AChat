@@ -9,7 +9,6 @@ The workflow is:
 PaddleOCR-VL returns layout-aware Markdown (with tables, formulas, images).
 PP-OCRv6 returns plain OCR text lines.
 
-Adapted from Fidi-Intelli's ``paddleocr_api.py``.
 """
 
 from __future__ import annotations
