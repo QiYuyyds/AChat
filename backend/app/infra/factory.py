@@ -20,7 +20,6 @@ class Infrastructure:
         self.status = InfrastructureStatus()
         self.neo4j_driver = None
         self.milvus_client = None
-        self.es_client = None
         self.kafka_producer = None
         self.redis_client = None  # Removed in dual-DB migration; kept for backward-compat
 
@@ -78,20 +77,6 @@ async def build_infrastructure(settings: Settings) -> Infrastructure:
     else:
         logger.info("Milvus not configured (milvus_host is empty)")
 
-    # ─── Elasticsearch (optional) ───
-    if settings.es_addresses:
-        try:
-            from elasticsearch import AsyncElasticsearch
-            addresses = [a.strip() for a in settings.es_addresses.split(",") if a.strip()]
-            infra.es_client = AsyncElasticsearch(addresses)
-            infra.status.elasticsearch = "connected"
-            logger.info("Elasticsearch connected: %s", addresses)
-        except Exception as e:
-            infra.status.elasticsearch = "disconnected"
-            logger.warning("Elasticsearch unavailable: %s", e)
-    else:
-        logger.info("Elasticsearch not configured (es_addresses is empty)")
-
     # ─── Neo4j (optional) ───
     if settings.neo4j_uri and settings.enable_graph:
         try:
@@ -148,12 +133,6 @@ async def close_infrastructure(infra: Infrastructure) -> None:
     if infra.neo4j_driver:
         try:
             await infra.neo4j_driver.close()
-        except Exception:
-            pass
-
-    if infra.es_client:
-        try:
-            await infra.es_client.close()
         except Exception:
             pass
 

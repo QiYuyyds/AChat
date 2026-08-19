@@ -9,7 +9,6 @@ class InfrastructureStatus:
 
     postgres: str = "disconnected"
     milvus: str = "disconnected"
-    elasticsearch: str = "disconnected"
     neo4j: str = "disconnected"
     kafka: str = "disconnected"
     redis: str = "disconnected"
@@ -18,7 +17,6 @@ class InfrastructureStatus:
         return {
             "postgres": self.postgres,
             "milvus": self.milvus,
-            "elasticsearch": self.elasticsearch,
             "neo4j": self.neo4j,
             "kafka": self.kafka,
             "redis": self.redis,

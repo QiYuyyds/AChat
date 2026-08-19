@@ -858,117 +858,97 @@ export function MessageInput({
     }
   }
 
+  const hasComposeAttachments = pending.length > 0 || uploading.length > 0
 
   return (
     <div className="relative shrink-0 -translate-y-2 bg-background px-2 pb-3 pt-0.5">
-      {/* 引用预览 */}
-      {replyMessage && (
-        <div className="mb-2">
-          <QuotedMessage
-            message={replyMessage}
-            variant="compose"
-            onDismiss={() => setReplyTarget(conversationId, null)}
-          />
-        </div>
-      )}
-
-      {/* 选区改写引用块 */}
-      {pendingQuote && (
-        <div className="mb-2 flex items-start gap-2 rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-xs">
-          <Sparkles className="mt-0.5 size-3 shrink-0 text-primary" />
-          <div className="min-w-0 flex-1">
-            <div className="font-medium text-primary">
-              {pendingQuote.kind === 'ask' ? '提问' : '改写'} · {pendingQuote.sourceLabel}
-            </div>
-            <pre className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words font-mono text-[10px] text-muted-foreground">
-              {pendingQuote.text}
-            </pre>
-            <div className="mt-0.5 text-[10px] text-muted-foreground/70">
-              {pendingQuote.kind === 'ask'
-                ? '在下方输入框写你的问题，发送时会带上这段引用一起发给 Agent'
-                : '在下方输入框写改写指令，发送时会作为引用一起发给 Agent'}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setPendingQuote(null)}
-            className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-            title="取消引用"
-          >
-            <X className="size-3" />
-          </button>
-        </div>
-      )}
-
-      {/* Attachments chips */}
-      {(pending.length > 0 || uploading.length > 0) && (
-        <div className="mb-2 flex flex-wrap gap-2">
-          {pending.map((a) => (
-            <AttachmentChip
-              key={a.id}
-              attachment={{
-                id: a.id,
-                fileName: a.fileName,
-                size: a.size,
-                mimeType: a.mimeType,
-                kind: a.kind,
-              }}
-              context="compose"
-              onRemove={() => removePending(a.id)}
+      <div className="mx-auto max-w-3xl">
+        {/* 引用预览 */}
+        {replyMessage && (
+          <div className="mb-2">
+            <QuotedMessage
+              message={replyMessage}
+              variant="compose"
+              onDismiss={() => setReplyTarget(conversationId, null)}
             />
-          ))}
-          {uploading.map((u) => (
-            <PendingAttachmentChip key={u.tempId} fileName={u.name} />
-          ))}
-        </div>
-      )}
+          </div>
+        )}
 
-      {/* 已选技能 chips（浅色气泡，/slug） */}
-      {selectedSkills.length > 0 && (
-        <div className="mb-2 flex flex-wrap items-center gap-1.5">
-          {selectedSkills.map((slug) => (
-            <span
-              key={slug}
-              className="inline-flex items-center gap-1 rounded-full bg-primary/10 py-0.5 pl-2 pr-1.5 font-mono text-xs text-primary"
+        {/* 选区改写引用块 */}
+        {pendingQuote && (
+          <div className="mb-2 flex items-start gap-2 rounded-md border border-primary/30 bg-primary/5 px-2 py-1.5 text-xs">
+            <Sparkles className="mt-0.5 size-3 shrink-0 text-primary" />
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-primary">
+                {pendingQuote.kind === 'ask' ? '提问' : '改写'} · {pendingQuote.sourceLabel}
+              </div>
+              <pre className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words font-mono text-[10px] text-muted-foreground">
+                {pendingQuote.text}
+              </pre>
+              <div className="mt-0.5 text-[10px] text-muted-foreground/70">
+                {pendingQuote.kind === 'ask'
+                  ? '在下方输入框写你的问题，发送时会带上这段引用一起发给 Agent'
+                  : '在下方输入框写改写指令，发送时会作为引用一起发给 Agent'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPendingQuote(null)}
+              className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+              title="取消引用"
             >
-              <Sparkles className="size-3" />
-              <span>/{slug}</span>
-              <button
-                type="button"
-                onClick={() => removeSkill(slug)}
-                className="rounded-full p-0.5 hover:bg-primary/20"
-                title="移除技能"
-              >
-                <X className="size-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
+              <X className="size-3" />
+            </button>
+          </div>
+        )}
 
-      {/* 已确认的 mention chips */}
-      {mentionedAgents.length > 0 && (
-        <div className="mb-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] text-muted-foreground">@ 指定</span>
-          {mentionedAgents.map((a) => (
-            <span
-              key={a.id}
-              className="inline-flex items-center gap-1 rounded-full bg-primary/10 py-0.5 pl-1 pr-1.5 text-xs text-primary"
-            >
-              <AgentAvatar agent={a} size="xs" />
-              <span>{a.name}</span>
-              <button
-                type="button"
-                onClick={() => removeMention(a.id)}
-                className="rounded-full p-0.5 hover:bg-primary/20"
-                title="移除"
+        {/* 已选技能 chips（浅色气泡，/slug） */}
+        {selectedSkills.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            {selectedSkills.map((slug) => (
+              <span
+                key={slug}
+                className="inline-flex items-center gap-1 rounded-full bg-primary/10 py-0.5 pl-2 pr-1.5 font-mono text-xs text-primary"
               >
-                <X className="size-3" />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
+                <Sparkles className="size-3" />
+                <span>/{slug}</span>
+                <button
+                  type="button"
+                  onClick={() => removeSkill(slug)}
+                  className="rounded-full p-0.5 hover:bg-primary/20"
+                  title="移除技能"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* 已确认的 mention chips */}
+        {mentionedAgents.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] text-muted-foreground">@ 指定</span>
+            {mentionedAgents.map((a) => (
+              <span
+                key={a.id}
+                className="inline-flex items-center gap-1 rounded-full bg-primary/10 py-0.5 pl-1 pr-1.5 text-xs text-primary"
+              >
+                <AgentAvatar agent={a} size="xs" />
+                <span>{a.name}</span>
+                <button
+                  type="button"
+                  onClick={() => removeMention(a.id)}
+                  className="rounded-full p-0.5 hover:bg-primary/20"
+                  title="移除"
+                >
+                  <X className="size-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
 
       <Dialog
         open={clearHistoryOpen}
@@ -1023,7 +1003,7 @@ export function MessageInput({
 
       {/* @ Mention popup */}
       {trigger && filtered.length > 0 && (
-        <div className="absolute bottom-full left-3 right-3 mb-2 max-h-60 overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
+        <div className="absolute bottom-full left-2 right-2 z-20 mx-auto mb-2 max-h-60 max-w-3xl overflow-y-auto rounded-md border bg-popover p-1 shadow-md">
           <div className="px-2 py-1 text-[10px] text-muted-foreground">
             选择 Agent · ↑↓ 切换 · Enter 确认 · Esc 取消
           </div>
@@ -1052,102 +1032,131 @@ export function MessageInput({
         </div>
       )}
 
-      {/* Gemini 风格胶囊输入条 */}
-      <div className="mx-auto flex max-w-3xl items-center rounded-full border bg-muted/50 px-0.5 shadow-[var(--shadow-sm)] transition-shadow focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10">
-        {/* 左侧附件按钮 */}
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          className="hidden"
-          onChange={(e) => {
-            void handleFiles(e.target.files)
-            e.target.value = '' // 允许同名文件再次选择
-          }}
-        />
-        <button
-          type="button"
-          className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-          onClick={() => fileInputRef.current?.click()}
-          title="附件 / 图片"
-        >
-          <Plus className="size-3.5" />
-        </button>
-
-        {/* 模型选择器：仅 SDK 会话显示 */}
-        {hasSdkAgent && (
-          <ModelSelector
-            profiles={profileList}
-            selectedProfile={selectedProfile}
-            onSelect={(id) => setSelectedProfileId(conversationId, id)}
-          />
+      {/* 一体 composer：有附件时圆角卡片，无附件时保持胶囊 */}
+      <div
+        className={cn(
+          'mx-auto max-w-3xl border bg-muted/50 shadow-[var(--shadow-sm)] transition-shadow focus-within:border-primary/50 focus-within:ring-2 focus-within:ring-primary/10',
+          hasComposeAttachments ? 'rounded-2xl' : 'rounded-full',
+        )}
+      >
+        {hasComposeAttachments && (
+          <div className="flex flex-wrap gap-2 px-3 pt-3 pb-1">
+            {pending.map((a) => (
+              <AttachmentChip
+                key={a.id}
+                attachment={{
+                  id: a.id,
+                  fileName: a.fileName,
+                  size: a.size,
+                  mimeType: a.mimeType,
+                  kind: a.kind,
+                }}
+                context="compose"
+                onRemove={() => removePending(a.id)}
+              />
+            ))}
+            {uploading.map((u) => (
+              <PendingAttachmentChip key={u.tempId} fileName={u.name} />
+            ))}
+          </div>
         )}
 
-        {/* 输入框 */}
-        <Textarea
-          ref={textareaRef}
-          data-testid="composer-input"
-          value={content}
-          onChange={handleChange}
-          onSelect={handleSelect}
-          onKeyDown={handleKeyDown}
-          onPaste={handlePaste}
-          placeholder={
-            planReview
-              ? '对计划提修改意见…'
-              : isGroup
-                ? '@ 指定 Agent，Enter 发送'
-                : '输入消息…'
-          }
-          className="min-h-[40px] max-h-28 resize-none border-0 bg-transparent px-2 py-1.5 text-[13px] leading-6 shadow-none focus-visible:ring-0 focus-visible:border-transparent placeholder:text-muted-foreground/60"
-          disabled={composerLocked}
-        />
-
-        {/* 右侧操作区 */}
-        <div className="flex shrink-0 items-center">
-          {/* 审批模式开关 */}
+        <div className="flex items-center px-0.5">
+          {/* 左侧附件按钮 */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              void handleFiles(e.target.files)
+              e.target.value = '' // 允许同名文件再次选择
+            }}
+          />
           <button
             type="button"
-            className="flex size-6 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-            onClick={() => void toggleApprovalMode()}
-            disabled={modeBusy}
-            title={
-              approvalMode === 'review'
-                ? 'Review 模式 · 点击切到 Auto'
-                : '⚠ Auto 模式 · 点击切回 Review'
-            }
+            className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+            onClick={() => fileInputRef.current?.click()}
+            title="附件 / 图片"
           >
-            {approvalMode === 'review' ? (
-              <Shield className={cn('size-3', modeBusy && 'opacity-50')} />
-            ) : (
-              <Zap className={cn('size-3 text-destructive', modeBusy && 'opacity-50')} />
-            )}
+            <Plus className="size-3.5" />
           </button>
 
-          {isRunning && !composerLocked && (
-            <button
-              type="button"
-              onClick={() => void abortAll()}
-              disabled={aborting}
-              className="flex size-6 items-center justify-center rounded-full text-destructive hover:bg-destructive/10 transition-colors"
-              title="中止全部"
-              data-testid="composer-abort"
-            >
-              <Square className="size-3 fill-current" />
-            </button>
+          {/* 模型选择器：仅 SDK 会话显示 */}
+          {hasSdkAgent && (
+            <ModelSelector
+              profiles={profileList}
+              selectedProfile={selectedProfile}
+              onSelect={(id) => setSelectedProfileId(conversationId, id)}
+            />
           )}
 
-          {/* 发送按钮 */}
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={composerLocked || (!content.trim() && pending.length === 0) || sending}
-            className="flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm transition-all enabled:hover:bg-primary/90 enabled:active:scale-95 disabled:opacity-30 disabled:pointer-events-none"
-            title="发送 (Enter)"
-            data-testid="composer-send"
-          >
-            <ArrowUp className="size-4" />
-          </button>
+          {/* 输入框 */}
+          <Textarea
+            ref={textareaRef}
+            data-testid="composer-input"
+            value={content}
+            onChange={handleChange}
+            onSelect={handleSelect}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            placeholder={
+              planReview
+                ? '对计划提修改意见…'
+                : isGroup
+                  ? '@ 指定 Agent，Enter 发送'
+                  : '输入消息…'
+            }
+            className="min-h-[40px] max-h-28 resize-none border-0 bg-transparent px-2 py-1.5 text-[13px] leading-6 shadow-none focus-visible:ring-0 focus-visible:border-transparent placeholder:text-muted-foreground/60"
+            disabled={composerLocked}
+          />
+
+          {/* 右侧操作区 */}
+          <div className="flex shrink-0 items-center">
+            {/* 审批模式开关 */}
+            <button
+              type="button"
+              className="flex size-6 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+              onClick={() => void toggleApprovalMode()}
+              disabled={modeBusy}
+              title={
+                approvalMode === 'review'
+                  ? 'Review 模式 · 点击切到 Auto'
+                  : '⚠ Auto 模式 · 点击切回 Review'
+              }
+            >
+              {approvalMode === 'review' ? (
+                <Shield className={cn('size-3', modeBusy && 'opacity-50')} />
+              ) : (
+                <Zap className={cn('size-3 text-destructive', modeBusy && 'opacity-50')} />
+              )}
+            </button>
+
+            {isRunning && !composerLocked && (
+              <button
+                type="button"
+                onClick={() => void abortAll()}
+                disabled={aborting}
+                className="flex size-6 items-center justify-center rounded-full text-destructive hover:bg-destructive/10 transition-colors"
+                title="中止全部"
+                data-testid="composer-abort"
+              >
+                <Square className="size-3 fill-current" />
+              </button>
+            )}
+
+            {/* 发送按钮 */}
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={composerLocked || (!content.trim() && pending.length === 0) || sending}
+              className="flex size-7 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm transition-all enabled:hover:bg-primary/90 enabled:active:scale-95 disabled:opacity-30 disabled:pointer-events-none"
+              title="发送 (Enter)"
+              data-testid="composer-send"
+            >
+              <ArrowUp className="size-4" />
+            </button>
+          </div>
         </div>
       </div>
     </div>

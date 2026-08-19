@@ -1,8 +1,7 @@
 """SQLAlchemy ORM models matching TypeScript Drizzle schema.
 
 Corresponds to src/db/schema.ts in the original TypeScript codebase.
-Extended with AGI-memory tables (LongTermMemory, UserPreference, RagChunk,
-ChatHistory, MemoryNode, MemoryEdge).
+Extended with UserPreference, RagChunk, ChatHistory (file-native memory migration).
 """
 
 import json
@@ -735,6 +734,19 @@ class UserSettings(Base):
     obsidian_vault_path: Mapped[str | None] = mapped_column(
         String(1024), name="obsidian_vault_path", nullable=True
     )
+    # RAG configuration (user-level, overrides .env global config)
+    rag_chunk_preset: Mapped[str | None] = mapped_column(
+        String(32), name="rag_chunk_preset", nullable=True
+    )
+    rag_chunk_size: Mapped[int | None] = mapped_column(
+        Integer, name="rag_chunk_size", nullable=True
+    )
+    rag_chunk_overlap: Mapped[int | None] = mapped_column(
+        Integer, name="rag_chunk_overlap", nullable=True
+    )
+    ocr_engine: Mapped[str | None] = mapped_column(
+        String(64), name="ocr_engine", nullable=True
+    )
     settings: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
 
@@ -808,42 +820,8 @@ class McpServer(Base):
 
 
 # ---------------------------------------------------------------------------
-# AGI-memory new models (6 new tables)
+# Memory models (UserPreference only — LongTermMemory/MemoryNode/MemoryEdge removed in file-native migration)
 # ---------------------------------------------------------------------------
-
-
-class LongTermMemory(Base):
-    """Long-term memory items with embedding vectors for semantic recall."""
-
-    __tablename__ = "long_term_memory"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
-    embedding: Mapped[Any] = mapped_column(JSONB, nullable=True)
-    created_at: Mapped[float] = mapped_column(Float, nullable=False)
-    last_accessed: Mapped[float] = mapped_column(Float, nullable=False)
-    category: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    slot_hint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="global")
-    agent_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    user_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("users.id"), name="user_id", nullable=True
-    )
-    # Structured fields for dual-path retrieval (summary embedding + keyword Jaccard)
-    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    keywords: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    content_scope: Mapped[str] = mapped_column(Text, nullable=False, default="")
-
-    __table_args__ = (
-        Index("idx_ltm_category", "category"),
-        Index("idx_ltm_created", "created_at"),
-        Index("idx_ltm_scope_agent", "scope", "agent_id"),
-        Index("idx_ltm_user", "user_id"),
-        Index("idx_ltm_content_scope", "content_scope"),
-    )
 
 
 class UserPreference(Base):
@@ -890,6 +868,15 @@ class RagChunk(Base):
     content_hash: Mapped[str | None] = mapped_column(
         String(16), name="content_hash", nullable=True, index=True
     )
+    chunk_token_count: Mapped[int] = mapped_column(
+        Integer, name="chunk_token_count", nullable=False, default=0
+    )
+    start_char_pos: Mapped[int | None] = mapped_column(
+        Integer, name="start_char_pos", nullable=True
+    )
+    end_char_pos: Mapped[int | None] = mapped_column(
+        Integer, name="end_char_pos", nullable=True
+    )
 
     __table_args__ = (
         Index("idx_rag_doc_hash", "doc_hash"),
@@ -899,7 +886,7 @@ class RagChunk(Base):
 
 
 class ChatHistory(Base):
-    """Chat history rows for ShortTerm Memory persistence."""
+    """Chat history rows for memory pipeline dual-write (PG + session/ jsonl)."""
 
     __tablename__ = "chat_history"
 
@@ -909,42 +896,6 @@ class ChatHistory(Base):
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
     user_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("users.id"), name="user_id", nullable=True
-    )
-
-
-class MemoryNode(Base):
-    """Memory graph nodes (Neo4j mirror table in PG)."""
-
-    __tablename__ = "memory_nodes"
-
-    mem_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    importance: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
-    user_id: Mapped[str | None] = mapped_column(
-        String, ForeignKey("users.id"), name="user_id", nullable=True
-    )
-
-
-class MemoryEdge(Base):
-    """Memory graph edges (Neo4j mirror table in PG)."""
-
-    __tablename__ = "memory_edges"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    from_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("memory_nodes.mem_id"), nullable=False
-    )
-    to_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("memory_nodes.mem_id"), nullable=False
-    )
-    rel_type: Mapped[str] = mapped_column(
-        String(32), nullable=False
-    )  # FOLLOWS / SIMILAR_TO / CAUSES / BELONGS_TO
-    weight: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
-
-    __table_args__ = (
-        Index("idx_memory_edges_from", "from_id"),
-        Index("idx_memory_edges_to", "to_id"),
     )
 
 
@@ -981,6 +932,22 @@ class Document(Base):
     content_hash: Mapped[str | None] = mapped_column(
         String(64), name="content_hash", nullable=True
     )
+    chunk_preset: Mapped[str] = mapped_column(
+        String(32), name="chunk_preset", nullable=False, default="general"
+    )
+    graph_status: Mapped[str | None] = mapped_column(
+        String(16), name="graph_status", nullable=True
+    )
+    # Virtual directory tree (adjacency list)
+    parent_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("documents.id", ondelete="SET NULL"),
+        name="parent_id",
+        nullable=True,
+    )
+    is_folder: Mapped[bool] = mapped_column(
+        Boolean, name="is_folder", nullable=False, default=False
+    )
 
     # Relationships
     versions: Mapped[list["DocumentVersion"]] = relationship(
@@ -990,6 +957,7 @@ class Document(Base):
     __table_args__ = (
         Index("idx_documents_updated", "updated_at"),
         Index("idx_documents_source_path", "source_path"),
+        Index("idx_documents_parent_id", "parent_id"),
     )
 
 
@@ -1017,4 +985,310 @@ class DocumentVersion(Base):
     __table_args__ = (
         Index("idx_doc_versions_doc_id", "document_id", "version"),
         UniqueConstraint("document_id", "version"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task Board models (global task pool — persistent, user-scoped)
+# ---------------------------------------------------------------------------
+
+
+class Task(Base):
+    """Persistent task in the global task pool.
+
+    Independent of any Conversation but may bind to one when an Agent claims it.
+    Uses optimistic concurrency control via the ``version`` column.
+    """
+
+    __tablename__ = "tasks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, name="user_id", nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="backlog"
+    )
+    priority: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="none"
+    )
+    labels: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+
+    assignee_agent_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("agents.id"), name="assignee_agent_id", nullable=True
+    )
+
+    creator_type: Mapped[str] = mapped_column(
+        String(16), name="creator_type", nullable=False, default="user"
+    )
+    creator_id: Mapped[str] = mapped_column(
+        String, name="creator_id", nullable=False, default=""
+    )
+    creator_name: Mapped[str] = mapped_column(
+        String, name="creator_name", nullable=False, default=""
+    )
+
+    conversation_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("conversations.id"), name="conversation_id", nullable=True
+    )
+
+    workspace_mode: Mapped[str | None] = mapped_column(
+        String(16), name="workspace_mode", nullable=True, default=None
+    )
+    workspace_path: Mapped[str | None] = mapped_column(
+        String(1024), name="workspace_path", nullable=True, default=None
+    )
+
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    failure_count: Mapped[int] = mapped_column(
+        Integer, name="failure_count", nullable=False, default=0
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer, name="sort_order", nullable=False, default=0
+    )
+    due_date: Mapped[str | None] = mapped_column(
+        String, name="due_date", nullable=True, default=None
+    )
+
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+    completed_at: Mapped[int | None] = mapped_column(
+        BigInteger, name="completed_at", nullable=True, default=None
+    )
+
+    # Relationships
+    comments: Mapped[list["TaskComment"]] = relationship(
+        back_populates="task", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("idx_tasks_user_status", "user_id", "status"),
+        Index("idx_tasks_user_updated", "user_id", "updated_at"),
+    )
+
+
+class TaskComment(Base):
+    """Comment on a Task — authored by user or Agent."""
+
+    __tablename__ = "task_comments"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    task_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        name="task_id",
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String, name="user_id", nullable=False
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+    author_type: Mapped[str] = mapped_column(
+        String(16), name="author_type", nullable=False, default="user"
+    )
+    author_id: Mapped[str] = mapped_column(
+        String, name="author_id", nullable=False, default=""
+    )
+    author_name: Mapped[str] = mapped_column(
+        String, name="author_name", nullable=False, default=""
+    )
+
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[int] = mapped_column(BigInteger, name="created_at", nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
+
+    # Relationships
+    task: Mapped["Task"] = relationship(back_populates="comments")
+
+    __table_args__ = (
+        Index("idx_task_comments_task", "task_id", "created_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# RAG Evaluation models (service-based eval system — DB-persisted)
+# ---------------------------------------------------------------------------
+
+
+class EvalDataset(Base):
+    """Evaluation dataset metadata — a collection of QA items for RAG eval."""
+
+    __tablename__ = "eval_datasets"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, name="user_id", nullable=False)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    item_count: Mapped[int] = mapped_column(Integer, name="item_count", nullable=False, default=0)
+    has_gold_chunks: Mapped[bool] = mapped_column(
+        Boolean, name="has_gold_chunks", nullable=False, default=False
+    )
+    has_gold_answers: Mapped[bool] = mapped_column(
+        Boolean, name="has_gold_answers", nullable=False, default=False
+    )
+    build_metadata: Mapped[dict | None] = mapped_column(JSONB, name="build_metadata", nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64), name="created_by", nullable=False, default="user")
+    created_at: Mapped[float] = mapped_column(Float, name="created_at", nullable=False)
+    updated_at: Mapped[float] = mapped_column(Float, name="updated_at", nullable=False)
+
+    # Relationships
+    items: Mapped[list["EvalDatasetItem"]] = relationship(
+        back_populates="dataset", cascade="all, delete-orphan"
+    )
+    runs: Mapped[list["EvalRun"]] = relationship(
+        back_populates="dataset", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("idx_eval_datasets_user", "user_id"),
+    )
+
+
+class EvalDatasetItem(Base):
+    """Individual QA entry in an evaluation dataset."""
+
+    __tablename__ = "eval_dataset_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    dataset_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("eval_datasets.id", ondelete="CASCADE"),
+        name="dataset_id",
+        nullable=False,
+    )
+    item_index: Mapped[int] = mapped_column(Integer, name="item_index", nullable=False)
+    query_text: Mapped[str] = mapped_column(Text, name="query_text", nullable=False)
+    gold_chunk_ids: Mapped[list | None] = mapped_column(JSONB, name="gold_chunk_ids", nullable=True)
+    gold_answer: Mapped[str | None] = mapped_column(Text, name="gold_answer", nullable=True)
+
+    # Relationships
+    dataset: Mapped["EvalDataset"] = relationship(back_populates="items")
+
+    __table_args__ = (
+        Index("idx_eval_items_dataset", "dataset_id"),
+    )
+
+
+class EvalRun(Base):
+    """Evaluation run — executes search + LLM judge against a dataset."""
+
+    __tablename__ = "eval_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, name="user_id", nullable=False)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    dataset_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("eval_datasets.id", ondelete="CASCADE"),
+        name="dataset_id",
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    retrieval_config: Mapped[dict | None] = mapped_column(JSONB, name="retrieval_config", nullable=True)
+    metrics: Mapped[dict | None] = mapped_column(JSONB, name="metrics", nullable=True)
+    overall_score: Mapped[float | None] = mapped_column(Float, name="overall_score", nullable=True)
+    total_items: Mapped[int] = mapped_column(Integer, name="total_items", nullable=False, default=0)
+    completed_items: Mapped[int] = mapped_column(
+        Integer, name="completed_items", nullable=False, default=0
+    )
+    started_at: Mapped[float | None] = mapped_column(Float, name="started_at", nullable=True)
+    completed_at: Mapped[float | None] = mapped_column(Float, name="completed_at", nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64), name="created_by", nullable=False, default="user")
+    created_at: Mapped[float] = mapped_column(Float, name="created_at", nullable=False)
+
+    # Relationships
+    dataset: Mapped["EvalDataset"] = relationship(back_populates="runs")
+    run_items: Mapped[list["EvalRunItem"]] = relationship(
+        back_populates="run", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("idx_eval_runs_user", "user_id"),
+        Index("idx_eval_runs_dataset", "dataset_id"),
+    )
+
+
+class RagTask(Base):
+    """Persistent RAG lifecycle task — parse / ingest / graph_build / delete_cleanup.
+
+    Independent from the global Task Board ``tasks`` table. Routed to local SQLite
+    (``LOCAL_TABLES``). Single asyncio worker (``RagTaskWorker``) polls ``pending``
+    tasks and processes them serially.
+    """
+
+    __tablename__ = "rag_tasks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String, name="user_id", nullable=False
+    )
+    task_type: Mapped[str] = mapped_column(
+        String(32), name="task_type", nullable=False
+    )  # parse | ingest | graph_build | delete_cleanup
+    document_id: Mapped[str | None] = mapped_column(
+        String, name="document_id", nullable=True,
+    )
+    version_id: Mapped[str | None] = mapped_column(
+        String, name="version_id", nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending"
+    )  # pending | running | completed | failed | failed_permanent
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(
+        Integer, name="retry_count", nullable=False, default=0
+    )
+    max_retries: Mapped[int] = mapped_column(
+        Integer, name="max_retries", nullable=False, default=3
+    )
+    created_at: Mapped[float] = mapped_column(Float, name="created_at", nullable=False)
+    updated_at: Mapped[float] = mapped_column(Float, name="updated_at", nullable=False)
+    started_at: Mapped[float | None] = mapped_column(
+        Float, name="started_at", nullable=True
+    )
+    completed_at: Mapped[float | None] = mapped_column(
+        Float, name="completed_at", nullable=True
+    )
+
+    __table_args__ = (
+        Index("idx_rag_tasks_status", "status"),
+        Index("idx_rag_tasks_user", "user_id"),
+        Index("idx_rag_tasks_doc", "document_id"),
+    )
+
+
+class EvalRunItem(Base):
+    """Per-item result of an evaluation run."""
+
+    __tablename__ = "eval_run_items"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("eval_runs.id", ondelete="CASCADE"),
+        name="run_id",
+        nullable=False,
+    )
+    item_index: Mapped[int] = mapped_column(Integer, name="item_index", nullable=False)
+    dataset_item_id: Mapped[str] = mapped_column(
+        String, ForeignKey("eval_dataset_items.id", ondelete="SET NULL"),
+        name="dataset_item_id", nullable=True,
+    )
+    query_text: Mapped[str] = mapped_column(Text, name="query_text", nullable=False)
+    gold_chunk_ids: Mapped[list | None] = mapped_column(JSONB, name="gold_chunk_ids", nullable=True)
+    gold_answer: Mapped[str | None] = mapped_column(Text, name="gold_answer", nullable=True)
+    generated_answer: Mapped[str | None] = mapped_column(Text, name="generated_answer", nullable=True)
+    retrieved_chunks: Mapped[list | None] = mapped_column(JSONB, name="retrieved_chunks", nullable=True)
+    metrics: Mapped[dict | None] = mapped_column(JSONB, name="metrics", nullable=True)
+
+    # Relationships
+    run: Mapped["EvalRun"] = relationship(back_populates="run_items")
+
+    __table_args__ = (
+        Index("idx_eval_run_items_run", "run_id"),
     )

@@ -46,6 +46,10 @@ def _serialize_user_settings(us: UserSettings) -> dict[str, Any]:
         "companionMode": us.companion_mode,
         "mobileDeviceToken": us.mobile_device_token,
         "obsidianVaultPath": us.obsidian_vault_path,
+        "ragChunkPreset": us.rag_chunk_preset,
+        "ragChunkSize": us.rag_chunk_size,
+        "ragChunkOverlap": us.rag_chunk_overlap,
+        "ocrEngine": us.ocr_engine,
         "updatedAt": us.updated_at,
     }
 
@@ -75,6 +79,10 @@ _USER_FIELDS = frozenset({
     "companion_mode",
     "mobile_device_token",
     "obsidian_vault_path",
+    "rag_chunk_preset",
+    "rag_chunk_size",
+    "rag_chunk_overlap",
+    "ocr_engine",
 })
 
 # Fields that belong to global settings

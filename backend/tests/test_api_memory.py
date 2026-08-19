@@ -1,9 +1,7 @@
 """API tests for the memory management router (app/api/memory.py).
 
 Covers:
-- GET /api/memory/long-term (list, filter, pagination)
-- PUT /api/memory/long-term/{id} (edit content/importance/category/tags)
-- DELETE /api/memory/long-term/{id}
+- GET /api/memory/files (list + bucket filter: all / procedure / wiki / daily)
 - GET /api/memory/preferences (list)
 - PUT /api/memory/preferences/{key} (upsert)
 - DELETE /api/memory/preferences/{key}
@@ -17,216 +15,160 @@ Uses the api_client fixture (isolated test DB) and patches
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 
 @pytest.fixture
-async def memory_svc(db):
-    """Create and initialize a real MemoryService bound to the test DB."""
+async def memory_svc(db, tmp_path):
+    """Create and initialize a real MemoryService with an isolated workspace."""
     from app.config import Settings
     from app.memory.memory_service import MemoryService
 
-    settings = Settings()
+    settings = Settings(memory_workspace_dir=str(tmp_path / "memory"))
     svc = MemoryService(settings)
     await svc.initialize()
     with patch("app.main._memory_service", svc):
         yield svc
 
 
-async def _seed_ltm(
-    memory_svc,
-    content: str = "test memory",
-    importance: float = 0.5,
-    category: str = "general",
-    tags: list[str] | None = None,
-    scope: str = "global",
-    agent_id: str = "",
-) -> int:
-    """Insert a LongTermMemory row into PG and sync the in-memory LTM cache."""
-    from app.db.engine import get_db
-    from app.db.models import LongTermMemory
+def _seed_file_native_memories(memory_svc) -> None:
+    """Seed one procedure, one wiki, and one daily card under the workspace."""
+    from app.memory.file_store.frontmatter import MemoryFrontmatter
+    from app.memory.file_store.markdown_io import write_markdown
 
-    now = time.time()
-    async with get_db() as session:
-        row = LongTermMemory(
-            content=content,
-            importance=importance,
-            embedding=None,
-            created_at=now,
-            last_accessed=now,
-            category=category,
-            tags=tags or [],
-            slot_hint="",
-            score=0.0,
-            scope=scope,
-            agent_id=agent_id or None,
-        )
-        session.add(row)
-        await session.flush()
-        mem_id = row.id
+    ws = memory_svc.workspace
+    write_markdown(
+        ws.digest_path("procedure", "how-to-deploy"),
+        MemoryFrontmatter(
+            name="how-to-deploy",
+            description="Deploy steps",
+            bucket="procedure",
+            tags=["deploy"],
+            importance=0.8,
+        ),
+        "Procedure body",
+    )
+    write_markdown(
+        ws.digest_path("wiki", "react-hooks"),
+        MemoryFrontmatter(
+            name="react-hooks",
+            description="Hooks knowledge",
+            bucket="wiki",
+            tags=["react"],
+            importance=0.7,
+        ),
+        "Wiki body",
+    )
+    write_markdown(
+        ws.daily_file_path("session_abc", "2026-08-04"),
+        MemoryFrontmatter(
+            name="session_abc",
+            description="Daily card",
+            tags=["session"],
+            importance=0.4,
+        ),
+        "Daily body",
+    )
 
-    # Reload in-memory cache so update_item/delete_item can find the item
-    await memory_svc.ltm.load_from_storage()
-    return mem_id
+
+# ─── Files: GET /api/memory/files ───────────────────────────────────────────
 
 
-# ─── LTM: GET /api/memory/long-term ────────────────────────────────────────
-
-
-async def test_list_ltm_empty(memory_svc, api_client):
-    resp = await api_client.get("/api/memory/long-term")
+async def test_list_files_empty(memory_svc, api_client):
+    resp = await api_client.get("/api/memory/files")
     assert resp.status_code == 200
     body = resp.json()
     assert body["items"] == []
     assert body["total"] == 0
 
 
-async def test_list_ltm_with_data(memory_svc, api_client):
-    await _seed_ltm(memory_svc, content="first memory", category="fact", tags=["tech"])
-    await _seed_ltm(memory_svc, content="second memory", category="preference", tags=["style"])
+async def test_list_files_all_includes_daily_and_digest(memory_svc, api_client):
+    _seed_file_native_memories(memory_svc)
 
-    resp = await api_client.get("/api/memory/long-term")
+    resp = await api_client.get("/api/memory/files")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["total"] == 2
-    assert len(body["items"]) == 2
-    # embedding should NOT be in response
-    assert "embedding" not in body["items"][0]
-    # verify field names are camelCase
-    assert "agentId" in body["items"][0]
-    assert "createdAt" in body["items"][0]
-    assert "lastAccessed" in body["items"][0]
+    assert body["total"] == 3
+    buckets = {item["bucket"] for item in body["items"]}
+    assert buckets == {"procedure", "wiki", "daily"}
+    names = {item["name"] for item in body["items"]}
+    assert names == {"how-to-deploy", "react-hooks", "session_abc"}
 
 
-async def test_list_ltm_filter_by_category(memory_svc, api_client):
-    await _seed_ltm(memory_svc, content="fact 1", category="fact")
-    await _seed_ltm(memory_svc, content="pref 1", category="preference")
+async def test_list_files_procedure_excludes_daily(memory_svc, api_client):
+    _seed_file_native_memories(memory_svc)
 
-    resp = await api_client.get("/api/memory/long-term?category=fact")
+    resp = await api_client.get("/api/memory/files?bucket=procedure")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 1
-    assert body["items"][0]["content"] == "fact 1"
+    assert body["items"][0]["bucket"] == "procedure"
+    assert body["items"][0]["name"] == "how-to-deploy"
+    assert not any(item["bucket"] == "daily" for item in body["items"])
+    assert not any(item["path"].replace("\\", "/").startswith("daily/") for item in body["items"])
 
 
-async def test_list_ltm_filter_by_tag(memory_svc, api_client):
-    await _seed_ltm(memory_svc, content="tagged", tags=["python", "web"])
-    await _seed_ltm(memory_svc, content="untagged", tags=[])
+async def test_list_files_wiki_excludes_daily(memory_svc, api_client):
+    _seed_file_native_memories(memory_svc)
 
-    resp = await api_client.get("/api/memory/long-term?tag=python")
+    resp = await api_client.get("/api/memory/files?bucket=wiki")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 1
-    assert body["items"][0]["content"] == "tagged"
+    assert body["items"][0]["bucket"] == "wiki"
+    assert body["items"][0]["name"] == "react-hooks"
+    assert not any(item["bucket"] == "daily" for item in body["items"])
+    assert not any(item["path"].replace("\\", "/").startswith("daily/") for item in body["items"])
 
 
-async def test_list_ltm_filter_by_agent_id(memory_svc, api_client):
-    await _seed_ltm(memory_svc, content="global mem", scope="global")
-    await _seed_ltm(memory_svc, content="agent mem", scope="agent", agent_id="agt_123")
+async def test_list_files_daily_excludes_digest(memory_svc, api_client):
+    _seed_file_native_memories(memory_svc)
 
-    resp = await api_client.get("/api/memory/long-term?agent_id=agt_123")
+    resp = await api_client.get("/api/memory/files?bucket=daily")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 1
-    assert body["items"][0]["content"] == "agent mem"
-    assert body["items"][0]["scope"] == "agent"
-    assert body["items"][0]["agentId"] == "agt_123"
+    assert body["items"][0]["bucket"] == "daily"
+    assert body["items"][0]["name"] == "session_abc"
+    assert body["items"][0]["path"].replace("\\", "/").startswith("daily/")
+    assert not any(item["bucket"] in ("procedure", "wiki") for item in body["items"])
 
 
-async def test_list_ltm_pagination(memory_svc, api_client):
-    for i in range(5):
-        await _seed_ltm(memory_svc, content=f"mem {i}")
+async def test_list_files_unknown_bucket_empty(memory_svc, api_client):
+    _seed_file_native_memories(memory_svc)
 
-    resp = await api_client.get("/api/memory/long-term?page=1&size=2")
+    resp = await api_client.get("/api/memory/files?bucket=personal")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["total"] == 5
-    assert len(body["items"]) == 2
-    assert body["page"] == 1
-    assert body["size"] == 2
-
-    resp2 = await api_client.get("/api/memory/long-term?page=2&size=2")
-    body2 = resp2.json()
-    assert len(body2["items"]) == 2
+    assert body["items"] == []
+    assert body["total"] == 0
 
 
-# ─── LTM: PUT /api/memory/long-term/{id} ───────────────────────────────────
+# ─── Search: GET /api/memory/search ────────────────────────────────────────
 
 
-async def test_update_ltm_content(memory_svc, api_client):
-    mem_id = await _seed_ltm(memory_svc, content="old content")
+async def test_search_returns_relative_path_openable(memory_svc, api_client):
+    """Search hits use workspace-relative paths that open via files API."""
+    _seed_file_native_memories(memory_svc)
+    memory_svc.auto_index.full_reindex()
 
-    resp = await api_client.put(
-        f"/api/memory/long-term/{mem_id}",
-        json={"content": "new content"},
-    )
+    resp = await api_client.get("/api/memory/search", params={"query": "react hooks"})
     assert resp.status_code == 200
-    assert resp.json()["ok"] is True
+    body = resp.json()
+    assert body["total"] >= 1
 
-    # verify in PG
-    resp2 = await api_client.get("/api/memory/long-term")
-    items = resp2.json()["items"]
-    assert items[0]["content"] == "new content"
+    hit = next(item for item in body["items"] if item["name"] == "react-hooks")
+    path = hit["path"]
+    assert not Path(path).is_absolute()
+    assert "react-hooks" in path.replace("\\", "/")
 
-
-async def test_update_ltm_importance_only(memory_svc, api_client):
-    mem_id = await _seed_ltm(memory_svc, content="keep content", importance=0.3)
-
-    resp = await api_client.put(
-        f"/api/memory/long-term/{mem_id}",
-        json={"importance": 0.9},
-    )
-    assert resp.status_code == 200
-
-    resp2 = await api_client.get("/api/memory/long-term")
-    item = resp2.json()["items"][0]
-    assert item["importance"] == 0.9
-    assert item["content"] == "keep content"
-
-
-async def test_update_ltm_not_found(memory_svc, api_client):
-    resp = await api_client.put(
-        "/api/memory/long-term/99999",
-        json={"content": "nope"},
-    )
-    assert resp.status_code == 404
-
-
-async def test_update_ltm_category_and_tags(memory_svc, api_client):
-    mem_id = await _seed_ltm(memory_svc, content="test", category="general", tags=[])
-
-    resp = await api_client.put(
-        f"/api/memory/long-term/{mem_id}",
-        json={"category": "fact", "tags": ["python", "ai"]},
-    )
-    assert resp.status_code == 200
-
-    resp2 = await api_client.get("/api/memory/long-term")
-    item = resp2.json()["items"][0]
-    assert item["category"] == "fact"
-    assert item["tags"] == ["python", "ai"]
-
-
-# ─── LTM: DELETE /api/memory/long-term/{id} ────────────────────────────────
-
-
-async def test_delete_ltm(memory_svc, api_client):
-    mem_id = await _seed_ltm(memory_svc, content="to be deleted")
-
-    resp = await api_client.delete(f"/api/memory/long-term/{mem_id}")
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
-
-    # verify gone
-    resp2 = await api_client.get("/api/memory/long-term")
-    assert resp2.json()["total"] == 0
-
-
-async def test_delete_ltm_not_found(memory_svc, api_client):
-    resp = await api_client.delete("/api/memory/long-term/99999")
-    assert resp.status_code == 404
+    detail = await api_client.get(f"/api/memory/files/{path}")
+    assert detail.status_code == 200
+    assert detail.json()["name"] == "react-hooks"
+    assert "Wiki body" in detail.json()["body"]
 
 
 # ─── Preferences: GET /api/memory/preferences ─────────────────────────────
@@ -240,9 +182,13 @@ async def test_list_preferences_empty(memory_svc, api_client):
     assert body["total"] == 0
 
 
-async def test_list_preferences_with_data(memory_svc, api_client):
-    await memory_svc.preference.set("喜好", "TypeScript")
-    await memory_svc.preference.set("姓名", "Alice")
+async def test_list_preferences_with_data(memory_svc, api_client, test_user):
+    from app.memory.preference import Preference
+
+    # Preferences are user-scoped; seed against the authenticated test user.
+    pref = Preference(user_id=test_user["id"])
+    await pref.set("喜好", "TypeScript")
+    await pref.set("姓名", "Alice")
 
     resp = await api_client.get("/api/memory/preferences")
     assert resp.status_code == 200
@@ -256,7 +202,9 @@ async def test_list_preferences_with_data(memory_svc, api_client):
 # ─── Preferences: PUT /api/memory/preferences/{key} ────────────────────────
 
 
-async def test_update_preference(memory_svc, api_client):
+async def test_update_preference(memory_svc, api_client, test_user):
+    from app.memory.preference import Preference
+
     resp = await api_client.put(
         "/api/memory/preferences/喜好",
         json={"value": "Python"},
@@ -264,36 +212,48 @@ async def test_update_preference(memory_svc, api_client):
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
-    # verify in-memory
-    assert memory_svc.preference.get("喜好") == "Python"
-
-    # verify via list endpoint
+    # verify via list endpoint (same authenticated user)
     resp2 = await api_client.get("/api/memory/preferences")
     items = {item["key"]: item["value"] for item in resp2.json()["items"]}
     assert items["喜好"] == "Python"
 
+    # verify DB-backed Preference for this user
+    pref = Preference(user_id=test_user["id"])
+    await pref.load_from_storage()
+    assert pref.get("喜好") == "Python"
 
-async def test_update_preference_overwrite(memory_svc, api_client):
-    await memory_svc.preference.set("喜好", "Java")
+
+async def test_update_preference_overwrite(memory_svc, api_client, test_user):
+    from app.memory.preference import Preference
+
+    pref = Preference(user_id=test_user["id"])
+    await pref.set("喜好", "Java")
 
     resp = await api_client.put(
         "/api/memory/preferences/喜好",
         json={"value": "Rust"},
     )
     assert resp.status_code == 200
-    assert memory_svc.preference.get("喜好") == "Rust"
+
+    await pref.load_from_storage()
+    assert pref.get("喜好") == "Rust"
 
 
 # ─── Preferences: DELETE /api/memory/preferences/{key} ─────────────────────
 
 
-async def test_delete_preference(memory_svc, api_client):
-    await memory_svc.preference.set("喜好", "Go")
+async def test_delete_preference(memory_svc, api_client, test_user):
+    from app.memory.preference import Preference
+
+    pref = Preference(user_id=test_user["id"])
+    await pref.set("喜好", "Go")
 
     resp = await api_client.delete("/api/memory/preferences/喜好")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert memory_svc.preference.get("喜好") == ""
+
+    await pref.load_from_storage()
+    assert pref.get("喜好") == ""
 
 
 async def test_delete_preference_not_found(memory_svc, api_client):
@@ -387,3 +347,73 @@ async def test_list_session_memories_empty(memory_svc, api_client):
     resp = await api_client.get("/api/memory/sessions")
     assert resp.status_code == 200
     assert resp.json()["total"] == 0
+
+
+# ─── Graph: GET /api/memory/graph ─────────────────────────────────────────
+
+
+def _seed_graph_memories(memory_svc) -> None:
+    """Seed memory files with wikilinks for graph API testing."""
+    from app.memory.file_store.frontmatter import MemoryFrontmatter
+    from app.memory.file_store.markdown_io import write_markdown
+
+    ws = memory_svc.workspace
+    write_markdown(
+        ws.digest_path("wiki", "python"),
+        MemoryFrontmatter(name="Python", description="Python language", bucket="wiki", tags=["python"], importance=0.8),
+        "Python is a language. [[asyncio]] [[threading]]",
+    )
+    write_markdown(
+        ws.digest_path("wiki", "asyncio"),
+        MemoryFrontmatter(name="AsyncIO", description="Async IO", bucket="wiki", tags=["async"], importance=0.7),
+        "AsyncIO module. [[python]]",
+    )
+    write_markdown(
+        ws.digest_path("procedure", "deploy"),
+        MemoryFrontmatter(name="Deploy", description="Deploy steps", bucket="procedure", tags=["deploy"], importance=0.9),
+        "Deploy steps. [[python]]",
+    )
+    memory_svc.auto_index.full_reindex()
+
+
+async def test_graph_empty(memory_svc, api_client):
+    resp = await api_client.get("/api/memory/graph")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"nodes": [], "edges": []}
+
+
+async def test_graph_full(memory_svc, api_client):
+    _seed_graph_memories(memory_svc)
+    resp = await api_client.get("/api/memory/graph")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["nodes"]) == 3
+    assert len(body["edges"]) >= 3
+    node = body["nodes"][0]
+    assert "path" in node
+    assert "name" in node
+    assert "bucket" in node
+    assert "degree" in node
+    edge = body["edges"][0]
+    assert "source" in edge
+    assert "target" in edge
+    assert "predicate" in edge
+
+
+async def test_graph_bucket_filter(memory_svc, api_client):
+    _seed_graph_memories(memory_svc)
+    resp = await api_client.get("/api/memory/graph?bucket=wiki")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert all(n["bucket"] == "wiki" for n in body["nodes"])
+    assert not any("procedure" in n["path"] for n in body["nodes"])
+
+
+async def test_graph_503_when_uninitialized(api_client):
+    """When MemoryService is not wired, the endpoint returns 503."""
+    from unittest.mock import patch
+
+    with patch("app.main._memory_service", None):
+        resp = await api_client.get("/api/memory/graph")
+        assert resp.status_code == 503

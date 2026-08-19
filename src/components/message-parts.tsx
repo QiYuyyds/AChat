@@ -14,6 +14,7 @@ import { DiffBlock } from '@/components/diff-block'
 import { Markdown } from '@/components/markdown'
 import { formatDuration } from '@/lib/format'
 import { artifactPreviewPath } from '@/lib/artifact-preview'
+import { getAccessToken } from '@/stores/auth-store'
 import { deployConversationArtifact, fetchArtifact } from '@/lib/api'
 import { getToolDisplayName, isBashToolName } from '@/lib/tool-display'
 import { useElapsedTimer } from '@/lib/use-elapsed-timer'
@@ -1396,7 +1397,7 @@ function IconAction({
 }
 
 function openPreviewUrl(artifactId: string): void {
-  openPath(artifactPreviewPath(artifactId))
+  openPath(artifactPreviewPath(artifactId, getAccessToken() ?? undefined))
 }
 
 function copyPreviewUrl(artifactId: string): void {

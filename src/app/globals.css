@@ -84,11 +84,11 @@
   --shadow-sm: 0 1px 3px 0 oklch(0 0 0 / 0.03), 0 1px 2px -1px oklch(0 0 0 / 0.03);
   --shadow-md: 0 4px 14px -2px oklch(0 0 0 / 0.05), 0 2px 6px -2px oklch(0 0 0 / 0.03);
   --inset-hi: inset 0 1px 0 0 oklch(1 0 0 / 0.6);
-  --sidebar: oklch(0.965 0.002 280);
+  --sidebar: oklch(0.94 0.002 280);
   --sidebar-foreground: oklch(0.20 0.004 280);
   --sidebar-primary: oklch(0.588 0.166 257);
   --sidebar-primary-foreground: oklch(1 0 0);
-  --sidebar-accent: oklch(0.94 0.003 280);
+  --sidebar-accent: oklch(0.91 0.003 280);
   --sidebar-accent-foreground: oklch(0.20 0.004 280);
   --sidebar-border: oklch(0.55 0.004 280 / 0.06);
   --sidebar-ring: oklch(0.588 0.166 257);
@@ -123,11 +123,11 @@
   --shadow-sm: 0 1px 3px 0 oklch(0 0 0 / 0.2);
   --shadow-md: 0 4px 14px -2px oklch(0 0 0 / 0.3), 0 2px 6px -2px oklch(0 0 0 / 0.2);
   --inset-hi: inset 0 1px 0 0 oklch(1 0 0 / 0.06);
-  --sidebar: oklch(0.10 0.003 280);
+  --sidebar: oklch(0.085 0.003 280);
   --sidebar-foreground: oklch(0.93 0.003 280);
   --sidebar-primary: oklch(0.646 0.157 257);
   --sidebar-primary-foreground: oklch(1 0 0);
-  --sidebar-accent: oklch(0.22 0.003 280);
+  --sidebar-accent: oklch(0.18 0.003 280);
   --sidebar-accent-foreground: oklch(0.93 0.003 280);
   --sidebar-border: oklch(0.93 0.003 280 / 0.06);
   --sidebar-ring: oklch(0.646 0.157 257);
@@ -765,6 +765,71 @@
   .cognition-fade-up-delay-2,
   .cognition-ambient,
   .cognition-empty-float {
+    animation: none;
+  }
+}
+
+/* ===== Task Board — premium motion & ambient ===== */
+
+@keyframes task-fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.task-fade-up         { animation: task-fade-up 400ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.task-fade-up-delay-1 { animation: task-fade-up 400ms cubic-bezier(0.22, 1, 0.36, 1) 50ms both; }
+.task-fade-up-delay-2 { animation: task-fade-up 400ms cubic-bezier(0.22, 1, 0.36, 1) 100ms both; }
+.task-fade-up-delay-3 { animation: task-fade-up 400ms cubic-bezier(0.22, 1, 0.36, 1) 150ms both; }
+
+/* 列入场：从左到右错落滑入 */
+@keyframes task-col-enter {
+  from { opacity: 0; transform: translateX(-12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.task-col-enter         { animation: task-col-enter 350ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.task-col-enter-delay-0 { animation: task-col-enter 350ms cubic-bezier(0.22, 1, 0.36, 1) 0ms both; }
+.task-col-enter-delay-1 { animation: task-col-enter 350ms cubic-bezier(0.22, 1, 0.36, 1) 60ms both; }
+.task-col-enter-delay-2 { animation: task-col-enter 350ms cubic-bezier(0.22, 1, 0.36, 1) 120ms both; }
+.task-col-enter-delay-3 { animation: task-col-enter 350ms cubic-bezier(0.22, 1, 0.36, 1) 180ms both; }
+
+/* 详情面板从右侧滑入 */
+@keyframes task-detail-slide-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.task-detail-enter { animation: task-detail-slide-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* 执行中卡片：顶部扫描线扫过 */
+@keyframes task-scan-line {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+.animate-scan-line { animation: task-scan-line 2.5s ease-in-out infinite; }
+
+/* 执行中卡片：整体呼吸辉光 */
+@keyframes task-card-glow {
+  0%, 100% {
+    box-shadow:
+      0 1px 3px 0 oklch(0 0 0 / 0.03),
+      0 0 12px -2px color-mix(in oklch, var(--warning) 10%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 2px 6px -1px oklch(0 0 0 / 0.05),
+      0 0 20px -2px color-mix(in oklch, var(--warning) 22%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-fade-up,
+  .task-fade-up-delay-1,
+  .task-fade-up-delay-2,
+  .task-fade-up-delay-3,
+  .task-col-enter,
+  .task-col-enter-delay-0,
+  .task-col-enter-delay-1,
+  .task-col-enter-delay-2,
+  .task-col-enter-delay-3,
+  .task-detail-enter {
     animation: none;
   }
 }

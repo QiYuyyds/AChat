@@ -30,7 +30,7 @@
 | 分类 | 引擎 | 表（共 22 张） | 路由函数 |
 |---|---|---|---|
 | **本地表（10 张）** | SQLite（WAL 模式，~0.1ms RTT） | messages, conversations, agent_runs, agent_run_checkpoints, artifacts, workspaces, attachments, conversation_context_summaries, agents, mcp_servers | `get_local_db()` |
-| **远端表（12 张）** | PostgreSQL（~50ms RTT） | users, user_settings, user_preferences, global_settings, app_settings, rag_chunks, long_term_memory, chat_history, memory_nodes, memory_edges, documents, document_versions | `get_remote_db()` |
+| **远端表（9 张）** | PostgreSQL（~50ms RTT） | users, user_settings, user_preferences, global_settings, app_settings, rag_chunks, chat_history, documents, document_versions | `get_remote_db()` |
 
 路由常量定义在 `backend/app/db/table_routing.py`。
 
@@ -40,7 +40,9 @@
 
 ### 本地表无 user_id 列
 
-本地表（`agents` / `conversations` / `mcp_servers` / `model_profiles` 等）不再有 `user_id` 列——双 DB 模式下单用户，无需用户隔离。远端表（`documents` / `rag_chunks` / `long_term_memory` 等）保留 `user_id` 列用于 PG 侧多用户隔离。
+本地表（`agents` / `conversations` / `mcp_servers` / `model_profiles` 等）不再有 `user_id` 列——双 DB 模式下单用户，无需用户隔离。远端表（`documents` / `rag_chunks` / `chat_history` 等）保留 `user_id` 列用于 PG 侧多用户隔离。
+
+> **记忆系统迁移**：`long_term_memory` / `memory_nodes` / `memory_edges` 三张表已在 file-native 记忆迁移中移除。记忆内容现以 Markdown 文件 + SQLite FTS5 索引存储，详见 `specs/` 记忆相关文档和 `backend/app/memory/`。`user_preferences` 表保留不动（Preference 系统）。
 
 SQLite 内部 FK 保持不变（`messages.agent_id → agents.id` 等），`PRAGMA foreign_keys=ON` 确保级联删除生效。
 
@@ -57,7 +59,7 @@ Redis 已完全移除，以下缓存改用进程内 dict TTL（5min）或直读�
 - `UserSettings` / `GlobalSettings`：远端 PG 直读 + 进程内 dict 缓存
 - `UserPreference`：每次 run 读取，写频率极低，进程内 dict 缓存
 - `Agent` / `Workspace`：本地 SQLite 直读（0.1ms），无需缓存
-- `LongTermMemory` recall：已在 `LongTermMemoryStore.items` 进程内存中
+- 文件原生记忆 recall：通过 SQLite FTS5 BM25 + wikilink 扩展 + RRF 融合检索
 
 ---
 

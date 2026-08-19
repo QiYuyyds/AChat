@@ -1,7 +1,9 @@
 import type { ArtifactContent } from '@/shared/types'
 
-export function artifactPreviewPath(artifactId: string): string {
-  return `/api/artifacts/${encodeURIComponent(artifactId)}/preview`
+export function artifactPreviewPath(artifactId: string, token?: string): string {
+  const base = `/api/artifacts/${encodeURIComponent(artifactId)}/preview`
+  if (token) return `${base}?token=${encodeURIComponent(token)}`
+  return base
 }
 
 export function buildWebAppHtml(

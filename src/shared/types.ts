@@ -464,6 +464,28 @@ export interface PendingMcpCall {
   createdAt: number
 }
 
+/** Conversation record carried by the conversation.created SSE event. */
+export interface ConversationRecord {
+  id: string
+  title: string
+  mode: 'single' | 'group' | 'guide'
+  agentIds: string[]
+  pinnedMessageIds: string[]
+  bookmarkedMessageIds: string[]
+  archived: boolean
+  pinnedAt: number | null
+  fsWriteApprovalMode: 'auto' | 'review'
+  summary: string | null
+  dispatchMode?: string
+  parentConversationId: string | null
+  forkPointMessageId: string | null
+  createdAt: number
+  updatedAt: number
+  workspaceMode: 'sandbox' | 'local'
+  workspaceBoundPath: string | null
+  workspaceEnvPreference: 'venv_created' | 'skip' | 'system_python' | null
+}
+
 // ─── StreamEvent 联合 ─────────────────────────────────────
 interface BaseEvent {
   conversationId: string
@@ -598,10 +620,22 @@ export type StreamEvent = BaseEvent &
       }
     | {
         type: 'guide_side_effect'
-        target: 'agents' | 'skills' | 'mcp' | 'documents' | 'memory' | 'profile' | 'conversations'
+        target: 'agents' | 'skills' | 'mcp' | 'documents' | 'memory' | 'profile' | 'conversations' | 'tasks'
         action: 'create' | 'update' | 'delete' | 'refresh'
         payload?: unknown
       }
+    | { type: 'task.created'; task: TaskRow }
+    | { type: 'task.updated'; task: TaskRow }
+    | { type: 'task.moved'; taskId: string; fromStatus: string; toStatus: string; task: TaskRow }
+    | { type: 'task.commented'; taskId: string; comment: TaskCommentRow }
+    | { type: 'task.assigned'; taskId: string; agentId: string | null; task: TaskRow }
+    | {
+        type: 'scheduler.status'
+        running: boolean
+        pendingCount: number
+        activeCount: number
+      }
+    | { type: 'conversation.created'; conversation: ConversationRecord }
   )
 
 /** RunUsage 事件 payload。与 db/schema.ts 的 RunUsage 同形，重复定义避开 client/server 边界 import。 */
@@ -699,6 +733,8 @@ export interface DocumentRow {
   latestVersionId: string
   sourcePath?: string
   contentHash?: string | null
+  parentId?: string | null
+  isFolder?: boolean
   latestMetadata?: {
     filename?: string
     parser?: string
@@ -708,6 +744,7 @@ export interface DocumentRow {
   }
   latestContentChars?: number
   latestParser?: string
+  chunkPreset?: string
 }
 
 export interface VersionRow {
@@ -763,6 +800,22 @@ export interface UploadResult {
   version?: VersionRow
   success: boolean
   message?: string
+  ragTaskId?: string
+}
+
+// ─── RAG Preset / OCR Engine Types ───────────────────────────────
+
+export interface RagPreset {
+  id: string
+  label: string
+  description: string
+}
+
+export interface OcrEngineStatus {
+  id: string
+  label: string
+  available: boolean
+  status: 'ok' | 'not_installed' | 'not_configured' | 'unreachable'
 }
 
 // ─── Obsidian Sync Types ──────────────────────────────────────
@@ -780,12 +833,23 @@ export interface FileNode {
   docType: string
   source: string
   updatedAt: number
+  isFolder?: boolean
+  parentId?: string | null
 }
 
 export interface DocumentTree {
   currentPath: string
   folders: FolderNode[]
   files: FileNode[]
+}
+
+export interface DocumentPreview {
+  documentId: string
+  versionId: string
+  contentMd: string
+  images: Array<{ filename: string; path: string; content_type: string }>
+  parser?: string | null
+  pages?: number | null
 }
 
 export interface SyncReport {
@@ -803,4 +867,113 @@ export interface SyncStatus {
   totalMdFiles: number
   lastSyncAt: number | null
   lastSyncSummary: SyncReport | null
+}
+
+// ─── Task Board Types ─────────────────────────────────
+
+export type TaskStatus =
+  | 'backlog'
+  | 'todo'
+  | 'in_progress'
+  | 'in_review'
+  | 'done'
+  | 'blocked'
+  | 'canceled'
+
+export type TaskPriority = 'none' | 'urgent' | 'high' | 'medium' | 'low'
+
+export type TaskCreatorType = 'user' | 'agent'
+
+export type TaskCommentAuthorType = 'user' | 'agent'
+
+export type TaskWorkspaceMode = 'sandbox' | 'local' | null
+
+export interface TaskRow {
+  id: string
+  userId: string
+  title: string
+  description: string
+  status: TaskStatus
+  priority: TaskPriority
+  labels: string[]
+  assigneeAgentId: string | null
+  creatorType: TaskCreatorType
+  creatorId: string
+  creatorName: string
+  conversationId: string | null
+  workspaceMode: TaskWorkspaceMode
+  workspacePath: string | null
+  version: number
+  failureCount: number
+  sortOrder: number
+  dueDate: string | null
+  createdAt: number
+  updatedAt: number
+  completedAt: number | null
+  comments?: TaskCommentRow[]
+}
+
+export interface TaskCommentRow {
+  id: string
+  taskId: string
+  userId: string
+  body: string
+  authorType: TaskCommentAuthorType
+  authorId: string
+  authorName: string
+  version: number
+  createdAt: number
+  updatedAt: number
+}
+
+// ─── Task SSE Events ─────────────────────────────────
+
+export interface TaskCreatedEvent {
+  type: 'task.created'
+  conversationId: ''
+  timestamp: number
+  task: TaskRow
+}
+
+export interface TaskUpdatedEvent {
+  type: 'task.updated'
+  conversationId: ''
+  timestamp: number
+  task: TaskRow
+}
+
+export interface TaskMovedEvent {
+  type: 'task.moved'
+  conversationId: ''
+  timestamp: number
+  taskId: string
+  fromStatus: string
+  toStatus: string
+  task: TaskRow
+}
+
+export interface TaskCommentedEvent {
+  type: 'task.commented'
+  conversationId: ''
+  timestamp: number
+  taskId: string
+  comment: TaskCommentRow
+}
+
+export interface TaskAssignedEvent {
+  type: 'task.assigned'
+  conversationId: ''
+  timestamp: number
+  taskId: string
+  agentId: string | null
+  task: TaskRow
+}
+
+export interface SchedulerStatusEvent {
+  type: 'scheduler.status'
+  conversationId: ''
+  timestamp: number
+  running: boolean
+  pendingCount: number
+  activeCount: number
 }

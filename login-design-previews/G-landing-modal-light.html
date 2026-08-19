@@ -1681,65 +1681,100 @@ pointer-events: auto;
     gap: 8px;
   }
 
-  /* Memory hierarchy diagram */
-  .memory-hierarchy {
+  /* File-native pipeline diagram */
+  .memory-pipeline {
     display: flex;
-    align-items: center;
+    align-items: stretch;
     justify-content: center;
-    gap: 6px;
-    padding: 12px 16px;
+    gap: 0;
+    padding: 14px 16px;
     border-top: 1px solid var(--border-soft);
     background: var(--bg-warm);
-    flex-wrap: wrap;
+    overflow-x: auto;
   }
 
-  .mem-layer {
+  .pipe-stage {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 3px;
-    padding: 6px 10px;
-    border-radius: 8px;
+    gap: 4px;
+    padding: 8px 14px;
+    border-radius: 10px;
     border: 1px solid var(--border-soft);
     background: var(--bg-elev);
     transition: all 0.3s ease;
+    min-width: 80px;
+    text-align: center;
   }
 
-  .mem-layer.active {
+  .pipe-stage.active {
     border-color: rgba(99,102,241,0.3);
     background: rgba(99,102,241,0.04);
   }
 
-  .mem-layer-icon {
+  .pipe-stage-icon {
     font-size: 9px;
     font-weight: 700;
     font-family: 'SF Mono', monospace;
     color: var(--muted-2);
   }
 
-  .mem-layer.active .mem-layer-icon { color: var(--accent); }
+  .pipe-stage.active .pipe-stage-icon { color: var(--accent); }
 
-  .mem-layer-name {
+  .pipe-stage-name {
     font-size: 10px;
     font-weight: 600;
     color: var(--fg-soft);
   }
 
-  .mem-layer-desc {
+  .pipe-stage-desc {
     font-size: 8px;
     color: var(--muted-3);
     white-space: nowrap;
   }
 
-  .mem-arrow {
-    font-size: 11px;
+  .pipe-arrow {
+    display: flex;
+    align-items: center;
     color: var(--muted-3);
+    font-size: 14px;
+    padding: 0 4px;
+    flex-shrink: 0;
   }
 
+  /* Memory search badge row */
+  .memory-search-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 14px;
+    border-top: 1px solid var(--border-soft);
+    background: var(--bg-elev);
+    justify-content: center;
+  }
+
+  .mem-search-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    font-size: 9.5px;
+    font-weight: 500;
+    background: var(--bg-warm);
+    color: var(--muted);
+    border: 1px solid var(--border-soft);
+  }
+
+  .mem-search-badge svg { width: 10px; height: 10px; }
+  .mem-search-badge.accent { color: var(--accent); border-color: var(--accent-ring); }
+  .mem-search-badge.success { color: var(--success); }
+  .mem-search-badge.purple { color: var(--purple); }
+
   @media (max-width: 640px) {
-    .memory-hierarchy { gap: 4px; }
-    .mem-layer { padding: 4px 6px; }
-    .mem-layer-desc { display: none; }
+    .memory-pipeline { gap: 0; padding: 10px 8px; }
+    .pipe-stage { padding: 6px 8px; min-width: 60px; }
+    .pipe-stage-desc { display: none; }
   }
 
   /* ===== 代码图谱 Mockup ===== */
@@ -2654,6 +2689,7 @@ pointer-events: auto;
   <div class="nav-links">
     <a href="#features" class="nav-link">功能</a>
     <a href="#artifact-preview" class="nav-link">产物</a>
+    <a href="#memory-system" class="nav-link">记忆</a>
     <a href="#workflow" class="nav-link">工作流</a>
     <a href="https://github.com/QiYuyyds/AChat" class="nav-link nav-github" target="_blank" rel="noopener">GitHub</a>
   </div>
@@ -2705,24 +2741,21 @@ pointer-events: auto;
             <button class="rail-btn" title="产物库" type="button" tabindex="-1">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7L12 12l8.7-5"/><path d="M12 22V12"/></svg>
             </button>
-            <button class="rail-btn" title="Agents" type="button" tabindex="-1">
+            <button class="rail-btn" title="联系人" type="button" tabindex="-1">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             </button>
+            <button class="rail-btn" title="任务" type="button" tabindex="-1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+            </button>
             <div class="rail-separator"></div>
-            <button class="rail-btn" title="分析" type="button" tabindex="-1">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>
+            <button class="rail-btn" title="配额" type="button" tabindex="-1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/></svg>
             </button>
-            <button class="rail-btn" title="知识库" type="button" tabindex="-1">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></svg>
+            <button class="rail-btn" title="沉淀" type="button" tabindex="-1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a7 7 0 0 0-7 7c0 2.5 1.5 4.5 3 6 .75.75 1 1.5 1 2.5v1a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-1c0-1 .25-1.75 1-2.5 1.5-1.5 3-3.5 3-6a7 7 0 0 0-7-7z"/><path d="M9 18h6"/></svg>
             </button>
-            <button class="rail-btn" title="技能" type="button" tabindex="-1">
+            <button class="rail-btn" title="扩展" type="button" tabindex="-1">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-            </button>
-            <button class="rail-btn" title="MCP" type="button" tabindex="-1">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6"/><path d="M15 2v6"/><path d="M5 8h14l-1.5 8a4 4 0 0 1-4 3.5h-3a4 4 0 0 1-4-3.5L5 8z"/><path d="M12 19.5V22"/></svg>
-            </button>
-            <button class="rail-btn" title="记忆管理" type="button" tabindex="-1">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6a9 3 0 0 0 18 0V5"/><path d="M3 11v6a9 3 0 0 0 18 0v-6"/></svg>
             </button>
           </nav>
           <div class="rail-bottom">
@@ -2914,7 +2947,7 @@ pointer-events: auto;
         </svg>
       </div>
       <div class="fc-title">本地优先部署</div>
-      <div class="fc-desc">数据自主可控，基础设施可独立降级，Milvus / ES / Neo4j 缺一不阻断</div>
+      <div class="fc-desc">数据自主可控，基础设施可独立降级，Milvus / Neo4j 缺一不阻断</div>
     </div>
 
     <div class="feature-card">
@@ -2925,19 +2958,7 @@ pointer-events: auto;
         </svg>
       </div>
       <div class="fc-title">RAG 混合检索</div>
-      <div class="fc-desc">Milvus 向量 + Elasticsearch 全文 + Neo4j 知识图谱，三路融合检索</div>
-    </div>
-
-    <div class="feature-card wide">
-      <div class="fc-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-          <path d="M2 17l10 5 10-5"/>
-          <path d="M2 12l10 5 10-5"/>
-        </svg>
-      </div>
-      <div class="fc-title">分层记忆系统</div>
-      <div class="fc-desc">短期 / 会话 / 长期 / 偏好 / 图谱记忆，自动固化与衰减</div>
+      <div class="fc-desc">Milvus 向量 + BM25 全文 + Neo4j 图谱 PPR + 4 种分块预设 + 7 种 OCR 引擎 + RAG 评测</div>
     </div>
 
     <div class="feature-card tinted-teal">
@@ -2953,7 +2974,7 @@ pointer-events: auto;
       <div class="fc-desc">CodeGraph 本地运行时 + code_explore 工具，Agent 理解项目结构</div>
     </div>
 
-    <div class="feature-card tinted-purple">
+    <div class="feature-card">
       <div class="fc-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -2961,6 +2982,29 @@ pointer-events: auto;
       </div>
       <div class="fc-title">可观测性</div>
       <div class="fc-desc">OpenTelemetry + Phoenix 全链路追踪 + 评测系统，trace_enabled 开关即降级</div>
+    </div>
+
+    <div class="feature-card">
+      <div class="fc-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <path d="M9 3v18M15 3v18"/>
+        </svg>
+      </div>
+      <div class="fc-title">全局任务看板</div>
+      <div class="fc-desc">Kanban UI · 7 状态列 · 乐观并发控制 · asyncio 调度器自动派发 todo 任务给 Agent</div>
+    </div>
+
+    <div class="feature-card tinted-purple">
+      <div class="fc-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+          <path d="M3.27 6.96 12 12.01l8.73-5.05"/>
+          <path d="M12 22.08V12"/>
+        </svg>
+      </div>
+      <div class="fc-title">ModelProfile</div>
+      <div class="fc-desc">用户级模型配置，独立于 Agent 实体 · 运行时解析 · 连通性测试</div>
     </div>
   </div>
 </section>
@@ -3212,78 +3256,91 @@ pointer-events: auto;
   </div>
 </section>
 
-<!-- ===== 分层记忆系统 Mockup ===== -->
+<!-- ===== 文件原生记忆系统 Mockup ===== -->
 <section class="section section-animate" id="memory-system">
   <div class="section-heading">
-    <h2>五层记忆，自动固化与衰减</h2>
-    <p>短期 → 会话 → 长期 → 偏好 → 图谱，Agent 跨会话记住一切。</p>
+    <h2>文件原生记忆，自动提取与精炼</h2>
+    <p>对话自动提取事实 → 每日卡片 → 精炼长期记忆。Markdown 文件存储，可直接查看和编辑。</p>
   </div>
 
   <div class="memory-mockup" id="memoryMockup">
     <div class="memory-tabs">
-      <div class="memory-tab active" data-mem-tab="ltm">长期记忆</div>
+      <div class="memory-tab active" data-mem-tab="digest">精炼记忆</div>
+      <div class="memory-tab" data-mem-tab="daily">每日卡片</div>
       <div class="memory-tab" data-mem-tab="pref">用户偏好</div>
-      <div class="memory-tab" data-mem-tab="session">会话摘要</div>
     </div>
 
-    <!-- LTM cards -->
-    <div class="memory-cards" data-mem-panel="ltm">
+    <!-- Digest cards (long-term refined memory) -->
+    <div class="memory-cards" data-mem-panel="digest">
       <div class="memory-card">
         <div class="memory-card-summary">用户项目使用 React 19 + Next.js 16</div>
-        <div class="memory-card-content">前端框架为 Next.js 16 App Router，配合 React 19、Tailwind v4 和 shadcn/ui 组件库。</div>
+        <div class="memory-card-content">前端框架为 Next.js 16 App Router，配合 React 19、Tailwind v4 和 shadcn/ui 组件库。构建工具为 pnpm。</div>
         <div class="memory-card-meta">
           <span class="memory-category cat-fact">事实</span>
-          <span class="memory-importance">
-            <span>重要性</span>
-            <span class="imp-bar"><span class="imp-fill" style="width:85%"></span></span>
-            <span class="imp-value">0.85</span>
-          </span>
           <span class="memory-keyword">#react</span>
           <span class="memory-keyword">#nextjs</span>
           <span class="memory-keyword">#frontend</span>
         </div>
         <div class="memory-card-footer">
-          <span>小德</span>
-          <span>· 2026-07-15</span>
-          <span>· scope: global</span>
+          <span>digest/personal/</span>
+          <span>· derived_from:: [[daily/2026-07-15/...]]</span>
+        </div>
+      </div>
+
+      <div class="memory-card">
+        <div class="memory-card-summary">pnpm build 超时处理步骤</div>
+        <div class="memory-card-content">用户项目 pnpm build 需要较长时间。Trigger: bash 工具超时。Steps: 1. 设置 timeoutMs: 300000  2. 检查 webpack 配置  3. 考虑增量构建。</div>
+        <div class="memory-card-meta">
+          <span class="memory-category cat-case">任务经验</span>
+          <span class="memory-keyword">#bash</span>
+          <span class="memory-keyword">#timeout</span>
+          <span class="memory-keyword">#build</span>
+        </div>
+        <div class="memory-card-footer">
+          <span>digest/procedure/</span>
+          <span>· derived_from:: [[daily/2026-07-22/...]]</span>
         </div>
       </div>
 
       <div class="memory-card">
         <div class="memory-card-summary">用户偏好深色主题和简洁界面</div>
-        <div class="memory-card-content">在多次对话中提到喜欢深色模式，偏好无多余装饰的极简设计风格。</div>
+        <div class="memory-card-content">在多次对话中提到喜欢深色模式，偏好无多余装饰的极简设计风格。偏好中文交流。</div>
         <div class="memory-card-meta">
           <span class="memory-category cat-preference">偏好</span>
-          <span class="memory-importance">
-            <span>重要性</span>
-            <span class="imp-bar"><span class="imp-fill" style="width:72%"></span></span>
-            <span class="imp-value">0.72</span>
-          </span>
           <span class="memory-keyword">#theme</span>
           <span class="memory-keyword">#dark-mode</span>
         </div>
         <div class="memory-card-footer">
-          <span>小柯</span>
-          <span>· 2026-07-20</span>
+          <span>digest/personal/</span>
+          <span>· derived_from:: [[daily/2026-07-20/...]]</span>
         </div>
       </div>
+    </div>
 
+    <!-- Daily cards panel -->
+    <div class="memory-cards" data-mem-panel="daily" style="display:none">
       <div class="memory-card">
-        <div class="memory-card-summary">bash 工具超时需设置 timeoutMs</div>
-        <div class="memory-card-content">用户项目 pnpm build 需要较长时间，bash 工具调用时应设置 timeoutMs: 300000。</div>
+        <div class="memory-card-summary">2026-08-19 · 认证模块重构</div>
+        <div class="memory-card-content">小德重构了 JWT 认证逻辑，从 session 迁移到 JWT。小柯补全了单元测试，覆盖率 42% → 87%。Orchestrator 聚合产物。</div>
         <div class="memory-card-meta">
-          <span class="memory-category cat-tool_failure">工具失败</span>
-          <span class="memory-importance">
-            <span>重要性</span>
-            <span class="imp-bar"><span class="imp-fill" style="width:60%"></span></span>
-            <span class="imp-value">0.60</span>
-          </span>
-          <span class="memory-keyword">#bash</span>
-          <span class="memory-keyword">#timeout</span>
+          <span class="memory-category cat-case">任务经验</span>
+          <span class="memory-keyword">#auth</span>
+          <span class="memory-keyword">#testing</span>
         </div>
         <div class="memory-card-footer">
-          <span>小德</span>
-          <span>· 2026-07-22</span>
+          <span>daily/2026-08-19/</span>
+          <span>· session: conv_a8f2…</span>
+        </div>
+      </div>
+      <div class="memory-card">
+        <div class="memory-card-summary">2026-08-19 · 用户偏好提取</div>
+        <div class="memory-card-content">用户在对话中提到偏好深色主题，使用中文交流。已提取为 preference 卡片。</div>
+        <div class="memory-card-meta">
+          <span class="memory-category cat-preference">偏好</span>
+          <span class="memory-keyword">#theme</span>
+        </div>
+        <div class="memory-card-footer">
+          <span>daily/2026-08-19/</span>
         </div>
       </div>
     </div>
@@ -3292,7 +3349,7 @@ pointer-events: auto;
     <div class="memory-cards" data-mem-panel="pref" style="display:none">
       <div class="memory-card">
         <div class="memory-card-summary">theme = dark</div>
-        <div class="memory-card-content">用户偏好深色主题</div>
+        <div class="memory-card-content">用户偏好深色主题（PG KV 持久化，跨会话生效）</div>
         <div class="memory-card-meta">
           <span class="memory-category cat-preference">偏好</span>
           <span class="memory-keyword">#theme</span>
@@ -3310,51 +3367,55 @@ pointer-events: auto;
       </div>
     </div>
 
-    <!-- Session panel -->
-    <div class="memory-cards" data-mem-panel="session" style="display:none">
-      <div class="memory-card">
-        <div class="memory-card-summary">重构认证模块 + 补全测试</div>
-        <div class="memory-card-content">本次会话中，小德重构了 JWT 认证逻辑，小柯补全了单元测试。Orchestrator 聚合产物后生成了最终代码。</div>
-        <div class="memory-card-meta">
-          <span class="memory-category cat-case">任务经验</span>
-          <span class="memory-keyword">#auth</span>
-          <span class="memory-keyword">#testing</span>
-        </div>
-        <div class="memory-card-footer"><span>会话: conv_a8f2…</span></div>
+    <!-- File-native pipeline diagram -->
+    <div class="memory-pipeline">
+      <div class="pipe-stage" data-pipe-stage="0">
+        <div class="pipe-stage-icon">JSONL</div>
+        <div class="pipe-stage-name">原始对话</div>
+        <div class="pipe-stage-desc">session/</div>
+      </div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-stage active" data-pipe-stage="1">
+        <div class="pipe-stage-icon">DAILY</div>
+        <div class="pipe-stage-name">每日卡片</div>
+        <div class="pipe-stage-desc">auto_memory</div>
+      </div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-stage active" data-pipe-stage="2">
+        <div class="pipe-stage-icon">DIGEST</div>
+        <div class="pipe-stage-name">精炼记忆</div>
+        <div class="pipe-stage-desc">auto_dream</div>
+      </div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-stage" data-pipe-stage="3">
+        <div class="pipe-stage-icon">PROACTIVE</div>
+        <div class="pipe-stage-name">主动召回</div>
+        <div class="pipe-stage-desc">interests.yaml</div>
       </div>
     </div>
 
-    <!-- Hierarchy diagram -->
-    <div class="memory-hierarchy">
-      <div class="mem-layer" data-mem-layer="0">
-        <div class="mem-layer-icon">STM</div>
-        <div class="mem-layer-name">短期记忆</div>
-        <div class="mem-layer-desc">最近 N 轮对话</div>
-      </div>
-      <span class="mem-arrow">→</span>
-      <div class="mem-layer" data-mem-layer="1">
-        <div class="mem-layer-icon">SM</div>
-        <div class="mem-layer-name">会话摘要</div>
-        <div class="mem-layer-desc">跨 run 恢复</div>
-      </div>
-      <span class="mem-arrow">→</span>
-      <div class="mem-layer active" data-mem-layer="2">
-        <div class="mem-layer-icon">LTM</div>
-        <div class="mem-layer-name">长期记忆</div>
-        <div class="mem-layer-desc">向量检索 + PG</div>
-      </div>
-      <span class="mem-arrow">→</span>
-      <div class="mem-layer" data-mem-layer="3">
-        <div class="mem-layer-icon">PREF</div>
-        <div class="mem-layer-name">用户偏好</div>
-        <div class="mem-layer-desc">跨会话持久化</div>
-      </div>
-      <span class="mem-arrow">→</span>
-      <div class="mem-layer" data-mem-layer="4">
-        <div class="mem-layer-icon">KG</div>
-        <div class="mem-layer-name">图谱记忆</div>
-        <div class="mem-layer-desc">Neo4j 关联</div>
-      </div>
+    <!-- Search architecture badges -->
+    <div class="memory-search-badges">
+      <span class="mem-search-badge accent">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        SQLite FTS5 BM25
+      </span>
+      <span class="mem-search-badge purple">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/></svg>
+        SQLite BLOB 向量 cosine
+      </span>
+      <span class="mem-search-badge success">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        RRF 融合
+      </span>
+      <span class="mem-search-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        wikilink 扩展
+      </span>
+      <span class="mem-search-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        Markdown + frontmatter
+      </span>
     </div>
   </div>
 </section>
@@ -3526,6 +3587,10 @@ pointer-events: auto;
     <span class="tech-badge">PostgreSQL 16</span>
     <span class="tech-badge">Tailwind v4</span>
     <span class="tech-badge">TypeScript</span>
+    <span class="tech-badge">SQLite FTS5</span>
+    <span class="tech-badge">Milvus</span>
+    <span class="tech-badge">Neo4j</span>
+    <span class="tech-badge">OpenTelemetry</span>
   </div>
   <p class="footer-text">AChat — 本地运行的多 Agent 协作工作空间</p>
 </footer>
@@ -3763,7 +3828,7 @@ pointer-events: auto;
   /* ===== 记忆系统 — Tab 切换 ===== */
   var memTabs = document.querySelectorAll('.memory-tab');
   var memPanels = document.querySelectorAll('.memory-cards[data-mem-panel]');
-  var memLayers = document.querySelectorAll('.mem-layer');
+  var pipeStages = document.querySelectorAll('.pipe-stage');
 
   memTabs.forEach(function(tab) {
     tab.addEventListener('click', function() {
@@ -3772,9 +3837,9 @@ pointer-events: auto;
       memPanels.forEach(function(p) {
         p.style.display = p.dataset.memPanel === target ? '' : 'none';
       });
-      var layerIdx = target === 'ltm' ? '2' : target === 'pref' ? '3' : '1';
-      memLayers.forEach(function(l) {
-        l.classList.toggle('active', l.dataset.memLayer === layerIdx);
+      var stageIdx = target === 'digest' ? '2' : target === 'daily' ? '1' : '0';
+      pipeStages.forEach(function(s) {
+        s.classList.toggle('active', s.dataset.pipeStage === stageIdx);
       });
     });
   });

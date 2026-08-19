@@ -6,6 +6,7 @@ import {
   Clipboard,
   Eye,
   EyeOff,
+  FileText,
   FolderUp,
   Info,
   KeyRound,
@@ -34,11 +35,15 @@ import type { AppSettingsRow } from '@/db/schema'
 import {
   fetchAppSettings,
   fetchConnectionHints,
+  fetchOcrEngines,
+  fetchRagPresets,
   regenerateMobileDeviceToken,
   updateAppSettings,
   type AppSettingsPatchBody,
   type ConnectionHint,
 } from '@/lib/api'
+import type { OcrEngineStatus, RagPreset } from '@/shared/types'
+import { cn } from '@/lib/utils'
 interface SettingsForm {
   anthropicApiKey: string
   anthropicBaseUrl: string
@@ -50,6 +55,10 @@ interface SettingsForm {
   deploymentPublishEnabled: boolean
   deploymentPublishDir: string
   deploymentPublicBaseUrl: string
+  ragChunkPreset: string
+  ragChunkSize: string
+  ragChunkOverlap: string
+  ocrEngine: string
 }
 
 /**
@@ -86,7 +95,13 @@ export function SettingsDialog({
     deploymentPublishEnabled: false,
     deploymentPublishDir: '',
     deploymentPublicBaseUrl: '',
+    ragChunkPreset: '',
+    ragChunkSize: '',
+    ragChunkOverlap: '',
+    ocrEngine: '',
   })
+  const [ragPresets, setRagPresets] = useState<RagPreset[]>([])
+  const [ocrEngines, setOcrEngines] = useState<OcrEngineStatus[]>([])
   const [reveal, setReveal] = useState<Record<keyof SettingsForm, boolean>>({
     anthropicApiKey: false,
     anthropicBaseUrl: false,
@@ -98,6 +113,10 @@ export function SettingsDialog({
     deploymentPublishEnabled: true,
     deploymentPublishDir: true,
     deploymentPublicBaseUrl: true,
+    ragChunkPreset: true,
+    ragChunkSize: true,
+    ragChunkOverlap: true,
+    ocrEngine: true,
   })
 
   useEffect(() => {
@@ -119,6 +138,14 @@ export function SettingsDialog({
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
+
+    // Load RAG presets and OCR engines for the RAG tab
+    fetchRagPresets()
+      .then((data) => { if (!cancelled) setRagPresets(data.presets) })
+      .catch((err) => console.error('[SettingsDialog] fetchRagPresets failed', err))
+    fetchOcrEngines()
+      .then((data) => { if (!cancelled) setOcrEngines(data.engines) })
+      .catch((err) => console.error('[SettingsDialog] fetchOcrEngines failed', err))
 
     return () => {
       cancelled = true
@@ -163,6 +190,10 @@ export function SettingsDialog({
         deploymentPublishEnabled: form.deploymentPublishEnabled,
         deploymentPublishDir: form.deploymentPublishDir.trim() || null,
         deploymentPublicBaseUrl: form.deploymentPublicBaseUrl.trim() || null,
+        ragChunkPreset: form.ragChunkPreset || null,
+        ragChunkSize: form.ragChunkSize ? parseInt(form.ragChunkSize, 10) : null,
+        ragChunkOverlap: form.ragChunkOverlap ? parseInt(form.ragChunkOverlap, 10) : null,
+        ocrEngine: form.ocrEngine || null,
       }
       await updateAppSettings(patch)
       onOpenChange(false)
@@ -267,6 +298,10 @@ export function SettingsDialog({
                   <FolderUp className="size-3.5" />
                   发布
                 </TabsTrigger>
+                <TabsTrigger value="rag">
+                  <FileText className="size-3.5" />
+                  RAG
+                </TabsTrigger>
               </TabsList>
               {tab === 'keys' && (
                 <TooltipProvider>
@@ -362,6 +397,21 @@ export function SettingsDialog({
                   onPublicBaseUrlChange={(deploymentPublicBaseUrl) =>
                     setForm((f) => ({ ...f, deploymentPublicBaseUrl }))
                   }
+                />
+              </TabsContent>
+
+              <TabsContent value="rag" className="mt-0 py-1">
+                <RagConfigSettings
+                  ragChunkPreset={form.ragChunkPreset}
+                  ragChunkSize={form.ragChunkSize}
+                  ragChunkOverlap={form.ragChunkOverlap}
+                  ocrEngine={form.ocrEngine}
+                  presets={ragPresets}
+                  ocrEngines={ocrEngines}
+                  onPresetChange={(ragChunkPreset) => setForm((f) => ({ ...f, ragChunkPreset }))}
+                  onChunkSizeChange={(ragChunkSize) => setForm((f) => ({ ...f, ragChunkSize }))}
+                  onChunkOverlapChange={(ragChunkOverlap) => setForm((f) => ({ ...f, ragChunkOverlap }))}
+                  onOcrEngineChange={(ocrEngine) => setForm((f) => ({ ...f, ocrEngine }))}
                 />
               </TabsContent>
 
@@ -592,6 +642,115 @@ function DeploymentPublishSettings({
   )
 }
 
+function RagConfigSettings({
+  ragChunkPreset,
+  ragChunkSize,
+  ragChunkOverlap,
+  ocrEngine,
+  presets,
+  ocrEngines,
+  onPresetChange,
+  onChunkSizeChange,
+  onChunkOverlapChange,
+  onOcrEngineChange,
+}: {
+  ragChunkPreset: string
+  ragChunkSize: string
+  ragChunkOverlap: string
+  ocrEngine: string
+  presets: RagPreset[]
+  ocrEngines: OcrEngineStatus[]
+  onPresetChange: (value: string) => void
+  onChunkSizeChange: (value: string) => void
+  onChunkOverlapChange: (value: string) => void
+  onOcrEngineChange: (value: string) => void
+}) {
+  return (
+    <section className="rounded-lg border bg-muted/30 p-3">
+      <div className="mb-3 flex items-center gap-2">
+        <FileText className="size-4 text-muted-foreground" />
+        <h3 className="text-sm font-medium">RAG 配置</h3>
+      </div>
+
+      <div className="grid gap-3">
+        <div className="grid gap-1.5">
+          <label className="text-xs font-medium">默认分块策略</label>
+          <select
+            value={ragChunkPreset}
+            onChange={(e) => onPresetChange(e.target.value)}
+            className="h-8 w-full rounded-md border bg-background px-2 text-xs outline-none focus:border-foreground/30"
+          >
+            <option value="">跟随全局默认</option>
+            {presets.map((p) => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
+          </select>
+          <p className="text-[11px] leading-4 text-muted-foreground">
+            上传时选择「跟随默认」将使用此策略。
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-1.5">
+            <label className="text-xs font-medium">分块大小</label>
+            <Input
+              type="number"
+              value={ragChunkSize}
+              onChange={(e) => onChunkSizeChange(e.target.value)}
+              placeholder="200"
+              className="h-8 text-xs"
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <label className="text-xs font-medium">分块重叠</label>
+            <Input
+              type="number"
+              value={ragChunkOverlap}
+              onChange={(e) => onChunkOverlapChange(e.target.value)}
+              placeholder="50"
+              className="h-8 text-xs"
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-1.5">
+          <label className="text-xs font-medium">OCR 引擎</label>
+          <select
+            value={ocrEngine}
+            onChange={(e) => onOcrEngineChange(e.target.value)}
+            className="h-8 w-full rounded-md border bg-background px-2 text-xs outline-none focus:border-foreground/30"
+          >
+            <option value="">跟随全局默认 (auto)</option>
+            {ocrEngines.map((eng) => (
+              <option key={eng.id} value={eng.id}>
+                {eng.label} ({eng.available ? '可用' : '不可用'})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {ocrEngines.length > 0 && (
+          <div className="space-y-1 rounded-md border bg-background px-2 py-2">
+            <p className="text-[11px] font-medium text-muted-foreground">引擎状态</p>
+            {ocrEngines.map((eng) => (
+              <div key={eng.id} className="flex items-center gap-1.5 text-[11px]">
+                <span className={cn('size-1.5 rounded-full', eng.available ? 'bg-success' : 'bg-muted-foreground/40')} />
+                <span className="font-medium">{eng.label}</span>
+                <span className="text-muted-foreground">
+                  {eng.status === 'ok' ? '可用' :
+                   eng.status === 'not_installed' ? '未安装' :
+                   eng.status === 'not_configured' ? '未配置 Key' :
+                   '服务不可达'}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 function hintIcon(kind: ConnectionHint['kind']) {
   switch (kind) {
     case 'tailscale':
@@ -659,5 +818,9 @@ function rowToForm(row: AppSettingsRow): SettingsForm {
     deploymentPublishEnabled: row.deploymentPublishEnabled,
     deploymentPublishDir: row.deploymentPublishDir ?? '',
     deploymentPublicBaseUrl: row.deploymentPublicBaseUrl ?? '',
+    ragChunkPreset: row.ragChunkPreset ?? '',
+    ragChunkSize: row.ragChunkSize != null ? String(row.ragChunkSize) : '',
+    ragChunkOverlap: row.ragChunkOverlap != null ? String(row.ragChunkOverlap) : '',
+    ocrEngine: row.ocrEngine ?? '',
   }
 }

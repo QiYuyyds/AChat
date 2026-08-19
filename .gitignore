@@ -13,10 +13,20 @@
 __pycache__/
 **/__pycache__/
 *.pyc
+*.pyo
+*.pyd
 !.yarn/patches
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
+
+# Python cache & tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
 
 # testing
 /coverage
@@ -30,6 +40,7 @@ __pycache__/
 
 # misc
 .DS_Store
+Thumbs.db
 *.pem
 
 # debug
@@ -37,6 +48,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+*.log
 
 # env files (can opt-in for committing if needed)
 .env*
@@ -54,6 +66,9 @@ next-env.d.ts
 /.agenthub-data-e2e/
 /.tmp/
 /drizzle/
+
+# CodeGraph local runtime data
+/.codegraph/
 
 # Playwright
 /playwright-report/
@@ -77,8 +92,25 @@ next-env.d.ts
 # 待融合项目
 /待融合项目/
 /eval/CRUD_RAG-main/
-/eval_memory/
 /md_sys/
 
+# AI 工具配置与本地资源（不上传）
+/skills/
+/resources/
+/eval_memory/
+/.superpowers/
+/.impeccable/
+/.codex/
+/.claude/
+/.catpaw/
 
-/.claude
+# Backend one-off scripts (never commit temp/ops scripts with real credentials)
+backend/_*.py
+
+# SQLite databases (local runtime data)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

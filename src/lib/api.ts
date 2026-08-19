@@ -23,6 +23,8 @@ import type {
   PendingMcpCall,
   PendingQuestion,
   PendingWrite,
+  TaskCommentRow,
+  TaskRow,
   UpdateModelProfileBody,
   UploadResult,
   VersionRow,
@@ -1099,17 +1101,21 @@ export async function fetchAppSettings(): Promise<AppSettingsRow> {
 }
 
 export interface AppSettingsPatchBody {
-  anthropicApiKey?: string | null
-  anthropicBaseUrl?: string | null
-  openaiApiKey?: string | null
-  deepseekApiKey?: string | null
-  arkApiKey?: string | null
-  companionMode?: 'off' | 'lan' | 'tailnet'
-  mobileDeviceToken?: string | null
-  deploymentPublishEnabled?: boolean
-  deploymentPublishDir?: string | null
-  deploymentPublicBaseUrl?: string | null
-  obsidianVaultPath?: string | null
+anthropicApiKey?: string | null
+anthropicBaseUrl?: string | null
+openaiApiKey?: string | null
+deepseekApiKey?: string | null
+arkApiKey?: string | null
+companionMode?: 'off' | 'lan' | 'tailnet'
+mobileDeviceToken?: string | null
+deploymentPublishEnabled?: boolean
+deploymentPublishDir?: string | null
+deploymentPublicBaseUrl?: string | null
+obsidianVaultPath?: string | null
+ragChunkPreset?: string | null
+ragChunkSize?: number | null
+ragChunkOverlap?: number | null
+ocrEngine?: string | null
 }
 
 export async function updateAppSettings(patch: AppSettingsPatchBody): Promise<AppSettingsRow> {
@@ -1185,25 +1191,28 @@ export async function deleteDocument(documentId: string): Promise<{ ok: boolean;
   )
 }
 
-export async function ingestDocument(documentId: string, versionId: string): Promise<IngestResult> {
-  return json<IngestResult>(
-    authFetch(`${API_BASE_URL}/api/documents/${documentId}/ingest`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ versionId }),
-    }),
-  )
+export async function ingestDocument(documentId: string, versionId: string, opts?: { presetId?: string }): Promise<IngestResult> {
+const body: Record<string, string> = { versionId }
+if (opts?.presetId) body.presetId = opts.presetId
+return json<IngestResult>(
+authFetch(`${API_BASE_URL}/api/documents/${documentId}/ingest`, {
+method: 'POST',
+headers: { 'Content-Type': 'application/json' },
+body: JSON.stringify(body),
+}),
+)
 }
 
 export async function uploadDocument(
-  file: File,
-  opts?: { documentId?: string; title?: string; docType?: string },
+file: File,
+opts?: { documentId?: string; title?: string; docType?: string; presetId?: string },
 ): Promise<UploadResult> {
-  const form = new FormData()
-  form.append('file', file)
-  if (opts?.documentId) form.append('document_id', opts.documentId)
-  if (opts?.title) form.append('title', opts.title)
-  if (opts?.docType) form.append('doc_type', opts.docType)
+const form = new FormData()
+form.append('file', file)
+if (opts?.documentId) form.append('document_id', opts.documentId)
+if (opts?.title) form.append('title', opts.title)
+if (opts?.docType) form.append('doc_type', opts.docType)
+if (opts?.presetId) form.append('preset_id', opts.presetId)
   const res = await authFetch(`${API_BASE_URL}/api/documents/upload`, {
     method: 'POST',
     body: form,
@@ -1215,9 +1224,26 @@ export async function uploadDocument(
   return res.json() as Promise<UploadResult>
 }
 
+// ─── RAG Config (presets + OCR engines) ─────────────────────────
+
+export async function fetchRagPresets(): Promise<{ presets: import('@/shared/types').RagPreset[]; default: string }> {
+return json<{ presets: import('@/shared/types').RagPreset[]; default: string }>(
+authFetch(API_BASE_URL + '/api/rag/presets'),
+)
+}
+
+export async function fetchOcrEngines(): Promise<{ engines: import('@/shared/types').OcrEngineStatus[]; current: string }> {
+return json<{ engines: import('@/shared/types').OcrEngineStatus[]; current: string }>(
+authFetch(API_BASE_URL + '/api/ocr-engines'),
+)
+}
+
 // ─── Obsidian Sync ──────────────────────────────────────────
-export async function fetchDocumentTree(path?: string): Promise<import('@/shared/types').DocumentTree> {
-  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+export async function fetchDocumentTree(path?: string, parentId?: string): Promise<import('@/shared/types').DocumentTree> {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  if (parentId) params.set('parent_id', parentId)
+  const query = params.toString() ? `?${params.toString()}` : ''
   return json<import('@/shared/types').DocumentTree>(
     authFetch(API_BASE_URL + '/api/documents/tree' + query),
   )
@@ -1229,6 +1255,32 @@ export async function fetchDocumentFlat(sources?: string[]): Promise<DocumentRow
     authFetch(API_BASE_URL + '/api/documents/flat' + query),
   )
   return documents
+}
+
+export async function getDocumentPreview(documentId: string): Promise<import('@/shared/types').DocumentPreview> {
+  return json<import('@/shared/types').DocumentPreview>(
+    authFetch(`${API_BASE_URL}/api/documents/${documentId}/preview`),
+  )
+}
+
+export async function createFolder(name: string, parentId?: string): Promise<DocumentRow> {
+  return json<DocumentRow>(
+    authFetch(API_BASE_URL + '/api/documents/folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, parentId: parentId ?? null }),
+    }),
+  )
+}
+
+export async function moveDocument(documentId: string, targetParentId: string | null): Promise<DocumentRow> {
+  return json<DocumentRow>(
+    authFetch(`${API_BASE_URL}/api/documents/${documentId}/move`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetParentId }),
+    }),
+  )
 }
 
 export async function syncObsidian(): Promise<import('@/shared/types').SyncReport> {
@@ -1480,4 +1532,141 @@ export async function fetchWorkspaceEnvStatus(
   return authJson<WorkspaceEnvStatus>(
     `${API_BASE_URL}/api/workspaces/${conversationId}/env-status`,
   )
+}
+
+// ─── Tasks API ──────────────────────────────────────────────────
+
+export async function fetchTasks(params?: {
+  status?: string
+  priority?: string
+  assigneeAgentId?: string
+}): Promise<TaskRow[]> {
+  const qs = new URLSearchParams()
+  if (params?.status) qs.set('status', params.status)
+  if (params?.priority) qs.set('priority', params.priority)
+  if (params?.assigneeAgentId) qs.set('assigneeAgentId', params.assigneeAgentId)
+  const q = qs.toString()
+  const data = await authJson<{ tasks: TaskRow[] }>(
+    `${API_BASE_URL}/api/tasks${q ? `?${q}` : ''}`,
+  )
+  return data.tasks
+}
+
+export async function fetchTask(taskId: string): Promise<TaskRow> {
+  return authJson<TaskRow>(`${API_BASE_URL}/api/tasks/${taskId}`)
+}
+
+export async function createTask(body: {
+  title: string
+  description?: string
+  status?: string
+  priority?: string
+  labels?: string[]
+  assigneeAgentId?: string | null
+  workspaceMode?: string | null
+  workspacePath?: string | null
+  dueDate?: string | null
+}): Promise<TaskRow> {
+  return authJson<TaskRow>(`${API_BASE_URL}/api/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function updateTask(
+  taskId: string,
+  body: {
+    title?: string
+    description?: string
+    priority?: string
+    labels?: string[]
+    dueDate?: string | null
+    ifVersion: number
+  },
+): Promise<TaskRow> {
+  return authJson<TaskRow>(`${API_BASE_URL}/api/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function moveTask(
+  taskId: string,
+  body: { status: string; ifVersion: number; sortOrder?: number },
+): Promise<TaskRow> {
+  return authJson<TaskRow>(`${API_BASE_URL}/api/tasks/${taskId}/move`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function assignTask(
+  taskId: string,
+  body: { agentId: string | null; ifVersion: number },
+): Promise<TaskRow> {
+  return authJson<TaskRow>(`${API_BASE_URL}/api/tasks/${taskId}/assign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function deleteTask(taskId: string): Promise<void> {
+  await authFetch(`${API_BASE_URL}/api/tasks/${taskId}`, { method: 'DELETE' })
+}
+
+export async function fetchTaskComments(
+  taskId: string,
+): Promise<TaskCommentRow[]> {
+  const data = await authJson<{ comments: TaskCommentRow[] }>(
+    `${API_BASE_URL}/api/tasks/${taskId}/comments`,
+  )
+  return data.comments
+}
+
+export async function addTaskComment(
+  taskId: string,
+  body: { body: string },
+): Promise<TaskCommentRow> {
+  return authJson<TaskCommentRow>(
+    `${API_BASE_URL}/api/tasks/${taskId}/comments`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )
+}
+
+export async function startScheduler(body: {
+  agentId?: string | null
+  intervalMinutes?: number
+  maxConcurrent?: number
+}): Promise<{ running: boolean }> {
+  return authJson<{ running: boolean }>(
+    `${API_BASE_URL}/api/tasks/scheduler/start`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )
+}
+
+export async function stopScheduler(): Promise<{ running: boolean }> {
+  return authJson<{ running: boolean }>(
+    `${API_BASE_URL}/api/tasks/scheduler/stop`,
+    { method: 'POST' },
+  )
+}
+
+export async function getSchedulerStatus(): Promise<{
+  running: boolean
+  pendingCount: number
+  activeCount: number
+}> {
+  return authJson(`${API_BASE_URL}/api/tasks/scheduler/status`)
 }

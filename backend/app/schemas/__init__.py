@@ -26,13 +26,8 @@ from app.schemas.dispatch import (
     PendingQuestion,
     PendingWrite,
 )
-from app.schemas.model_profile import (
-    CreateModelProfileRequest,
-    ModelProfileOut,
-    ModelProfileTestResult,
-    UpdateModelProfileRequest,
-)
 from app.schemas.document import (
+    CreateFolderRequest,
     DeleteDocumentResponse,
     DocumentDetailResponse,
     DocumentFlatListResponse,
@@ -44,6 +39,8 @@ from app.schemas.document import (
     FolderNode,
     IngestResultResponse,
     IngestVersionRequest,
+    MoveDocumentRequest,
+    PreviewResponse,
     UploadDocumentResponse,
     VersionListResponse,
     VersionResponse,
@@ -61,7 +58,13 @@ from app.schemas.events import (
     PartStartEvent,
     RunEndEvent,
     RunStartEvent,
+    SchedulerStatusEvent,
     StreamEvent,
+    TaskAssignedEvent,
+    TaskCommentedEvent,
+    TaskCreatedEvent,
+    TaskMovedEvent,
+    TaskUpdatedEvent,
     ToolCallEvent,
     ToolResultEvent,
     WorkspaceEnvHintEvent,
@@ -78,6 +81,19 @@ from app.schemas.messages import (
     ThinkingPart,
     ToolResultPart,
     ToolUsePart,
+)
+from app.schemas.model_profile import (
+    CreateModelProfileRequest,
+    ModelProfileOut,
+    ModelProfileTestResult,
+    UpdateModelProfileRequest,
+)
+from app.schemas.rag_task import (
+    CreateRagTaskRequest,
+    RagTaskListResponse,
+    RagTaskResponse,
+    RagTaskStatus,
+    RagTaskType,
 )
 from app.schemas.requests import (
     AgentResponse,
@@ -129,6 +145,16 @@ from app.schemas.requests import (
     VipLoginRequest,
     WorkspaceEnvStatusResponse,
 )
+from app.schemas.task import (
+    AddTaskCommentRequest,
+    AssignTaskRequest,
+    CreateTaskRequest,
+    MoveTaskRequest,
+    SchedulerStartRequest,
+    TaskCommentRow,
+    TaskRow,
+    UpdateTaskRequest,
+)
 
 __all__ = [
     # Artifacts
@@ -171,6 +197,13 @@ __all__ = [
     "HeartbeatEvent",
     "WorkspaceEnvHintEvent",
     "WorkspaceEnvStatusEvent",
+    # Task board events
+    "TaskCreatedEvent",
+    "TaskUpdatedEvent",
+    "TaskMovedEvent",
+    "TaskCommentedEvent",
+    "TaskAssignedEvent",
+    "SchedulerStatusEvent",
     # Messages
     "MessagePart",
     "MessageUsage",
@@ -255,4 +288,22 @@ __all__ = [
     "DocumentFlatListResponse",
     "FolderNode",
     "FileNode",
+    "PreviewResponse",
+    "CreateFolderRequest",
+    "MoveDocumentRequest",
+    # Tasks
+    "TaskRow",
+    "TaskCommentRow",
+    "CreateTaskRequest",
+    "UpdateTaskRequest",
+    "MoveTaskRequest",
+    "AssignTaskRequest",
+    "AddTaskCommentRequest",
+    "SchedulerStartRequest",
+    # Rag Tasks
+    "RagTaskResponse",
+    "RagTaskListResponse",
+    "CreateRagTaskRequest",
+    "RagTaskType",
+    "RagTaskStatus",
 ]

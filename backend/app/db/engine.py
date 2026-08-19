@@ -95,6 +95,7 @@ async def init_db() -> None:
     # Local engine: create local tables
     if _local_engine is not None:
         async with _local_engine.begin() as conn:
+            await _rebuild_cross_db_fk_tables_sqlite(conn)
             await conn.run_sync(
                 lambda sync_conn: Base.metadata.create_all(
                     sync_conn, tables=local_tables, checkfirst=True
@@ -111,7 +112,7 @@ def _attach_sqlite_pragmas(engine: AsyncEngine) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.close()
 
 
@@ -128,20 +129,14 @@ _PG_MIGRATION_STATEMENTS = [
     "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS dispatch_mode VARCHAR NOT NULL DEFAULT 'solo'",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS mcp_server_ids JSONB NOT NULL DEFAULT '[]'::jsonb",
     "ALTER TABLE messages ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE",
-    "ALTER TABLE long_term_memory ADD COLUMN IF NOT EXISTS scope VARCHAR(16) NOT NULL DEFAULT 'global'",
-    "ALTER TABLE long_term_memory ADD COLUMN IF NOT EXISTS agent_id VARCHAR",
-    "CREATE INDEX IF NOT EXISTS idx_ltm_scope_agent ON long_term_memory (scope, agent_id)",
     "ALTER TABLE agents ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE conversation_context_summaries ADD COLUMN IF NOT EXISTS summary_type VARCHAR(16) NOT NULL DEFAULT 'compaction'",
     "ALTER TABLE conversation_context_summaries ADD COLUMN IF NOT EXISTS covers_up_to FLOAT",
     # ─── Multi-user auth migration (remote tables only) ───
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id VARCHAR",
-    "ALTER TABLE long_term_memory ADD COLUMN IF NOT EXISTS user_id VARCHAR",
-    "ALTER TABLE memory_nodes ADD COLUMN IF NOT EXISTS user_id VARCHAR",
     "ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS user_id VARCHAR",
     "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS user_id VARCHAR",
     "CREATE INDEX IF NOT EXISTS idx_docs_user ON documents (user_id)",
-    "CREATE INDEX IF NOT EXISTS idx_ltm_user ON long_term_memory (user_id)",
     "CREATE INDEX IF NOT EXISTS idx_rag_user ON rag_chunks (user_id)",
     # ─── Drop user_id from local tables (single-user mode) ───
     "ALTER TABLE agents DROP COLUMN IF EXISTS user_id",
@@ -180,6 +175,14 @@ _PG_MIGRATION_STATEMENTS = [
     "ALTER TABLE agents DROP COLUMN IF EXISTS api_key",
     "ALTER TABLE agents DROP COLUMN IF EXISTS api_base_url",
     "ALTER TABLE agents DROP COLUMN IF EXISTS supports_vision",
+    # ─── RAG overhaul foundation: documents + rag_chunks column additions ───
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_preset VARCHAR(32) NOT NULL DEFAULT 'general'",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS graph_status VARCHAR(16)",
+    "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS chunk_token_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS start_char_pos INTEGER",
+    "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS end_char_pos INTEGER",
+    "UPDATE documents SET chunk_preset = 'general' WHERE chunk_preset IS NULL",
+    "UPDATE documents SET graph_status = 'graph_indexed' WHERE status = 'active' AND graph_status IS NULL",
 ]
 
 # ── SQLite-compatible migration statements ────────────────────────────
@@ -241,6 +244,12 @@ _SQLITE_MIGRATION_STATEMENTS = [
     "ALTER TABLE agents DROP COLUMN api_key",
     "ALTER TABLE agents DROP COLUMN api_base_url",
     "ALTER TABLE agents DROP COLUMN supports_vision",
+    # ─── RAG overhaul foundation: documents + rag_chunks column additions ───
+    "ALTER TABLE documents ADD COLUMN chunk_preset VARCHAR(32) NOT NULL DEFAULT 'general'",
+    "ALTER TABLE documents ADD COLUMN graph_status VARCHAR(16)",
+    "ALTER TABLE rag_chunks ADD COLUMN chunk_token_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE rag_chunks ADD COLUMN start_char_pos INTEGER",
+    "ALTER TABLE rag_chunks ADD COLUMN end_char_pos INTEGER",
 ]
 
 
@@ -251,6 +260,28 @@ async def _migrate_columns_pg(conn) -> None:  # type: ignore[no-untyped-def]
     for stmt in _PG_MIGRATION_STATEMENTS:
         with contextlib.suppress(Exception):
             await conn.execute(text(stmt))
+
+
+async def _rebuild_cross_db_fk_tables_sqlite(conn) -> None:
+    """Drop local tables that have cross-DB FK constraints to remote tables.
+
+    In dual-DB mode, local SQLite tables cannot enforce FK constraints to
+    remote PostgreSQL tables (e.g. ``users``). If a table was previously
+    created with such a FK, it must be dropped and recreated by
+    ``create_all`` without the FK.
+    """
+    from sqlalchemy import text
+
+    await conn.execute(text("PRAGMA foreign_keys=OFF"))
+
+    for tbl in ("tasks", "task_comments", "rag_tasks"):
+        result = await conn.execute(text(f"PRAGMA foreign_key_list({tbl})"))
+        fks = result.fetchall()
+        remote_refs = {"users", "documents", "document_versions"}
+        if any(fk[2] in remote_refs for fk in fks):
+            await conn.execute(text(f"DROP TABLE IF EXISTS {tbl}"))
+
+    await conn.execute(text("PRAGMA foreign_keys=ON"))
 
 
 async def _migrate_columns_sqlite(conn) -> None:  # type: ignore[no-untyped-def]

@@ -19,6 +19,7 @@ class WriteDocumentRequest(BaseModel):
     summary: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     ingest_to_rag: bool = Field(default=False, alias="ingestToRag")
+    preset_id: str = Field(default="", alias="presetId")
 
     model_config = {"populate_by_name": True}
 
@@ -27,6 +28,7 @@ class IngestVersionRequest(BaseModel):
     """Request to ingest a specific version into RAG."""
 
     version_id: str = Field(alias="versionId")
+    preset_id: str = Field(default="", alias="presetId")
 
     model_config = {"populate_by_name": True}
 
@@ -49,6 +51,9 @@ class DocumentResponse(BaseModel):
     latest_version_id: str = Field(alias="latestVersionId")
     source_path: str = Field(default="", alias="sourcePath")
     content_hash: str | None = Field(default=None, alias="contentHash")
+    chunk_preset: str = Field(default="general", alias="chunkPreset")
+    parent_id: str | None = Field(default=None, alias="parentId")
+    is_folder: bool = False
 
     model_config = {"populate_by_name": True}
 
@@ -185,6 +190,8 @@ class FileNode(BaseModel):
     doc_type: str = Field(alias="docType")
     source: str
     updated_at: float = Field(alias="updatedAt")
+    is_folder: bool = False
+    parent_id: str | None = Field(default=None, alias="parentId")
 
     model_config = {"populate_by_name": True}
 
@@ -203,5 +210,35 @@ class DocumentFlatListResponse(BaseModel):
     """Response for GET /api/documents/flat."""
 
     documents: list[DocumentListItem]
+
+    model_config = {"populate_by_name": True}
+
+
+class PreviewResponse(BaseModel):
+    """Response for GET /api/documents/{id}/preview — parsed Markdown + images."""
+
+    document_id: str = Field(alias="documentId")
+    version_id: str = Field(alias="versionId")
+    content_md: str = Field(alias="contentMd")
+    images: list[dict[str, Any]] = Field(default_factory=list)
+    parser: str | None = None
+    pages: int | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class CreateFolderRequest(BaseModel):
+    """Request to create a virtual folder in the document tree."""
+
+    name: str
+    parent_id: str | None = Field(default=None, alias="parentId")
+
+    model_config = {"populate_by_name": True}
+
+
+class MoveDocumentRequest(BaseModel):
+    """Request to move a document/folder to a new parent."""
+
+    target_parent_id: str | None = Field(default=None, alias="targetParentId")
 
     model_config = {"populate_by_name": True}

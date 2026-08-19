@@ -224,6 +224,10 @@ class UpdateSettingsRequest(BaseModel):
         default=None, alias="deploymentPublicBaseUrl"
     )
     obsidian_vault_path: str | None = Field(default=None, alias="obsidianVaultPath")
+    rag_chunk_preset: str | None = Field(default=None, alias="ragChunkPreset")
+    rag_chunk_size: int | None = Field(default=None, alias="ragChunkSize")
+    rag_chunk_overlap: int | None = Field(default=None, alias="ragChunkOverlap")
+    ocr_engine: str | None = Field(default=None, alias="ocrEngine")
 
     model_config = {"populate_by_name": True}
 

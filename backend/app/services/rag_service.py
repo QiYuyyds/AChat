@@ -1,17 +1,16 @@
 """RAGService — high-level RAG assembly entry point.
 
 Provides ``ingest()`` and ``search()`` as the main API surface.
-Wires RAGEngine + LLMRewriter + LLMReranker based on settings.
+Wires RAGEngine + LLMReranker based on settings.
 """
 
 import logging
 from collections.abc import Callable
 
 from app.config import Settings
-from app.infra.hybrid import HybridStore
+from app.infra.hybrid import HybridStore, RetrievalConfig
 from app.rag.rag_engine import RAGEngine
 from app.rag.reranker import LLMReranker
-from app.rag.rewriter import HistoryMessage, LLMRewriter
 
 logger = logging.getLogger(__name__)
 
@@ -27,19 +26,14 @@ class RAGService:
         self._embed_fn: Callable | None = None
         self._initialized = False
         # Delete backends for document cleanup (wired in main.py)
-        self._es_delete_fn: Callable | None = None
         self._milvus_delete_fn: Callable | None = None
         self._kg_delete_fn: Callable | None = None
 
     def set_generate_fn(self, fn: Callable) -> None:
-        """Inject LLM generate function for query rewrite / rerank / answer composition."""
+        """Inject LLM generate function for rerank / answer composition."""
         self._generate_fn = fn
         self._engine.set_generate_fn(fn)
 
-        if self.settings.rag_rewrite_enabled:
-            self._engine.set_rewriter(
-                LLMRewriter(fn, num_queries=self.settings.rag_rewrite_num_queries)
-            )
         if self.settings.rag_rerank_enabled:
             self._engine.set_reranker(
                 LLMReranker(fn, preview_len=self.settings.rag_rerank_preview_len)
@@ -50,11 +44,18 @@ class RAGService:
         self._embed_fn = fn
         self._engine.set_embed_fn(fn)
 
-    def set_milvus_backend(self, search_fn: Callable, insert_fn: Callable | None = None) -> None:
-        self._hybrid.set_milvus_backend(search_fn, insert_fn)
-
-    def set_es_backend(self, search_fn: Callable, index_fn: Callable | None = None) -> None:
-        self._hybrid.set_es_backend(search_fn, index_fn)
+    def set_milvus_backend(
+        self,
+        search_fn: Callable,
+        insert_fn: Callable | None = None,
+        bm25_search_fn: Callable | None = None,
+        hybrid_search_fn: Callable | None = None,
+    ) -> None:
+        self._hybrid.set_milvus_backend(
+            search_fn, insert_fn,
+            bm25_search_fn=bm25_search_fn,
+            hybrid_search_fn=hybrid_search_fn,
+        )
 
     def set_kg_backend(self, search_fn: Callable) -> None:
         self._hybrid.set_kg_backend(search_fn)
@@ -62,10 +63,6 @@ class RAGService:
     def set_kg_index_fn(self, fn: Callable) -> None:
         """Inject KG index function for document entity extraction."""
         self._hybrid.set_kg_index_fn(fn)
-
-    def set_es_delete_fn(self, fn: Callable) -> None:
-        """Inject ES delete-by-ids function for document cleanup."""
-        self._es_delete_fn = fn
 
     def set_milvus_delete_fn(self, fn: Callable) -> None:
         """Inject Milvus delete-by-ids function for document cleanup."""
@@ -90,38 +87,44 @@ class RAGService:
                 stmt = select(func.count()).select_from(RagChunk)
                 result = await session.execute(stmt)
                 count = result.scalar() or 0
-                if count > 0:
-                    self._engine.loaded = True
-                    logger.info("RAG service: %d existing chunks detected", count)
+            if count > 0:
+                self._engine.loaded = True
+                self._hybrid._has_chunks = True
+                logger.info("RAG service: %d existing chunks detected", count)
         except Exception as e:
             logger.warning("RAG chunk count check failed: %s", e)
 
         self._initialized = True
         logger.info(
-            "RAGService initialized: mode=%s, rewrite=%s, rerank=%s",
+            "RAGService initialized: mode=%s, rerank=%s",
             self._hybrid.mode(),
-            self.settings.rag_rewrite_enabled,
             self.settings.rag_rerank_enabled,
         )
 
-    async def ingest(self, doc: str, *, user_id: str | None = None) -> int:
+    async def ingest(
+        self,
+        doc: str,
+        *,
+        user_id: str | None = None,
+        preset_id: str = "",
+    ) -> int:
         """Ingest a document: split → embed → index to PG/Milvus/ES."""
         from app.observability import start_span
         with start_span("rag.ingest"):
-            return await self._engine.ingest(doc, user_id=user_id)
+            return await self._engine.ingest(doc, user_id=user_id, preset_id=preset_id)
 
     async def search(
         self,
         query: str,
-        history: list[HistoryMessage] | None = None,
         *,
         user_id: str | None = None,
+        retrieval_config: RetrievalConfig | None = None,
     ) -> tuple[str, list[dict]]:
-        """Search the knowledge base with optional history-aware rewriting."""
+        """Search the knowledge base."""
         from app.observability import start_span
         truncated_q = query[:100] if query else ""
-        with start_span("rag.search", query=truncated_q, mode=self._hybrid.mode(), rewrite_enabled=self.settings.rag_rewrite_enabled):
-            return await self._engine.query_with_history(query, history, user_id=user_id)
+        with start_span("rag.search", query=truncated_q, mode=self._hybrid.mode()):
+            return await self._engine.query(query, user_id=user_id, retrieval_config=retrieval_config)
 
     @property
     def engine(self) -> RAGEngine:
@@ -132,7 +135,7 @@ class RAGService:
         return self._hybrid
 
     async def delete_by_doc_hash(self, doc_hash: str) -> int:
-        """Delete all RAG chunks with the given doc_hash from PG + ES + Milvus + KG.
+        """Delete all RAG chunks with the given doc_hash from PG + Milvus + KG.
 
         Returns the number of PG rows deleted.
         """
@@ -156,21 +159,14 @@ class RAGService:
             )
             deleted_count = result.rowcount or 0
 
-        # 3. Delete from ES (best-effort)
-        if self._es_delete_fn:
-            try:
-                await self._es_delete_fn(pg_ids)
-            except Exception as e:
-                logger.warning("ES delete by doc_hash failed: %s", e)
-
-        # 4. Delete from Milvus (best-effort)
+        # 3. Delete from Milvus (best-effort)
         if self._milvus_delete_fn:
             try:
                 self._milvus_delete_fn(pg_ids)
             except Exception as e:
                 logger.warning("Milvus delete by doc_hash failed: %s", e)
 
-        # 5. Delete from KG (best-effort)
+        # 4. Delete from KG (best-effort)
         if self._kg_delete_fn:
             try:
                 await self._kg_delete_fn(doc_hash)
@@ -180,7 +176,7 @@ class RAGService:
         return deleted_count
 
     async def delete_by_document_id(self, document_id: str) -> int:
-        """Delete all RAG chunks for a document (all versions) from PG + ES + Milvus + KG.
+        """Delete all RAG chunks for a document (all versions) from PG + Milvus + KG.
 
         Queries rag_chunks by document_id to collect pg_ids + doc_hashes,
         then batch-deletes across all four stores.
@@ -211,21 +207,14 @@ class RAGService:
             )
             deleted_count = result.rowcount or 0
 
-        # 3. Delete from ES (best-effort)
-        if self._es_delete_fn:
-            try:
-                await self._es_delete_fn(pg_ids)
-            except Exception as e:
-                logger.warning("ES delete by document_id failed: %s", e)
-
-        # 4. Delete from Milvus (best-effort)
+        # 3. Delete from Milvus (best-effort)
         if self._milvus_delete_fn:
             try:
                 self._milvus_delete_fn(pg_ids)
             except Exception as e:
                 logger.warning("Milvus delete by document_id failed: %s", e)
 
-        # 5. Delete from KG (best-effort) — by each unique doc_hash
+        # 4. Delete from KG (best-effort) — by each unique doc_hash
         if self._kg_delete_fn:
             for dh in doc_hashes:
                 try:

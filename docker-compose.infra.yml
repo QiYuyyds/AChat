@@ -1,7 +1,7 @@
 # AChat 基础设施服务 — 部署在远程服务器
 # 用法: docker compose -f docker-compose.infra.yml up -d
 #
-# 仅包含 PostgreSQL / Milvus / Elasticsearch / Neo4j 及其依赖。
+# 仅包含 PostgreSQL / Milvus / Neo4j 及其依赖。
 # 前后端在本机运行，通过 .env.local 指向服务器 IP。
 
 services:
@@ -52,7 +52,7 @@ services:
     restart: unless-stopped
 
   milvus:
-    image: milvusdb/milvus:v2.4.17
+    image: milvusdb/milvus:v2.5.6
     command: ["milvus", "run", "standalone"]
     environment:
       ETCD_ENDPOINTS: milvus-etcd:2379
@@ -63,17 +63,6 @@ services:
       milvus-etcd: { condition: service_healthy }
       milvus-minio: { condition: service_healthy }
     volumes: ["milvusdata:/var/lib/milvus"]
-    restart: unless-stopped
-
-  elasticsearch:
-    image: elasticsearch:8.14.0
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-    ports:
-      - "9200:9200"
-    volumes: ["esdata:/usr/share/elasticsearch/data"]
     restart: unless-stopped
 
   neo4j:
@@ -104,5 +93,4 @@ volumes:
   etcddata:
   miniodata:
   milvusdata:
-  esdata:
   neo4jdata:

@@ -1,6 +1,6 @@
 'use client'
 
-import { Archive, ArchiveRestore, Brain, ChevronDown, ChevronRight, Cpu, Ellipsis, GitBranch, LogOut, MessagesSquare, Moon, Package, Pencil, Pin, PinOff, Plus, Puzzle, Search, Settings as SettingsIcon, Sun, Trash2, User, Users, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Brain, CheckSquare, ChevronDown, ChevronRight, Cpu, Ellipsis, GitBranch, LogOut, MessagesSquare, Moon, Package, Pencil, Pin, PinOff, Plus, Puzzle, Search, Settings as SettingsIcon, Sun, Trash2, User, Users, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from 'next-themes'
 
@@ -10,6 +10,7 @@ import { GlobalSearchTrigger } from '@/components/global-search-trigger'
 import { ArtifactSidebarNav } from '@/components/artifact-sidebar-nav'
 import { CognitionSidebarNav } from '@/components/cognition-sidebar-nav'
 import { ExtensionSidebarNav } from '@/components/extension-sidebar-nav'
+import { TaskSidebarNav } from '@/components/task-sidebar-nav'
 import { ResourcesSidebarNav } from '@/components/resources-sidebar-nav'
 import { NewConversationDialog } from '@/components/new-conversation-dialog'
 import { ProfileDialog } from '@/components/profile-dialog'
@@ -200,7 +201,7 @@ export function Sidebar() {
       {/* 单列侧边栏：桌面端 flex 内联；移动端固定左侧滑入/滑出 */}
       <div
         className={cn(
-          'flex w-[240px] shrink-0 flex-col overflow-hidden border-r bg-card',
+          'flex w-[240px] shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground',
           'max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:transition-transform max-md:duration-200',
           mobileOpen ? 'max-md:translate-x-0' : 'max-md:-translate-x-full',
         )}
@@ -216,6 +217,7 @@ export function Sidebar() {
           <RailButton mode={mode} self="conversations" onClick={() => pickMode('conversations')} icon={<MessagesSquare className="size-5" />} label="对话" />
           <RailButton mode={mode} self="artifacts" onClick={() => pickMode('artifacts')} icon={<Package className="size-5" />} label="产物库" />
           <RailButton mode={mode} self="agents" onClick={() => pickMode('agents')} icon={<Users className="size-5" />} label="联系人" />
+          <RailButton mode={mode} self="tasks" onClick={() => pickMode('tasks')} icon={<CheckSquare className="size-5" />} label="任务" />
           <span className="my-0.5 h-px w-8 shrink-0 self-center bg-border" aria-hidden="true" />
           <RailButton mode={mode} self="resources" onClick={() => pickMode('resources')} icon={<Cpu className="size-5" />} label="配额" />
           <RailButton mode={mode} self="cognition" onClick={() => pickMode('cognition')} icon={<Brain className="size-5" />} label="沉淀" />
@@ -362,6 +364,8 @@ export function Sidebar() {
             <CognitionSidebarNav />
           ) : mode === 'resources' ? (
             <ResourcesSidebarNav />
+          ) : mode === 'tasks' ? (
+            <TaskSidebarNav />
           ) : null}
         </div>
 
@@ -448,22 +452,22 @@ function BottomActionBar() {
     )
   }
 
-  // Authenticated: show avatar + settings dropdown
+  // Authenticated: show avatar + settings dropdown (rounded card with accent background)
   return (
     <>
-      <div className="flex shrink-0 items-center gap-2 border-t px-3 py-3">
-        <Avatar className="size-5 shrink-0">
+      <div className="mx-2 mb-2 flex shrink-0 items-center gap-2.5 rounded-xl bg-primary/10 px-3 py-2.5 shadow-sm ring-1 ring-primary/20">
+        <Avatar className="size-7 shrink-0 ring-2 ring-primary/20">
           {avatarSrc && <AvatarImage src={avatarSrc} alt={user?.name ?? 'avatar'} />}
-          <AvatarFallback className="bg-primary/10 text-[10px] text-primary">
-            {user?.name?.charAt(0).toUpperCase() ?? <User className="size-3" />}
+          <AvatarFallback className="bg-gradient-to-br from-primary to-primary/70 text-xs font-semibold text-white">
+            {user?.name?.charAt(0).toUpperCase() ?? <User className="size-3.5" />}
           </AvatarFallback>
         </Avatar>
-        <span className="min-w-0 flex-1 truncate text-xs font-medium">
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold">
           {profileName ?? user?.email ?? '用户'}
         </span>
         <DropdownMenu>
           <DropdownMenuTrigger
-            className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground transition hover:bg-accent hover:text-foreground"
+            className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition hover:bg-background/80 hover:text-foreground"
             title="设置"
             aria-label="设置"
           >

@@ -3,6 +3,7 @@
 import { Brain } from 'lucide-react'
 
 import { LongTermMemoryPanel } from '@/components/settings/memory-management/long-term-memory-panel'
+import { MemoryGraphPanel } from '@/components/settings/memory-management/memory-graph-panel'
 import { PreferencePanel } from '@/components/settings/memory-management/preference-panel'
 import { SessionMemoryPanel } from '@/components/settings/memory-management/session-memory-panel'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -11,6 +12,7 @@ import { useAppStore, type MemoryTab } from '@/stores/app-store'
 
 const TABS: { id: MemoryTab; label: string; desc: string }[] = [
   { id: 'long-term', label: '长期记忆', desc: 'Agent 在对话中积累的事实、技能与项目知识' },
+  { id: 'graph', label: '图谱', desc: '记忆文件 wikilink 关联拓扑可视化' },
   { id: 'preferences', label: '用户偏好', desc: '跨会话持久化的用户设置与喜好' },
   { id: 'session', label: '会话摘要', desc: '各会话的压缩摘要，用于跨 run 上下文恢复' },
 ]
@@ -72,13 +74,19 @@ export function MemoryMainPanel() {
         </div>
       </div>
 
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="px-6 py-6">
-          {tab === 'long-term' && <LongTermMemoryPanel />}
-          {tab === 'preferences' && <PreferencePanel />}
-          {tab === 'session' && <SessionMemoryPanel />}
+      {tab === 'graph' ? (
+        <div className="min-h-0 flex-1 px-4 pb-4 pt-2">
+          <MemoryGraphPanel />
         </div>
-      </ScrollArea>
+      ) : (
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="px-6 py-6">
+            {tab === 'long-term' && <LongTermMemoryPanel />}
+            {tab === 'preferences' && <PreferencePanel />}
+            {tab === 'session' && <SessionMemoryPanel />}
+          </div>
+        </ScrollArea>
+      )}
     </div>
   )
 }

@@ -38,6 +38,10 @@ export const BASELINE_AGENT_TOOLS = [
  * UI-selectable tools for Custom adapter agents. These are the only tools
  * that appear as checkboxes in the create/edit agent dialog. Baseline tools
  * are merged at runtime by the backend and are not selectable.
+ *
+ * Task tools (task_complete, task_list, etc.) are NOT listed here — they
+ * are only injected by the TaskScheduler when dispatching a task, and are
+ * filtered out from normal conversations.
  */
 export const AVAILABLE_AGENT_TOOLS = [
   'write_artifact',

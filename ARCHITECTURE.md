@@ -21,15 +21,21 @@
 - 每会话独立 workspace 沙箱（sandbox / local 双模式）
 - **Worktree 隔离**（DAG 波调度并行任务用 git worktree 隔离）
 - **用户认证与多用户隔离**（JWT + bcrypt · CSRF 防护 · 所有用户数据 `user_id` 隔离）
-- **RAG 混合检索**（Milvus 向量 + Elasticsearch 全文 + Neo4j 知识图谱，RRF 融合）
-- **分层记忆系统**（短期 / 会话 / 长期 / 偏好 / 图谱记忆 + 自动固化与衰减）
+- **RAG 混合检索**（Milvus dense vector + 原生 BM25 sparse + Neo4j 知识图谱 PPR + entity/triple 向量召回 + RRF 融合）
+- **RAG 文件生命周期**（11 状态状态机 + 异步任务队列 + 乐观并发 + 虚拟目录树）
+- **RAG 评测系统**（dataset CRUD + benchmark 自动生成 + LLM-as-Judge + 独立 eval LLM 配置）
+- **RAG 分块预设**（general / qa / semantic / separator 四种策略 + 用户级配置）
+- **OCR 引擎注册表**（7 种引擎 + auto 模式按优先级自动选择）
+- **文件原生记忆系统**（Markdown 文件 + frontmatter + wikilinks + auto_memory/auto_dream pipeline + SQLite FTS5 混合检索）
 - **Document + Version 知识库**（全局文档版本化、解析入库、按需召回）
 - **Obsidian 知识同步**（vault 同步 + 预处理 + RAG 入库）
 - **代码图谱智能**（CodeGraph 本地运行时 + code_explore 工具 + 索引管理）
 - **执行计划工具**（create_plan / plan_step / add_plan_steps 结构化计划卡片）
+- **全局任务看板**（Task Board · 持久化任务池 · Kanban UI · asyncio 后台调度器自动派发 todo 任务给 Agent）
 - **外部 MCP 接入**（MCP Server 配置管理 + client_manager + 调用审批）
 - **Run 内压缩**（五阶段递进压缩 pipeline，纯结构化裁剪无 LLM）
 - ~~**Redis 元数据缓存 + 异步 DB 写入**~~（**已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代）
+- ~~**Elasticsearch 全文检索**~~（**已移除** — Milvus 原生 BM25 sparse vector 替代）
 - **Agent 可观测性与评测系统**（OpenTelemetry 全链路追踪 · Arize Phoenix :6006 · 在线规则评测 · 离线 LLM-as-Judge · 5+4 维评测指标体系）
 - 桌面打包（Electron）+ 移动伴随端（Capacitor）
 
@@ -57,7 +63,7 @@
 | 框架 | FastAPI（Python 3.11+） |
 | ORM | SQLAlchemy 2.0 async + asyncpg |
 | 验证 | Pydantic v2 + pydantic-settings |
-| 数据库 | **PostgreSQL 16**（asyncpg 驱动） |
+| 数据库 | **PostgreSQL 16**（asyncpg 驱动）+ **SQLite**（WAL 模式，本地热数据） |
 | 认证 | bcrypt + PyJWT（JWT HttpOnly cookie · `token_version` 全局吊销） |
 | AI 适配器 | Claude Code / Codex 走 **CLI 子进程**（stream-json / JSON-RPC 2.0）；Custom 走 `openai` Python SDK |
 | 包管理 | pip + venv（`pyproject.toml`） |
@@ -69,15 +75,15 @@
 
 | 服务 | 镜像 | 用途 |
 |---|---|---|
-| PostgreSQL | `postgres:16-alpine` | 关系型主库（业务库 `agenthub` 22 张表 + Phoenix 专用库 `achat_observability`） |
+| PostgreSQL | `postgres:16-alpine` | 关系型主库（业务库 `agenthub` 27 张表 + Phoenix 专用库 `achat_observability`） |
 | Phoenix | `arizephoenix/phoenix:latest` | ★ Agent 可观测性后端（Trace 瀑布流 + Eval 评分 · :6006 Web UI · :4317 OTLP gRPC） |
-| Milvus | `milvusdb/milvus:v2.4.17` | 向量检索（RAG 语义 + LTM recall） |
-| Elasticsearch | `elasticsearch:8.14.0` | 全文检索（RAG BM25） |
-| Neo4j | `neo4j:5-community` | 知识图谱（KGStore + GraphMemory） |
+| Milvus | `milvusdb/milvus:v2.4.17` | 向量检索（RAG dense + sparse BM25 + 图谱 entity/triple 向量） |
+| ~~Elasticsearch~~ | ~~`elasticsearch:8.14.0`~~ | ~~全文检索~~ — **已移除**，Milvus 原生 BM25 sparse vector 替代 |
+| Neo4j | `neo4j:5-community` | 知识图谱（RAG KGStore · PPR + entity/triple 子图遍历） |
 | Kafka | 可选 | 事件总线增强（默认 in-process） |
 | Redis | ~~`redis:7-alpine`~~ | ~~元数据缓存 + 异步 DB 写入~~ — **已移除**，双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代 |
 
-> **降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；ES 挂 → 无全文检索；Neo4j 挂 → GraphMemory no-op；Kafka 不配 → 用 in-process EventBus；Phoenix 不可达 → OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路。启动时打印状态面板。
+> **降级策略**：每个基础设施服务独立 try/except，单个失败不影响其他。Milvus 挂 → 退化为 TF cosine；Neo4j 挂 → KGStore no-op，RAG 退化为向量+全文；Kafka 不配 → 用 in-process EventBus；Phoenix 不可达 → OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路。启动时打印状态面板。
 
 ---
 
@@ -102,9 +108,9 @@
 │     SQLAlchemy 双引擎：本地 SQLite[WAL] + 远端 PostgreSQL + workspace FS  │
 ├──────────────────────────────────────────────────────────────────┤
 │  Infrastructure Layer (可选, 独立降级)          backend/app/infra/   │
-│  Milvus(向量) · Elasticsearch(全文) · Neo4j(图谱) · Kafka(事件)     │
+│  Milvus(向量+BM25+图谱向量) · Neo4j(图谱) · Kafka(事件)     │
 │  └─ RAG 混合检索 (backend/app/rag/)  HybridStore + RRF              │
-│  └─ 记忆系统 (backend/app/memory/)  STM/LTM/Session/Preference/Graph │
+│  └─ 记忆系统 (backend/app/memory/)  file-native + SessionMemory/Preference │
 │  └─ 知识图谱 (backend/app/graph/)   KGStore + Extractor             │
 │  └─ 代码图谱智能 (backend/app/code_intelligence/)  CodeGraph 运行时  │
 └──────────────────────────────────────────────────────────────────┘
@@ -135,14 +141,13 @@ bitdance-agenthub-main/
 ├── apps/mobile/          移动伴随 App (Capacitor)
 ├── packages/shared/      共享包 (workspace)
 ├── specs/                ★ 20 份编号详细规格 (语言无关契约)
-├── openspec/             OpenSpec 能力契约 (18 个 capability spec) + 变更提案
+├── openspec/             OpenSpec 能力契约 (19 个 capability spec) + 变更提案
 ├── skills/               可复用开发任务模板
 ├── scripts/              构建 / Electron / SQLite 辅助脚本 (.mjs)
 ├── docs/                 文档 + 图片
 ├── .agenthub-data/       运行时数据 (workspaces + deployments + skills + worktrees)
 ├── docker-compose.yml            全栈容器化 (前后端 + 基基础设施)
 ├── docker-compose.infra.yml      仅基础设施 (本机跑前后端, 远端跑 PG/Milvus/ES/Neo4j)
-├── docker-compose.redis.yml     ~~Redis~~ 已废弃 (双 DB 迁移移除了 Redis 依赖)
 ├── CLAUDE.md             ★ AI 协作规则 (怎么做 / 不做什么)
 ├── OVERVIEW.md           代码地图 (做了什么 / 在哪)
 └── ARCHITECTURE.md       本文档
@@ -169,12 +174,14 @@ backend/
 │   │   ├── dependencies.py   FastAPI 依赖注入 (获取当前用户 · token_version 校验)
 │   │   └── ownership.py      资源所有权检查 (user_id 隔离)
 │   │
-│   ├── db/ (3)             【L1 持久化】
-│   │   ├── models.py        22 张表 SQLAlchemy 模型 (14 核心 + 6 AGI-memory + 2 Document)
-│   │   ├── table_routing.py ★ 双 DB 表路由 (10 张本地 SQLite + 12 张远端 PG)
-│   │   └── engine.py        ★ 双引擎: 本地 SQLite[WAL] + 远端 PostgreSQL (连接池)
+│   ├── db/ (5)             【L1 持久化】
+│   │   ├── models.py        27 张表 SQLAlchemy 模型 (核心域 + ModelProfile + AGI-memory + Document + Task Board + RAG Task Queue + RAG Eval)
+│   │   ├── table_routing.py ★ 双 DB 表路由 (14 张本地 SQLite + 13 张远端 PG)
+│   │   ├── engine.py        ★ 双引擎: 本地 SQLite[WAL] + 远端 PostgreSQL (连接池)
+│   │   ├── migrations/      ★ schema 迁移脚本 (rag_overhaul + user_settings_rag_config)
+│   │   └── __init__.py      模块导出
 │   │
-│   ├── schemas/ (8)        【类型契约 Pydantic】
+│   ├── schemas/ (10)       【类型契约 Pydantic】
 │   │   ├── events.py        30+ StreamEvent (SSE 协议, snake_case + camelCase 别名)
 │   │   ├── messages.py      MessagePart (parts 数组)
 │   │   ├── artifacts.py     Artifact 内容类型
@@ -182,9 +189,11 @@ backend/
 │   │   ├── document.py      Document / DocumentVersion
 │   │   ├── plan.py          ★ 执行计划 (PlanStep / PlanState / PlanComplexity)
 │   │   ├── obsidian.py      ★ Obsidian 同步配置
+│   │   ├── model_profile.py ★ ModelProfile 配置
+│   │   ├── task.py          ★ Task Board (CreateTask / MoveTask / SchedulerStart ...)
 │   │   └── requests.py      API 请求 / 响应模型
 │   │
-│   ├── services/ (40+)     【L3 业务逻辑 —— 核心大头】
+│   ├── services/ (42+)     【L3 业务逻辑 —— 核心大头】
 │   │   ├── agent_runner.py        ★ 执行器 (execute_run 路由 + execute_simple_run ReAct loop
 │   │   │                          + baseline 工具合并 + build_adapter_input)
 │   │   ├── agent_loop.py          ★ 统一 Agent Loop (run_agent_loop: solo/coordinated/subagent)
@@ -227,6 +236,8 @@ backend/
 │   │   ├── plan_usage_service.py  ★ 计划用量统计
 │   │   ├── project_artifact.py    项目产物管理
 │   │   ├── agent_load_tracker.py  Agent 负载追踪
+│   │   ├── task_service.py       ★ Task CRUD + 乐观并发控制 (version 列)
+│   │   ├── task_scheduler.py     ★ asyncio 后台调度器 (定期扫描 todo → dispatch 给 Agent)
 │   │   ├── network_hints.py       移动端网络发现
 │   │   ├── bash_command_approval.py bash 命令审批逻辑
 │   │   ├── hooks/                 ★ 内置 Hook 实现 (7 个)
@@ -268,7 +279,7 @@ backend/
 │   │
 │   ├── mcp_bridge.py      ★ AChat MCP Bridge: stdio MCP Server, 把 write_artifact/ask_user/task_dispatch 等平台工具暴露给 CLI agent
 │   │
-│   ├── tools/ (33)         【工具系统】36 个内置工具
+│   ├── tools/ (35)         【工具系统】45 个内置工具
 │   │   ├── base.py / registry.py  ToolContext (asyncio.Event 取消) + 注册表
 │   │   ├── write_artifact / read_artifact / update_artifact (★ 增量更新)
 │   │   ├── deploy_artifact / deploy_workspace
@@ -281,30 +292,39 @@ backend/
 │   │   ├── web_search (Tavily API)
 │   │   ├── memory_rag (memory_recall + rag_search/ingest/list/delete)
 │   │   ├── memory_store (★ 主动记忆存储，支持结构化字段 summary/keywords/content_scope)
+│   │   ├── memory_proactive (★ 主动记忆拉取)
 │   │   ├── skills (load_skill / write_skill)
 │   │   ├── ★ manage_base (管理工具公共基类)
 │   │   ├── ★ manage_agents / manage_skills / manage_mcp / manage_documents
-│   │   │  / manage_memory / manage_profile / manage_conversations
-│   │   │  (7 个 guide agent 专用管理工具, 仅对 is_guide=True 的 Agent 注入)
+│   │   │  / manage_memory / manage_profile / manage_conversations / manage_tasks
+│   │   │  (8 个 guide agent 专用管理工具, 仅对 is_guide=True 的 Agent 注入)
+│   │   ├── ★ task_tools (7 个 opt-in task 工具: task_list/get/create/claim/complete/move/comment)
 │   │   └── rate_limiter.py
 │   │
-│   ├── rag/ (6)            【RAG 引擎】
-│   │   ├── rag_engine.py    HybridStore: 向量(Milvus) + 全文(ES) + 图谱(KG) + RRF 融合
-│   │   ├── parser.py        文档解析 (pdfplumber → PyPDF2 → pdftotext 三级降级)
+│   ├── rag/                【RAG 引擎】★ 大重构
+│   │   ├── rag_engine.py    HybridStore: Milvus dense (COSINE) + Milvus sparse BM25 + Neo4j KG (PPR + entity/triple vector) + RRF
+│   │   ├── parser.py        文档解析 (pdfplumber → PyPDF2 → pdftotext 三级降级) + OCR dispatch
+│   │   ├── parser_registry.py ★ OCR 引擎注册表 (7 种引擎 lazy import + auto 优先级)
+│   │   ├── parsers/          ★ OCR 引擎实现 (base.py + rapid_ocr/mineru/mineru_official/pp_structure_v3/deepseek_ocr/paddleocr_api/unified)
 │   │   ├── splitter.py      文档分块 (chunk_size / overlap)
-│   │   ├── rewriter.py      Query Rewriting (LLM 生成扩展查询)
+│   │   ├── chunking/        ★ 分块预设 (presets.py 4 种策略 + dispatcher.py 路由 + nlp.py 分词 + parsers/ + utils/)
+│   │   ├── file_lifecycle.py ★ 文件生命周期状态机 (11 状态 + 乐观并发 + Document.status + graph_status)
+│   │   ├── graph_build_task.py ★ 异步图谱构建 (分批 extract → 并发 Neo4j MERGE + 重试)
+│   │   ├── graph_retrieval.py ★ 图谱检索增强 (PPR + entity/triple vector search)
+│   │   ├── milvus_graph_vector_store.py ★ 图谱 entity/triple Milvus 向量存储
+│   │   ├── eval/            ★ RAG 评测模块 (service.py + evaluator.py + metrics.py + benchmark_generation.py)
 │   │   ├── reranker.py      Reranking (LLM 打分重排)
 │   │   └── obsidian_preprocessor.py ★ Obsidian vault 预处理 (wikilink 解析 · frontmatter 提取)
+│   │   ─── rewriter.py 已移除 (Query Rewriting 删除) ───
 │   │
-│   ├── memory/ (8)         【分层记忆系统】
-│   │   ├── memory_service.py  ★ 门面: STM + LTM + SessionMemory + Preference + GraphMemory
-│   │   ├── short_term.py      短期记忆 (chat_history 表, 滑动窗口)
-│   │   ├── long_term.py       ★ 长期记忆 (long_term_memory 表, embedding 语义召回 + 结构化字段 summary/keywords/content_scope + 双路检索)
-│   │   ├── session_memory.py  ★ 会话记忆 (跨 run 会话级上下文)
-│   │   ├── preference.py      用户偏好 (user_preferences 表, KV)
-│   │   ├── graph_memory.py    图谱记忆 (Neo4j + memory_nodes/edges 镜像表)
-│   │   ├── memory_writer.py   记忆写入门面
-│   │   └── consolidation.py   记忆固化 / 去重 / 衰减 / TTL (支持结构化字段同步 + case 类型专用参数)
+│   ├── memory/             【文件原生记忆系统】
+│   │   ├── memory_service.py  ★ 门面: file-native pipeline + Preference + SessionMemory
+│   │   ├── file_store/        Markdown 文件读写 + frontmatter + wikilinks + workspace
+│   │   ├── search/            SQLite FTS5 BM25 + wikilink 图扩展 + RRF 融合
+│   │   ├── pipeline/          auto_memory + auto_index + auto_dream + proactive
+│   │   ├── preference.py      用户偏好 (user_preferences 表, KV) — 保留不动
+│   │   ├── session_memory.py  会话摘要 (跨 run 上下文压缩) — 保留不动
+│   │   └── memory_writer_compat.py  Preference 提取工具 (从旧 memory_writer 保留)
 │   │
 │   ├── graph/ (4)          【知识图谱】
 │   │   ├── kgstore.py       KGStore: 文档 → 实体/关系抽取 → Neo4j 入图 → 子图检索
@@ -313,19 +333,21 @@ backend/
 │   │
 │   ├── infra/ (6)          【基础设施工厂】
 │   │   ├── factory.py       build_infrastructure(): 配置驱动, 独立降级
-│   │   │                   (Milvus/ES/Neo4j/Kafka — Redis 已移除)
+│   │   │                   (Milvus/Neo4j/Kafka — Redis/ES 已移除)
 │   │   ├── hybrid.py        HybridStore 抽象 (向量 + 全文 + 图谱统一接口)
 │   │   ├── cache.py         ★ 进程内 dict TTL 缓存 (替代 Redis KV，已移除)
 │   │   ├── cache_helpers.py ★ 缓存实体查找 (Agent/Workspace 本地 SQLite 直读; UserSettings/GlobalSettings 远端 PG + dict TTL)
 │   │   ├── cache_metrics.py 嵌入缓存命中率指标
 │   │   └── status.py        基础设施连接状态面板 + 可观测性状态
 │   │
-│   ├── api/ (23)           【API 路由】
+│   ├── api/ (28)           【API 路由】
 │   │   ├── conversations / messages / agents / artifacts / attachments
 │   │   ├── fs / pending / settings / runs_misc / stream (SSE)
 │   │   ├── documents / skills / deployments / **auth** / **eval**
 │   │   ├── **code_intelligence** / **mcp** / **memory** / **obsidian**
 │   │   ├── **plan_usage** / **profile** / **workspaces**
+│   │   ├── **model_profiles** / **tasks**
+│   │   ├── **rag_config** / **rag_eval** / **rag_tasks**  ★ RAG 配置/评测/任务队列
 │   │   └── mobile/routes
 │   │
 │   ├── observability/ (7)   【Agent 可观测性与评测】★ OTel + Phoenix
@@ -359,7 +381,7 @@ backend/
 
 ---
 
-## 6. 数据库：22 张表
+## 6. 数据库：27 张表
 
 ### 用户域（1 张）
 
@@ -382,31 +404,51 @@ backend/
 | `conversation_context_summaries` | 上下文压缩摘要 | 本地 SQLite |
 | `app_settings` | 全局设置单行表（各 provider API key + 部署配置 + companion） | 远端 PG |
 
-### 设置域（3 张）
+### 设置域（4 张）
 
 | 表 | 说明 | 路由 |
 |---|---|---|
 | `global_settings` | 全局部署配置（deployment_publish_enabled / deployment_publish_dir / deployment_public_base_url） | 远端 PG |
-| `user_settings` | 用户级设置（user_id / 各 provider API key / companion_mode / mobile_device_token） | 远端 PG |
+| `user_settings` | 用户级设置（user_id / 各 provider API key / companion_mode / mobile_device_token / **rag_chunk_preset** / **rag_chunk_size** / **rag_chunk_overlap** / **ocr_engine**）★ 新增 RAG 配置字段 | 远端 PG |
 | `mcp_servers` | MCP Server 配置（user_id / name / command / args / env / transport_type） | 本地 SQLite |
+| `model_profiles` | ★ ModelProfile 用户级模型配置（user_id / provider / model_id / api_key / api_base_url / supports_vision / is_default） | 本地 SQLite |
 
 ### AGI-memory 新增（6 张）
 
 | 表 | 说明 | 路由 |
 |---|---|---|
-| `long_term_memory` | 长期记忆（content / importance / embedding / category / tags / score / **summary** / **keywords** / **content_scope** / **user_id**）★ 结构化字段 + 双路检索 | 远端 PG |
 | `user_preferences` | 用户偏好 KV（**user_id** / key / value / source） | 远端 PG |
-| `rag_chunks` | RAG 文档分块（doc_hash / chunk_idx / content / embedding / document_id / version_id / content_hash / **user_id**） | 远端 PG |
-| `chat_history` | 短期记忆持久化（role / content） | 远端 PG |
-| `memory_nodes` | 记忆图谱节点（Neo4j 镜像表） | 远端 PG |
-| `memory_edges` | 记忆图谱边（from_id / to_id / rel_type / weight） | 远端 PG |
+| `rag_chunks` | RAG 文档分块（doc_hash / chunk_idx / content / embedding / document_id / version_id / content_hash / **user_id** / **chunk_token_count** / **start_char_pos** / **end_char_pos**）★ 新增分块位置字段 | 远端 PG |
+| `chat_history` | 对话历史持久化（role / content） | 远端 PG |
 
 ### Document + Version 知识库（2 张）
 
 | 表 | 说明 | 路由 |
 |---|---|---|
-| `documents` | 全局知识库文档（title / doc_type / source / status / latest_version_id） | 远端 PG |
+| `documents` | 全局知识库文档（title / doc_type / source / status / latest_version_id / **chunk_preset** / **graph_status** / **parent_id** / **is_folder**）★ 新增分块预设/图谱状态/虚拟目录树字段 | 远端 PG |
 | `document_versions` | 文档版本（document_id / version / content_md / summary / metadata） | 远端 PG |
+
+### Task Board（2 张）★
+
+| 表 | 说明 | 路由 |
+|---|---|---|
+| `tasks` | 全局任务池（id / user_id / title / description / status / priority / labels / assignee_agent_id / creator_type / conversation_id / workspace_mode / version 乐观并发 / failure_count / sort_order / due_date） | 本地 SQLite |
+| `task_comments` | 任务评论（task_id / user_id / body / author_type / author_id / author_name / version / created_at） | 本地 SQLite |
+
+### RAG Task Queue（1 张）★
+
+| 表 | 说明 | 路由 |
+|---|---|---|
+| `rag_tasks` | RAG 生命周期任务（id / user_id / task_type: parse\|ingest\|graph_build\|delete_cleanup / document_id / version_id / status: pending\|running\|completed\|failed\|failed_permanent / payload / result / error_message / retry_count / max_retries / timestamps）独立于 Task Board `tasks` 表 | 本地 SQLite |
+
+### RAG Evaluation（4 张）★
+
+| 表 | 说明 | 路由 |
+|---|---|---|
+| `eval_datasets` | 评测数据集元数据（user_id / name / description / item_count / has_gold_chunks / has_gold_answers / build_metadata） | 远端 PG |
+| `eval_dataset_items` | 评测数据集条目（dataset_id / item_index / query_text / gold_chunk_ids / gold_answer） | 远端 PG |
+| `eval_runs` | 评测运行（user_id / dataset_id / status / retrieval_config / metrics / overall_score / total_items / completed_items） | 远端 PG |
+| `eval_run_items` | 评测运行条目结果（run_id / item_index / dataset_item_id / query_text / gold_chunk_ids / gold_answer / generated_answer / retrieved_chunks / metrics） | 远端 PG |
 
 ---
 
@@ -464,7 +506,7 @@ backend/
   ├─ 主聊天面板                              ├─ GuideFloatingPanel 悬浮组件
   ├─ 完整 MessageList + MessageInput         ├─ 精简 MessageList (text + tool_use + ask_user)
   ├─ 附件 / 斜杠命令 / @mention              ├─ 无附件 / 无斜杠命令 / 固定 mentionedAgentIds
-  └─ 完整工具集 (baseline + optional)        └─ 7 个管理工具 + ask_user (无 baseline)
+  └─ 完整工具集 (baseline + optional)        └─ 8 个管理工具 + ask_user (无 baseline)
 
 小A 管理操作副作用:
   └─ manage_* 工具执行成功
@@ -520,26 +562,36 @@ Agent 启动 (ON_RUN_START)
 ## 8. RAG 混合检索数据流
 
 ```
-文档入库:
-  Document (PG) → DocumentVersion (PG)
-    └─ parser.py 解析 (pdfplumber → PyPDF2 → pdftotext)
-       └─ splitter.py 分块
-          └─ embedding API → 向量
-             ├─ rag_chunks (PG, content_hash 缓存)
-             ├─ Milvus insert (向量索引, COSINE)
-             ├─ Elasticsearch index (全文, BM25)
-             └─ KGStore.index_document (Neo4j, LLM 抽取实体/关系入图)
+文件生命周期 + 任务队列:
+  upload_file → FileLifecycleManager (status=uploading → parsing)
+    → RagTaskWorker polls pending rag_tasks
+      ├─ parse: parser_registry → OCR 引擎 dispatch → 解析为 Markdown
+      │   → splitter + chunking preset → 分块
+      ├─ ingest: embedding API → 向量
+      │   ├─ rag_chunks (PG, content_hash 缓存)
+      │   ├─ Milvus dense insert (COSINE + IVF_FLAT)
+      │   └─ Milvus sparse insert (BM25 + SPARSE_INVERTED_INDEX)
+      ├─ graph_build: GraphBuildTask (异步, fire-and-forget)
+      │   └─ 分批 extract → 并发 Neo4j MERGE → graph_status 流转
+      │       └─ MilvusGraphVectorStore insert (entity/triple 向量)
+      └─ delete_cleanup: 级联删除 chunks + Milvus + Neo4j 数据
 
 查询召回:
   user query
-    └─ (可选) rewriter.py LLM 扩展查询
-       └─ 并行检索:
-          ├─ Milvus search (语义相似度)
-          ├─ Elasticsearch search (全文匹配)
-          └─ KGStore.search (图谱子图遍历, max_hops)
-       └─ RRF 融合 (semantic_weight 加权)
-          └─ (可选) reranker.py LLM 重排
-             └─ 返回 top_k chunks → 注入 Agent 上下文
+    └─ 并行检索:
+       ├─ Milvus dense search (语义相似度, COSINE)
+       ├─ Milvus sparse search (全文匹配, BM25)
+       └─ GraphRetrieval.search (图谱增强)
+           ├─ MilvusGraphVectorStore → entity/triple 向量召回
+           └─ KGStore.search_with_ppr (Neo4j PPR 扩散)
+    └─ RRF 融合 (三路加权)
+       └─ (可选) reranker.py LLM 重排
+          └─ 返回 top_k chunks → 注入 Agent 上下文
+
+状态机:
+  Document.status: uploading → parsing → parsed → indexing → indexed → active
+  Document.graph_status: graph_pending → graph_building → graph_indexed
+  乐观并发: UPDATE ... WHERE id=? AND status=? (非法转换被拒绝)
 ```
 
 ---
@@ -553,12 +605,12 @@ Agent 启动 (ON_RUN_START)
         └─ ConsolidationService:
            ├─ 去重 (cosine 相似度 > dedup 阈值 → 合并)
            ├─ 衰减 (importance *= decay_rate, 低于 min → 清理)
-           └─ 写入 LongTermMemory (long_term_memory 表, embedding 向量)
-              └─ GraphMemory 抽取实体/关系 → Neo4j + memory_nodes/edges 镜像表
+└─ 写入 daily/ Markdown 卡片 (auto_memory pipeline)
+└─ auto_dream 精炼: daily → digest/{procedure,wiki} Markdown 文件
 
 Agent 运行时注入 (PromptAssembler):
   ProfileSource (UserPreference)  → 用户偏好
-  RecallSource (LTM + GraphMemory) → 语义召回相关记忆
+  RecallSource (file-native hybrid search) → BM25 + Vector cosine 召回相关记忆
   ConstraintsSource               → 约束规则
   → 组装为 system prompt 补充段
 ```
@@ -590,7 +642,7 @@ SDK ReAct loop 每轮迭代后:
 | 目录 | 内容 |
 |---|---|
 | `app/` | `layout.tsx` / `page.tsx`（挂载 StreamProvider + AuthGate + 主界面） · `login/page.tsx` · `register/page.tsx` |
-| `components/` (80+) | ChatPanel / MessageList / MessageParts / ArtifactPreviewPanel / ArtifactCodeEditor / AgentLibrary / AgentCreateWizard / CreateAgentDialog / DispatchPlanCard / KnowledgeLibrary / DocumentDetail / UploadDocumentDialog / SkillLibrary / GlobalSearch / SettingsDialog / TurnTimeline / MessageHighlightLayer / WaveColumnHeader / **AuthGate / AuthBrandPanel / ProfileDialog / MemoryLibrary / CodeIntelligenceControl / McpServerLibrary / PendingMcpCallCard / WorkspaceEnvHintCard / DiffBlock** ... |
+| `components/` (90+) | ChatPanel / MessageList / MessageParts / ArtifactPreviewPanel / ArtifactCodeEditor / AgentLibrary / AgentCreateWizard / CreateAgentDialog / DispatchPlanCard / KnowledgeLibrary / DocumentDetail / UploadDocumentDialog / SkillLibrary / GlobalSearch / SettingsDialog / TurnTimeline / MessageHighlightLayer / WaveColumnHeader / **AuthGate / LoginDialog / AuthLogo / ProfileDialog / MemoryLibrary / CodeIntelligenceControl / McpServerLibrary / PendingMcpCallCard / WorkspaceEnvHintCard / DiffBlock / MergeConflictPanel / DispatchDagGraph / ModelConfigTab** · ★ **TaskBoardView / TaskBoardCard / TaskBoardColumn / TaskBoardDetail / TaskBoardEditor / TaskDetailPanel** (任务看板) · 6 个 sidebar-nav 组件 (Agent/Artifact/Task/Resources/Cognition/Extension) ... |
 | `lib/` | `api.ts`（REST 客户端，统一 `API_BASE_URL` 前缀）· `config.ts`（读 `NEXT_PUBLIC_API_BASE_URL`）· `api/memory.ts`（记忆管理 API）· `code-intelligence.ts`（代码图谱 API）· `artifact-groups.ts` · `tool-display.ts` · `wave-utils.ts` · `use-elapsed-timer.ts`（耗时 UI） · 工具 |
 | `stores/` | `app-store.ts`（会话 / 消息 / 事件 reducer）· `search-store.ts` · **`auth-store.ts`**（认证状态 / 用户信息 / token 刷新） |
 | `shared/` (18) | StreamEvent / MessagePart / Artifact 等**前后端共享类型**（纯类型，无逻辑） · `agent-builder-config.ts`（★ 4 角色预设 + baseline 工具配置） · `codex-compat.ts` · `model-registry.ts` · `ppt-theme.ts` · `usage.ts` ... |
@@ -605,7 +657,7 @@ SDK ReAct loop 每轮迭代后:
 | 目录 | 说明 | 当前状态 |
 |---|---|---|
 | `specs/` | 20 份编号详细规格（实体 / 事件 / 适配器 / 工具 / 编排 / 统一 Agent Loop ...），**语言无关契约** | 有效 |
-| `openspec/` | OpenSpec 能力契约（18 个 capability spec，含 **user-auth** / **run-internal-compaction** / **worktree-conflict-resolution**）+ 变更提案（`changes/` 下 80+ 提案） | 有效 |
+| `openspec/` | OpenSpec 能力契约（19 个 capability spec，含 **user-auth** / **run-internal-compaction** / **worktree-conflict-resolution**）+ 变更提案（`changes/` 下 100+ 提案，含 RAG 大重构 12 个 change） | 有效 |
 | `electron/` | 桌面版（`main.ts` 启动内嵌 Next server） | ⚠️ 待改造：内嵌 Next 已无后端，需改启 Python |
 | `apps/mobile/` | 移动伴随 App（Capacitor / 远程审批，spec 14） | 独立模块 |
 | `scripts/` | 构建 / Electron / SQLite ABI 辅助（`.mjs`） | 前端用 |
@@ -651,9 +703,11 @@ $env:NEXT_PUBLIC_API_BASE_URL="http://localhost:8000"; pnpm dev
 
 ### API Key 优先级
 
-1. **`agents.api_key`** — per-agent override（最高优先级）
-2. **`user_settings.<provider>_api_key`** — 用户在「设置」面板全局自填，存 `user_settings` 表（按 `user_id` 分行）
+1. **`ModelProfile.api_key`** — SDK (Custom) agent 的 API key 从 ModelProfile 解析（显式选中的 profile 或用户默认 profile）
+2. **`user_settings.<provider>_api_key`** — 用户在「设置」面板全局自填，存 `user_settings` 表（按 `user_id` 分行）；用于 RAG / 记忆等非 agent 子系统
 3. **`backend/.env`** — 环境变量兜底（dev / CI 友好；`config.py` 的 `apply_env_overrides()` 桥接到 `os.environ`）
+
+> CLI 适配器（Claude Code / Codex）走 CLI 自带认证（OAuth / 环境变量），跳过 API key 解析与工具注入。详见 [CLAUDE.md](./CLAUDE.md) §5.4。
 
 ```env
 # backend/.env
@@ -663,19 +717,28 @@ OPENAI_API_KEY=...
 DEEPSEEK_API_KEY=...
 ARK_API_KEY=...
 TAVILY_API_KEY=...           # web_search 工具
-EMBEDDING_API_KEY=...        # RAG / LTM 语义检索
+EMBEDDING_API_KEY=...        # RAG 语义检索
 EMBEDDING_API_URL=...
 EMBEDDING_MODEL=...
 MILVUS_HOST=localhost        # 留空 = 禁用 Milvus
-ES_ADDRESSES=http://localhost:9200  # 留空 = 禁用 ES
 NEO4J_URI=bolt://localhost:7687     # 留空 = 禁用 Neo4j
 ENABLE_GRAPH=false           # true 才启用知识图谱
-REDIS_URL=                   # 留空 = 禁用 Redis (退化为同步 DB 读写)
+MEMORY_ENABLED=true          # false = 禁用记忆 pipeline (节省 API 调用)
 TRACE_ENABLED=true           # false = 禁用可观测性 (OTel 全 no-op)
 PHOENIX_ENDPOINT=http://localhost:4317  # OTLP gRPC endpoint
 PHOENIX_UI_URL=http://localhost:6006    # Phoenix Web UI
 EVAL_RULE_ENABLED=true       # 在线规则评测 (默认开启)
 EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge (默认关闭)
+# ★ RAG 评测系统独立 LLM 配置
+EVAL_LLM_API_KEY=...         # RAG 评测 Judge LLM
+EVAL_LLM_API_URL=...
+EVAL_LLM_MODEL=...
+EVAL_DATASET_LLM_API_KEY=... # RAG benchmark 自动生成 LLM
+EVAL_DATASET_LLM_API_URL=...
+EVAL_DATASET_LLM_MODEL=...
+# ★ RAG 任务队列
+RAG_TASK_WORKER_ENABLED=true # false = 禁用异步任务队列 (降级为同步模式)
+RAG_TASK_WORKER_INTERVAL=5   # 轮询间隔 (秒)
 ```
 
 ---
@@ -685,17 +748,20 @@ EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge (默认关闭)
 | 服务 | 配置为空时 | 影响 |
 |---|---|---|
 | PostgreSQL | — (必需) | 后端无法启动 |
-| Milvus | `MILVUS_HOST` 空 | RAG 向量检索退化；LTM 退化为 TF cosine |
-| Elasticsearch | `ES_ADDRESSES` 空 | RAG 无全文检索 |
-| Neo4j | `NEO4J_URI` 空 或 `ENABLE_GRAPH=false` | GraphMemory no-op；RAG 无图谱检索 |
+| Milvus | `MILVUS_HOST` 空 | RAG 向量+全文检索退化；图谱向量召回不可用 |
+| ~~Elasticsearch~~ | ~~`ES_ADDRESSES` 空~~ | ~~**已移除** — Milvus 原生 BM25 sparse vector 替代~~ |
+| Neo4j | `NEO4J_URI` 空 或 `ENABLE_GRAPH=false` | KGStore no-op；RAG 无图谱检索 |
 | Kafka | `KAFKA_BROKERS` 空 | 用 in-process EventBus（默认） |
 | ~~Redis~~ | ~~`REDIS_URL` 空~~ | ~~**已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代~~ |
 | Phoenix | `TRACE_ENABLED=false` 或 Phoenix 不可达 | OTel `BatchSpanProcessor` 缓冲后静默丢弃，不阻断主链路 |
-| Embedding API | `EMBEDDING_API_KEY` 空 | RAG / LTM 无语义检索能力 |
-| LLM API (RAG 用) | 无任何 LLM key | RAG 无 rewrite / rerank；KG 无实体抽取 |
+| Embedding API | `EMBEDDING_API_KEY` 空 | RAG 无语义检索能力 |
+| LLM API (RAG 用) | 无任何 LLM key | RAG 无 rerank；KG 无实体抽取 |
+| Memory Pipeline | `MEMORY_ENABLED=false` | 记忆 pipeline 全部关闭（节省 API 调用） |
+| RAG Task Worker | `RAG_TASK_WORKER_ENABLED=false` | 降级为同步模式（上传时直接解析+索引） |
+| RAG Eval LLM | `EVAL_LLM_API_KEY` 空 | RAG 评测系统不可用（不影响 RAG 检索） |
 
 > 启动时后端打印状态面板，一目了然哪些服务已连接、哪些降级。
 
 ---
 
-*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-07-30 · 同步双 DB 架构（本地 SQLite[WAL] + 远端 PostgreSQL）、Redis 移除、Worktree 三层冲突解决、结构化记忆（LTM summary/keywords/content_scope + 双路检索）、rag_search 迁移为 Agent 级工具等近期变更。*
+*本文档由整体目录与代码分析生成。深入某子系统请读 `specs/` 对应编号；协作规则见 [CLAUDE.md](./CLAUDE.md)；代码地图见 [OVERVIEW.md](./OVERVIEW.md)。最后更新：2026-08-19 · 同步 RAG 大重构（ES 移除 → Milvus BM25、OCR 引擎注册表、分块预设、文件生命周期、任务队列、图谱 v2 PPR + entity/triple vector、评测系统、DB 22→27 张表 + 路由 14+13、MEMORY_ENABLED 环境变量等）。*

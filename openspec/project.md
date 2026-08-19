@@ -27,17 +27,21 @@ OpenSpec capability specs under `openspec/specs/` are the concise, testable cont
 | `run-internal-compaction` | `specs/19-unified-agent-loop.md`（Run 内压缩章节） |
 | `user-auth` | `specs/11-platform.md`（用户认证与多用户隔离章节） |
 | `guide-agent` | `openspec/changes/archive/2026-07-21-add-guide-agent/`（小A Guide Agent） |
+| `model-profiles` | `openspec/changes/archive/`（ModelProfile 用户级模型配置） |
+| `worktree-conflict-resolution` | `specs/19-unified-agent-loop.md`（Worktree 三层冲突解决章节） |
 
 ## Technology
 
 - Frontend: Next.js 16 App Router + React 19, TypeScript strict, Tailwind v4 + shadcn/ui, Zustand + Immer, SSE
-- Backend: Python 3.11+ / FastAPI, SQLAlchemy 2.0 async + asyncpg, **PostgreSQL 16**, Pydantic v2, ruff, pytest
+- Backend: Python 3.11+ / FastAPI, SQLAlchemy 2.0 async + asyncpg + aiosqlite, **PostgreSQL 16** + **SQLite (WAL)** (dual-DB: local SQLite for hot data + remote PG for user/knowledge data), Pydantic v2, ruff, pytest
 - Adapter routes (see `specs/05-adapter-interface.md`):
   - **CLI subprocess route** — Claude Code (`spawn claude -p --output-format stream-json`) and Codex (`spawn codex app-server --listen stdio://`, JSON-RPC 2.0). The CLI owns tool execution, sandbox, and approval; AChat translates CLI events into `StreamEvent`.
   - **SDK route** — Custom adapter uses the `openai` Python SDK (Chat Completions) with an AChat-managed tool loop. Covers DeepSeek / OpenAI / 火山方舟 / OpenRouter / SiliconFlow etc.
   - **Mock route** — scripted event stream for development without token cost.
 - AChat MCP Bridge (`backend/app/mcp_bridge.py`) exposes platform tools (`write_artifact`, `ask_user`, `task_dispatch`, …) to CLI agents via stdio MCP.
-- Infrastructure (Docker Compose, independently degradable): Milvus (vector) · Elasticsearch (BM25) · Neo4j (KG) · Kafka (optional)
+- Infrastructure (Docker Compose, independently degradable): Milvus (dense vector + sparse BM25 + graph entity/triple vector) · Neo4j (KG · PPR + entity/triple subgraph) · Kafka (optional). **Elasticsearch removed** — replaced by Milvus native BM25 sparse vector. **Redis removed** — replaced by dual-DB SQLite direct-write + in-process dict TTL cache.
+- RAG subsystem (`backend/app/rag/`): parser registry (7 OCR engines + auto mode) · chunking presets (general/qa/semantic/separator) · file lifecycle state machine (11 states + optimistic concurrency) · async task queue (`rag_tasks` table + `RagTaskWorker`) · graph build task (async, fire-and-forget) · graph retrieval (PPR + entity/triple vector search) · MilvusGraphVectorStore (entity/triple Milvus collections) · RAG evaluation system (dataset CRUD + benchmark auto-generation + LLM-as-Judge + independent eval LLM config). `rewriter.py` removed.
+- Database: 27 tables (22 core + `rag_tasks` + `eval_datasets` / `eval_dataset_items` / `eval_runs` / `eval_run_items`). Dual-DB routing: 14 local SQLite + 13 remote PostgreSQL. Schema migrations in `backend/app/db/migrations/`.
 - Desktop shell: Electron 33; Mobile companion: Capacitor
 
 ## Rules

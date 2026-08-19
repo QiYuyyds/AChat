@@ -15,6 +15,7 @@ from .types import (
     ExtractResult,
     GraphSearchResult,
     Relation,
+    TripleRef,
 )
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "ENTITY_EVENT",
     "ENTITY_PRODUCT",
     "ENTITY_UNKNOWN",
+    "TripleRef",
     "Extractor",
     "KGStore",
 ]

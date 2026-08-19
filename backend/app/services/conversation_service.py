@@ -560,6 +560,7 @@ async def create_conversation(
     code_intelligence_enabled: bool = False,
     dispatch_mode: str | None = None,
     user_id: str | None = None,
+    fs_write_approval_mode: str = "review",
 ) -> ConversationResponse:
     """Create a conversation + its workspace, validating agents and the bound path."""
     if mode == "guide":
@@ -636,7 +637,7 @@ async def create_conversation(
             mode=mode,
             archived=False,
             pinned_at=None,
-            fs_write_approval_mode="review",
+            fs_write_approval_mode=fs_write_approval_mode,
             rag_enabled=False,
             dispatch_mode=dispatch_mode or ("orchestrated" if mode == "group" else "solo"),
             created_at=now,

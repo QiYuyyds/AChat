@@ -1,448 +1,514 @@
 'use client'
 
-import { Brain, Filter, Folder, Loader2, Pencil, RefreshCw, Search, Trash2, X } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import {
+  Brain,
+  CalendarDays,
+  FileText,
+  Folder,
+  Hash,
+  Info,
+  Loader2,
+  Pencil,
+  RefreshCw,
+  Save,
+  Search,
+  Sparkles,
+  Star,
+  Trash2,
+  X,
+} from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import {
-  type LongTermMemoryItem,
-  deleteLongTermMemory,
-  fetchLongTermMemories,
-  updateLongTermMemory,
+  type MemoryFileItem,
+  type ProactiveTopic,
+  deleteMemoryFile,
+  fetchMemoryFiles,
+  fetchProactiveTopics,
+  readMemoryFile,
+  searchMemoryFiles,
+  triggerAutoDream,
+  writeMemoryFile,
 } from '@/lib/api/memory'
 import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 import { cn } from '@/lib/utils'
 
-const PAGE_SIZE = 10
+const BUCKETS = ['all', 'procedure', 'personal', 'wiki', 'daily'] as const
+type BucketFilter = (typeof BUCKETS)[number]
 
-const CATEGORIES = ['fact', 'preference', 'policy', 'tool_failure', 'identity', 'case'] as const
+const BUCKET_CHIP_LABELS: Record<BucketFilter, string> = {
+  all: '全部',
+  procedure: '经验',
+  personal: '个人',
+  wiki: '知识',
+  daily: '日常',
+}
 
-type CategoryConfig = {
+/** Selected-state classes for type chips — aligned with interest-topic pills */
+const BUCKET_CHIP_SELECTED: Record<Exclude<BucketFilter, 'all'>, string> = {
+  procedure: 'border-blue-500/40 bg-blue-500/15 text-blue-700 dark:text-blue-300',
+  personal: 'border-violet-500/40 bg-violet-500/15 text-violet-700 dark:text-violet-300',
+  wiki: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
+  daily: 'border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300',
+}
+
+const BUCKET_CONFIG: Record<
+  string,
+  { label: string; dot: string; badge: string; bar: string; border: string; borderHover: string }
+> = {
+  procedure: {
+    label: '经验',
+    dot: 'bg-blue-500',
+    badge: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
+    bar: 'bg-blue-500',
+    border: 'border-blue-500/35',
+    borderHover: 'hover:border-blue-500/60',
+  },
+  personal: {
+    label: '个人',
+    dot: 'bg-violet-500',
+    badge: 'bg-violet-500/10 text-violet-600 dark:text-violet-400',
+    bar: 'bg-violet-500',
+    border: 'border-violet-500/35',
+    borderHover: 'hover:border-violet-500/60',
+  },
+  wiki: {
+    label: '知识',
+    dot: 'bg-emerald-500',
+    badge: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+    bar: 'bg-emerald-500',
+    border: 'border-emerald-500/35',
+    borderHover: 'hover:border-emerald-500/60',
+  },
+  daily: {
+    label: '日常',
+    dot: 'bg-amber-500',
+    badge: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
+    bar: 'bg-amber-500',
+    border: 'border-amber-500/35',
+    borderHover: 'hover:border-amber-500/60',
+  },
+}
+
+type BucketCfg = {
   label: string
   dot: string
   badge: string
-  accent: string
+  bar: string
+  border: string
+  borderHover: string
 }
 
-const CATEGORY_CONFIG: Record<string, CategoryConfig> = {
-  '': {
-    label: '通用',
-    dot: 'bg-zinc-400',
-    badge: 'bg-zinc-500/10 text-zinc-600 dark:text-zinc-400',
-    accent: 'before:bg-zinc-400',
-  },
-  fact: {
-    label: '事实',
-    dot: 'bg-blue-500',
-    badge: 'bg-blue-500/10 text-blue-600 dark:text-blue-400',
-    accent: 'before:bg-blue-500',
-  },
-  preference: {
-    label: '偏好',
-    dot: 'bg-amber-500',
-    badge: 'bg-amber-500/10 text-amber-600 dark:text-amber-400',
-    accent: 'before:bg-amber-500',
-  },
-  policy: {
-    label: '策略',
-    dot: 'bg-emerald-500',
-    badge: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-    accent: 'before:bg-emerald-500',
-  },
-  tool_failure: {
-    label: '工具失败',
-    dot: 'bg-rose-500',
-    badge: 'bg-rose-500/10 text-rose-600 dark:text-rose-400',
-    accent: 'before:bg-rose-500',
-  },
-  identity: {
-    label: '身份',
-    dot: 'bg-violet-500',
-    badge: 'bg-violet-500/10 text-violet-600 dark:text-violet-400',
-    accent: 'before:bg-violet-500',
-  },
-  case: {
-    label: '任务经验',
-    dot: 'bg-cyan-500',
-    badge: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400',
-    accent: 'before:bg-cyan-500',
-  },
+function getBucketConfig(bucket: string): BucketCfg {
+  return (
+    BUCKET_CONFIG[bucket] ?? {
+      label: bucket,
+      dot: 'bg-zinc-400',
+      badge: 'bg-zinc-500/10 text-zinc-600 dark:text-zinc-400',
+      bar: 'bg-zinc-400',
+      border: 'border-border',
+      borderHover: 'hover:border-primary/30',
+    }
+  )
 }
 
-function getCategoryConfig(category: string): CategoryConfig {
-  return CATEGORY_CONFIG[category] ?? CATEGORY_CONFIG['']
+const MACHINE_NAME_RE = /^session_[A-Za-z0-9_-]+$/i
+const PLACEHOLDER_DESC_RE = /^(Memory from conversation\b|Memory card\b)/i
+
+/** 从正文预览里抽第一条可读事实（去掉 markdown 列表符） */
+function firstFactFromPreview(preview: string): string {
+  for (const raw of preview.split('\n')) {
+    const line = raw.trim()
+    if (!line) continue
+    if (line.startsWith('##')) continue
+    if (line.startsWith('---')) continue
+    if (line.startsWith('*Source') || line.startsWith('- *Source')) continue
+    const fact = line.replace(/^[-*]\s+/, '').trim()
+    if (fact) return fact
+  }
+  return ''
+}
+
+function isMachineName(name: string): boolean {
+  return MACHINE_NAME_RE.test(name.trim())
+}
+
+function isPlaceholderDescription(description: string): boolean {
+  return PLACEHOLDER_DESC_RE.test(description.trim())
+}
+
+const TITLE_MAX = 18
+
+function shortTitle(text: string, max = TITLE_MAX): string {
+  const t = text.trim()
+  if (t.length <= max) return t
+  // 尽量在标点/空格处截断，避免生硬半句
+  const slice = t.slice(0, max)
+  const cut = Math.max(
+    slice.lastIndexOf('，'),
+    slice.lastIndexOf('。'),
+    slice.lastIndexOf('；'),
+    slice.lastIndexOf('、'),
+    slice.lastIndexOf(' '),
+    slice.lastIndexOf('：'),
+    slice.lastIndexOf(':'),
+  )
+  const base = cut >= Math.floor(max * 0.5) ? slice.slice(0, cut) : slice
+  return base.replace(/[，。；、:\s]+$/u, '')
+}
+
+/** 卡片标题：机器名时用正文首条事实兜底；统一短标题，避免省略号拖尾 */
+function cardTitle(item: MemoryFileItem): string {
+  const name = item.name?.trim() || ''
+  if (name && !isMachineName(name)) return shortTitle(name)
+  const fromBody = firstFactFromPreview(item.bodyPreview || '')
+  if (fromBody) return shortTitle(fromBody)
+  return shortTitle(name || '未命名记忆')
+}
+
+/** description 优先（跳过占位文案），否则 bodyPreview */
+function cardPreview(item: MemoryFileItem): string {
+  const desc = item.description?.trim()
+  if (desc && !isPlaceholderDescription(desc)) return desc
+  const fromBody = firstFactFromPreview(item.bodyPreview || '')
+  if (fromBody) return fromBody
+  return item.bodyPreview?.trim() || ''
+}
+
+/** Normalize path separators so Windows `\` and `/` collapse to one key. */
+function normalizeMemoryPath(path: string): string {
+  return path.replace(/\\/g, '/')
+}
+
+/** Keep first occurrence per path — guards against duplicate API rows / race merges. */
+function dedupeMemoryItems(items: MemoryFileItem[]): MemoryFileItem[] {
+  const seen = new Set<string>()
+  const out: MemoryFileItem[] = []
+  for (const item of items) {
+    const key = normalizeMemoryPath(item.path)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(item.path === key ? item : { ...item, path: key })
+  }
+  return out
 }
 
 export function LongTermMemoryPanel() {
-  const [items, setItems] = useState<LongTermMemoryItem[]>([])
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(1)
+  const [items, setItems] = useState<MemoryFileItem[]>([])
   const [loading, setLoading] = useState(false)
-  const [filterAgent, setFilterAgent] = useState('')
-  const [filterCategory, setFilterCategory] = useState('')
-  const [searchTag, setSearchTag] = useState('')
-  const [editingId, setEditingId] = useState<number | null>(null)
-  const [editContent, setEditContent] = useState('')
-  const [editImportance, setEditImportance] = useState('')
-  const [editCategory, setEditCategory] = useState('')
+  const [filterBucket, setFilterBucket] = useState<BucketFilter>('all')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchMode, setSearchMode] = useState(false)
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [fileDetail, setFileDetail] = useState<{
+    path: string
+    name: string
+    body: string
+    description: string
+    tags: string[]
+    importance: number
+    bucket: string
+  } | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [editName, setEditName] = useState('')
+  const [editBody, setEditBody] = useState('')
+  const [editDescription, setEditDescription] = useState('')
   const [editTags, setEditTags] = useState('')
-  const [editSummary, setEditSummary] = useState('')
-  const [editKeywords, setEditKeywords] = useState('')
-  const [editContentScope, setEditContentScope] = useState('')
+  const [editImportance, setEditImportance] = useState('')
+  const [editBucket, setEditBucket] = useState('wiki')
   const [saving, setSaving] = useState(false)
-  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null)
+  const [deleteConfirmPath, setDeleteConfirmPath] = useState<string | null>(null)
+  const [proactiveTopics, setProactiveTopics] = useState<ProactiveTopic[]>([])
+  const [dreaming, setDreaming] = useState(false)
+
+  // Group same-color pills: 经验 → 知识 → 日常; keep yaml order within each bucket
+  const sortedProactiveTopics = useMemo(() => {
+    const rank = (bucket: string | undefined) => {
+      if (bucket === 'procedure') return 0
+      if (bucket === 'wiki') return 1
+      if (bucket === 'daily') return 2
+      return 3
+    }
+    return proactiveTopics
+      .map((t, index) => ({ t, index }))
+      .sort((a, b) => {
+        const d = rank(a.t.bucket) - rank(b.t.bucket)
+        return d !== 0 ? d : a.index - b.index
+      })
+      .map(({ t }) => t)
+  }, [proactiveTopics])
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const resp = await fetchLongTermMemories({
-        agentId: filterAgent || undefined,
-        category: filterCategory || undefined,
-        tag: searchTag || undefined,
-        page,
-        size: PAGE_SIZE,
-      })
-      setItems(resp.items)
-      setTotal(resp.total)
+      if (searchMode && searchQuery.trim()) {
+        const resp = await searchMemoryFiles({ query: searchQuery.trim() })
+        const searchItems: MemoryFileItem[] = resp.items.map((r) => ({
+          path: normalizeMemoryPath(r.path),
+          name: r.name,
+          description: '',
+          bucket: (r.frontmatter.bucket as string) || 'wiki',
+          agentId: (r.frontmatter.agent_id as string) || null,
+          tags: (r.frontmatter.tags as string[]) || [],
+          importance: (r.frontmatter.importance as number) || 0.5,
+          createdAt: (r.frontmatter.created_at as string) || '',
+          updatedAt: (r.frontmatter.updated_at as string) || '',
+          source: r.source,
+          bodyPreview: r.content.slice(0, 200),
+        }))
+        setItems(dedupeMemoryItems(searchItems))
+      } else {
+        const resp = await fetchMemoryFiles({
+          bucket: filterBucket === 'all' ? undefined : filterBucket,
+        })
+        setItems(dedupeMemoryItems(resp.items))
+      }
     } catch (err) {
-      console.error('[LTMPanel] load failed', err)
+      console.error('[MemoryPanel] load failed', err)
     } finally {
       setLoading(false)
     }
-  }, [filterAgent, filterCategory, searchTag, page])
+  }, [filterBucket, searchMode, searchQuery])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  useGuideSideEffectRefresh('memory', () => { void load() })
+  useGuideSideEffectRefresh('memory', () => {
+    void load()
+  })
 
-  const startEdit = (item: LongTermMemoryItem) => {
-    setEditingId(item.id)
-    setEditContent(item.content)
-    setEditImportance(String(item.importance))
-    setEditCategory(item.category)
-    setEditTags(item.tags.join(', '))
-    setEditSummary(item.summary)
-    setEditKeywords(item.keywords.join(', '))
-    setEditContentScope(item.contentScope)
+  useEffect(() => {
+    void fetchProactiveTopics()
+      .then((r) => setProactiveTopics(r.topics))
+      .catch(() => {})
+  }, [])
+
+  const openFile = async (path: string) => {
+    try {
+      const detail = await readMemoryFile(path)
+      setSelectedPath(path)
+      setFileDetail({
+        path: detail.path,
+        name: detail.name,
+        body: detail.body,
+        description: detail.description,
+        tags: detail.tags,
+        importance: detail.importance,
+        bucket: detail.bucket,
+      })
+      setEditing(false)
+    } catch (err) {
+      console.error('[MemoryPanel] read file failed', err)
+    }
+  }
+
+  const startEdit = () => {
+    if (!fileDetail) return
+    setEditName(fileDetail.name)
+    setEditBody(fileDetail.body)
+    setEditDescription(fileDetail.description)
+    setEditTags(fileDetail.tags.join(', '))
+    setEditImportance(String(fileDetail.importance))
+    setEditBucket(fileDetail.bucket)
+    setEditing(true)
   }
 
   const cancelEdit = () => {
-    setEditingId(null)
-    setEditContent('')
-    setEditImportance('')
-    setEditCategory('')
-    setEditTags('')
-    setEditSummary('')
-    setEditKeywords('')
-    setEditContentScope('')
+    setEditing(false)
   }
 
   const handleSave = async () => {
-    if (editingId === null || saving) return
+    if (!fileDetail || saving) return
     setSaving(true)
     try {
-      await updateLongTermMemory(editingId, {
-        content: editContent,
-        importance: parseFloat(editImportance) || undefined,
-        category: editCategory,
+      await writeMemoryFile(fileDetail.path, {
+        name: editName,
+        body: editBody,
+        description: editDescription,
         tags: editTags
           .split(',')
           .map((t) => t.trim())
           .filter(Boolean),
-        summary: editSummary,
-        keywords: editKeywords
-          .split(',')
-          .map((t) => t.trim())
-          .filter(Boolean),
-        contentScope: editContentScope,
+        importance: parseFloat(editImportance) || 0.5,
+        bucket: editBucket,
       })
-      cancelEdit()
+      setEditing(false)
+      await openFile(fileDetail.path)
       await load()
     } catch (err) {
-      console.error('[LTMPanel] save failed', err)
+      console.error('[MemoryPanel] save failed', err)
     } finally {
       setSaving(false)
     }
   }
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (path: string) => {
     try {
-      await deleteLongTermMemory(id)
-      setDeleteConfirmId(null)
+      await deleteMemoryFile(path)
+      setDeleteConfirmPath(null)
+      if (selectedPath === path) {
+        setSelectedPath(null)
+        setFileDetail(null)
+      }
       await load()
     } catch (err) {
-      console.error('[LTMPanel] delete failed', err)
+      console.error('[MemoryPanel] delete failed', err)
     }
   }
 
-  const totalPages = Math.ceil(total / PAGE_SIZE)
+  const handleDream = async () => {
+    setDreaming(true)
+    try {
+      await triggerAutoDream()
+      await load()
+    } catch (err) {
+      console.error('[MemoryPanel] auto-dream failed', err)
+    } finally {
+      setDreaming(false)
+    }
+  }
 
+  // ─── Detail dialog (overlay, list stays visible) ───
+  const detailOpen = !!fileDetail && !!selectedPath
+  const displayBucket = fileDetail?.path?.includes('daily') ? 'daily' : fileDetail?.bucket ?? 'wiki'
+  const displayBucketCfg = getBucketConfig(displayBucket)
+
+  // ─── List view (always visible) ───
   return (
     <div className="flex flex-col gap-4">
-      {/* Filter bar */}
-      <div className="cognition-fade-up flex flex-wrap items-center gap-2 rounded-lg border bg-card/50 p-2.5 shadow-[var(--shadow-sm)]">
-        <div className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          <Filter className="size-3" />
-          筛选
+      {/* Proactive topics from daily/interests.yaml */}
+      {proactiveTopics.length > 0 && (
+        <div className="cognition-fade-up flex flex-col gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3">
+          <div className="flex items-center gap-2">
+            <Sparkles className="size-3.5 text-primary" />
+            <span className="text-xs font-semibold text-primary">兴趣话题</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {sortedProactiveTopics.map((t, i) => {
+              const bucket = t.bucket || 'wiki'
+              const cfg = getBucketConfig(bucket)
+              // Stronger fills so 经验/知识/日常 read clearly on the pill
+              const pillTone =
+                bucket === 'procedure'
+                  ? 'border-blue-500/40 bg-blue-500/15 text-blue-700 dark:text-blue-300'
+                  : bucket === 'daily'
+                    ? 'border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                    : 'border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+              return (
+                <span
+                  key={`${t.title}-${i}`}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium',
+                    pillTone,
+                  )}
+                  title={t.reason ? `${cfg.label} · ${t.reason}` : cfg.label}
+                >
+                  <span className={cn('size-1.5 shrink-0 rounded-full', cfg.dot)} />
+                  {t.title || '未命名话题'}
+                </span>
+              )
+            })}
+          </div>
         </div>
-        <div className="relative">
-          <Input
-            placeholder="Agent ID"
-            value={filterAgent}
-            onChange={(e) => {
-              setFilterAgent(e.target.value)
-              setPage(1)
-            }}
-            className="h-8 w-28 text-xs"
-          />
+      )}
+
+      {/* Toolbar: search + actions, then type chips */}
+      <div className="cognition-fade-up flex flex-col gap-2 rounded-lg border bg-card/50 p-2.5 shadow-[var(--shadow-sm)]">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[12rem] flex-1">
+            <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="搜索记忆内容..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && searchQuery.trim()) {
+                  setSearchMode(true)
+                  void load()
+                }
+              }}
+              className="h-8 pl-7 text-xs"
+            />
+          </div>
+          {searchMode && (
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-8 gap-1 text-xs"
+              onClick={() => {
+                setSearchMode(false)
+                setSearchQuery('')
+              }}
+            >
+              <X className="size-3" />
+              清除搜索
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void load()}
+            disabled={loading}
+            className="h-8 gap-1 text-xs"
+          >
+            {loading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+            刷新
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void handleDream()}
+            disabled={dreaming}
+            className="h-8 gap-1 text-xs"
+          >
+            {dreaming ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+            手动精炼
+          </Button>
         </div>
-        <select
-          value={filterCategory || 'all'}
-          onChange={(e) => {
-            setFilterCategory(e.target.value === 'all' ? '' : e.target.value)
-            setPage(1)
-          }}
-          className="h-8 w-32 rounded-md border border-input bg-background px-2 text-xs outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/10"
-        >
-          <option value="all">全部分类</option>
-          {CATEGORIES.map((c) => (
-            <option key={c} value={c}>
-              {getCategoryConfig(c).label}
-            </option>
-          ))}
-        </select>
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="标签搜索"
-            value={searchTag}
-            onChange={(e) => {
-              setSearchTag(e.target.value)
-              setPage(1)
-            }}
-            className="h-8 w-28 pl-7 text-xs"
-          />
+
+        <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="记忆类型">
+          {BUCKETS.map((b) => {
+            const selected = filterBucket === b
+            const cfg = b === 'all' ? null : getBucketConfig(b)
+            return (
+              <button
+                key={b}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                onClick={() => {
+                  setFilterBucket(b)
+                  setSearchMode(false)
+                  setSearchQuery('')
+                }}
+                className={cn(
+                  'inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[11px] font-medium transition-colors',
+                  selected
+                    ? b === 'all'
+                      ? 'border-primary/30 bg-primary/10 text-primary'
+                      : BUCKET_CHIP_SELECTED[b]
+                    : 'border-transparent bg-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+                )}
+              >
+                {cfg && <span className={cn('size-1.5 shrink-0 rounded-full', cfg.dot)} />}
+                {BUCKET_CHIP_LABELS[b]}
+              </button>
+            )
+          })}
         </div>
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => void load()}
-          disabled={loading}
-          className="ml-auto h-8 gap-1 text-xs"
-        >
-          {loading ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
-          刷新
-        </Button>
       </div>
 
-      {/* Card list */}
-      <div className="flex flex-col gap-2">
-        {items.map((item, index) => {
-          const catConfig = getCategoryConfig(item.category)
-          return (
-            <div
-              key={item.id}
-              className={cn(
-                'cognition-fade-up group relative overflow-hidden rounded-lg border bg-card p-3 shadow-[var(--shadow-sm)] transition-all duration-150 hover:border-primary/30 hover:shadow-[var(--shadow-md)]',
-                'before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:opacity-60',
-                catConfig.accent,
-              )}
-              style={{ animationDelay: `${index * 40}ms` }}
-            >
-              {editingId === item.id ? (
-                <div className="flex flex-col gap-2.5 pl-1.5">
-                  <Input
-                    value={editSummary}
-                    onChange={(e) => setEditSummary(e.target.value)}
-                    className="h-7 text-xs"
-                    placeholder="摘要标题"
-                  />
-                  <textarea
-                    value={editContent}
-                    onChange={(e) => setEditContent(e.target.value)}
-                    className="w-full rounded border bg-background px-2 py-1.5 text-xs leading-5 outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/10"
-                    rows={3}
-                  />
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Input
-                      value={editCategory}
-                      onChange={(e) => setEditCategory(e.target.value)}
-                      className="h-7 w-24 text-xs"
-                      placeholder="分类"
-                    />
-                    <Input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      max="1"
-                      value={editImportance}
-                      onChange={(e) => setEditImportance(e.target.value)}
-                      className="h-7 w-16 text-xs"
-                      placeholder="重要性"
-                    />
-                    <Input
-                      value={editTags}
-                      onChange={(e) => setEditTags(e.target.value)}
-                      placeholder="标签（逗号分隔）"
-                      className="h-7 w-32 text-xs"
-                    />
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Input
-                      value={editKeywords}
-                      onChange={(e) => setEditKeywords(e.target.value)}
-                      placeholder="关键词（逗号分隔）"
-                      className="h-7 w-32 text-xs"
-                    />
-                    <Input
-                      value={editContentScope}
-                      onChange={(e) => setEditContentScope(e.target.value)}
-                      placeholder="内容范围路径"
-                      className="h-7 w-40 text-xs"
-                    />
-                  </div>
-                  <div className="flex items-center justify-end gap-1">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 px-2 text-xs"
-                      onClick={cancelEdit}
-                    >
-                      取消
-                    </Button>
-                    <Button
-                      size="sm"
-                      className="h-7 px-2 text-xs"
-                      onClick={() => void handleSave()}
-                      disabled={saving}
-                    >
-                      {saving ? <Loader2 className="size-3 animate-spin" /> : '保存'}
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-start gap-3 pl-1.5">
-                  <div className="min-w-0 flex-1">
-                    {item.summary && (
-                      <p className="mb-1 text-sm font-medium leading-5 text-foreground">{item.summary}</p>
-                    )}
-                    <p className="text-sm leading-5 text-foreground/90">{item.content}</p>
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      {/* Category badge */}
-                      <span
-                        className={cn(
-                          'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
-                          catConfig.badge,
-                        )}
-                      >
-                        <span className={cn('size-1.5 rounded-full', catConfig.dot)} />
-                        {catConfig.label}
-                      </span>
-                      {/* Importance */}
-                      <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                        <span>重要性</span>
-                        <span className="relative inline-block h-1 w-10 overflow-hidden rounded-full bg-muted">
-                          <span
-                            className="absolute inset-y-0 left-0 rounded-full bg-primary/70 transition-all duration-300"
-                            style={{ width: `${Math.round(item.importance * 100)}%` }}
-                          />
-                        </span>
-                        <span className="font-mono tabular-nums">{item.importance.toFixed(2)}</span>
-                      </span>
-                      {/* Keywords */}
-                      {item.keywords.map((kw) => (
-                        <span
-                          key={kw}
-                          className="rounded bg-primary/5 px-1.5 py-0.5 text-[10px] text-primary/70"
-                        >
-                          #{kw}
-                        </span>
-                      ))}
-                      {/* Tags */}
-                      {item.tags.map((tag) => (
-                        <span
-                          key={tag}
-                          className="rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                    {/* Metadata */}
-                    <div className="mt-1.5 flex items-center gap-2 text-[10px] text-muted-foreground/70">
-                      {item.agentId && (
-                        <>
-                          <span className="font-mono">{item.agentId}</span>
-                          <span className="text-border">|</span>
-                        </>
-                      )}
-                      <span className="tabular-nums">{new Date(item.createdAt * 1000).toLocaleDateString()}</span>
-                      {item.contentScope && (
-                        <>
-                          <span className="text-border">|</span>
-                          <span className="flex items-center gap-0.5 font-mono">
-                            <Folder className="size-2.5" />
-                            {item.contentScope}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  {/* Actions */}
-                  <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
-                    {deleteConfirmId === item.id ? (
-                      <div className="flex items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          className="h-7 px-2 text-xs"
-                          onClick={() => void handleDelete(item.id)}
-                        >
-                          确认删除
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 px-2 text-xs"
-                          onClick={() => setDeleteConfirmId(null)}
-                        >
-                          取消
-                        </Button>
-                      </div>
-                    ) : (
-                      <>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="size-7 p-0"
-                          onClick={() => startEdit(item)}
-                          title="编辑"
-                          aria-label="编辑"
-                        >
-                          <Pencil className="size-3" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="size-7 p-0 text-destructive hover:text-destructive"
-                          onClick={() => setDeleteConfirmId(item.id)}
-                          title="删除"
-                          aria-label="删除"
-                        >
-                          <Trash2 className="size-3" />
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
+      {/* File list - Hybrid layout */}
+      <MemoryHybridGrid items={items} openFile={openFile} getBucketConfig={getBucketConfig} />
 
       {/* Empty state */}
       {items.length === 0 && !loading && (
@@ -454,8 +520,10 @@ export function LongTermMemoryPanel() {
             </div>
           </div>
           <div className="cognition-fade-up relative space-y-0.5">
-            <p className="text-sm font-semibold text-foreground">暂无长期记忆</p>
-            <p className="text-xs text-muted-foreground">Agent 在对话中积累的知识会出现在这里</p>
+            <p className="text-sm font-semibold text-foreground">暂无记忆文件</p>
+            <p className="text-xs text-muted-foreground">
+              Agent 在对话中积累的知识会自动提取为文件并出现在这里
+            </p>
           </div>
         </div>
       )}
@@ -467,34 +535,534 @@ export function LongTermMemoryPanel() {
         </div>
       )}
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] tabular-nums text-muted-foreground">
-            共 {total} 条, 第 {page}/{totalPages} 页
-          </span>
-          <div className="flex gap-1">
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              上一页
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 text-xs"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            >
-              下一页
-            </Button>
+      {/* Detail dialog overlay */}
+      <Dialog open={detailOpen} onOpenChange={(open) => { if (!open) { setSelectedPath(null); setFileDetail(null); setEditing(false) } }}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto p-0 sm:max-w-3xl">
+          {fileDetail && (
+            <MemoryDetailView
+              fileDetail={{ ...fileDetail, bucket: displayBucket }}
+              bucketCfg={displayBucketCfg}
+              onStartEdit={startEdit}
+              onDeleteConfirm={(path) => setDeleteConfirmPath(path)}
+              deleteConfirmPath={deleteConfirmPath}
+              onHandleDelete={handleDelete}
+              onCancelEdit={cancelEdit}
+              onSave={handleSave}
+              editing={editing}
+              editName={editName}
+              setEditName={setEditName}
+              editBody={editBody}
+              setEditBody={setEditBody}
+              editDescription={editDescription}
+              setEditDescription={setEditDescription}
+              editTags={editTags}
+              setEditTags={setEditTags}
+              editImportance={editImportance}
+              setEditImportance={setEditImportance}
+              editBucket={editBucket}
+              setEditBucket={setEditBucket}
+              saving={saving}
+              setSelectedPath={setSelectedPath}
+              setFileDetail={setFileDetail}
+              load={load}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+// ─── Hybrid Grid: Featured cards (>0.9) + Bento grid for rest ──────────────
+
+const FEATURED_THRESHOLD = 0.9
+
+interface MemoryHybridGridProps {
+  items: MemoryFileItem[]
+  openFile: (path: string) => Promise<void>
+  getBucketConfig: (bucket: string) => BucketCfg
+}
+
+function MemoryHybridGrid({ items, openFile, getBucketConfig }: MemoryHybridGridProps) {
+  const unique = dedupeMemoryItems(items)
+  const featured = unique.filter((item) => item.importance >= FEATURED_THRESHOLD)
+  const regular = unique.filter((item) => item.importance < FEATURED_THRESHOLD)
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* Featured high-importance memories as hero cards */}
+      {featured.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+            <Star className="size-3.5 text-amber-500" />
+            精选记忆
+            <span className="ml-0.5 rounded-full bg-amber-500/10 px-1.5 py-0.5 font-mono tabular-nums text-[10px] text-amber-600 dark:text-amber-400">
+              {featured.length}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 [grid-auto-rows:minmax(140px,auto)]">
+            {featured.map((item, index) => (
+              <FeaturedCard
+                key={item.path}
+                item={item}
+                bucketCfg={getBucketConfig(item.bucket)}
+                onClick={() => void openFile(item.path)}
+                index={index}
+              />
+            ))}
           </div>
         </div>
       )}
+
+      {/* Regular memories in bento grid */}
+      {regular.length > 0 && (
+        <div className="flex flex-col gap-3">
+          {featured.length > 0 && (
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+              <FileText className="size-3.5" />
+              全部记忆
+              <span className="ml-0.5 rounded-full bg-muted px-1.5 py-0.5 font-mono tabular-nums text-[10px]">
+                {regular.length}
+              </span>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 [grid-auto-rows:minmax(140px,auto)]">
+            {regular.map((item, index) => (
+              <CompactCard
+                key={item.path}
+                item={item}
+                bucketCfg={getBucketConfig(item.bucket)}
+                onClick={() => void openFile(item.path)}
+                index={index + featured.length}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Featured grid card for importance >= 0.9 */
+function FeaturedCard({
+  item,
+  bucketCfg,
+  onClick,
+  index,
+}: {
+  item: MemoryFileItem
+  bucketCfg: BucketCfg
+  onClick: () => void
+  index: number
+}) {
+  const preview = cardPreview(item)
+  const title = cardTitle(item)
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'cognition-fade-up group relative flex h-full flex-col overflow-hidden rounded-lg border border-amber-500/25 bg-gradient-to-br from-amber-500/[0.06] to-card p-3.5 text-left shadow-[var(--shadow-sm)] transition-all duration-200 ease-out',
+        'hover:-translate-y-1 hover:scale-[1.03] hover:border-amber-500/45 hover:shadow-[var(--shadow-md)] hover:z-10',
+      )}
+      style={{ animationDelay: `${index * 45}ms` }}
+    >
+      {/* Top: name + star badge */}
+      <div className="flex items-start justify-between gap-2">
+        <h4
+          className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-5 text-foreground"
+          title={title}
+        >
+          {title}
+        </h4>
+        <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/10 px-1.5 py-px text-[10px] font-medium text-amber-600 dark:text-amber-400">
+          <Star className="size-2.5 fill-amber-500 text-amber-500" />
+          {item.importance.toFixed(2)}
+        </span>
+      </div>
+
+      {/* Category badge */}
+      <div className="mt-2">
+        <span
+          className={cn(
+            'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
+            bucketCfg.badge,
+          )}
+        >
+          <span className={cn('size-1.5 rounded-full', bucketCfg.dot)} />
+          {bucketCfg.label}
+        </span>
+      </div>
+
+      {/* Preview body — fills the card middle */}
+      {preview ? (
+        <p className="mt-2.5 line-clamp-3 flex-1 text-[11px] leading-relaxed text-muted-foreground">
+          {preview}
+        </p>
+      ) : (
+        <div className="min-h-0 flex-1" />
+      )}
+
+      {/* Bottom: tags + date */}
+      <div className="mt-3 flex items-end justify-between gap-2">
+        <div className="min-w-0 flex-1 overflow-hidden">
+          {item.tags.slice(0, 3).map((tag) => (
+            <span
+              key={tag}
+              className="mr-1 inline-block rounded-md border border-primary/12 bg-primary/6 px-1.5 py-px text-[10px] leading-tight text-foreground/75"
+            >
+              {tag}
+            </span>
+          ))}
+          {item.tags.length > 3 && (
+            <span className="text-[9px] text-muted-foreground">
+              +{item.tags.length - 3}
+            </span>
+          )}
+        </div>
+        {item.createdAt && (
+          <span className="shrink-0 tabular-nums text-[9px] leading-tight text-muted-foreground/40">
+            {item.createdAt.slice(5)}
+          </span>
+        )}
+      </div>
+    </button>
+  )
+}
+
+/** Compact card for the regular grid */
+function CompactCard({
+  item,
+  bucketCfg,
+  onClick,
+  index,
+}: {
+  item: MemoryFileItem
+  bucketCfg: BucketCfg
+  onClick: () => void
+  index: number
+}) {
+  const preview = cardPreview(item)
+  const title = cardTitle(item)
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'cognition-fade-up group relative flex h-full flex-col overflow-hidden rounded-lg border bg-card p-3 text-left shadow-[var(--shadow-sm)] transition-all duration-200 ease-out',
+        bucketCfg.border,
+        bucketCfg.borderHover,
+        'hover:-translate-y-1 hover:scale-[1.03] hover:shadow-[var(--shadow-md)] hover:z-10',
+      )}
+      style={{ animationDelay: `${Math.min(index * 35, 400)}ms` }}
+    >
+      <span
+        className={cn('absolute inset-y-0 left-0 w-0.5 opacity-70', bucketCfg.bar)}
+        aria-hidden
+      />
+
+      {/* Top: name + category badge */}
+      <div className="flex items-start justify-between gap-2 pl-1">
+        <h4
+          className="min-w-0 flex-1 truncate text-[13px] font-medium leading-5 text-foreground"
+          title={title}
+        >
+          {title}
+        </h4>
+        <span
+          className={cn(
+            'inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium',
+            bucketCfg.badge,
+          )}
+        >
+          <span className={cn('size-1.5 rounded-full', bucketCfg.dot)} />
+          {bucketCfg.label}
+        </span>
+      </div>
+
+      {/* Importance bar */}
+      <div className="mt-2 flex items-center gap-2 pl-1">
+        <span className="relative inline-block h-1.5 w-10 shrink-0 overflow-hidden rounded-full bg-muted">
+          <span
+            className={cn(
+              'absolute inset-y-0 left-0 rounded-full',
+              item.importance >= 0.7
+                ? 'bg-emerald-500/80'
+                : item.importance >= 0.4
+                  ? 'bg-primary/60'
+                  : 'bg-zinc-400/60',
+            )}
+            style={{ width: `${Math.round(item.importance * 100)}%` }}
+          />
+        </span>
+        <span className="font-mono tabular-nums text-[9px] text-muted-foreground/70">
+          {item.importance.toFixed(2)}
+        </span>
+      </div>
+
+      {/* Preview — description or bodyPreview */}
+      {preview ? (
+        <p className="mt-2 line-clamp-2 flex-1 pl-1 text-[11px] leading-snug text-muted-foreground/80">
+          {preview}
+        </p>
+      ) : (
+        <div className="min-h-0 flex-1" />
+      )}
+
+      {/* Bottom: tags + date */}
+      <div className="mt-auto flex items-end justify-between gap-2 pt-2 pl-1">
+        <div className="min-w-0 flex-1 overflow-hidden">
+          {item.tags.slice(0, 3).map((tag) => (
+            <span
+              key={tag}
+              className="mr-1 inline-block rounded bg-muted/60 px-1 py-px text-[9px] leading-tight text-muted-foreground"
+            >
+              {tag}
+            </span>
+          ))}
+          {item.tags.length > 3 && (
+            <span className="text-[9px] text-muted-foreground/50">
+              +{item.tags.length - 3}
+            </span>
+          )}
+        </div>
+        {item.createdAt && (
+          <span className="shrink-0 tabular-nums text-[9px] leading-tight text-muted-foreground/40">
+            {item.createdAt.slice(5)}
+          </span>
+        )}
+      </div>
+    </button>
+  )
+}
+
+// ─── Memory Detail View (structured rendering) ──────────────────────────────
+
+interface MemoryDetailViewProps {
+  fileDetail: {
+    path: string
+    name: string
+    body: string
+    description: string
+    tags: string[]
+    importance: number
+    bucket: string
+  }
+  bucketCfg: { label: string; dot: string; badge: string }
+  onStartEdit: () => void
+  onDeleteConfirm: (path: string | null) => void
+  deleteConfirmPath: string | null
+  onHandleDelete: (path: string) => Promise<void>
+  onCancelEdit: () => void
+  onSave: () => Promise<void>
+  editing: boolean
+  editName: string
+  setEditName: (v: string) => void
+  editBody: string
+  setEditBody: (v: string) => void
+  editDescription: string
+  setEditDescription: (v: string) => void
+  editTags: string
+  setEditTags: (v: string) => void
+  editImportance: string
+  setEditImportance: (v: string) => void
+  editBucket: string
+  setEditBucket: (v: string) => void
+  saving: boolean
+  setSelectedPath: (p: string | null) => void
+  setFileDetail: (d: { path: string; name: string; body: string; description: string; tags: string[]; importance: number; bucket: string } | null) => void
+  load: () => Promise<void>
+}
+
+function MemoryDetailView({
+  fileDetail,
+  bucketCfg,
+  onStartEdit,
+  onDeleteConfirm,
+  deleteConfirmPath,
+  onHandleDelete,
+  onCancelEdit,
+  onSave,
+  editing,
+  editName,
+  setEditName,
+  editBody,
+  setEditBody,
+  editDescription,
+  setEditDescription,
+  editTags,
+  setEditTags,
+  editImportance,
+  setEditImportance,
+  editBucket,
+  setEditBucket,
+  saving,
+  setSelectedPath,
+  setFileDetail,
+  load,
+}: MemoryDetailViewProps) {
+  // Extract source line from body for display
+  const sourceLine = useMemo(() => {
+    const match = fileDetail.body.match(/(\*Source:.*|- \*Source:.*)/m)
+    return match ? match[1].trim() : ''
+  }, [fileDetail.body])
+
+  // Clean body: strip the source line for rendering
+  const cleanBody = useMemo(() => {
+    return fileDetail.body.replace(/\n?\*Source:.*$/m, '').replace(/\n?- \*Source:.*$/m, '').trim()
+  }, [fileDetail.body])
+
+  const displayTitle = useMemo(() => {
+    const name = fileDetail.name?.trim() || ''
+    if (name && !isMachineName(name)) return shortTitle(name, 28)
+    const fromBody = firstFactFromPreview(cleanBody)
+    if (fromBody) return shortTitle(fromBody, 28)
+    return shortTitle(name || '未命名记忆', 28)
+  }, [fileDetail.name, cleanBody])
+
+  const displayDescription = useMemo(() => {
+    const desc = fileDetail.description?.trim() || ''
+    if (desc && !isPlaceholderDescription(desc)) return desc
+    return firstFactFromPreview(cleanBody)
+  }, [fileDetail.description, cleanBody])
+
+  if (editing) {
+    return (
+      <div className="flex flex-col gap-3 rounded-lg border bg-card p-4 shadow-[var(--shadow-sm)]">
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="ghost" className="h-8 gap-1 text-xs" onClick={onCancelEdit}>
+            <X className="size-3" /> 返回列表
+          </Button>
+        </div>
+        <div className="flex flex-col gap-3 rounded-lg border bg-card/50 p-4 shadow-[var(--shadow-sm)]">
+          <div className="flex flex-wrap items-center gap-2">
+            <Input value={editName} onChange={(e) => setEditName(e.target.value)} className="h-8 flex-1 text-sm" placeholder="文件名称" />
+            <select value={editBucket} onChange={(e) => setEditBucket(e.target.value)} className="h-8 w-28 rounded-md border border-input bg-background px-2 text-xs outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/10">
+              <option value="procedure">经验 (procedure)</option>
+              <option value="wiki">知识 (wiki)</option>
+            </select>
+            <Input type="number" step="0.1" min="0" max="1" value={editImportance} onChange={(e) => setEditImportance(e.target.value)} className="h-8 w-20 text-xs" placeholder="重要性" />
+          </div>
+          <Input value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="h-8 text-xs" placeholder="简短描述" />
+          <Input value={editTags} onChange={(e) => setEditTags(e.target.value)} className="h-8 text-xs" placeholder="标签（逗号分隔）" />
+          <textarea value={editBody} onChange={(e) => setEditBody(e.target.value)} className="min-h-[200px] w-full rounded border bg-background px-3 py-2 text-sm leading-6 outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/10" placeholder="Markdown 内容" />
+          <div className="flex items-center justify-end gap-1">
+            <Button size="sm" variant="ghost" className="h-8 px-3 text-xs" onClick={onCancelEdit}>取消</Button>
+            <Button size="sm" className="h-8 gap-1 px-3 text-xs" onClick={() => void onSave()} disabled={saving}>
+              {saving ? <Loader2 className="size-3 animate-spin" /> : <Save className="size-3" />} 保存
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-4 rounded-lg border bg-card p-5 shadow-[var(--shadow-sm)]">
+      {/* Header row */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <FileText className="size-5 text-primary/70" />
+          <h3 className="text-base font-semibold text-foreground">{displayTitle}</h3>
+          <span className={cn('inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium', bucketCfg.badge)}>
+            <span className={cn('size-1.5 rounded-full', bucketCfg.dot)} />
+            {bucketCfg.label}
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {!editing && (
+            <>
+              <Button size="sm" variant="ghost" className="h-7 gap-1 text-[11px]" onClick={onStartEdit}>
+                <Pencil className="size-3" /> 编辑
+              </Button>
+              {deleteConfirmPath === fileDetail.path ? (
+                <div className="flex items-center gap-1">
+                  <Button size="sm" variant="destructive" className="h-7 px-2 text-[11px]" onClick={() => void onHandleDelete(fileDetail.path)}>确认删除</Button>
+                  <Button size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => onDeleteConfirm(null)}>取消</Button>
+                </div>
+              ) : (
+                <Button size="sm" variant="ghost" className="h-7 gap-1 text-[11px] text-destructive hover:text-destructive" onClick={() => onDeleteConfirm(fileDetail.path)}>
+                  <Trash2 className="size-3" /> 删除
+                </Button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Meta info strip */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <Info className="size-3" /> {displayDescription || '无描述'}
+        </span>
+        <span className="flex items-center gap-1">
+          重要性
+          <span className="relative inline-block h-1.5 w-12 overflow-hidden rounded-full bg-muted">
+            <span className="absolute inset-y-0 left-0 rounded-full bg-primary/70" style={{ width: `${Math.round(fileDetail.importance * 100)}%` }} />
+          </span>
+          <span className="font-mono tabular-nums font-medium text-foreground/80">{fileDetail.importance.toFixed(2)}</span>
+        </span>
+        {sourceLine && (
+          <span className="flex items-center gap-0.5 font-mono opacity-60">
+            <CalendarDays className="size-3" /> {sourceLine.replace('*', '').replace('Source:', '').trim()}
+          </span>
+        )}
+      </div>
+
+      {/* Tags */}
+      {fileDetail.tags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Hash className="size-3 text-muted-foreground" />
+          {fileDetail.tags.map((tag) => (
+            <span key={tag} className="rounded-md bg-primary/6 border border-primary/12 px-2 py-0.5 text-[11px] text-foreground/80 hover:bg-primary/10 transition-colors">
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* File path */}
+      <div className="flex items-center gap-0.5 text-[10px] text-muted-foreground/50 font-mono">
+        <Folder className="size-2.5" /> {fileDetail.path}
+      </div>
+
+      {/* Markdown body — rendered as readable content */}
+      <div className="mt-2 rounded-lg border border-border/50 bg-background p-4 shadow-[var(--shadow-xs)]">
+        <div className="prose prose-sm prose-slate max-w-none dark:prose-invert
+          prose-headings:text-foreground prose-p:text-foreground/85 prose-li:text-foreground/85
+          prose-strong:text-foreground prose-code:text-foreground/80
+          prose-h3:text-sm prose-h3:font-semibold prose-h3:mt-4 prose-h3:mb-2
+          prose-ul:my-2 prose-li:my-0.5 prose-li:marker:text-muted-foreground">
+          {cleanBody.split('\n').map((line, i) => {
+            // Render markdown-like lines with basic formatting
+            if (line.startsWith('## ')) {
+              return <h3 key={i} className="text-sm font-semibold mt-4 mb-2 text-foreground">{line.replace('## ', '')}</h3>
+            }
+            if (line.startsWith('### ')) {
+              return <h4 key={i} className="text-[13px] font-semibold mt-3 mb-1.5 text-foreground/90">{line.replace('### ', '')}</h4>
+            }
+            if (line.startsWith('---')) {
+              return <hr key={i} className="my-3 border-border/50" />
+            }
+            if (line.trim().startsWith('- ')) {
+              return (
+                <li key={i} className="ml-4 list-disc text-[13px] leading-relaxed text-foreground/85">
+                  {line.trim().slice(2)}
+                </li>
+              )
+            }
+            if (line.trim().startsWith('- ')) {
+              return null // handled above
+            }
+            if (line.trim() === '') {
+              return <div key={i} className="h-2" />
+            }
+            return <p key={i} className="text-[13px] leading-relaxed text-foreground/85 my-1">{line}</p>
+          })}
+        </div>
+      </div>
     </div>
   )
 }

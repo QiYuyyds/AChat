@@ -49,9 +49,6 @@ class Settings(BaseSettings):
     milvus_host: str = ""
     milvus_port: int = 19530
 
-    # ─── Elasticsearch ───
-    es_addresses: str = ""  # comma-separated
-
     # ─── Neo4j ───
     neo4j_uri: str = ""
     neo4j_user: str = ""
@@ -80,32 +77,80 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 200
     rag_chunk_overlap: int = 50
     rag_top_k: int = 3
-    rag_rrf_constant_k: int = 30
-    rag_semantic_weight: float = 0.5
-    rag_keyword_weight: float = 0.5
+    rag_rrf_constant_k: int = 60
+    rag_semantic_weight: float = 0.7
+    rag_keyword_weight: float = 0.3
     rag_milvus_dim: int = 1024
-    rag_rewrite_enabled: bool = True
-    rag_rewrite_num_queries: int = 3
     rag_rerank_enabled: bool = True
     rag_rerank_preview_len: int = 200
+
+    # ─── RAG: Image extraction ───
+    rag_extract_images: bool = True
+
+    # ─── RAG: Chunking presets ───
+    rag_chunk_preset: str = "general"
+    rag_chunk_parser_config: str = ""  # JSON string for per-parser overrides
+
+    # ─── RAG: Concurrency control ───
+    rag_embed_concurrency: int = 5
+    rag_search_concurrency: int = 8
+    rag_graph_concurrency: int = 5
+    rag_graph_neo4j_concurrency: int = 8
+    milvus_bm25_drop_ratio_search: float = 0.0
+
+    # ─── RAG: Graph auto-build ───
+    rag_graph_auto_build: bool = True
+    rag_graph_max_extraction_attempts: int = 3
+    rag_graph_retry_delays: str = "2.0,10.0"  # comma-separated seconds
+
+    # ─── RAG Task Queue ───
+    rag_task_worker_interval: int = 5
+    rag_task_max_retries: int = 3
+    rag_task_worker_enabled: bool = True
+
+    # ─── OCR engines ───
+    ocr_engine: str = "auto"  # 'auto' | 'none' | 'rapidocr' | 'mineru' | 'deepseek-ocr' | 'paddleocr' | ...
+    ocr_rapid_ocr_path: str = ""
+    ocr_mineru_url: str = ""
+    ocr_mineru_official_key: str = ""
+    ocr_deepseek_ocr_key: str = ""
+    ocr_pp_structure_url: str = ""  # PaddleX service URL for PP-Structure-V3
+    ocr_paddleocr_key: str = ""  # PaddleOCR cloud API token
+
+    # ─── Eval LLM (independent from RAG LLM) ───
+    eval_llm_api_key: str | None = None
+    eval_llm_api_url: str | None = None
+    eval_llm_model: str | None = None
+    eval_dataset_llm_api_key: str | None = None
+    eval_dataset_llm_api_url: str | None = None
+    eval_dataset_llm_model: str | None = None
 
     # ─── Session Metadata (custom_adapter prompt injection) ───
     default_language: str = "zh-CN"
     default_timezone: str = "GMT+8"
     default_location: str = "auto"  # 'auto' → IP geolocation; or set to e.g. 'Chongqing'
 
-    # ─── Memory ───
-    memory_short_term_max_turns: int = 10
-    memory_long_term_top_k: int = 3
-    memory_consolidation_similarity: float = 0.80
-    memory_consolidation_dedup: float = 0.95
-    memory_consolidation_ttl_days: int = 30
-    memory_consolidation_decay_rate: float = 0.995
-    memory_consolidation_min_importance: float = 0.3
-    memory_consolidation_trigger: int = 5
+    # ─── Memory (file-native) ───
+    memory_workspace_dir: str = ""  # empty → defaults to <data_dir>/memory
+    memory_auto_dream_threshold: int = 5
+    memory_auto_dream_cron: str = "23:00"
+    memory_auto_dream_max_units: int = 5
+    memory_dream_topic_count: int = 3
+    memory_dream_topic_diversity_days: int = 7
+    memory_search_top_k: int = 10
+    memory_bm25_weight: float = 0.3
+    memory_vector_weight: float = 0.7
+    # DEPRECATED: wikilink no longer participates in RRF ranking (post-processing only)
+    memory_wikilink_weight: float = 0.3
+    memory_rrf_k: int = 60
+    memory_chunk_size: int = 512
+    memory_chunk_min_size: int = 100
 
-    # ─── Case Memory ───
-    case_extraction_enabled: bool = True
+    @property
+    def memory_workspace_path(self) -> Path:
+        """Get memory workspace root as resolved Path."""
+        p = self.memory_workspace_dir or str(self.data_path / "memory")
+        return Path(p).resolve()
 
     # ─── Auth ───
     jwt_secret: str = ""

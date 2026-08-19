@@ -19,6 +19,8 @@ def test_pdftotext_page_count(monkeypatch):
     """pdftotext fallback should count \\x0c form feeds for page count."""
     import app.rag.parser as parser_mod
 
+    processor = parser_mod.DocumentProcessor()
+
     # Mock pdftotext binary availability
     monkeypatch.setattr(parser_mod.shutil, "which", lambda cmd: "/usr/bin/pdftotext")
 
@@ -28,7 +30,7 @@ def test_pdftotext_page_count(monkeypatch):
         parser_mod.subprocess, "check_output", lambda *a, **kw: fake_output
     )
 
-    text, pages, parser_name = parser_mod._extract_pdf_with_pdftotext(b"fake pdf")
+    text, pages, parser_name, _ = processor._extract_pdf_with_pdftotext(b"fake pdf")
     assert parser_name == "pdftotext"
     assert pages == 3
     assert "Page 1" in text
@@ -39,6 +41,8 @@ def test_pdftotext_single_page(monkeypatch):
     """pdftotext with no form feed should report 1 page."""
     import app.rag.parser as parser_mod
 
+    processor = parser_mod.DocumentProcessor()
+
     monkeypatch.setattr(parser_mod.shutil, "which", lambda cmd: "/usr/bin/pdftotext")
     monkeypatch.setattr(
         parser_mod.subprocess,
@@ -46,7 +50,7 @@ def test_pdftotext_single_page(monkeypatch):
         lambda *a, **kw: b"single page content",
     )
 
-    _, pages, parser_name = parser_mod._extract_pdf_with_pdftotext(b"fake pdf")
+    _, pages, parser_name, _ = processor._extract_pdf_with_pdftotext(b"fake pdf")
     assert parser_name == "pdftotext"
     assert pages == 1
 
@@ -55,12 +59,14 @@ def test_pdftotext_empty_output_zero_pages(monkeypatch):
     """pdftotext with empty output should report 0 pages."""
     import app.rag.parser as parser_mod
 
+    processor = parser_mod.DocumentProcessor()
+
     monkeypatch.setattr(parser_mod.shutil, "which", lambda cmd: "/usr/bin/pdftotext")
     monkeypatch.setattr(
         parser_mod.subprocess, "check_output", lambda *a, **kw: b"  \n  "
     )
 
-    _, pages, _ = parser_mod._extract_pdf_with_pdftotext(b"fake pdf")
+    _, pages, _, _ = processor._extract_pdf_with_pdftotext(b"fake pdf")
     assert pages == 0
 
 

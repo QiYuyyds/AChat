@@ -18,6 +18,7 @@ from app.auth.dependencies import get_current_user
 from app.auth.ownership import verify_document_ownership
 from app.db.models import User
 from app.schemas import (
+    CreateFolderRequest,
     DeleteDocumentResponse,
     DocumentDetailResponse,
     DocumentFlatListResponse,
@@ -29,6 +30,8 @@ from app.schemas import (
     FolderNode,
     IngestResultResponse,
     IngestVersionRequest,
+    MoveDocumentRequest,
+    PreviewResponse,
     UploadDocumentResponse,
     VersionListResponse,
     VersionResponse,
@@ -61,6 +64,9 @@ def _doc_response(d: dict) -> DocumentResponse:
         latest_version_id=d["latest_version_id"],
         source_path=d.get("source_path", ""),
         content_hash=d.get("content_hash"),
+        chunk_preset=d.get("chunk_preset", "general"),
+        parent_id=d.get("parent_id"),
+        is_folder=d.get("is_folder", False),
     )
 
 
@@ -123,6 +129,7 @@ async def write_document(req: WriteDocumentRequest, user: User = Depends(get_cur
             metadata=req.metadata,
             ingest_to_rag=req.ingest_to_rag,
             user_id=user.id,
+            preset_id=req.preset_id,
         )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=404)  # type: ignore
@@ -142,11 +149,12 @@ async def write_document(req: WriteDocumentRequest, user: User = Depends(get_cur
 @router.get("/documents/tree")
 async def list_document_tree(
     path: str = "",
+    parent_id: str | None = None,
     user: User = Depends(get_current_user),
 ) -> DocumentTreeResponse:
-    """Virtual directory tree for obsidian_sync documents."""
+    """Virtual directory tree for all document sources."""
     svc = _get_service()
-    result = await svc.list_tree(path, user.id)
+    result = await svc.list_tree(path, user.id, parent_id=parent_id)
     return DocumentTreeResponse(
         current_path=result["current_path"],
         folders=[
@@ -165,6 +173,8 @@ async def list_document_tree(
                 doc_type=f["doc_type"],
                 source=f["source"],
                 updated_at=f["updated_at"],
+                is_folder=f.get("is_folder", False),
+                parent_id=f.get("parent_id"),
             )
             for f in result["files"]
         ],
@@ -269,7 +279,9 @@ async def ingest_document(
     """Ingest a specific version into RAG."""
     svc = _get_service()
     try:
-        result = await svc.ingest_version(document_id, req.version_id, user_id=user.id)
+        result = await svc.ingest_version(
+        document_id, req.version_id, user_id=user.id, preset_id=req.preset_id
+    )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=404)  # type: ignore
     return IngestResultResponse(
@@ -289,6 +301,7 @@ async def upload_document(
     document_id: str = Form(default=""),
     title: str | None = Form(default=None),
     doc_type: str | None = Form(default=None),
+    preset_id: str = Form(default=""),
 ) -> UploadDocumentResponse:
     """Upload file → parse → create document → ingest to RAG (one-stop).
 
@@ -311,6 +324,7 @@ async def upload_document(
             title=title,
             doc_type=doc_type or "upload",
             user_id=user.id,
+            preset_id=preset_id,
         )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)  # type: ignore
@@ -329,3 +343,57 @@ async def upload_document(
         success=result["success"],
         message=result.get("message"),
     )
+
+
+# ─── File preview ─────────────────────────────────────────────────────────
+
+
+@router.get("/documents/{document_id}/preview")
+async def preview_document(
+    document_id: str, user: User = Depends(get_current_user)
+) -> PreviewResponse:
+    """Return parsed Markdown + image metadata for document preview."""
+    await verify_document_ownership(document_id, user.id)
+    svc = _get_service()
+    result = await svc.get_document(document_id)
+    if result is None:
+        return JSONResponse({"error": "Document not found"}, status_code=404)  # type: ignore
+    ver = result["version"]
+    meta = ver.get("metadata", {})
+    return PreviewResponse(
+        document_id=result["document"]["id"],
+        version_id=ver["id"],
+        content_md=ver["content_md"],
+        images=meta.get("images", []),
+        parser=meta.get("parser"),
+        pages=meta.get("pages"),
+    )
+
+
+# ─── Folder management ────────────────────────────────────────────────────
+
+
+@router.post("/documents/folder")
+async def create_folder(
+    req: CreateFolderRequest, user: User = Depends(get_current_user)
+) -> DocumentResponse:
+    """Create a virtual folder in the document tree."""
+    svc = _get_service()
+    folder = await svc.create_folder(user_id=user.id, parent_id=req.parent_id, name=req.name)
+    return _doc_response(folder)
+
+
+@router.patch("/documents/{document_id}/move")
+async def move_document(
+    document_id: str,
+    req: MoveDocumentRequest,
+    user: User = Depends(get_current_user),
+) -> DocumentResponse:
+    """Move a document/folder to a new parent."""
+    await verify_document_ownership(document_id, user.id)
+    svc = _get_service()
+    try:
+        doc = await svc.move_document(document_id, req.target_parent_id)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)  # type: ignore
+    return _doc_response(doc)

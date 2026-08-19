@@ -1,12 +1,13 @@
 'use client'
 
-import { BookOpen, Brain, Library, Loader2, Search, Sparkles, Upload, UserCog, X } from 'lucide-react'
+import { BookOpen, Brain, Library, Loader2, Search, Network, Sparkles, Upload, UserCog, X } from 'lucide-react'
 import { useCallback, useState } from 'react'
 
 import { DocumentDetail } from '@/components/document-detail'
 import { MyDocumentsSection, ObsidianVaultSection } from '@/components/knowledge-library'
 import { UploadDocumentDialog } from '@/components/upload-document-dialog'
 import { LongTermMemoryPanel } from '@/components/settings/memory-management/long-term-memory-panel'
+import { MemoryGraphPanel } from '@/components/settings/memory-management/memory-graph-panel'
 import { PreferencePanel } from '@/components/settings/memory-management/preference-panel'
 import { SessionMemoryPanel } from '@/components/settings/memory-management/session-memory-panel'
 import { Button } from '@/components/ui/button'
@@ -18,6 +19,7 @@ import { useAppStore, type MemoryTab } from '@/stores/app-store'
 
 const MEMORY_SUBTABS: { id: MemoryTab; label: string; icon: typeof Brain }[] = [
   { id: 'long-term', label: '长期记忆', icon: Brain },
+  { id: 'graph', label: '图谱', icon: Network },
   { id: 'preferences', label: '用户偏好', icon: UserCog },
   { id: 'session', label: '会话摘要', icon: Sparkles },
 ]
@@ -238,13 +240,19 @@ function MemoryTabContent() {
       </div>
 
       {/* Content */}
-      <ScrollArea className="min-h-0 flex-1">
-        <div key={subtab} className="tab-content-enter px-6 py-6">
-          {subtab === 'long-term' && <LongTermMemoryPanel />}
-          {subtab === 'preferences' && <PreferencePanel />}
-          {subtab === 'session' && <SessionMemoryPanel />}
+      {subtab === 'graph' ? (
+        <div key="graph" className="tab-content-enter min-h-0 flex-1 px-4 pb-4 pt-2">
+          <MemoryGraphPanel />
         </div>
-      </ScrollArea>
+      ) : (
+        <ScrollArea className="min-h-0 flex-1">
+          <div key={subtab} className="tab-content-enter px-6 py-6">
+            {subtab === 'long-term' && <LongTermMemoryPanel />}
+            {subtab === 'preferences' && <PreferencePanel />}
+            {subtab === 'session' && <SessionMemoryPanel />}
+          </div>
+        </ScrollArea>
+      )}
     </>
   )
 }

@@ -33,12 +33,22 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "pypdf>=5.1.0",  # read_attachment PDF text extraction (replaces TS pdf-parse)
 
+    # Document parsing (DOCX/PPTX text extraction)
+    "python-docx>=1.1.0",
+    "python-pptx>=0.6.23",
+    "pypdfium2>=4.30.0",  # PDF page rendering for OCR (DeepSeek-OCR / RapidOCR)
+    "json-repair>=0.25.0",  # repair LLM JSON output in OCR results
+
     # Auth
     "bcrypt>=4.2.0",
     "PyJWT>=2.10.0",
 
     # MCP client (external MCP server support for Custom adapter)
     "mcp>=1.0.0",
+
+    # Memory file-native (frontmatter parsing + Chinese BM25 tokenization)
+    "python-frontmatter>=1.1.0",
+    "jieba>=0.42.1",
 ]
 
 [project.optional-dependencies]
@@ -64,7 +74,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+ignore = ["E501", "B008"]
 
 [tool.mypy]
 python_version = "3.11"

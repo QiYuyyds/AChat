@@ -12,6 +12,30 @@ ENTITY_EVENT: EntityType = "Event"
 ENTITY_PRODUCT: EntityType = "Product"
 ENTITY_UNKNOWN: EntityType = "Unknown"
 
+# Entity type weight map for PPR seed weighting (rag-graph-v2)
+# Professional entities (Concept/Product) rank higher than generic ones (Location/Person)
+_ENTITY_TYPE_WEIGHTS: dict[str, float] = {
+    "Concept": 1.5,
+    "Product": 1.4,
+    "Event": 1.3,
+    "Organization": 1.0,
+    "Person": 0.8,
+    "Location": 0.7,
+    "Unknown": 1.0,
+}
+
+
+def get_entity_type_weight(
+    entity_type: str,
+    overrides: dict[str, float] | None = None,
+) -> float:
+    """Get the seed weight for a given entity type, with optional overrides."""
+    if overrides:
+        val = overrides.get(entity_type)
+        if val is not None:
+            return val
+    return _ENTITY_TYPE_WEIGHTS.get(entity_type, 1.0)
+
 
 @dataclass
 class Entity:
@@ -58,3 +82,14 @@ class ChunkRef:
     id: int = 0          # 文档内 chunk idx（0-based）
     pg_id: int = 0       # PostgreSQL 自增 ID，KG 节点上同时持久化以支持 RAG RRF 融合
     content: str = ""
+
+
+@dataclass
+class TripleRef:
+    """知识图谱中的三元组引用（实体关系抽取产物，用于 Neo4j MERGE）"""
+    subject: str = ""
+    relation: str = ""
+    object: str = ""
+    pg_id: int = 0       # PostgreSQL 自增 ID，用于 RAG RRF 融合
+    chunk_id: int = 0    # 文档内 chunk idx（0-based）
+    doc_hash: str = ""

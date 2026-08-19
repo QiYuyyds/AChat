@@ -1,22 +1,14 @@
-"""memory_store tool — Agent-initiated long-term memory write.
+"""memory_store tool — Agent-initiated memory write to digest/ files.
 
-Agents with ``memory_enabled=true`` receive this tool. It enforces three
-layers of protection against abuse:
-
-1. **Hard constraints (handler)**: category whitelist, importance floor,
-   content length, per-run rate limiting (max 3 writes/run).
-2. **Soft constraints (tool description)**: guidance on what is worth storing.
-3. **Post-write cleanup (existing)**: ``store_classified`` cosine dedup +
-   Consolidation decay/dedup/expire.
-
-Writes go through ``LongTerm.store_classified()`` so they share the same
-dedup logic as the background ``extract_ltm_memories`` path.
+Agents with ``memory_enabled=true`` receive this tool. Writes go to
+digest/{bucket}/ Markdown files with frontmatter. Uses the file-native
+storage layer (no PG/embedding).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
+from datetime import date
 from typing import Any
 
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
@@ -24,72 +16,45 @@ from app.tools.rate_limiter import _rate_limiter
 
 logger = logging.getLogger(__name__)
 
-_VALID_CATEGORIES = ("fact", "policy", "tool_failure", "case")
-
-_SLOT_BY_CATEGORY: dict[str, str] = {
-    "fact": "recall_memory",
-    "policy": "constraints",
-    "tool_failure": "tool_state",
-    "case": "recall_memory",
-}
-
 MAX_WRITES_PER_RUN = 3
 MAX_CONTENT_LENGTH = 500
 
 
 async def memory_store_handler(args: Any, ctx: ToolContext) -> ToolResult:
-    """Store a long-term memory item with validation and rate limiting."""
+    """Store a memory by writing a digest Markdown file."""
     if not isinstance(args, dict):
         return err("memory_store requires a dict of arguments")
 
-    # ── Defense 1: category whitelist ──────────────────────────────
-    category = args.get("category", "")
-    if category not in _VALID_CATEGORIES:
-        return err(
-            f"category must be one of: {', '.join(_VALID_CATEGORIES)}"
-        )
+    name = str(args.get("name", "")).strip()
+    if not name:
+        return err("name is required")
 
-    # ── Defense 1b: case category requires summary + keywords ─────
-    summary = str(args.get("summary", "")).strip()
-    keywords = args.get("keywords", [])
-    if not isinstance(keywords, list):
-        keywords = []
-    if category == "case":
-        if not summary:
-            return err("summary is required when category is 'case'")
-        if not keywords or not isinstance(keywords, list) or len(keywords) == 0:
-            return err("keywords is required (at least 1) when category is 'case'")
-
-    # ── Defense 2: importance floor ────────────────────────────────
-    try:
-        importance = float(args.get("importance", 0))
-    except (TypeError, ValueError):
-        return err("importance must be a number between 0.3 and 1.0")
-    if importance < 0.3:
-        return err("importance must be >= 0.3")
-    if importance > 1.0:
-        return err("importance must be <= 1.0")
-
-    # ── Content length validation ──────────────────────────────────
     content = str(args.get("content", "")).strip()
     if not content or len(content) > MAX_CONTENT_LENGTH:
         return err(f"content must be 1-{MAX_CONTENT_LENGTH} characters")
 
-    # ── Keywords validation (if provided) ──────────────────────────
-    if keywords:
-        keywords = [str(k).strip() for k in keywords if str(k).strip()]
-        if len(keywords) > 10:
-            return err("keywords must have at most 10 entries")
+    bucket = str(args.get("bucket", "procedure")).strip()
+    if bucket not in ("procedure", "wiki"):
+        return err("bucket must be 'procedure' or 'wiki'")
 
-    # ── Defense 3: per-run rate limiting ───────────────────────────
+    try:
+        importance = float(args.get("importance", 0.5))
+    except (TypeError, ValueError):
+        return err("importance must be a number between 0 and 1.0")
+    if importance < 0 or importance > 1.0:
+        return err("importance must be between 0 and 1.0")
+
+    tags = args.get("tags", [])
+    if not isinstance(tags, list):
+        tags = []
+
+    # Per-run rate limiting
     rate_key = f"mem_writes:{ctx.agent_id}:{ctx.run_id}"
     count = await _rate_limiter.incr(rate_key, ttl=300)
     if count > MAX_WRITES_PER_RUN:
-        return err(
-            f"memory_store rate limit: max {MAX_WRITES_PER_RUN} writes per agent run"
-        )
+        return err(f"memory_store rate limit: max {MAX_WRITES_PER_RUN} writes per agent run")
 
-    # ── Access memory service ──────────────────────────────────────
+    # Access memory service
     try:
         from app.main import _memory_service  # type: ignore[attr-defined]
     except ImportError:
@@ -98,116 +63,170 @@ async def memory_store_handler(args: Any, ctx: ToolContext) -> ToolResult:
     if _memory_service is None:
         return err("Memory service not initialized")
 
-    ltm = _memory_service.ltm
-    embed_fn = _memory_service._embed_fn  # noqa: SLF001
+    from app.memory.file_store.frontmatter import MemoryFrontmatter
+    from app.memory.file_store.markdown_io import write_markdown
 
-    # Compute embedding off the event loop (embed_fn is a blocking client)
-    emb = None
-    if embed_fn:
-        try:
-            emb = await asyncio.to_thread(embed_fn, content)
-        except Exception as e:
-            logger.warning("memory_store embedding failed: %s", e)
-
-    # ── Store via store_classified (cosine dedup) ──────────────────
-    tags = args.get("tags", [])
-    if not isinstance(tags, list):
-        tags = []
-
-    slot_hint = _SLOT_BY_CATEGORY.get(category, "")
-
-    try:
-        inserted = await ltm.store_classified(
-            content=content,
-            importance=importance,
-            emb=emb,
-            category=category,
-            tags=tags,
-            slot_hint=slot_hint,
-            scope="agent",
-            agent_id=ctx.agent_id,
-            summary=summary,
-            keywords=keywords if keywords else None,
-        )
-    except Exception as e:
-        logger.warning("memory_store store_classified failed: %s", e)
-        return err(f"memory_store failed: {e}")
-
-    # ── Return agent memory count (soft constraint feedback) ───────
-    agent_mem_count = sum(
-        1 for it in ltm.items
-        if it.scope == "agent" and it.agent_id == ctx.agent_id
+    today = date.today().isoformat()
+    fm = MemoryFrontmatter(
+        name=name,
+        description=str(args.get("description", "")),
+        agent_id=ctx.agent_id or None,
+        tags=[str(t) for t in tags if t][:10],
+        importance=importance,
+        bucket=bucket,
+        created_at=today,
+        updated_at=today,
+        source=f"agent:{ctx.agent_id}",
     )
 
+    filepath = _memory_service.workspace.digest_path(bucket, name, agent_id=ctx.agent_id or None)
+    write_markdown(filepath, fm, content)
+
+    # Reindex the file
+    _memory_service.auto_index.index_file(filepath)
+
     return ok({
-        "stored": inserted,
-        "agent_memory_count": agent_mem_count,
+        "stored": True,
+        "path": str(filepath.relative_to(_memory_service.workspace.root)),
+        "bucket": bucket,
     })
 
 
 memory_store_tool = ToolDef(
     name="memory_store",
     description=(
-        "Store a long-term memory that will persist across conversations. "
+        "Store a long-term memory as a Markdown file in the digest. "
         "ONLY store facts that are: "
         "(1) long-lived and stable (tech stack, project constraints), "
         "(2) affect future tasks (deployment failures, API quirks), "
         "(3) have long-term learning value. "
         "DO NOT store: temporary conversation details, "
-        "information derivable from code, single-use operation results, "
-        "or anything already in the agent's system prompt."
+        "information derivable from code, single-use operation results."
     ),
     parameters={
         "type": "object",
         "properties": {
+            "name": {
+                "type": "string",
+                "description": "Concise title for the memory (will be the filename).",
+            },
             "content": {
                 "type": "string",
-                "description": (
-                    "Self-contained memory content. "
-                    "Must be understandable without conversation context. "
-                    "Example: 'User project uses React 19 + Next.js 16 with App Router'"
-                ),
+                "description": "Memory content in Markdown. Must be self-contained.",
             },
-            "category": {
+            "bucket": {
                 "type": "string",
-                "enum": ["fact", "policy", "tool_failure", "case"],
-                "description": (
-                    "fact=objective fact about user/project/environment, "
-                    "policy=constraint or rule to follow, "
-                    "tool_failure=lesson learned from a tool failure, "
-                    "case=reusable task experience or pattern"
-                ),
+                "enum": ["procedure", "wiki"],
+                "description": "procedure=how-to experience, wiki=knowledge node",
             },
             "importance": {
                 "type": "number",
-                "minimum": 0.3,
-                "maximum": 1.0,
-                "description": "0.3=minor, 0.5=normal, 0.8=critical, 1.0=identity-level",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "0.3=minor, 0.5=normal, 0.8=critical",
             },
             "tags": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional tags for filtering during recall.",
+                "description": "Optional tags for filtering.",
             },
-            "summary": {
+            "description": {
                 "type": "string",
-                "description": (
-                    "3-10 word self-contained title for the memory. "
-                    "Required when category is 'case'. "
-                    "Example: '认证模块重构策略'"
-                ),
-            },
-            "keywords": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "3-5 retrieval keywords (proper nouns, technical terms). "
-                    "Required when category is 'case'. "
-                    "Avoid generic words like 'user', 'project', 'system'."
-                ),
+                "description": "Optional short description for the memory.",
             },
         },
-        "required": ["content", "category", "importance"],
+        "required": ["name", "content", "bucket", "importance"],
     },
     handler=memory_store_handler,
+)
+
+
+# ─── memory_recall tool ────────────────────────────────────────────────────
+
+
+async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
+    """Recall relevant memories using hybrid BM25 + wikilink search."""
+    query = args.get("query", "").strip() if isinstance(args, dict) else str(args)
+    if not query:
+        return err("query is required for memory_recall")
+
+    top_k = args.get("top_k", 5) if isinstance(args, dict) else 5
+
+    try:
+        from app.main import _memory_service  # type: ignore[attr-defined]
+        if _memory_service is None:
+            return err("Memory service not initialized")
+        results = await _memory_service.recall(
+            query, top_k=top_k, agent_id=ctx.agent_id, user_id=ctx.user_id,
+        )
+        memories = [
+            {
+                "name": r.name,
+                "content": r.content,
+                "score": r.score,
+                "source": r.source,
+                "path": r.path,
+            }
+            for r in results
+        ]
+        # Preferences are scoped to the calling user (same as 沉淀 UI).
+        pref_context = await _memory_service.get_preference_context(user_id=ctx.user_id)
+        return ok({"memories": memories, "preferences": pref_context})
+    except Exception as e:
+        return err(f"Memory recall failed: {e}")
+
+
+memory_recall_tool = ToolDef(
+    name="memory_recall",
+    description=(
+        "Recall relevant memories from the file-native memory system using "
+        "hybrid BM25 + wikilink search. Use this at the start of a task to "
+        "check for past context, or when the user references prior work."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The query to search for in memory.",
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "Maximum number of memories to return (default: 5).",
+            },
+        },
+        "required": ["query"],
+    },
+    handler=memory_recall_handler,
+)
+
+
+# ─── memory_proactive tool ─────────────────────────────────────────────────
+
+
+async def memory_proactive_handler(args: Any, ctx: ToolContext) -> ToolResult:
+    """Get proactive interest topics for the current session."""
+    try:
+        from app.main import _memory_service  # type: ignore[attr-defined]
+        if _memory_service is None:
+            return err("Memory service not initialized")
+        topics = _memory_service.proactive.get_topics()
+        return ok({"topics": topics, "total": len(topics)})
+    except Exception as e:
+        return err(f"Proactive memory failed: {e}")
+
+
+memory_proactive_tool = ToolDef(
+    name="memory_proactive",
+    description=(
+        "Retrieve proactive interest topics that the memory system has "
+        "identified as potentially relevant. Topics are generated by the "
+        "auto_dream pipeline from recent conversations."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+    handler=memory_proactive_handler,
 )
