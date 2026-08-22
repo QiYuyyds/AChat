@@ -36,24 +36,42 @@ _FENCE_RE = re.compile(
 
 _HEADING_RE = re.compile(r"^#{1,6} ")
 
+_IMAGE_LINK_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+
+_TABLE_RE = re.compile(
+    r"^(?:[ \t]*\|[^\n]+\n)"
+    r"(?:[ \t]*\|[\s\-:|]+\|[^\n]*\n)"
+    r"(?:[ \t]*\|[^\n]*\n?)*",
+    re.MULTILINE,
+)
+
 
 class RecursiveSplitter:
     """递归分隔符栈 + Markdown 保护 + tail-rune overlap 的文本切分器。"""
 
     def __init__(self, chunk_size: int = 200, chunk_overlap: int = 50,
-                 separators: list[str] | None = None):
+                 separators: list[str] | None = None, *,
+                 protect_tables: bool = False):
         self.chunk_size = max(1, int(chunk_size or 1))
         overlap = max(0, int(chunk_overlap or 0))
         if overlap >= self.chunk_size:
             overlap = self.chunk_size - 1
         self.chunk_overlap = overlap
         self.separators = list(separators) if separators else list(_DEFAULT_SEPARATORS)
+        self.protect_tables = protect_tables
 
     def split(self, text: str) -> list[Chunk]:
         if not text:
             return []
 
         atoms = self._protect_fences(text)
+
+        # Protect image links as atomic segments
+        atoms = self._protect_image_links(atoms)
+
+        # Protect tables as atomic segments (when enabled)
+        if self.protect_tables:
+            atoms = self._protect_tables(atoms)
 
         pieces: list[tuple[bool, str]] = []
         for is_atom, segment in atoms:
@@ -81,6 +99,80 @@ class RecursiveSplitter:
         if not atoms:
             atoms = [(False, text)]
         return atoms
+
+    def _protect_image_links(self, atoms: list[tuple[bool, str]]) -> list[tuple[bool, str]]:
+        """Protect markdown image links as atomic segments within non-atom segments."""
+        result: list[tuple[bool, str]] = []
+        for is_atom, segment in atoms:
+            if is_atom:
+                result.append((True, segment))
+                continue
+            cursor = 0
+            for m in _IMAGE_LINK_RE.finditer(segment):
+                if m.start() > cursor:
+                    result.append((False, segment[cursor:m.start()]))
+                result.append((True, m.group(0)))
+                cursor = m.end()
+            if cursor < len(segment):
+                result.append((False, segment[cursor:]))
+        return result
+
+    def _protect_tables(self, atoms: list[tuple[bool, str]]) -> list[tuple[bool, str]]:
+        """Protect markdown table blocks as atomic segments within non-atom segments.
+
+        Tables that exceed chunk_size are split line-by-line, keeping the header +
+        separator + first body row together.
+        """
+        result: list[tuple[bool, str]] = []
+        for is_atom, segment in atoms:
+            if is_atom:
+                result.append((True, segment))
+                continue
+            cursor = 0
+            for m in _TABLE_RE.finditer(segment):
+                if m.start() > cursor:
+                    result.append((False, segment[cursor:m.start()]))
+                table_text = m.group(0)
+                if len(table_text) <= self.chunk_size:
+                    result.append((True, table_text))
+                else:
+                    # Large table: split by rows, keep header+separator+first row together
+                    for piece in self._split_large_table(table_text):
+                        result.append((True, piece))
+                cursor = m.end()
+            if cursor < len(segment):
+                result.append((False, segment[cursor:]))
+        return result
+
+    def _split_large_table(self, table_text: str) -> list[str]:
+        """Split a large table by rows, keeping header + separator + first body row together."""
+        lines = table_text.split("\n")
+        if len(lines) <= 3:
+            return [table_text]
+
+        header = lines[0]
+        separator = lines[1]
+        body_lines = lines[2:]
+
+        pieces: list[str] = []
+        # First piece: header + separator + first body row
+        first = "\n".join([header, separator, body_lines[0]])
+        pieces.append(first)
+
+        # Subsequent rows: pack as many as fit in chunk_size
+        buf = ""
+        for line in body_lines[1:]:
+            candidate = buf + "\n" + line if buf else line
+            if len(candidate) <= self.chunk_size:
+                buf = candidate
+            else:
+                if buf:
+                    pieces.append(buf)
+                buf = line
+        if buf:
+            pieces.append(buf)
+
+        return pieces
 
     def _recursive_split(self, text: str, seps: list[str]) -> list[str]:
         if len(text) <= self.chunk_size:

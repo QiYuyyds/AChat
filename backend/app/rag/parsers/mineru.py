@@ -16,7 +16,7 @@ import tempfile
 
 import httpx
 
-from app.rag.parsers.base import BaseDocumentProcessor, ParseResult
+from app.rag.parsers.base import BaseDocumentProcessor, ExtractedImage, ParseResult
 from app.rag.parsers.ocr_zip_utils import process_ocr_zip
 
 logger = logging.getLogger(__name__)
@@ -66,8 +66,8 @@ class MinerUParser(BaseDocumentProcessor):
             )
 
         try:
-            text = self._call_mineru(data, filename)
-            text = self.normalize_text(text)
+            markdown, images = self._call_mineru(data, filename)
+            text = self.normalize_text(markdown)
 
             return ParseResult(
                 filename=filename,
@@ -76,6 +76,7 @@ class MinerUParser(BaseDocumentProcessor):
                 content=text,
                 text_chars=self.rune_len(text),
                 needs_ocr=not text.strip(),
+                images=images,
             )
         except Exception as e:
             logger.warning("MinerU processing failed for %s: %s", filename, e)
@@ -86,7 +87,7 @@ class MinerUParser(BaseDocumentProcessor):
                 needs_ocr=True,
             )
 
-    def _call_mineru(self, data: bytes, filename: str) -> str:
+    def _call_mineru(self, data: bytes, filename: str) -> tuple[str, list[ExtractedImage]]:
         """Call MinerU /file_parse endpoint, receive ZIP, extract markdown.
 
         The MinerU API returns a ZIP archive containing:
@@ -126,7 +127,7 @@ class MinerUParser(BaseDocumentProcessor):
             except Exception:
                 error_detail = resp.text or f"HTTP {resp.status_code}"
             logger.warning("MinerU HTTP error %d: %s", resp.status_code, error_detail)
-            return ""
+            return "", []
 
         # Response is a ZIP file
         zip_data = resp.content
@@ -134,17 +135,17 @@ class MinerUParser(BaseDocumentProcessor):
         # Process ZIP: extract full.md + save images to temp dir
         image_dir = tempfile.mkdtemp(prefix="mineru_images_")
         try:
-            markdown = process_ocr_zip(zip_data, image_output_dir=image_dir)
+            markdown, images = process_ocr_zip(zip_data, image_output_dir=image_dir)
 
             if not markdown.strip():
                 logger.warning("MinerU returned empty markdown from ZIP")
-                return ""
+                return "", []
 
             logger.info(
                 "MinerU: extracted %d chars markdown from %s",
                 len(markdown), filename,
             )
-            return markdown
+            return markdown, images
         except Exception as e:
             logger.warning("MinerU ZIP processing failed: %s", e)
-            return ""
+            return "", []

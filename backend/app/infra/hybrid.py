@@ -537,7 +537,7 @@ class HybridStore:
                     expand_depth = 1
 
         graph_task = (
-            self._fetch_kg(query, recall_k, expand_depth=expand_depth, retrieval_config=retrieval_config)
+            self._fetch_kg(query, recall_k, expand_depth=expand_depth, retrieval_config=retrieval_config, user_id=user_id)
             if use_graph
             else _noop_path_hits()
         )
@@ -901,6 +901,7 @@ class HybridStore:
         *,
         expand_depth: int = 0,
         retrieval_config: RetrievalConfig | None = None,
+        user_id: str | None = None,
     ) -> _PathHits:
         from app.observability import start_span
 
@@ -909,7 +910,7 @@ class HybridStore:
             from app.rag.graph_retrieval import GraphRetrieval
             if GraphRetrieval.available():
                 with start_span("rag.kg_search", top_k=fetch_k) as span:
-                    hits = (await GraphRetrieval.search(query, fetch_k, expand_depth=expand_depth, retrieval_config=retrieval_config)) or []
+                    hits = (await GraphRetrieval.search(query, fetch_k, expand_depth=expand_depth, retrieval_config=retrieval_config, user_id=user_id or "")) or []
                     if span.is_recording():
                         span.set_attribute("agenthub.hits", len(hits))
                         span.set_attribute("agenthub.skipped", not hits)

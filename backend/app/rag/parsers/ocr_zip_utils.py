@@ -16,6 +16,8 @@ import time
 import zipfile
 from pathlib import Path
 
+from app.rag.parsers.base import ExtractedImage
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_IMAGE_DIR = "ocr-images"
@@ -24,7 +26,7 @@ DEFAULT_IMAGE_DIR = "ocr-images"
 def process_ocr_zip(
     zip_data: bytes,
     image_output_dir: str | Path | None = None,
-) -> str:
+) -> tuple[str, list[ExtractedImage]]:
     """Process an OCR result ZIP, return markdown with rewritten image links.
 
     Args:
@@ -33,8 +35,10 @@ def process_ocr_zip(
             are kept as-is in the markdown with their original relative paths.
 
     Returns:
-        Markdown text extracted from the ZIP, with image links rewritten
-        to point to saved image files (if image_output_dir is provided).
+        Tuple of (markdown text, list of extracted images). The markdown has
+        image links rewritten to point to saved image files (if image_output_dir
+        is provided). The images list contains ExtractedImage objects for each
+        extracted image.
     """
     import io
 
@@ -42,22 +46,22 @@ def process_ocr_zip(
         archive = zipfile.ZipFile(io.BytesIO(zip_data))
     except zipfile.BadZipFile as e:
         logger.warning("OCR result is not a valid ZIP: %s", e)
-        return ""
+        return "", []
 
     # Safety: reject path traversal
     for name in archive.namelist():
         if name.startswith("/") or name.startswith("\\"):
             logger.warning("ZIP contains unsafe path: %s", name)
-            return ""
+            return "", []
         if ".." in Path(name).parts:
             logger.warning("ZIP path contains parent reference: %s", name)
-            return ""
+            return "", []
 
     # Find markdown file (prefer full.md)
     md_files = [n for n in archive.namelist() if n.lower().endswith(".md")]
     if not md_files:
         logger.warning("No .md file found in OCR result ZIP")
-        return ""
+        return "", []
 
     md_file = next((n for n in md_files if Path(n).name == "full.md"), md_files[0])
 
@@ -66,16 +70,22 @@ def process_ocr_zip(
             markdown_content = f.read().decode("utf-8")
     except Exception as e:
         logger.warning("Failed to read %s from OCR ZIP: %s", md_file, e)
-        return ""
+        return "", []
 
     # Find and process images
     images_dir = _find_images_directory(archive, md_file)
+    extracted_images: list[ExtractedImage] = []
     if images_dir and image_output_dir:
-        markdown_content = _extract_and_rewrite_images(
+        markdown_content, extracted_images = _extract_and_rewrite_images(
             archive, images_dir, markdown_content, image_output_dir,
         )
 
-    return markdown_content
+    # Infer page_index from image position in markdown (approximate by order of appearance)
+    for idx, img in enumerate(extracted_images):
+        if img.page_index is None:
+            img.page_index = idx
+
+    return markdown_content, extracted_images
 
 
 def _find_images_directory(zip_file: zipfile.ZipFile, md_file_path: str) -> str | None:
@@ -100,8 +110,11 @@ def _extract_and_rewrite_images(
     images_dir: str,
     markdown_content: str,
     output_dir: str | Path,
-) -> str:
-    """Extract images from ZIP, save to output_dir, rewrite markdown links."""
+) -> tuple[str, list[ExtractedImage]]:
+    """Extract images from ZIP, save to output_dir, rewrite markdown links.
+
+    Returns tuple of (rewritten markdown, list of ExtractedImage objects).
+    """
     supported_extensions = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
     output_path = Path(output_dir)
@@ -111,6 +124,7 @@ def _extract_and_rewrite_images(
 
     # Build mapping: original path → new relative path
     image_map: dict[str, str] = {}
+    extracted_images: list[ExtractedImage] = []
 
     for img_name in image_names:
         suffix = Path(img_name).suffix.lower()
@@ -138,6 +152,21 @@ def _extract_and_rewrite_images(
             image_map[f"/{original_path}"] = relative_path
             image_map[original_name] = relative_path
 
+            # Collect ExtractedImage for return
+            content_type_map = {
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+            }
+            extracted_images.append(ExtractedImage(
+                filename=new_name,
+                data=data,
+                content_type=content_type_map.get(suffix, "image/png"),
+            ))
+
             logger.debug("Saved OCR image: %s -> %s", img_name, relative_path)
 
         except Exception as e:
@@ -145,9 +174,10 @@ def _extract_and_rewrite_images(
             continue
 
     if not image_map:
-        return markdown_content
+        return markdown_content, []
 
-    return _replace_image_links(markdown_content, image_map)
+    rewritten = _replace_image_links(markdown_content, image_map)
+    return rewritten, extracted_images
 
 
 def _replace_image_links(markdown_content: str, image_map: dict[str, str]) -> str:

@@ -86,6 +86,7 @@ class Settings(BaseSettings):
 
     # ─── RAG: Image extraction ───
     rag_extract_images: bool = True
+    rag_image_caption_enabled: bool = False
 
     # ─── RAG: Chunking presets ───
     rag_chunk_preset: str = "general"

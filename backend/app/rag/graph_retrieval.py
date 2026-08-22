@@ -70,6 +70,7 @@ class GraphRetrieval:
         expand_depth: int = 1,
         *,
         retrieval_config: RetrievalConfig | None = None,
+        user_id: str = "",
     ) -> list[dict]:
         """先 Milvus 向量召回 entity/triple → 再 Neo4j PPR 扩散 → 返回关联 pg_id 列表。
 
@@ -78,6 +79,7 @@ class GraphRetrieval:
 
         Args:
             retrieval_config: 检索配置，控制种子加权策略和 triple 注入。
+            user_id: 用户 ID，用于 Neo4j 标签隔离和 Milvus user_id 过滤。
         """
         # 解析 retrieval_config 参数
         weight_by_type = True
@@ -90,13 +92,17 @@ class GraphRetrieval:
             triple_inject = retrieval_config.graph_triple_inject_seeds
             type_weight_overrides = retrieval_config.graph_entity_type_weights
 
+        # 设置 KGStore 的 user_id（用于 Neo4j 标签隔离）
+        if user_id and cls._kg_store:
+            cls._kg_store.set_user_id(user_id)
+
         # 1. entity 向量召回
-        entity_hits = await cls._milvus_entity_recall(query, top_k)
+        entity_hits = await cls._milvus_entity_recall(query, top_k, user_id=user_id)
 
         # 2. triple 向量召回（如果启用）
         triple_hits: list[dict] = []
         if triple_inject:
-            triple_hits = await cls._milvus_triple_recall(query, top_k)
+            triple_hits = await cls._milvus_triple_recall(query, top_k, user_id=user_id)
 
         # 3. 合并 entity + triple 召回结果为 SeedInfo 列表
         seeds = _merge_seeds(
@@ -131,11 +137,14 @@ class GraphRetrieval:
         cls,
         query: str,
         top_k: int,
+        *,
+        user_id: str = "",
     ) -> list[dict]:
         """从 MilvusGraphVectorStore 向量召回 entity 结果列表。
 
         返回格式: [{"name": str, "entity_type": str, "score": float}]
         如果 MilvusGraphVectorStore 或 embed_fn 不可用，返回空列表。
+        user_id 用于 Milvus 查询过滤（确保只返回该用户的 entity 向量）。
         """
         if not cls._embed_fn:
             return []
@@ -156,7 +165,7 @@ class GraphRetrieval:
 
         try:
             hits = await MilvusGraphVectorStore.search_entities(
-                query, query_emb, top_k,
+                query, query_emb, top_k, user_id=user_id,
             )
         except Exception as e:
             logger.warning("GraphRetrieval: milvus entity recall failed: %s", e)
@@ -182,11 +191,14 @@ class GraphRetrieval:
         cls,
         query: str,
         top_k: int,
+        *,
+        user_id: str = "",
     ) -> list[dict]:
         """从 MilvusGraphVectorStore 向量召回 triple 结果列表。
 
         返回格式与 search_entities 一致: [{"name": str, "entity_type": str, "score": float}]
         triple 的 subject + object 被解析为两个 entity 条目。
+        user_id 用于 Milvus 查询过滤。
         """
         if not cls._embed_fn:
             return []
@@ -207,7 +219,7 @@ class GraphRetrieval:
 
         try:
             hits = await MilvusGraphVectorStore.search_triples(
-                query, query_emb, top_k,
+                query, query_emb, top_k, user_id=user_id,
             )
         except Exception as e:
             logger.warning("GraphRetrieval: milvus triple recall failed: %s", e)

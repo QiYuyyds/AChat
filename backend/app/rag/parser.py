@@ -146,6 +146,7 @@ class DocumentProcessor(BaseDocumentProcessor):
                                         filename=f"page_{idx}_img_{img_idx + 1}.png",
                                         data=buf.getvalue(),
                                         content_type="image/png",
+                                        page_index=idx - 1,
                                     ))
                                 except Exception:
                                     pass

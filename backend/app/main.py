@@ -917,12 +917,12 @@ def _wire_kg_to_rag(rag_service, neo4j_driver, settings, generate_fn, *, milvus_
     Also inject KGStore + Extractor into GraphBuildTask and GraphRetrieval.
     If milvus_client + embed_fn available, inject MilvusGraphVectorStore too.
     """
-    from app.graph.extractor import Extractor
+    from app.graph.extractors.factory import GraphExtractorFactory
     from app.graph.kgstore import KGStore
     from app.rag.graph_build_task import GraphBuildTask
     from app.rag.graph_retrieval import GraphRetrieval
 
-    extractor = Extractor(generate_fn)
+    extractor = GraphExtractorFactory.create("llm", {"llm_fn": generate_fn}) if generate_fn else None
     kg_store = KGStore(settings, neo4j_driver, extractor)
 
     # Inject into GraphBuildTask and GraphRetrieval (class-level injection)
@@ -956,6 +956,51 @@ def _wire_kg_to_rag(rag_service, neo4j_driver, settings, generate_fn, *, milvus_
     rag_service.set_kg_index_fn(kg_index)
     rag_service.set_kg_delete_fn(kg_delete)
     logger.info("RAG: KG backend wired (GraphBuildTask + GraphRetrieval injected)")
+
+    # 旧数据迁移：检测无 UserKG 标签的旧 Entity 节点，清空 Neo4j + Milvus graph collections
+    asyncio.create_task(_migrate_old_graph_data(neo4j_driver))
+
+
+async def _migrate_old_graph_data(neo4j_driver) -> None:
+    """检测旧格式图谱数据（无 UserKG 标签的 Entity 节点），如存在则清空。
+
+    旧模型不兼容新图模型（Chunk 节点 + MENTIONS 边 + 确定性 ID + 用户隔离），
+    需删除重建。用户需要重新上传文档触发图谱构建。
+    """
+    try:
+        async with neo4j_driver.session() as session:
+            result = await session.run(
+                "MATCH (e:Entity) WHERE NOT any(l IN labels(e) WHERE l STARTS WITH 'UserKG') "
+                "RETURN count(e) AS count"
+            )
+            data = await result.data()
+            count = data[0]["count"] if data else 0
+            if count > 0:
+                logger.warning(
+                    "Graph isolation migration: detected %d old-format Entity nodes, "
+                    "clearing Neo4j graph data (users need to re-upload documents to rebuild graph)",
+                    count,
+                )
+                await session.run("MATCH (n) DETACH DELETE n")
+
+        # 清空 Milvus graph collections
+        try:
+            from app.rag.milvus_graph_vector_store import MilvusGraphVectorStore
+            if MilvusGraphVectorStore.available():
+                MilvusGraphVectorStore._ensure_collections()
+                client = MilvusGraphVectorStore._client
+                if client:
+                    if client.has_collection("rag_graph_entities"):
+                        client.drop_collection("rag_graph_entities")
+                    if client.has_collection("rag_graph_triples"):
+                        client.drop_collection("rag_graph_triples")
+                    MilvusGraphVectorStore._initialized = False
+                logger.info("Graph isolation migration: Milvus graph collections dropped")
+        except Exception as e:
+            logger.warning("Graph isolation migration: Milvus cleanup failed: %s", e)
+
+    except Exception as e:
+        logger.warning("Graph isolation migration failed: %s", e)
 
 
 def create_app() -> FastAPI:
@@ -1014,6 +1059,7 @@ def create_app() -> FastAPI:
         documents,
         eval,
         fs,
+        graph,
         mcp,
         memory,
         messages,
@@ -1052,6 +1098,7 @@ def create_app() -> FastAPI:
     app.include_router(plan_usage.router, prefix="/api", tags=["plan-usage"])
     app.include_router(mobile_routes.router, prefix="/api", tags=["mobile"])
     app.include_router(stream.router, prefix="/api", tags=["stream"])
+    app.include_router(graph.router, prefix="/api/graph", tags=["graph"])
     app.include_router(documents.router, prefix="/api", tags=["documents"])
     app.include_router(obsidian.router, prefix="/api", tags=["obsidian"])
     app.include_router(eval.router, prefix="/api", tags=["eval"])

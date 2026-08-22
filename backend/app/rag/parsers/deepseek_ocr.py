@@ -17,7 +17,7 @@ import re
 
 import httpx
 
-from app.rag.parsers.base import BaseDocumentProcessor, ParseResult
+from app.rag.parsers.base import BaseDocumentProcessor, ExtractedImage, ParseResult
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +76,11 @@ class DeepSeekOCRParser(BaseDocumentProcessor):
 
         try:
             if ext == ".pdf":
-                text = self._process_pdf(data)
+                text, images = self._process_pdf(data)
             else:
                 mime_type = _MIME_TYPE_MAP.get(ext, "image/jpeg")
                 text = self._call_api(data, mime_type)
+                images = []
 
             text = self.normalize_text(text)
 
@@ -90,6 +91,7 @@ class DeepSeekOCRParser(BaseDocumentProcessor):
                 content=text,
                 text_chars=self.rune_len(text),
                 needs_ocr=not text.strip(),
+                images=images,
             )
         except Exception as e:
             logger.warning("DeepSeek-OCR processing failed for %s: %s", filename, e)
@@ -100,18 +102,22 @@ class DeepSeekOCRParser(BaseDocumentProcessor):
                 needs_ocr=True,
             )
 
-    def _process_pdf(self, data: bytes) -> str:
-        """Render each PDF page to image, then OCR each page via API."""
+    def _process_pdf(self, data: bytes) -> tuple[str, list[ExtractedImage]]:
+        """Render each PDF page to image, then OCR each page via API.
+
+        Returns tuple of (joined markdown text, list of page images).
+        """
         try:
             import pypdfium2 as pdfium  # type: ignore
         except ImportError:
             logger.warning("pypdfium2 not installed — cannot render PDF pages for DeepSeek-OCR")
-            return ""
+            return "", []
 
         pdf = pdfium.PdfDocument(io.BytesIO(data))
         try:
             total_pages = len(pdf)
             all_text: list[str] = []
+            images: list[ExtractedImage] = []
 
             for page_idx in range(total_pages):
                 page = pdf[page_idx]
@@ -127,17 +133,24 @@ class DeepSeekOCRParser(BaseDocumentProcessor):
                 if page_text.strip():
                     all_text.append(page_text)
 
+                images.append(ExtractedImage(
+                    filename=f"page_{page_idx}.png",
+                    data=img_bytes,
+                    content_type="image/png",
+                    page_index=page_idx,
+                ))
+
                 if (page_idx + 1) % 10 == 0:
                     logger.info(
                         "DeepSeek-OCR: processed %d/%d pages", page_idx + 1, total_pages,
                     )
 
             pdf.close()
-            return "\n\n".join(all_text)
+            return "\n\n".join(all_text), images
         except Exception as e:
             logger.warning("DeepSeek-OCR PDF processing failed: %s", e)
             pdf.close()
-            return ""
+            return "", []
 
     def _call_api(self, data_bytes: bytes, mime_type: str) -> str:
         """Call SiliconFlow DeepSeek-OCR API with a single image.

@@ -45,6 +45,7 @@ class Entity:
     doc_hash: str = ""
     chunk_id: int = 0  # 文档内的 chunk idx（0-based）
     pg_id: int = 0     # PG 自增 ID（用于 RAG 检索 join 回真实 chunk）
+    attributes: list[dict] = field(default_factory=list)  # [{text, label}] 属性列表
 
 
 @dataclass
@@ -93,3 +94,17 @@ class TripleRef:
     pg_id: int = 0       # PostgreSQL 自增 ID，用于 RAG RRF 融合
     chunk_id: int = 0    # 文档内 chunk idx（0-based）
     doc_hash: str = ""
+
+
+def build_entity_attributes(entities: list[dict]) -> list[dict]:
+    """合并同名实体的属性列表（并集，按 {text, label} 去重）。"""
+    seen: set[tuple[str, str]] = set()
+    merged: list[dict] = []
+    for ent in entities:
+        for attr in ent.get("attributes", []):
+            key = (attr.get("text", ""), attr.get("label", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append({"text": attr["text"], "label": attr["label"]})
+    return merged
