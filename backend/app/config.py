@@ -169,10 +169,21 @@ class Settings(BaseSettings):
     # Optional Custom tool-turn fuse (None/0 = off). When hit, uses soft→forced
     # wrap-up pipeline — not a product default max-steps cap.
     max_tool_turns: int | None = None
-    # Five-stage in-memory compaction pipeline (stages 1/2/3). When True,
-    # ReAct loop uses escalating summarize→prune→fold at 0.70/0.80/0.88 ratios.
-    # When False, falls back to legacy single-point _mid_run_compact at 0.85.
+    # In-memory compaction pipeline. When True, ReAct loop uses escalating
+    # mask→fold at 0.75/0.88 ratios. When False, falls back to legacy
+    # single-point _mid_run_compact at 0.85.
     compact_pipeline_enabled: bool = True
+    # Feature flag for unified cross-run compaction pipeline. When True
+    # (default), build_history_for uses CompactMessage + run_compact_pipeline_unified.
+    compact_use_unified_pipeline: bool = True
+
+    # ─── Summary LLM (Session Memory extraction — cheap model) ───
+    # Independent from the main conversation model. Falls back to
+    # DEEPSEEK_API_KEY when summary_llm_api_key is empty.
+    summary_llm_provider: str = "deepseek"
+    summary_llm_model: str = "deepseek-chat"
+    summary_llm_api_key: str | None = None
+    summary_llm_base_url: str | None = None
 
     # ─── Verify Stage (P2 O6) ───
     enable_verify_stage: bool = True
@@ -229,6 +240,10 @@ def apply_env_overrides() -> None:
         ("DEEPSEEK_API_KEY", s.deepseek_api_key),
         ("ARK_API_KEY", s.ark_api_key),
         ("TAVILY_API_KEY", s.tavily_api_key),
+        ("SUMMARY_LLM_PROVIDER", s.summary_llm_provider),
+        ("SUMMARY_LLM_MODEL", s.summary_llm_model),
+        ("SUMMARY_LLM_API_KEY", s.summary_llm_api_key),
+        ("SUMMARY_LLM_BASE_URL", s.summary_llm_base_url),
     ):
         if value and not os.environ.get(name):
             os.environ[name] = value

@@ -1,13 +1,11 @@
-"""Five-stage in-memory compaction pipeline for the SDK ReAct loop.
+"""Three-stage in-memory compaction pipeline for the SDK ReAct loop.
 
-Replaces the single-point ``_mid_run_compact`` with escalating stages:
-  - stage 1 (ratio ≥ 0.70): semantic summarization of old tool results
-  - stage 2 (ratio ≥ 0.80): re-prune stage-1 summaries more aggressively
+  - stage 1 (ratio ≥ 0.75): universal masking of old tool results
   - stage 3 (ratio ≥ 0.88): fold older turns into a single marker
   - stage 4 (ratio ≥ 0.93): soft wrap-up inject (unchanged, in react_loop_termination)
   - stage 5 (ratio ≥ 0.95): forced final (unchanged, in react_loop_termination)
 
-Stages 1/2/3 are pure regex + structural pruning (no LLM). Token estimation
+Stages 1/3 are pure structural masking + folding (no LLM). Token estimation
 counts only ``content`` + ``tool_calls.function.name/arguments`` +
 ``reasoning_content`` — not JSON structural fields like ``role`` /
 ``tool_call_id`` / ``type``. This is independent from the cross-run
@@ -20,23 +18,22 @@ from __future__ import annotations
 import json
 import logging
 from collections import Counter
+from dataclasses import dataclass
 from typing import Any
 
 from app.services.compact_markers import (
     CompactMarkerBuilder,
-    CompactSuccessJudge,
 )
 from app.services.fs_service import detect_language, extract_outline
 
 logger = logging.getLogger(__name__)
 
 # ─── Stage thresholds (kept here so tuning is one-file) ─────────────────────
-STAGE1_SUMMARIZE_RATIO = 0.70
-STAGE2_PRUNE_RATIO = 0.80
-STAGE3_FOLD_RATIO = 0.88
+COMPACT_MASK_RATIO = 0.75
+COMPACT_FOLD_RATIO = 0.88
 
-# Keep the most recent N complete turns intact during fold/prune.
-KEEP_RECENT_TURNS = 2
+# Keep the most recent N complete turns intact during mask/fold.
+KEEP_RECENT_TURNS = 3
 # Only fold when there are at least this many complete turns; otherwise the
 # savings are too small to justify losing the turns.
 FOLD_TURN_THRESHOLD = 4
@@ -45,20 +42,197 @@ FOLD_TURN_THRESHOLD = 4
 LEGACY_RECENT_KEEP = 6
 
 __all__ = [
-    "STAGE1_SUMMARIZE_RATIO",
-    "STAGE2_PRUNE_RATIO",
-    "STAGE3_FOLD_RATIO",
+    "COMPACT_MASK_RATIO",
+    "COMPACT_FOLD_RATIO",
     "KEEP_RECENT_TURNS",
     "FOLD_TURN_THRESHOLD",
     "LEGACY_RECENT_KEEP",
+    "CompactMessage",
     "estimate_messages_tokens",
     "find_turn_boundaries",
     "keep_recent_turns",
+    "to_compact_messages",
+    "to_compact_messages_orm",
+    "from_compact_messages",
     "summarize_tool_result",
     "summarize_tool_result_with_summary",
-    "summarize_tool_result_full",
+    "_build_mask_marker",
+    "_is_whitelisted",
+    "_stage1_mask",
     "run_compact_pipeline",
+    "run_compact_pipeline_unified",
+    "_stage1_mask_unified",
+    "_stage3_fold_unified",
+    "_keep_recent_turns_compact",
 ]
+
+
+
+# ─── CompactMessage: unified data structure for Layer 1 + Layer 3 ────────────
+
+
+@dataclass
+class CompactMessage:
+    """Unified message representation for cross-layer compaction.
+
+    Layer 1 (ReAct loop, dict) and Layer 3 (cross-run, ORM Message) both
+    convert to this format before entering the unified pipeline, eliminating
+    the duplicated mask/fold logic.
+    """
+
+    id: str
+    role: str
+    content: str
+    tool_calls: list[dict] | None = None
+    tool_call_id: str | None = None
+    created_at: float = 0.0
+    is_pinned: bool = False
+
+
+def to_compact_messages(messages: list[dict]) -> list[CompactMessage]:
+    """Convert OpenAI chat message dicts to CompactMessage list (Layer 1)."""
+    result: list[CompactMessage] = []
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = "\n".join(
+                p.get("text", "") for p in content
+                if isinstance(p, dict) and p.get("type") == "text"
+            )
+        elif content is None:
+            content = ""
+        tool_calls = msg.get("tool_calls")
+        tool_call_id = msg.get("tool_call_id")
+        result.append(CompactMessage(
+            id=msg.get("id", str(i)),
+            role=role,
+            content=content,
+            tool_calls=list(tool_calls) if tool_calls else None,
+            tool_call_id=tool_call_id,
+            created_at=float(msg.get("created_at", 0.0)),
+            is_pinned=bool(msg.get("is_pinned", False)),
+        ))
+    return result
+
+
+def to_compact_messages_orm(messages: list) -> list[CompactMessage]:
+    """Convert SQLAlchemy Message objects to CompactMessage list (Layer 3).
+
+    Scans each Message's ``parts_list``, mapping:
+    - text/code parts → content string
+    - tool_use parts → tool_calls list (on the same CompactMessage)
+    - tool_result parts → a separate ``role=tool`` CompactMessage with
+      tool_call_id and content
+    """
+    result: list[CompactMessage] = []
+    for msg in messages:
+        parts = getattr(msg, "parts_list", None) or []
+        role = getattr(msg, "role", "user")
+        msg_id = getattr(msg, "id", "")
+        created_at = float(getattr(msg, "created_at", 0.0) or 0.0)
+
+        # Collect tool_calls and tool_results from parts.
+        text_buf: list[str] = []
+        tool_calls: list[dict] = []
+        tool_result_parts: list[dict] = []
+
+        for p in parts:
+            if not isinstance(p, dict):
+                continue
+            ptype = p.get("type")
+            if ptype in ("text", "code"):
+                c = p.get("content", "")
+                if c:
+                    text_buf.append(c)
+            elif ptype == "tool_use":
+                call_id = p.get("callId", "")
+                tool_name = p.get("toolName", "")
+                args = p.get("args") or {}
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except (TypeError, ValueError):
+                        args = {}
+                tool_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(args, ensure_ascii=False)
+                        if isinstance(args, dict) else str(args),
+                    },
+                })
+            elif ptype == "tool_result":
+                tool_result_parts.append(p)
+
+        content = "\n".join(text_buf)
+
+        # If this is an agent message with tool_use, emit assistant CompactMessage.
+        if role == "agent":
+            result.append(CompactMessage(
+                id=msg_id,
+                role="assistant",
+                content=content,
+                tool_calls=tool_calls if tool_calls else None,
+                created_at=created_at,
+            ))
+        elif role == "user":
+            result.append(CompactMessage(
+                id=msg_id,
+                role="user",
+                content=content,
+                created_at=created_at,
+            ))
+        elif role == "system":
+            result.append(CompactMessage(
+                id=msg_id,
+                role="system",
+                content=content,
+                created_at=created_at,
+            ))
+
+        # Emit separate tool CompactMessages for tool_result parts.
+        for tr in tool_result_parts:
+            call_id = tr.get("callId", "")
+            result_text = _extract_tool_result_text_from_part(tr)
+            result.append(CompactMessage(
+                id=f"{msg_id}_tr_{call_id}",
+                role="tool",
+                content=result_text,
+                tool_call_id=call_id,
+                created_at=created_at,
+            ))
+
+    return result
+
+
+def _extract_tool_result_text_from_part(part: dict) -> str:
+    """Extract text from a tool_result part (ORM side)."""
+    result = part.get("result", "")
+    if result is None:
+        return ""
+    if isinstance(result, str):
+        return result
+    try:
+        return json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(result)
+
+
+def from_compact_messages(msgs: list[CompactMessage]) -> list[dict]:
+    """Convert CompactMessage list back to OpenAI chat message dicts."""
+    result: list[dict] = []
+    for cm in msgs:
+        msg: dict[str, Any] = {"role": cm.role, "content": cm.content}
+        if cm.tool_calls:
+            msg["tool_calls"] = cm.tool_calls
+        if cm.tool_call_id:
+            msg["tool_call_id"] = cm.tool_call_id
+        result.append(msg)
+    return result
 
 
 # ─── Token estimation (delegates to transcript_renderer) ────────────────────
@@ -135,7 +309,10 @@ def keep_recent_turns(
     return list(messages[keep_from:]), list(messages[:keep_from])
 
 
-# ─── ToolResultSummarizer ────────────────────────────────────────────────────
+# ─── Per-tool summarizers (used by transcript_renderer, NOT by ReAct loop) ───
+# These functions produce a stage-1 compressed view of tool_result content for
+# transcript rendering (session_memory.extract → render_tool_aware_transcript).
+# The ReAct loop compaction path uses _stage1_mask / _build_mask_marker instead.
 
 
 def _parse_tool_content(content: Any) -> str:
@@ -879,26 +1056,6 @@ def summarize_tool_result_with_summary(
     return new_content, summary
 
 
-def summarize_tool_result_full(
-    tool_name: str,
-    args: dict,
-    content: str,
-    stage: int,
-) -> tuple[str, str, str]:
-    """Like ``summarize_tool_result_with_summary`` but also returns the recover hint.
-
-    Returns ``(new_content, summary, recover_hint)``. The recover hint tells the
-    model how to re-fetch the original content (e.g. ``fs_list(path='src', depth=3)
-    重新获取结构``). Used by cross-run compaction (Tier 4) to build structured
-    markers via ``CompactMarkerBuilder.build_tool_result_marker``.
-    """
-    summarizer = _SUMMARIZERS.get(tool_name)
-    if summarizer is None:
-        _warn_unknown_tool(tool_name)
-        return _summarize_unknown(args, content, stage)
-    return summarizer(args, content, stage)
-
-
 # ─── Five-stage pipeline ─────────────────────────────────────────────────────
 
 
@@ -928,62 +1085,83 @@ def _find_tool_call_for_tool_message(
     return None
 
 
-def _stage1_summarize(messages: list[dict]) -> list[dict]:
-    """Stage 1: summarize old tool_result content, keep recent turns intact."""
-    recent, old = keep_recent_turns(messages, k=KEEP_RECENT_TURNS)
+# ─── Universal mask (new stage 1) ───────────────────────────────────────────
+
+
+def _build_mask_marker(tool_name: str, args: dict) -> str:
+    """Build a universal mask marker for a tool_result.
+
+    Format::
+        [masked tool=fs_read path='backend/app/services/compact_pipeline.py' mode='full']
+        [recover: fs_read(path='backend/app/services/compact_pipeline.py', mode='full') 重新读取]
+    """
+    # Extract path-like and mode-like args for the marker header.
+    path_keys = ("path", "file", "dir", "directory", "pattern", "command", "query", "cwd")
+    path_val = ""
+    for k in path_keys:
+        if k in args:
+            path_val = str(args[k])
+            break
+
+    mode_val = str(args.get("mode", ""))
+
+    # Build the args summary for the recover hint.
+    recover_parts = []
+    for k in path_keys:
+        if k in args:
+            recover_parts.append(f"{k}={args[k]!r}")
+    if "mode" in args:
+        recover_parts.append(f"mode={args['mode']!r}")
+    recover_args = ", ".join(recover_parts) if recover_parts else ""
+
+    header_parts = [f"tool={tool_name}"]
+    if path_val:
+        header_parts.append(f"path='{path_val}'")
+    if mode_val:
+        header_parts.append(f"mode='{mode_val}'")
+    header = f"[masked {' '.join(header_parts)}]"
+
+    recover_hint = f"{tool_name}({recover_args}) 重新获取" if recover_args else f"{tool_name} 重新调用"
+    recover = f"[recover: {recover_hint}]"
+
+    return f"{header}\n{recover}"
+
+
+def _is_whitelisted(tool_name: str, args: dict) -> bool:
+    """Return True if a tool result should be preserved verbatim (not masked)."""
+    if tool_name == "code_explore":
+        return True
+    return tool_name == "fs_read" and args.get("mode") in ("outline", "head")
+
+
+def _stage1_mask(messages: list[dict], k: int = KEEP_RECENT_TURNS) -> list[dict]:
+    """Stage 1 (universal mask): replace old tool_result content with mask markers.
+
+    Splits messages into (recent, old) on turn boundaries. For each ``role=="tool"``
+    message in the old segment, finds the corresponding tool_call to recover
+    ``tool_name`` and ``args``. Whitelisted tools are preserved verbatim; all
+    others have their ``content`` replaced by a mask marker. Assistant messages'
+    ``tool_calls`` are never modified.
+    """
+    recent, old = keep_recent_turns(messages, k=k)
     if not old:
         return list(messages)
 
-    # old indices start at 0 in the old slice. We summarize tool messages there.
     for idx, msg in enumerate(old):
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
-        # Recover the tool name + args from the paired assistant tool_call.
-        # ``old`` is a prefix of ``messages`` so indices within old map 1:1 to
-        # indices within the full messages list for positions < len(old).
+        # old is a prefix of messages so indices map 1:1 for positions < len(old).
         pair = _find_tool_call_for_tool_message(messages, idx)
         if pair is None:
             continue
         tool_name, args = pair
-        content = _parse_tool_content(msg.get("content"))
-        # code_explore / outline / head are always preserved — skip entirely.
-        if tool_name == "code_explore":
+        if _is_whitelisted(tool_name, args):
             continue
-        mode = args.get("mode")
-        if tool_name == "fs_read" and mode in ("outline", "head"):
-            continue
-        new_content = summarize_tool_result(tool_name, args, content, stage=1)
-        # Only replace if the summary is actually shorter (safeguard against
-        # dense-code outlines that can be larger than the original).
-        if new_content != content and len(new_content) < len(content):
-            msg["content"] = new_content
-
-    # Reassemble: old (now summarized) + recent.
-    return old + recent
-
-
-def _stage2_prune(messages: list[dict]) -> list[dict]:
-    """Stage 2: re-prune stage-1 summaries more aggressively."""
-    recent, old = keep_recent_turns(messages, k=KEEP_RECENT_TURNS)
-    if not old:
-        return list(messages)
-
-    for idx, msg in enumerate(old):
-        if not isinstance(msg, dict) or msg.get("role") != "tool":
-            continue
-        pair = _find_tool_call_for_tool_message(messages, idx)
-        if pair is None:
-            continue
-        tool_name, args = pair
-        if tool_name == "code_explore":
-            continue
-        mode = args.get("mode")
-        if tool_name == "fs_read" and mode in ("outline", "head"):
-            continue
-        content = _parse_tool_content(msg.get("content"))
-        new_content = summarize_tool_result(tool_name, args, content, stage=2)
-        if new_content != content and len(new_content) < len(content):
-            msg["content"] = new_content
+        original_content = _parse_tool_content(msg.get("content"))
+        mask_marker = _build_mask_marker(tool_name, args)
+        # Only replace if the mask is actually shorter.
+        if len(mask_marker) < len(original_content):
+            msg["content"] = mask_marker
 
     return old + recent
 
@@ -1099,17 +1277,249 @@ def _stage3_fold(messages: list[dict]) -> list[dict]:
 def run_compact_pipeline(messages: list[dict], stage: int) -> list[dict]:
     """Dispatch to the right stage function.
 
-    ``stage`` must be 1, 2, or 3. Stages 4/5 (soft_inject / force_final) are
-    handled in ``react_loop_termination`` and are not dispatched here.
+    Universal mask path: stage 1 masks old tool results, stage 2 collapses
+    to stage 1 (no separate prune needed after masking), stage 3 folds old
+    turns. Stages 4/5 (soft_inject / force_final) are handled in
+    ``react_loop_termination``.
     """
-    if stage == 1:
-        return _stage1_summarize(messages)
-    if stage == 2:
-        return _stage2_prune(messages)
+    if stage in (1, 2):
+        return _stage1_mask(messages)
     if stage == 3:
         return _stage3_fold(messages)
     raise ValueError(f"unknown compact stage: {stage}")
 
 
-# Re-export the success judge for convenience.
-judge_compact_success = CompactSuccessJudge.judge
+# ─── Unified pipeline (CompactMessage-based, shared by Layer 1 + Layer 3) ───
+
+
+def _find_turn_boundaries_compact(
+    messages: list[CompactMessage],
+) -> list[tuple[int, int]]:
+    """Identify complete ReAct turns in a CompactMessage list.
+
+    A turn = one ``role=="assistant"`` message with ``tool_calls`` + all
+    immediately following ``role=="tool"`` messages.
+    """
+    boundaries: list[tuple[int, int]] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        msg = messages[i]
+        if msg.role == "assistant" and msg.tool_calls:
+            start = i
+            j = i + 1
+            while j < n and messages[j].role == "tool":
+                j += 1
+            boundaries.append((start, j - 1))
+            i = j
+        else:
+            i += 1
+    return boundaries
+
+
+def _keep_recent_turns_compact(
+    messages: list[CompactMessage],
+    k: int = KEEP_RECENT_TURNS,
+) -> tuple[list[CompactMessage], list[CompactMessage]]:
+    """Split CompactMessages into (recent, old) on turn boundaries."""
+    boundaries = _find_turn_boundaries_compact(messages)
+    if len(boundaries) <= k:
+        return list(messages), []
+    keep_from = boundaries[-k][0]
+    return list(messages[keep_from:]), list(messages[:keep_from])
+
+
+def _find_tool_call_for_tool_message_compact(
+    messages: list[CompactMessage],
+    tool_msg_index: int,
+) -> tuple[str, dict] | None:
+    """Find the tool name + args for a ``role=="tool"`` CompactMessage."""
+    tool_msg = messages[tool_msg_index]
+    tool_call_id = tool_msg.tool_call_id
+    if not tool_call_id:
+        return None
+    for j in range(tool_msg_index - 1, -1, -1):
+        prev = messages[j]
+        if prev.role != "assistant" or not prev.tool_calls:
+            continue
+        for tc in prev.tool_calls:
+            if isinstance(tc, dict) and tc.get("id") == tool_call_id:
+                fn = tc.get("function") or {}
+                return fn.get("name", ""), _parse_args(fn.get("arguments"))
+    return None
+
+
+def _stage1_mask_unified(
+    messages: list[CompactMessage],
+    note_whitelist: set[str] | None = None,
+    pinned_ids: set[str] | None = None,
+) -> list[CompactMessage]:
+    """Stage 1 universal mask on CompactMessage list.
+
+    Splits into (recent, old) on turn boundaries. For each ``role=="tool"``
+    in old, finds the corresponding tool_call. Whitelisted tools are preserved;
+    others have their ``content`` replaced by a mask marker.
+
+    When ``note_whitelist`` is provided, ``fs_read`` tool_results whose ``path``
+    argument is in the whitelist are preserved verbatim (not masked).
+    When ``pinned_ids`` is provided, tool messages whose id is in the set
+    (or whose parent assistant message id is in the set) are preserved.
+    """
+    recent, old = _keep_recent_turns_compact(messages, k=KEEP_RECENT_TURNS)
+    if not old:
+        return list(messages)
+
+    pinned_set = pinned_ids or set()
+    for idx, cm in enumerate(old):
+        if cm.role != "tool":
+            continue
+        # Check if this tool message belongs to a pinned parent message.
+        # to_compact_messages_orm generates tool message ids as "{parent_id}_tr_{call_id}".
+        parent_id = cm.id.rsplit("_tr_", 1)[0] if "_tr_" in cm.id else cm.id
+        if pinned_set and (cm.id in pinned_set or parent_id in pinned_set):
+            continue
+        pair = _find_tool_call_for_tool_message_compact(messages, idx)
+        if pair is None:
+            continue
+        tool_name, args = pair
+        if _is_whitelisted(tool_name, args):
+            continue
+        if note_whitelist and tool_name == "fs_read":
+            path = args.get("path", args.get("file", ""))
+            if path and path in note_whitelist:
+                continue
+        original_content = _parse_tool_content(cm.content)
+        mask_marker = _build_mask_marker(tool_name, args)
+        if len(mask_marker) < len(original_content):
+            cm.content = mask_marker
+
+    return old + recent
+
+
+def _collect_tool_names_in_span_compact(
+    messages: list[CompactMessage], start: int, end: int,
+) -> Counter[str]:
+    """Count tool names invoked by assistant messages in [start, end]."""
+    counts: Counter[str] = Counter()
+    for idx in range(start, end + 1):
+        cm = messages[idx]
+        if cm.role != "assistant" or not cm.tool_calls:
+            continue
+        for tc in cm.tool_calls:
+            if isinstance(tc, dict):
+                fn = tc.get("function") or {}
+                name = fn.get("name")
+                if name:
+                    counts[name] += 1
+    return counts
+
+
+def _first_user_head_compact(
+    messages: list[CompactMessage], start: int, end: int,
+) -> str | None:
+    for idx in range(start, end + 1):
+        cm = messages[idx]
+        if cm.role == "user" and cm.content.strip():
+            return cm.content.strip()[:80]
+    return None
+
+
+def _last_assistant_text_head_compact(
+    messages: list[CompactMessage], start: int, end: int,
+) -> str | None:
+    for idx in range(end, start - 1, -1):
+        cm = messages[idx]
+        if cm.role == "assistant" and cm.content.strip():
+            return cm.content.strip()[:80]
+    return None
+
+
+def _stage3_fold_unified(
+    messages: list[CompactMessage],
+    pinned_ids: set[str] | None = None,
+) -> list[CompactMessage]:
+    """Stage 3 fold on CompactMessage list.
+
+    Preserves the first system message. Folds older turns (beyond recent 3)
+    into a single fold marker. Pinned messages are never folded.
+    """
+    pinned_set = pinned_ids or set()
+
+    system_prompt: CompactMessage | None = None
+    body_start = 0
+    if messages and messages[0].role == "system":
+        system_prompt = messages[0]
+        body_start = 1
+    body = messages[body_start:]
+
+    boundaries = _find_turn_boundaries_compact(body)
+    if not boundaries or len(boundaries) < FOLD_TURN_THRESHOLD:
+        if len(body) > LEGACY_RECENT_KEEP:
+            logger.warning(
+                "[compact-pipeline] unified stage 3: no/few turn boundaries (%d turns), "
+                "falling back to recent_keep=%d",
+                len(boundaries),
+                LEGACY_RECENT_KEEP,
+            )
+            recent = list(body[-LEGACY_RECENT_KEEP:])
+            old = list(body[:-LEGACY_RECENT_KEEP])
+        else:
+            return list(messages)
+    else:
+        recent, old = _keep_recent_turns_compact(body, k=KEEP_RECENT_TURNS)
+        if not old:
+            return list(messages)
+
+    folded = [m for m in old if m.id not in pinned_set]
+    kept_from_old = [m for m in old if m.id in pinned_set]
+    if not folded:
+        return list(messages)
+
+    tools_used = _collect_tool_names_in_span_compact(folded, 0, len(folded) - 1)
+    first_user = _first_user_head_compact(folded, 0, len(folded) - 1)
+    last_reply = _last_assistant_text_head_compact(folded, 0, len(folded) - 1)
+
+    folded_turns = len(_find_turn_boundaries_compact(folded))
+    summary = f"已折叠 {len(folded)} 条消息（{folded_turns} 个工具轮次）"
+    fold_marker_text = CompactMarkerBuilder.build_fold_marker(
+        stage=3,
+        turns_folded=folded_turns,
+        tools_used_counts=tools_used,
+        summary=summary,
+        first_user_msg_head=first_user,
+        last_assistant_text_head=last_reply,
+    )
+    fold_marker = CompactMessage(
+        id=f"folded_{len(folded)}",
+        role="system",
+        content=fold_marker_text,
+        created_at=folded[0].created_at if folded else 0.0,
+    )
+    result: list[CompactMessage] = []
+    if system_prompt is not None:
+        result.append(system_prompt)
+    result.append(fold_marker)
+    result.extend(kept_from_old)
+    result.extend(recent)
+    return result
+
+
+def run_compact_pipeline_unified(
+    messages: list[CompactMessage],
+    stage: int,
+    pinned_ids: set[str] | None = None,
+    note_whitelist: set[str] | None = None,
+) -> list[CompactMessage]:
+    """Unified compaction pipeline entry point for both Layer 1 and Layer 3.
+
+    ``stage=1`` → ``_stage1_mask_unified`` (mask old tool results).
+    ``stage=3`` → ``_stage3_fold_unified`` (fold old turns).
+
+    Layer 1 (ReAct loop) calls with ``pinned_ids=None, note_whitelist=None``.
+    Layer 3 (cross-run) calls with pinned message ids and optional whitelist.
+    """
+    if stage == 1:
+        return _stage1_mask_unified(messages, note_whitelist=note_whitelist, pinned_ids=pinned_ids)
+    if stage == 3:
+        return _stage3_fold_unified(messages, pinned_ids=pinned_ids)
+    raise ValueError(f"unknown compact stage: {stage}")

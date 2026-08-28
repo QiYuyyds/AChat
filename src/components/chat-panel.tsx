@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertTriangle, FilePenLine, FileStack, Files, GitBranch, Menu, MessagesSquare, MoreHorizontal, PanelRight, UploadCloud, UserRoundPlus, X } from 'lucide-react'
+import { AlertTriangle, FilePenLine, FileStack, Files, GitBranch, Menu, MessagesSquare, MoreHorizontal, NotebookPen, PanelRight, UploadCloud, UserRoundPlus, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { AddAgentDialog } from '@/components/add-agent-dialog'
@@ -54,8 +54,10 @@ export function ChatPanel() {
   const agents = useAppStore((s) => s.agents)
   const streamConnected = useAppStore((s) => s.streamConnected)
   const fileExplorerOpen = useAppStore((s) => s.fileExplorerOpen)
+  const sessionNoteOpen = useAppStore((s) => s.sessionNoteOpen)
   const previewArtifactId = useAppStore((s) => s.previewArtifactId)
   const setFileExplorerOpen = useAppStore((s) => s.setFileExplorerOpen)
+  const setSessionNoteOpen = useAppStore((s) => s.setSessionNoteOpen)
   const setMobileSidebarOpen = useAppStore((s) => s.setMobileSidebarOpen)
   const closeFile = useAppStore((s) => s.closeFile)
   const setActiveTab = useAppStore((s) => s.setActiveTab)
@@ -236,6 +238,15 @@ export function ChatPanel() {
           >
             <PanelRight className="size-4 motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out motion-safe:group-hover/button:scale-110 motion-safe:group-active/button:scale-90" />
           </Button>
+          <Button
+            size="icon-sm"
+            variant={sessionNoteOpen ? 'default' : 'ghost'}
+            onClick={() => setSessionNoteOpen(!sessionNoteOpen)}
+            title={sessionNoteOpen ? '关闭会话笔记' : '打开会话笔记'}
+            aria-label={sessionNoteOpen ? '关闭会话笔记' : '打开会话笔记'}
+          >
+            <NotebookPen className="size-4 motion-safe:transition-transform motion-safe:duration-200 motion-safe:ease-out motion-safe:group-hover/button:scale-110 motion-safe:group-active/button:scale-90" />
+          </Button>
           {conv.workspaceMode === 'local' && (
             <CodeIntelligenceControl conversationId={conv.id} />
           )}
@@ -293,6 +304,10 @@ export function ChatPanel() {
               <DropdownMenuItem onClick={() => setFileExplorerOpen(!fileExplorerOpen)}>
                 <PanelRight className="size-4" />
                 文件树
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setSessionNoteOpen(!sessionNoteOpen)}>
+                <NotebookPen className="size-4" />
+                会话笔记
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => setArtifactsOpen(true)}>
                 <FileStack className="size-4" />

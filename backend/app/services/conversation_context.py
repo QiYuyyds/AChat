@@ -1,25 +1,25 @@
 """Conversation-context serialization.
 
-Port of src/server/conversation-context.ts: turn a conversation's MessagePart
-history into OpenAI-format chat-message dicts for ``AdapterInput.history`` so an
-agent remembers context across runs. Handles pinned-message injection, the latest
-context-summary block, agent self/other perspective rendering, and a token budget.
-See specs/13-conversation-context.md.
+Turns a conversation's MessagePart history into OpenAI-format chat-message
+dicts for ``AdapterInput.history`` so an agent remembers context across runs.
 
-The returned messages are plain dicts ({"role", "content", ...}) matching OpenAI's
-ChatCompletionMessageParam shape — the same wire format the TS produced.
+Uses the unified CompactMessage pipeline with tiered injection (design doc §8.1):
+- Case A: no messages after Note → inject Note only
+- Case B: ratio < 0.50 → full text only, no Note
+- Case C: 0.50 ≤ ratio < 0.75 → Note + full text, no compaction
+- Case D: 0.75 ≤ ratio < 0.88 → Note + mask-compacted
+- Case E: ratio ≥ 0.88 → Note + fold-compacted
 
-Task 4.7: build_history_for() now delegates to PromptAssembler for schema-driven
-context assembly while preserving backward compatibility for existing callers.
+DB always stores complete, uncompacted messages. Layer 1 (ReAct loop) compaction
+is transient (in-memory only). Layer 3 (cross-run) loads from DB and compacts
+independently — no double-compaction risk.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections import Counter
 from dataclasses import dataclass
-from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -27,16 +27,11 @@ from app.db.engine import get_local_db
 from app.db.models import Agent, Artifact, Conversation, Message
 from app.infra.cache_helpers import get_agent_cached
 from app.memory.session_memory import SessionMemory
-from app.services.compact_markers import CompactMarkerBuilder
+from app.memory.session_note import SessionNote
 from app.services.compact_pipeline import (
-    FOLD_TURN_THRESHOLD,
-    KEEP_RECENT_TURNS,
-    LEGACY_RECENT_KEEP,
-    summarize_tool_result_full,
-)
-from app.services.context_compaction_service import (
-    get_latest_context_summary,
-    render_conversation_summary_block,
+    from_compact_messages,
+    run_compact_pipeline_unified,
+    to_compact_messages_orm,
 )
 from app.services.prompt_assembler import (
     ContextAssembler,
@@ -50,36 +45,27 @@ from app.services.transcript_renderer import (
 
 logger = logging.getLogger(__name__)
 
-# Ratio threshold for cross-run history pruning. When loaded history tokens
-# (including prompt estimate) divided by model_context_limit is below this
-# value, full history is injected without pruning. This forms a 0.05 buffer
-# below run-internal compaction stage 1 (0.70).
-PRE_RUN_COMPACT_RATIO = 0.65
+# Fixed context window for ratio calculation (design doc §8.2).
+_CONTEXT_WINDOW = 200_000
 
-# Cross-run replay: cap tool_result text to avoid blowing the history budget.
-# prune_old_tool_results already replaces large results with a marker, but this
-# is a second safety net for results that slip through (e.g. recent turns).
-TOOL_RESULT_REPLAY_CHAR_CAP = 4000
+# Tiered injection thresholds (design doc §8.1).
+_RATIO_FULL_ONLY = 0.50      # Below: full text only, no Note
+_RATIO_NOTE_PLUS_FULL = 0.75 # Below: Note + full text, no compaction
+_RATIO_NOTE_PLUS_MASK = 0.88 # Below: Note + mask; at/above: Note + fold
 
-# OpenAI ChatCompletionMessageParam, as a loose dict (kept camelCase-free; pure shape).
+# OpenAI ChatCompletionMessageParam, as a loose dict.
 ChatMessage = dict
 
 
 @dataclass
 class BuildHistoryOptions:
-    """Options for build_history_for (mirrors the TS BuildHistoryOptions)."""
+    """Options for build_history_for."""
 
-    # How many recent (non-pinned) messages to load. None → no limit (load all uncompacted).
     max_turns: int | None = None
-    # Whether to inject pinned messages. None → True.
     include_pinned: bool | None = None
-    # The triggering message id; excluded from history to avoid duplication.
     exclude_message_id: str | None = None
-    # Token budget for history only (excl. system / current user). None → no cut.
     token_budget: int | None = None
-    # Model context window size (tokens) for ratio-aware pruning. None → no pruning.
     model_context_limit: int | None = None
-    # System + prompt + safety token estimate, supplied by build_adapter_input.
     prompt_estimate: int = 0
 
 
@@ -91,16 +77,11 @@ class _Item:
     tokens: int
 
 
-# ─── O1: context compaction layers (read-path, no DB writes) ────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
 
 def _extract_tool_result_text(part: dict) -> str:
-    """Extract a readable string from a tool_result part's 'result' field.
-
-    The persisted shape is ``{"type": "tool_result", "result": dict|list|str|None, ...}``
-    (see ``persist_event`` in ``agent_runner.py``). Earlier code read ``content``
-    which never exists on tool_result parts — this fixes the field mismatch.
-    """
+    """Extract a readable string from a tool_result part's 'result' field."""
     result = part.get("result", "")
     if result is None:
         return ""
@@ -110,43 +91,6 @@ def _extract_tool_result_text(part: dict) -> str:
         return json.dumps(result, ensure_ascii=False)
     except (TypeError, ValueError):
         return str(result)
-
-
-def _find_turn_boundaries_messages(messages: list) -> list[tuple[int, int]]:
-    """Identify complete ReAct turns in a list of DB Message objects.
-
-    A turn = one ``role=="agent"`` Message whose ``parts_list`` contains a
-    ``tool_use`` part. In the DB, ``tool_use`` and ``tool_result`` parts are
-    typically in the same Message (written at ``message.end``), so the turn's
-    start and end index are the same. Messages without tool_use don't constitute
-    a turn. Returns ``[(start_index, end_index), ...]``.
-    """
-    boundaries: list[tuple[int, int]] = []
-    for i, msg in enumerate(messages):
-        if getattr(msg, "role", None) != "agent":
-            continue
-        parts = msg.parts_list or []
-        if any(p.get("type") == "tool_use" for p in parts):
-            boundaries.append((i, i))
-    return boundaries
-
-
-def _keep_recent_turns_messages(
-    messages: list,
-    k: int = KEEP_RECENT_TURNS,
-) -> tuple[list, list]:
-    """Split messages into (recent, old) on turn boundaries.
-
-    ``recent`` contains everything from the start of the k-th-from-last turn
-    onwards (inclusive of user messages between turns). ``old`` contains
-    everything before. When there are ``<= k`` complete turns, returns
-    ``(messages, [])``.
-    """
-    boundaries = _find_turn_boundaries_messages(messages)
-    if len(boundaries) <= k:
-        return list(messages), []
-    keep_from = boundaries[-k][0]
-    return list(messages[keep_from:]), list(messages[:keep_from])
 
 
 def _build_tool_use_map(parts: list[dict]) -> dict[str, tuple[str, dict]]:
@@ -175,165 +119,179 @@ def _should_preserve_tool_result(tool_name: str, args: dict) -> bool:
     )
 
 
-def prune_old_tool_results(
-    messages: list,
-    keep_recent_turns: int = KEEP_RECENT_TURNS,
-) -> list:
-    """Replace old tool_result parts with structured, recoverable markers.
+def _extract_whitelist(note: SessionNote | None) -> set[str] | None:
+    """Extract file paths from Session Note's files_touched.
 
-    Uses ``_keep_recent_turns_messages`` to find the cutoff (last
-    ``keep_recent_turns`` complete turns). For each ``tool_result`` part in the
-    old segment, dispatches to ``summarize_tool_result_full(stage=1)`` and
-    replaces the part with a ``CompactMarkerBuilder.build_tool_result_marker``.
-    ``code_explore`` and ``fs_read(mode=outline/head)`` results are preserved
-    verbatim.
-
-    IMPORTANT: callers MUST ensure all ORM Message objects are detached from
-    the session (e.g. via ``db.expunge_all()``) before calling this function.
-    This function writes compact markers back to ``msg.parts_list``; if the
-    objects are still attached, the session auto-commits on exit and
-    permanently corrupts the DB. The ``copy.deepcopy`` below prevents
-    in-place mutation of the *returned* list, but the re-assignment
-    ``msg.parts_list = parts`` still marks the ORM object dirty.
+    These files are preserved longer in Layer 1 compaction (design doc §8.3).
+    Entry format: "path/to/file.py (已读, 292 行)" → "path/to/file.py"
     """
-    import copy
-
-    recent, old = _keep_recent_turns_messages(messages, k=keep_recent_turns)
-    if not old:
-        return messages
-
-    for msg in old:
-        parts = copy.deepcopy(msg.parts_list)
-        tool_use_map = _build_tool_use_map(parts)
-        modified = False
-        for j, p in enumerate(parts):
-            if p.get("type") != "tool_result":
-                continue
-            call_id = p.get("callId", "")
-            tool_name, args = tool_use_map.get(call_id, ("", {}))
-            if _should_preserve_tool_result(tool_name, args):
-                continue
-            content = _extract_tool_result_text(p)
-            _new_content, summary, recover = summarize_tool_result_full(
-                tool_name, args, content, stage=1,
-            )
-            marker = CompactMarkerBuilder.build_tool_result_marker(
-                stage=1,
-                tool_name=tool_name or "unknown",
-                args=args,
-                summary=summary,
-                recover_hint=recover,
-            )
-            parts[j] = {"type": "text", "content": marker}
-            modified = True
-        if modified:
-            msg.parts_list = parts
-    return messages
+    if not note or not note.files_touched:
+        return None
+    whitelist: set[str] = set()
+    for entry in note.files_touched:
+        path = entry.split("(")[0].strip()
+        if path:
+            whitelist.add(path)
+    return whitelist
 
 
-def _collect_tool_names_in_span_messages(
-    messages: list, start: int, end: int,
-) -> Counter[str]:
-    """Count tool names invoked by agent messages in [start, end]."""
-    counts: Counter[str] = Counter()
-    for idx in range(start, end + 1):
-        msg = messages[idx]
-        if getattr(msg, "role", None) != "agent":
-            continue
-        for p in msg.parts_list or []:
-            if p.get("type") == "tool_use":
-                name = p.get("toolName", "")
-                if name:
-                    counts[name] += 1
-    return counts
+def _build_session_note_message(session_mem) -> ChatMessage | None:
+    """Build a chat message injecting the Session Note.
 
-
-def _first_user_head_messages(messages: list, start: int, end: int) -> str | None:
-    for idx in range(start, end + 1):
-        msg = messages[idx]
-        if getattr(msg, "role", None) != "user":
-            continue
-        for p in msg.parts_list or []:
-            if p.get("type") == "text" and p.get("content", "").strip():
-                return p["content"].strip()[:80]
-    return None
-
-
-def _last_assistant_text_head_messages(
-    messages: list, start: int, end: int,
-) -> str | None:
-    for idx in range(end, start - 1, -1):
-        msg = messages[idx]
-        if getattr(msg, "role", None) != "agent":
-            continue
-        for p in msg.parts_list or []:
-            if p.get("type") == "text" and p.get("content", "").strip():
-                return p["content"].strip()[:80]
-    return None
-
-
-def fold_old_messages(
-    messages: list,
-    pinned_ids: set[str] | None = None,
-) -> list:
-    """Fold old messages into a single structured marker when turns exceed threshold.
-
-    Uses ``_find_turn_boundaries_messages`` to count complete turns. When the
-    turn count exceeds ``FOLD_TURN_THRESHOLD``, older turns (beyond the most
-    recent ``KEEP_RECENT_TURNS``) are replaced with a single fold marker built
-    by ``CompactMarkerBuilder.build_fold_marker``. Pinned messages are never
-    folded. If no complete turn is found, falls back to ``LEGACY_RECENT_KEEP``
-    (count-based) with a warning.
+    Tries YAML parse → structured XML; falls back to plain text (design doc §7.3).
     """
-    pinned_set = pinned_ids or set()
-    boundaries = _find_turn_boundaries_messages(messages)
-
-    if not boundaries:
-        if len(messages) <= LEGACY_RECENT_KEEP:
-            return messages
-        logger.warning(
-            "[conversation-context] fold: no turn boundaries found, "
-            "falling back to recent_keep=%d",
-            LEGACY_RECENT_KEEP,
-        )
-        recent = list(messages[-LEGACY_RECENT_KEEP:])
-        old = list(messages[:-LEGACY_RECENT_KEEP])
-    elif len(boundaries) < FOLD_TURN_THRESHOLD:
-        return messages
+    if not session_mem or not session_mem.summary:
+        return None
+    note = SessionNote.from_yaml(session_mem.summary)
+    if note is not None:
+        sm_content = note.to_xml()
     else:
-        recent, old = _keep_recent_turns_messages(messages, k=KEEP_RECENT_TURNS)
-        if not old:
-            return messages
+        covers_ts = (
+            session_mem.covers_up_to
+            if session_mem.covers_up_to is not None
+            else 0
+        )
+        sm_content = (
+            f'<session_memory covers_up_to="{covers_ts}">\n'
+            f"{session_mem.summary}\n"
+            "</session_memory>"
+        )
+    return {"role": "user", "content": sm_content}
 
-    folded = [m for m in old if m.id not in pinned_set]
-    kept_from_old = [m for m in old if m.id in pinned_set]
-    if not folded:
-        return messages
 
-    tools_used = _collect_tool_names_in_span_messages(old, 0, len(old) - 1)
-    first_user = _first_user_head_messages(old, 0, len(old) - 1)
-    last_reply = _last_assistant_text_head_messages(old, 0, len(old) - 1)
+# ─── Capability context restoration ─────────────────────────────────────────
 
-    folded_turns = len(_find_turn_boundaries_messages(folded))
-    summary = f"已折叠 {len(folded)} 条消息（{folded_turns} 个工具轮次）"
-    fold_marker_text = CompactMarkerBuilder.build_fold_marker(
-        stage=3,
-        turns_folded=folded_turns,
-        tools_used_counts=tools_used,
-        summary=summary,
-        first_user_msg_head=first_user,
-        last_assistant_text_head=last_reply,
-    )
 
-    time_start = folded[0].created_at
-    fold_marker = SimpleNamespace(
-        id=f"folded_{len(folded)}",
-        created_at=time_start,
-        role="user",
-        agent_id=None,
-        parts_list=[{"type": "text", "content": fold_marker_text}],
-    )
-    return [*kept_from_old, fold_marker, *recent]
+async def _build_capability_context(
+    conversation_id: str, agent_ids: list[str]
+) -> str:
+    """Build a capability context block for post-compaction restoration.
+
+    Collects: current tool names, active attachments, active dispatch plan,
+    recent file paths (from Session Note), active plan cards, recent skill loads.
+    """
+    parts: list[str] = ["[能力上下文]"]
+
+    # Tools
+    tool_names: set[str] = set()
+    for aid in agent_ids:
+        agent = await get_agent_cached(aid)
+        if agent:
+            for tn in agent.tool_names_list or []:
+                tool_names.add(tn)
+    if tool_names:
+        parts.append(f"- 可用工具: {', '.join(sorted(tool_names))}")
+
+    # Attachments
+    try:
+        async with get_local_db() as db:
+            attach_msgs = (
+                (
+                    await db.execute(
+                        select(Message).where(
+                            Message.conversation_id == conversation_id,
+                            Message.status == "complete",
+                        ).order_by(
+                            Message.created_at.desc()
+                        ).limit(30)
+                    )
+                ).scalars().all()
+            )
+            attachments: list[str] = []
+            for msg in attach_msgs:
+                for p in msg.parts_list or []:
+                    if p.get("type") in ("image_attachment", "file_attachment"):
+                        fname = p.get("fileName", "unknown")
+                        attachments.append(fname)
+            if attachments:
+                parts.append(f"- 附件: {', '.join(attachments[:5])}")
+    except Exception:
+        pass
+
+    # Recent file paths from Session Note
+    session_note = await _get_session_note(conversation_id)
+    if session_note and session_note.files_touched:
+        files_list = ", ".join(session_note.files_touched[:10])
+        parts.append(f"- 最近操作文件: {files_list}")
+
+    # Active plan cards
+    try:
+        async with get_local_db() as db:
+            plan_msgs = (
+                (
+                    await db.execute(
+                        select(Message).where(
+                            Message.conversation_id == conversation_id,
+                            Message.status == "complete",
+                        ).order_by(
+                            Message.created_at.desc()
+                        ).limit(50)
+                    )
+                ).scalars().all()
+            )
+            active_plans: list[str] = []
+            for msg in plan_msgs:
+                for p in msg.parts_list or []:
+                    if p.get("type") == "tool_result":
+                        data = _try_parse_json(_extract_tool_result_text(p))
+                        if data and data.get("planId"):
+                            active_plans.append(f"planId={data['planId']}")
+            if active_plans:
+                parts.append(f"- 活跃计划: {', '.join(active_plans[:3])}")
+    except Exception:
+        pass
+
+    # Recent skill loads
+    try:
+        async with get_local_db() as db:
+            skill_msgs = (
+                (
+                    await db.execute(
+                        select(Message).where(
+                            Message.conversation_id == conversation_id,
+                            Message.status == "complete",
+                        ).order_by(
+                            Message.created_at.desc()
+                        ).limit(50)
+                    )
+                ).scalars().all()
+            )
+            skills: set[str] = set()
+            for msg in skill_msgs:
+                for p in msg.parts_list or []:
+                    if p.get("type") == "tool_use" and p.get("toolName") == "load_skill":
+                        slug = (p.get("args") or {}).get("slug", "")
+                        if slug:
+                            skills.add(slug)
+            if skills:
+                parts.append(f"- 已加载技能: {', '.join(sorted(skills))}")
+    except Exception:
+        pass
+
+    if len(parts) == 1:
+        return ""
+    return "\n".join(parts)
+
+
+def _try_parse_json(text: str) -> dict | None:
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else None
+    except (TypeError, ValueError):
+        return None
+
+
+async def _get_session_note(conversation_id: str) -> SessionNote | None:
+    """Load and parse the Session Note for a conversation."""
+    session_mem = await SessionMemory().get(conversation_id)
+    if not session_mem or not session_mem.summary:
+        return None
+    return SessionNote.from_yaml(session_mem.summary)
+
+
+# ─── Public API ─────────────────────────────────────────────────────────────
 
 
 async def build_history_for(
@@ -345,16 +303,16 @@ async def build_history_for(
     user_id: str = "",
 ) -> list[ChatMessage]:
     """Serialize a conversation into OpenAI chat messages for the given agent.
-    
+
     If an assembler is provided, delegates to PromptAssembler for schema-driven
-    context assembly. Otherwise falls back to the original implementation for
-    backward compatibility.
+    context assembly. Otherwise uses the unified CompactMessage pipeline with
+    tiered injection (design doc §8.1).
     """
     if assembler is not None:
         return await _build_history_with_assembler(
             agent_id, conversation_id, options, assembler, user_id=user_id,
         )
-    return await _build_history_legacy(
+    return await _build_history_unified(
         agent_id, conversation_id, options
     )
 
@@ -372,10 +330,10 @@ async def _build_history_with_assembler(
     max_turns = opts.max_turns
     exclude_message_id = opts.exclude_message_id
 
-    latest_summary = await get_latest_context_summary(conversation_id)
+    session_mem = await SessionMemory().get(conversation_id)
+    covers_up_to = session_mem.covers_up_to if session_mem else None
 
     async with get_local_db() as db:
-        # Load recent messages for query context
         recent_stmt = (
             select(Message)
             .where(
@@ -389,28 +347,25 @@ async def _build_history_with_assembler(
             recent_stmt = recent_stmt.limit(max_turns)
         if exclude_message_id:
             recent_stmt = recent_stmt.where(Message.id != exclude_message_id)
-        if latest_summary is not None:
+        if covers_up_to is not None:
             recent_stmt = recent_stmt.where(
-                Message.created_at > latest_summary.covered_until_created_at
+                Message.created_at > covers_up_to
             )
         recent = (await db.execute(recent_stmt)).scalars().all()
         recent_asc = sorted(recent, key=lambda m: m.created_at)
 
-    # Ensure agent is in cache for downstream callers
+        db.expunge_all()
+
     await get_agent_cached(agent_id)
 
-    # Build query text from recent messages
     query_text = "\n".join(
         _extract_message_text(m) for m in recent_asc[-3:] if m.role == "user"
     )
 
-    # Determine schema mode based on options
     mode = "chat"
     if opts.token_budget is not None and opts.token_budget < 1000:
         mode = "chat"
-    # Could be extended to detect "tool" or "react" modes
 
-    # Assemble context using PromptAssembler
     query = Query(
         text=query_text,
         mode=mode,
@@ -419,53 +374,56 @@ async def _build_history_with_assembler(
     )
     ctx: RuntimeContext = await assembler.assemble(query)
 
-    # Render to OpenAI chat format — render_history() now uses render_static()
-    # for cache-stable system messages.
     system_messages = ctx.render_history()
-    
-    # Fall back to legacy message serialization for conversation history
-    legacy_messages = await _build_history_legacy(
+
+    history_messages = await _build_history_unified(
         agent_id, conversation_id, options
     )
-    
-    # Inject dynamic content (render_dynamic) as user message prefix (cache-safe).
-    # Dynamic content is wrapped in <system-reminder> tags by render_dynamic().
+
     dynamic_content = ctx.render_dynamic()
-    if dynamic_content and legacy_messages:
-        # Prepend dynamic content to the first user message in history
-        for i, msg in enumerate(legacy_messages):
+    if dynamic_content and history_messages:
+        for i, msg in enumerate(history_messages):
             if msg.get("role") == "user":
-                legacy_messages[i] = {
+                history_messages[i] = {
                     "role": "user",
                     "content": f"{dynamic_content}\n\n{msg.get('content', '')}",
                 }
                 break
         else:
-            # No user message found; inject as a new user message
-            legacy_messages.insert(0, {"role": "user", "content": dynamic_content})
+            history_messages.insert(0, {"role": "user", "content": dynamic_content})
     elif dynamic_content:
-        legacy_messages.insert(0, {"role": "user", "content": dynamic_content})
-    
-    # Combine: system context + conversation history
-    return system_messages + legacy_messages
+        history_messages.insert(0, {"role": "user", "content": dynamic_content})
+
+    return system_messages + history_messages
 
 
-async def _build_history_legacy(
+# ─── Unified pipeline (tiered injection) ────────────────────────────────────
+
+
+async def _build_history_unified(
     agent_id: str,
     conversation_id: str,
     options: BuildHistoryOptions | None,
 ) -> list[ChatMessage]:
-    """Original implementation preserved for backward compatibility."""
+    """Build history using CompactMessage unified pipeline with tiered injection.
+
+    Tiered injection (design doc §8.1):
+      - Case A: no messages after Note → inject Note only
+      - Case B: ratio < 0.50 → full text only, no Note
+      - Case C: 0.50 ≤ ratio < 0.75 → Note + full text, no compaction
+      - Case D: 0.75 ≤ ratio < 0.88 → Note + mask-compacted
+      - Case E: ratio ≥ 0.88 → Note + fold-compacted
+    """
     opts = options or BuildHistoryOptions()
     max_turns = opts.max_turns
     include_pinned = opts.include_pinned if opts.include_pinned is not None else True
     exclude_message_id = opts.exclude_message_id
     token_budget = opts.token_budget
 
-    latest_summary = await get_latest_context_summary(conversation_id)
+    session_mem = await SessionMemory().get(conversation_id)
+    covers_up_to = session_mem.covers_up_to if session_mem else None
 
     async with get_local_db() as db:
-        # Recent complete messages (desc by time, flipped to asc below).
         recent_stmt = (
             select(Message)
             .where(
@@ -479,20 +437,18 @@ async def _build_history_legacy(
             recent_stmt = recent_stmt.limit(max_turns)
         if exclude_message_id:
             recent_stmt = recent_stmt.where(Message.id != exclude_message_id)
-        if latest_summary is not None:
+        if covers_up_to is not None:
             recent_stmt = recent_stmt.where(
-                Message.created_at > latest_summary.covered_until_created_at
+                Message.created_at > covers_up_to
             )
         recent = (await db.execute(recent_stmt)).scalars().all()
 
-        # Always load conversation for pinned ids + agentIds (name map for Phase C).
         conv = (
             await db.execute(
                 select(Conversation).where(Conversation.id == conversation_id)
             )
         ).scalars().first()
 
-        # Pinned messages may live outside the recent N; load them separately.
         pinned: list[Message] = []
         pinned_id_set: set[str] = set()
         if include_pinned and conv is not None:
@@ -510,13 +466,10 @@ async def _build_history_legacy(
                                 Message.status == "complete",
                             )
                         )
-                    )
-                    .scalars()
-                    .all()
+                    ).scalars().all()
                 )
                 pinned_id_set = {p.id for p in pinned}
 
-        # Agent name map: Phase C group chat renders other agents as [Name]: text.
         agent_names: dict[str, str] = {}
         if conv is not None and len(conv.agent_ids_list) > 1:
             rows = (
@@ -529,7 +482,6 @@ async def _build_history_legacy(
             for row in rows:
                 agent_names[row.id] = row.name
 
-        # Merge + dedup by id, sort ascending by createdAt.
         by_id: dict[str, Message] = {}
         for m in recent:
             by_id[m.id] = m
@@ -537,71 +489,96 @@ async def _build_history_legacy(
             by_id[m.id] = m
         merged = sorted(by_id.values(), key=lambda m: m.created_at)
 
-        # Detach all ORM objects from the session before any compaction logic
-        # runs. prune_old_tool_results writes compact markers back to
-        # msg.parts_list; if the objects are still attached, the session
-        # auto-commits on exit and permanently corrupts the DB.
+        # CRITICAL: expunge_all before any compaction logic.
+        # DB always stores complete messages; Layer 1 compaction is transient.
+        # Layer 3 loads from DB and compacts independently.
         db.expunge_all()
 
-        # Ratio-aware pruning: only prune when history + prompt fills a
-        # significant fraction of the context window. Below the threshold,
-        # full history is injected so the LLM can see prior tool results.
-        loaded_tokens = estimate_full_message_tokens(merged)
-        if opts.model_context_limit and opts.model_context_limit > 0:
-            ratio = (loaded_tokens + opts.prompt_estimate) / opts.model_context_limit
-        else:
-            ratio = 0.0
-
-        if ratio >= PRE_RUN_COMPACT_RATIO:
-            merged = prune_old_tool_results(merged)
-            merged = fold_old_messages(merged, pinned_ids=pinned_id_set)
-
-        # Batch-load artifact titles for artifact_ref folding.
         artifact_ids = _collect_artifact_ids(merged)
         artifact_titles = await _load_artifact_titles(db, artifact_ids)
 
-    # Serialize everything, then drop oldest non-pinned items to fit the budget.
+    # ─── Tiered injection decision ────────────────────────────────────
+    if not merged:
+        # Case A: no messages after Note → inject Note only (if exists).
+        note_msg = _build_session_note_message(session_mem)
+        return [note_msg] if note_msg else []
+
+    loaded_tokens = estimate_full_message_tokens(merged)
+    prompt_estimate = opts.prompt_estimate or 0
+    ratio = (loaded_tokens + prompt_estimate) / _CONTEXT_WINDOW
+
+    has_note = session_mem is not None and bool(session_mem.summary)
+    note_msg = _build_session_note_message(session_mem) if has_note else None
+    session_note_obj = (
+        SessionNote.from_yaml(session_mem.summary)
+        if has_note else None
+    )
+
+    inject_note = False
+    compact_stage = 0  # 0 = no compaction
+
+    if ratio < _RATIO_FULL_ONLY:
+        # Case B: full text only, no Note.
+        inject_note = False
+        compact_stage = 0
+    elif ratio < _RATIO_NOTE_PLUS_FULL:
+        # Case C: Note + full text, no compaction.
+        inject_note = True
+        compact_stage = 0
+    elif ratio < _RATIO_NOTE_PLUS_MASK:
+        # Case D: Note + mask-compacted.
+        inject_note = True
+        compact_stage = 1
+    else:
+        # Case E: Note + fold-compacted.
+        inject_note = True
+        compact_stage = 3
+
+    # ─── Apply compaction via unified pipeline ───────────────────────
+    if compact_stage > 0:
+        note_whitelist = _extract_whitelist(session_note_obj)
+        compact_msgs = to_compact_messages_orm(merged)
+        for cm in compact_msgs:
+            if cm.id in pinned_id_set:
+                cm.is_pinned = True
+        compact_result = run_compact_pipeline_unified(
+            compact_msgs,
+            stage=compact_stage,
+            pinned_ids=pinned_id_set,
+            note_whitelist=note_whitelist,
+        )
+        compact_dicts = from_compact_messages(compact_result)
+        result_msgs: list[ChatMessage] = []
+        if inject_note and note_msg:
+            result_msgs.append(note_msg)
+        result_msgs.extend(compact_dicts)
+
+        if token_budget is not None and token_budget > 0:
+            total = sum(
+                estimate_dict_message_tokens(m, include_reasoning=False)
+                for m in result_msgs
+            )
+            while len(result_msgs) > 1 and total > token_budget:
+                msg = result_msgs.pop(0)
+                if msg is not note_msg:
+                    total -= estimate_dict_message_tokens(
+                        msg, include_reasoning=False
+                    )
+        return result_msgs
+
+    # No compaction needed — serialize messages normally.
     items: list[_Item] = []
-    if latest_summary is not None:
-        summary_message: ChatMessage = {
-            "role": "user",
-            "content": render_conversation_summary_block(latest_summary),
-        }
+    if inject_note and note_msg:
         items.append(
             _Item(
-                msg_id=latest_summary.id,
+                msg_id="session_memory",
                 is_pinned=True,
-                serialized=[summary_message],
+                serialized=[note_msg],
                 tokens=estimate_dict_message_tokens(
-                summary_message, include_reasoning=False
-            ),
+                    note_msg, include_reasoning=False
+                ),
             )
         )
-    else:
-        # No ContextSummary — try SessionMemory as a lighter fallback.
-        session_mem = await SessionMemory().get(conversation_id)
-        if session_mem and session_mem.summary:
-            covers_ts = (
-                session_mem.covers_up_to
-                if session_mem.covers_up_to is not None
-                else 0
-            )
-            sm_content = (
-                f'<session_memory covers_up_to="{covers_ts}">\n'
-                f"{session_mem.summary}\n"
-                "</session_memory>"
-            )
-            sm_message: ChatMessage = {"role": "user", "content": sm_content}
-            items.append(
-                _Item(
-                    msg_id="session_memory",
-                    is_pinned=True,
-                    serialized=[sm_message],
-                    tokens=estimate_dict_message_tokens(
-                        sm_message, include_reasoning=False
-                    ),
-                )
-            )
     for msg in merged:
         serialized = _serialize_message(msg, agent_id, artifact_titles, agent_names)
         if not serialized:
@@ -621,12 +598,11 @@ async def _build_history_legacy(
 
     if token_budget is not None and token_budget > 0:
         total = sum(it.tokens for it in items)
-        # Over budget: drop non-pinned from oldest to newest until it fits.
         i = 0
         while i < len(items) and total > token_budget:
             if not items[i].is_pinned:
                 total -= items[i].tokens
-                items[i].tokens = -1  # mark dropped; filtered below
+                items[i].tokens = -1
             i += 1
 
     out: list[ChatMessage] = []
@@ -635,6 +611,9 @@ async def _build_history_legacy(
             continue
         out.extend(it.serialized)
     return out
+
+
+# ─── Serialization core ─────────────────────────────────────────────────────
 
 
 def _extract_message_text(msg: Message) -> str:
@@ -647,9 +626,6 @@ def _extract_message_text(msg: Message) -> str:
     return "\n".join(texts).strip()
 
 
-# ─── serialization core ─────────────────────────────────────────────────────
-
-
 def _serialize_message(
     msg: Message,
     current_agent_id: str,
@@ -657,7 +633,7 @@ def _serialize_message(
     agent_names: dict[str, str],
 ) -> list[ChatMessage] | None:
     if msg.role == "system":
-        return None  # system prompt is injected by the runner, not history
+        return None
 
     parts = msg.parts_list
 
@@ -670,7 +646,6 @@ def _serialize_message(
     if msg.role == "agent":
         if msg.agent_id == current_agent_id:
             return _render_self_assistant_parts(parts, artifact_titles)
-        # Phase C: other agent's message → [Name]: text user msg (group chat only).
         if msg.agent_id and msg.agent_id in agent_names:
             m = _render_other_agent_as_user(
                 parts, agent_names[msg.agent_id], artifact_titles
@@ -682,9 +657,6 @@ def _serialize_message(
 
 
 def _render_user_parts(parts: list[dict]) -> str:
-    # 1. Prefer effective_prompt (contains dynamic_prefix + [current_time]) so
-    #    history reconstruction matches what was actually sent to the LLM,
-    #    keeping DeepSeek's prefix cache continuous across turns.
     effective = None
     attachment_labels: list[str] = []
     for p in parts:
@@ -701,7 +673,6 @@ def _render_user_parts(parts: list[dict]) -> str:
             effective += "\n" + "\n".join(attachment_labels)
         return effective
 
-    # 2. Fallback: reconstruct from raw text parts (pre-existing behavior)
     buf: list[str] = []
     for p in parts:
         t = p.get("type")
@@ -711,7 +682,6 @@ def _render_user_parts(parts: list[dict]) -> str:
             buf.append(f"[图片附件: {p.get('fileName')}]")
         elif t == "file_attachment":
             buf.append(f"[文件附件: {p.get('fileName')}]")
-        # user shouldn't carry thinking/tool_use/tool_result/code/artifact_ref.
     return "\n".join(buf).strip()
 
 
@@ -727,8 +697,6 @@ def _render_self_assistant_parts(
 def _render_other_agent_as_user(
     parts: list[dict], agent_name: str, artifact_titles: dict[str, str]
 ) -> ChatMessage | None:
-    # Phase C: fold another agent's message into a [Name] text user message;
-    # keep text/code/artifact_ref only, drop thinking/tool_use/tool_result.
     text = _render_agent_public_text(parts, artifact_titles)
     if not text:
         return None
@@ -738,7 +706,11 @@ def _render_other_agent_as_user(
 def _render_agent_public_text(
     parts: list[dict], artifact_titles: dict[str, str]
 ) -> str:
-    tool_use_map = _build_tool_use_map(parts)
+    """Render agent message parts as visible text.
+
+    No 4000-char hard truncation — mask-compacted content is already short,
+    and whitelisted content should not be truncated (design doc §8.5).
+    """
     buf: list[str] = []
     for p in parts:
         t = p.get("type")
@@ -750,13 +722,6 @@ def _render_agent_public_text(
             if text:
                 is_error = p.get("isError", False)
                 prefix = "[tool_error]" if is_error else "[tool_result]"
-                call_id = p.get("callId", "")
-                tool_name, args = tool_use_map.get(call_id, ("", {}))
-                if not _should_preserve_tool_result(tool_name, args) and len(text) > TOOL_RESULT_REPLAY_CHAR_CAP:
-                    text = (
-                        text[:TOOL_RESULT_REPLAY_CHAR_CAP]
-                        + f"...[truncated, {len(text)} chars total]"
-                    )
                 buf.append(f"{prefix} {text}")
         elif t == "artifact_ref":
             artifact_id = p.get("artifactId")
@@ -779,7 +744,6 @@ def _render_agent_public_text(
                     f"[部署失败: {deployment.get('title')} "
                     f"({deployment.get('error') or 'unknown error'})]"
                 )
-        # thinking/tool_use are not replayed in cross-run history.
     return "\n".join(buf).strip()
 
 
@@ -789,10 +753,10 @@ def _format_deployment_source_label(deployment: dict) -> str:
     return f"v{deployment.get('version')}"
 
 
-# ─── batch artifact title load ──────────────────────────────────────────────
+# ─── Batch artifact title load ───────────────────────────────────────────────
 
 
-def _collect_artifact_ids(messages: list[Message]) -> list[str]:
+def _collect_artifact_ids(messages: list) -> list[str]:
     ids: set[str] = set()
     for m in messages:
         if m.role != "agent":

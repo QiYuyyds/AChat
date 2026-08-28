@@ -1114,11 +1114,10 @@ async def test_react_loop_legacy_fallback_when_disabled(conversation, monkeypatc
     assert pipeline_calls == []
 
 
-async def test_compact_disabled_triggers_after_three_failures(conversation, monkeypatch):
-    """3 consecutive compact failures → compact_disabled → soft_inject on next call."""
+async def test_compact_mask_triggers_and_updates_state(conversation, monkeypatch):
+    """Universal mask compaction triggers and updates anti-oscillation state."""
     from app.services.agent_runner import _run_react_loop
     from app.services.react_loop_termination import (
-        COMPACT_FAILURE_THRESHOLD,
         PreModelDecision,
         StopReason,
     )
@@ -1126,23 +1125,25 @@ async def test_compact_disabled_triggers_after_three_failures(conversation, monk
     _mock_model_limit(monkeypatch)
     messages = _compact_messages()
 
-    # No-op pipeline that never reduces tokens → always success=False
+    # Pipeline that actually replaces content (simulating mask)
+    def fake_pipeline(msgs, stage):
+        result = list(msgs)
+        for m in result:
+            if isinstance(m, dict) and m.get("role") == "tool":
+                m["content"] = "[masked tool=test]"
+        return result
+
     monkeypatch.setattr(
         "app.services.compact_pipeline.run_compact_pipeline",
-        lambda msgs, stage: msgs,
+        fake_pipeline,
     )
 
     call_count = [0]
 
     def fake_decide(*, state, total_tokens, model_limit, pipeline_enabled=True):
         call_count[0] += 1
-        # First 3 calls: return summarize (stage 1) → compact runs, fails (no reduction)
-        # After 3 failures, compact_disabled is True → decide_pre_model should
-        # return soft_inject. But since we're mocking, we need to check state.
-        if state.compact_disabled:
-            return PreModelDecision(action="hard_stop", stop_reason=StopReason.BUDGET_EXHAUSTED)
-        if call_count[0] <= COMPACT_FAILURE_THRESHOLD + 1:
-            return PreModelDecision(action="summarize")
+        if call_count[0] == 1:
+            return PreModelDecision(action="mask")
         return PreModelDecision(action="hard_stop", stop_reason=StopReason.BUDGET_EXHAUSTED)
 
     monkeypatch.setattr("app.services.react_loop_termination.decide_pre_model", fake_decide)
@@ -1162,9 +1163,6 @@ async def test_compact_disabled_triggers_after_three_failures(conversation, monk
         )
     ]
 
-    # After COMPACT_FAILURE_THRESHOLD (3) failures, compact_disabled should be True.
-    # The loop should have exited via hard_stop.
     assert events[-1].type == "run.usage"
-    # At least 3 compact attempts were made (all failed because no-op pipeline)
-    assert call_count[0] >= COMPACT_FAILURE_THRESHOLD + 1
+    assert call_count[0] >= 1
 

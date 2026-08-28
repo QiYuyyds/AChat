@@ -12,6 +12,7 @@ import { LoginDialog } from '@/components/login-dialog'
 import { MessageHighlightLayer } from '@/components/message-highlight-layer'
 import { ResourcesMainPanel } from '@/components/resources-main-panel'
 import { SelectionPopover } from '@/components/selection-popover'
+import { SessionNoteSidePanel } from '@/components/session-note-side-panel'
 import { Sidebar } from '@/components/sidebar'
 import { TaskBoardView } from '@/components/task-board-view'
 import { TaskDetailPanel } from '@/components/task-detail-panel'
@@ -46,6 +47,7 @@ export default function Home() {
         <ChatPanel />
       )}
       <FileExplorerPanel />
+      <SessionNoteSidePanel />
       <ArtifactPreviewPanel />
       <TaskDetailPanel />
       <SelectionPopover />

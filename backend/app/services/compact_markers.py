@@ -1,10 +1,7 @@
-"""Marker builders and success judge for the five-stage compaction pipeline.
+"""Marker builders for the compaction pipeline.
 
 Produces structured plain-text (not JSON) markers that carry recovery metadata,
-replacing the old dead-end ``"[tool_result 已裁剪]"`` markers. Also provides a
-strict ``CompactSuccessJudge`` that requires real token reduction (≥15%) rather
-than just a change in message count — this lets the ``compact_disabled`` circuit
-breaker actually trip.
+replacing the old dead-end ``"[tool_result 已裁剪]"`` markers.
 """
 
 from __future__ import annotations
@@ -16,15 +13,10 @@ from collections import Counter
 MAX_MARKER_CHARS = 500
 MAX_SUMMARY_CHARS = 200
 
-# success requires at least this much real token reduction (post < pre * 0.85)
-EFFECTIVE_COMPACT_RATIO = 0.85
-
 __all__ = [
     "MAX_MARKER_CHARS",
     "MAX_SUMMARY_CHARS",
-    "EFFECTIVE_COMPACT_RATIO",
     "CompactMarkerBuilder",
-    "CompactSuccessJudge",
 ]
 
 
@@ -108,23 +100,3 @@ class CompactMarkerBuilder:
 
         marker = "\n".join(lines)
         return _truncate(marker, MAX_MARKER_CHARS)
-
-
-class CompactSuccessJudge:
-    """Decide whether a compaction stage actually reduced the context.
-
-    Returns ``True`` only when ``post_tokens < pre_tokens * EFFECTIVE_COMPACT_RATIO``
-    (at least 15% real token reduction). A change in ``len(messages)`` alone is
-    NOT considered success — the old len-based rule made ``compact_disabled``
-    unreachable because fold always shrinks the count.
-    """
-
-    @staticmethod
-    def judge(pre_tokens: int, post_tokens: int, pre_len: int, post_len: int) -> bool:  # noqa: ARG004
-        # len is intentionally unused — kept in the signature so callers can
-        # pass it without branching, and so the spec scenario "fold that doesn't
-        # reduce tokens counts as failure" maps directly to this function.
-        if pre_tokens <= 0:
-            # No prior tokens → nothing to reduce → not a success.
-            return False
-        return post_tokens < int(pre_tokens * EFFECTIVE_COMPACT_RATIO)

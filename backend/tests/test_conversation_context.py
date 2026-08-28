@@ -17,7 +17,6 @@ async def _seed_conversation(
     async with get_db() as db:
         conv = Conversation(
             id=conv_id,
-            user_id="test_user_1",
             title="ctx test",
             mode="group" if len(agent_ids) > 1 else "single",
             archived=False,
@@ -189,30 +188,38 @@ async def test_other_agent_rendered_as_user_in_group(db, agents):
 
 
 async def test_context_summary_prepended(db, agents):
+    """Session Note (summary_type='session') is injected when ratio >= 0.50."""
     alice = agents["alice"]
     conv_id = await _seed_conversation([alice])
     now = now_ms()
     async with get_db() as session:
-        summary = ContextSummary(
-            id="cs1",
+        from app.db.models import ContextSummary as CS
+        sm = CS(
+            id="cs_session",
             conversation_id=conv_id,
-            summary="earlier stuff",
-            covered_until_message_id="m0",
+            summary="title: test\ncurrent_state: earlier stuff\nkey_decisions: []\n"
+                    "files_touched: []\ncommands_run: []\nartifacts_produced: []\n"
+                    "blockers: []\nopen_questions: []\nnext_steps: []\n"
+                    "architecture_understanding: \"\"\n",
+            covered_until_message_id="session",
             covered_until_created_at=50,
             source_message_count=3,
             token_estimate=10,
             created_at=now,
+            summary_type="session",
+            covers_up_to=50.0,
         )
-        session.add(summary)
-    # Message after the summary's coverage window should still appear.
-    await _add_message("u1", conv_id, "user", [{"type": "text", "content": "after"}], 100)
+        session.add(sm)
+    # Large message after note → ratio >= 0.50 → Case C (Note + full text)
+    big_content = "x" * 500_000
+    await _add_message("u1", conv_id, "user", [{"type": "text", "content": big_content}], 100)
 
     history = await cc.build_history_for(alice, conv_id)
 
+    # Session Note should be injected (first message)
     assert history[0]["role"] == "user"
     assert "earlier stuff" in history[0]["content"]
-    assert "covered_until_message_id" in history[0]["content"]
-    assert {"role": "user", "content": "after"} in history
+    assert {"role": "user", "content": big_content} in history
 
 
 async def test_token_budget_drops_oldest_non_pinned(db, agents):
@@ -233,3 +240,95 @@ async def test_token_budget_drops_oldest_non_pinned(db, agents):
     assert "tiny" in contents
     # Only one copy of `big` (the pinned), the non-pinned big u2 was dropped.
     assert contents.count(big) == 1
+
+
+async def test_session_memory_yaml_injected_as_xml(db, agents):
+    """Session Memory with valid YAML → injected as <session_note> XML."""
+    alice = agents["alice"]
+    conv_id = await _seed_conversation([alice])
+
+    yaml_summary = (
+        "title: 测试\n"
+        "current_state: 正在测试\n"
+        "key_decisions:\n"
+        "  - \"[14:32] 决策A\"\n"
+        "files_touched: []\n"
+        "commands_run: []\n"
+        "artifacts_produced: []\n"
+        "blockers: []\n"
+        "open_questions: []\n"
+        "next_steps: []\n"
+        "architecture_understanding: \"\"\n"
+        "covers_up_to: 100.0\n"
+    )
+
+    now = now_ms()
+    async with get_db() as session:
+        from app.db.models import ContextSummary as CS
+
+        sm = CS(
+            id="cs_session_yaml",
+            conversation_id=conv_id,
+            summary=yaml_summary,
+            covered_until_message_id="session",
+            covered_until_created_at=100,
+            source_message_count=3,
+            token_estimate=50,
+            created_at=now,
+            summary_type="session",
+            covers_up_to=100.0,
+        )
+        session.add(sm)
+
+    big_content = "x" * 500_000
+    await _add_message("u1", conv_id, "user", [{"type": "text", "content": big_content}], 200)
+
+    history = await cc.build_history_for(alice, conv_id)
+
+    found_xml = False
+    for msg in history:
+        if "<session_note" in msg.get("content", ""):
+            found_xml = True
+            assert "covers_up_to" in msg["content"]
+            assert "<title>测试</title>" in msg["content"]
+            break
+    assert found_xml, "Expected <session_note> XML in injected history"
+
+
+async def test_session_memory_plain_text_injected_as_session_memory(db, agents):
+    """Session Memory with plain text (non-YAML) → injected as <session_memory> (legacy)."""
+    alice = agents["alice"]
+    conv_id = await _seed_conversation([alice])
+
+    plain_summary = "This is a plain text summary, not YAML."
+
+    now = now_ms()
+    async with get_db() as session:
+        from app.db.models import ContextSummary as CS
+
+        sm = CS(
+            id="cs_session_plain",
+            conversation_id=conv_id,
+            summary=plain_summary,
+            covered_until_message_id="session",
+            covered_until_created_at=100,
+            source_message_count=3,
+            token_estimate=50,
+            created_at=now,
+            summary_type="session",
+            covers_up_to=100.0,
+        )
+        session.add(sm)
+
+    big_content = "x" * 500_000
+    await _add_message("u1", conv_id, "user", [{"type": "text", "content": big_content}], 200)
+
+    history = await cc.build_history_for(alice, conv_id)
+
+    found_legacy = False
+    for msg in history:
+        if "<session_memory" in msg.get("content", ""):
+            found_legacy = True
+            assert plain_summary in msg["content"]
+            break
+    assert found_legacy, "Expected <session_memory> legacy injection for plain text"

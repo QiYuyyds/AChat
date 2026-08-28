@@ -20,13 +20,13 @@ from typing import Any, Literal
 logger = logging.getLogger(__name__)
 
 # ─── Thresholds (v1: code constants) ─────────────────────────────────────────
-# Five-stage compaction pipeline. Stages 1/2/3 replace the single-point compact
-# when ``compact_pipeline_enabled`` is True (default). Stage 4 (soft_inject)
-# and stage 5 (force_final) are unchanged.
-STAGE1_RATIO = 0.70  # semantic summarization (regex-only, no LLM)
-STAGE2_RATIO = 0.80  # moderate pruning (re-prune stage-1 summaries)
-STAGE3_RATIO = 0.88  # turn-boundary folding (older turns → single marker)
-
+# Three-stage compaction pipeline. Stage 1 (universal mask) and stage 3 (fold)
+# replace the single-point compact when ``compact_pipeline_enabled`` is True.
+# Stage 4 (soft_inject) and stage 5 (force_final) are unchanged.
+COMPACT_MASK_RATIO = 0.75  # universal masking of old tool results
+COMPACT_FOLD_RATIO = 0.88  # turn-boundary folding (older turns → single marker)
+# Sliding window: keep the most recent N complete turns intact during mask/fold.
+COMPACT_KEEP_RECENT_TURNS = 3
 # Legacy single-point compact threshold. Lowered from 0.90 → 0.85 to compensate
 # for the content-only token estimator (excludes JSON metadata, ~15-25% lower).
 # Only used when ``compact_pipeline_enabled=False`` (legacy rollback path).
@@ -40,7 +40,6 @@ SAFETY_MAX_MODEL_CALLS = 10_000
 # Circuit breaker thresholds
 DUPLICATE_FINGERPRINT_THRESHOLD = 3
 TOOL_ERROR_THRESHOLD = 3
-COMPACT_FAILURE_THRESHOLD = 3
 
 # Volatile arg keys excluded from fingerprints (prefer under-trigger).
 _VOLATILE_ARG_KEYS = frozenset({
@@ -89,7 +88,6 @@ class StopReason(StrEnum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     DUPLICATE_TOOL_BREAKER = "duplicate_tool_breaker"
     TOOL_ERROR_BREAKER = "tool_error_breaker"
-    COMPACT_FAILURE_BREAKER = "compact_failure_breaker"
     MAX_TOOL_TURNS = "max_tool_turns"
 
 
@@ -101,7 +99,6 @@ STOP_REASON_LABELS: dict[str, str] = {
     StopReason.BUDGET_EXHAUSTED.value: "上下文已用尽，未能完成完整收尾",
     StopReason.DUPLICATE_TOOL_BREAKER.value: "检测到重复操作，已自动总结",
     StopReason.TOOL_ERROR_BREAKER.value: "同一工具连续失败，已自动总结",
-    StopReason.COMPACT_FAILURE_BREAKER.value: "上下文压缩失败，已自动总结",
     StopReason.MAX_TOOL_TURNS.value: "达到操作轮次上限，已自动收尾",
 }
 
@@ -144,9 +141,10 @@ FORCED_FINAL_INSTRUCTION = (
 
 DecisionAction = Literal[
     "continue",
-    # Five-stage pipeline (stages 1/2/3, only when pipeline enabled)
-    "summarize",   # stage 1: semantic summarization of old tool results
-    "prune",       # stage 2: moderate re-pruning of stage-1 summaries
+    # Three-stage pipeline (stages 1/3, only when pipeline enabled)
+    "mask",    # stage 1: universal masking of old tool results
+    "summarize",   # legacy stage 1: semantic summarization (feature-flag fallback)
+    "prune",       # legacy stage 2: moderate re-pruning (feature-flag fallback)
     "fold",        # stage 3: fold older turns into a single marker
     # Legacy single-point compact (only when pipeline disabled)
     "compact",
@@ -179,9 +177,9 @@ class TerminationState:
     # optional fuse from settings (None = off)
     max_tool_turns: int | None = None
 
-    # budget path
-    compact_consecutive_failures: int = 0
-    compact_disabled: bool = False
+    # budget path — anti-oscillation
+    last_compact_stage: int = 0  # 0=none, 1=mask, 3=fold
+    turns_since_compact: int = 0
 
     # breakers
     last_fingerprint: str | None = None
@@ -211,6 +209,7 @@ class TerminationState:
     def record_tool_calls(self, names: list[str], fingerprints: list[str], errors: list[bool]) -> None:
         """Update breaker counters after a tool-execution turn."""
         self.tool_turn_count += 1
+        self.turns_since_compact += 1
         for name in names:
             self.tool_names_used.append(name)
 
@@ -323,11 +322,11 @@ def decide_pre_model(
 ) -> PreModelDecision:
     """Single pre-model-call decision for the Custom termination pipeline.
 
-    When ``pipeline_enabled`` is True (default), stages 1/2/3 replace the
-    single-point compact: ratio ≥ 0.70 → summarize, ≥ 0.80 → prune, ≥ 0.88 →
-    fold. When False, the legacy single-point ``compact`` at ``COMPACT_RATIO``
-    (0.85) is used instead. Stages 4/5 (soft_inject / force_final) are
-    unchanged regardless of the toggle.
+    When ``pipeline_enabled`` is True (default), stages 1/3 replace the
+    single-point compact: ratio ≥ 0.75 → mask, ≥ 0.88 → fold. When False, the
+    legacy single-point ``compact`` at ``COMPACT_RATIO`` (0.85) is used instead.
+    Stages 4/5 (soft_inject / force_final) are unchanged regardless of the
+    toggle. Anti-oscillation is enforced via ``should_compact``.
     """
     if state.forced_done:
         return PreModelDecision(
@@ -370,9 +369,6 @@ def decide_pre_model(
         and state.tool_turn_count >= state.max_tool_turns
     )
 
-    # Compact failure breaker → soft/forced pipeline
-    compact_breaker = state.compact_disabled
-
     # Duplicate inject (before soft_done)
     if (
         state.consecutive_fingerprint_count >= DUPLICATE_FINGERPRINT_THRESHOLD
@@ -403,13 +399,12 @@ def decide_pre_model(
         )
 
     # After soft, if still requesting tools due to breaker / fuse / budget → force
-    needs_wrap = fuse_hit or compact_breaker or ratio >= SOFT_RATIO or ratio >= HARD_RATIO
+    needs_wrap = fuse_hit or ratio >= SOFT_RATIO or ratio >= HARD_RATIO
 
     if needs_wrap:
         if not state.soft_done:
             reason = (
                 StopReason.MAX_TOOL_TURNS if fuse_hit
-                else StopReason.COMPACT_FAILURE_BREAKER if compact_breaker
                 else StopReason.BUDGET_SOFT_COMPLETE
             )
             state.soft_done = True
@@ -420,11 +415,6 @@ def decide_pre_model(
                     "[系统提示·请勿在回复中复述本段] 已达到操作轮次上限。"
                     "请尽快收束并给出用户可用的总结与下一步建议；"
                     "仅在必要时调用工具，否则直接回复。"
-                )
-            elif compact_breaker:
-                inject = (
-                    "[系统提示·请勿在回复中复述本段] 上下文压缩多次失败，预算紧张。"
-                    "请尽快总结并停止扩展上下文的操作。"
                 )
             return PreModelDecision(
                 action="soft_inject",
@@ -437,7 +427,7 @@ def decide_pre_model(
             reason = (
                 StopReason.MAX_TOOL_TURNS if fuse_hit and state.soft_trigger_reason == StopReason.MAX_TOOL_TURNS
                 else state.soft_trigger_reason
-                or (StopReason.COMPACT_FAILURE_BREAKER if compact_breaker else StopReason.BUDGET_FORCED_FINAL)
+                or StopReason.BUDGET_FORCED_FINAL
             )
             # Map soft-complete reason to forced when forcing due to continued tools
             if reason == StopReason.BUDGET_SOFT_COMPLETE:
@@ -453,17 +443,16 @@ def decide_pre_model(
             stop_reason=StopReason.BUDGET_EXHAUSTED,
         )
 
-    # Compact band: only when below soft and compact still allowed.
-    # When pipeline_enabled, use five-stage pipeline (stages 1/2/3).
-    # When not, use legacy single-point compact at COMPACT_RATIO.
-    if model_limit > 0 and not state.compact_disabled:
+    # Compact band: only when below soft and anti-oscillation allows.
+    # When pipeline_enabled, use three-stage pipeline (mask/fold) with
+    # should_compact anti-oscillation. When not, use legacy single-point compact.
+    if model_limit > 0:
         if pipeline_enabled:
-            if ratio >= STAGE3_RATIO:
+            compact_action = should_compact(state, ratio)
+            if compact_action == "fold":
                 return PreModelDecision(action="fold")
-            if ratio >= STAGE2_RATIO:
-                return PreModelDecision(action="prune")
-            if ratio >= STAGE1_RATIO:
-                return PreModelDecision(action="summarize")
+            if compact_action == "mask":
+                return PreModelDecision(action="mask")
         elif ratio >= COMPACT_RATIO:
             return PreModelDecision(action="compact")
 
@@ -478,7 +467,6 @@ def decide_pre_model(
                 StopReason.DUPLICATE_TOOL_BREAKER,
                 StopReason.TOOL_ERROR_BREAKER,
                 StopReason.MAX_TOOL_TURNS,
-                StopReason.COMPACT_FAILURE_BREAKER,
             )
             # force only if they keep calling tools — handled after tool turn when
             # we re-enter with force flags. Here: if soft done from budget and
@@ -492,17 +480,42 @@ def decide_pre_model(
     return PreModelDecision(action="continue")
 
 
-def mark_compact_result(state: TerminationState, *, success: bool) -> None:
-    if success:
-        state.compact_consecutive_failures = 0
-        return
-    state.compact_consecutive_failures += 1
-    if state.compact_consecutive_failures >= COMPACT_FAILURE_THRESHOLD:
-        state.compact_disabled = True
-        logger.warning(
-            "[react-termination] compact failed %d times; disabling further compact",
-            state.compact_consecutive_failures,
-        )
+def should_compact(state: TerminationState, ratio: float) -> str | None:
+    """Anti-oscillation compact decision.
+
+    Returns ``"mask"``, ``"fold"``, or ``None`` (no compaction).
+
+    Three rules:
+    1. Minimum interval: after mask, skip mask if ``turns_since_compact < K+1``
+       (K=3 → 4 turns). The sliding window means the first 3 turns after mask
+       are in the retention window — mask has nothing to prune.
+    2. Direct upgrade: after mask, if ``ratio ≥ 0.88``, skip mask and go directly
+       to fold.
+    3. No compaction after fold: after fold, no further compaction regardless of
+       ratio. soft_inject (0.93) and force_final (0.95) handle termination.
+    """
+    # Rule 3: no compaction after fold
+    if state.last_compact_stage == 3:
+        return None
+
+    # Rule 2: direct upgrade from mask to fold
+    if state.last_compact_stage == 1 and ratio >= COMPACT_FOLD_RATIO:
+        return "fold"
+
+    # Rule 1: minimum interval after mask
+    if state.last_compact_stage == 1 and state.turns_since_compact < COMPACT_KEEP_RECENT_TURNS + 1:
+        # Still in retention window, skip mask. But allow fold if ratio is high.
+        if ratio >= COMPACT_FOLD_RATIO:
+            return "fold"
+        return None
+
+    # Normal compaction triggers
+    if ratio >= COMPACT_FOLD_RATIO:
+        return "fold"
+    if ratio >= COMPACT_MASK_RATIO:
+        return "mask"
+
+    return None
 
 
 def build_forced_messages(state: TerminationState) -> list[dict]:

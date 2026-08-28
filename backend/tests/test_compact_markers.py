@@ -1,42 +1,14 @@
-"""Unit tests for compact_markers.py — CompactMarkerBuilder + CompactSuccessJudge."""
+"""Unit tests for compact_markers.py — CompactMarkerBuilder."""
 
 from __future__ import annotations
 
 from collections import Counter
 
 from app.services.compact_markers import (
-    EFFECTIVE_COMPACT_RATIO,
     MAX_MARKER_CHARS,
     MAX_SUMMARY_CHARS,
     CompactMarkerBuilder,
-    CompactSuccessJudge,
 )
-
-# ─── CompactSuccessJudge ────────────────────────────────────────────────────
-
-
-def test_judge_returns_true_when_token_drops_15_percent():
-    """pre=100k, post=80k → 20% drop → True."""
-    assert CompactSuccessJudge.judge(pre_tokens=100_000, post_tokens=80_000, pre_len=50, post_len=20) is True
-
-
-def test_judge_returns_true_at_exactly_15_percent_boundary():
-    """post == pre * 0.85 is NOT success (strict less-than)."""
-    pre = 100_000
-    post = int(pre * EFFECTIVE_COMPACT_RATIO)  # exactly 85% → not < 85%
-    assert CompactSuccessJudge.judge(pre_tokens=pre, post_tokens=post, pre_len=50, post_len=20) is False
-    # post = 84.9% → True
-    assert CompactSuccessJudge.judge(pre_tokens=pre, post_tokens=post - 1, pre_len=50, post_len=20) is True
-
-
-def test_judge_returns_false_when_only_len_changes():
-    """Fold that reduces len but not tokens → False."""
-    assert CompactSuccessJudge.judge(pre_tokens=100_000, post_tokens=98_000, pre_len=50, post_len=15) is False
-
-
-def test_judge_returns_false_when_pre_is_zero():
-    assert CompactSuccessJudge.judge(pre_tokens=0, post_tokens=0, pre_len=0, post_len=0) is False
-
 
 # ─── CompactMarkerBuilder ───────────────────────────────────────────────────
 
