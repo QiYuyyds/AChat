@@ -35,6 +35,7 @@ import {
   GitBranch,
   Loader2,
   Maximize2,
+  MessageCircle,
   Minimize2,
   Plus,
   RotateCw,
@@ -47,7 +48,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import type { DispatchState } from '@/stores/app-store'
+import type { DispatchState, PeerActivity } from '@/stores/app-store'
 import type { AgentRow } from '@/db/schema'
 import type { DispatchPlanItem, DispatchTaskStatus } from '@/shared/types'
 
@@ -66,6 +67,8 @@ interface TaskNodeData extends Record<string, unknown> {
   editable: boolean
   selected?: boolean
   pendingApprovalCount?: number
+  peerAsking?: PeerActivity[]
+  peerAnswered?: PeerActivity[]
 }
 
 interface EdgeData extends Record<string, unknown> {
@@ -73,6 +76,7 @@ interface EdgeData extends Record<string, unknown> {
   onDelete?: (edgeId: string) => void
   sourceStatus?: DispatchTaskStatus
   targetStatus?: DispatchTaskStatus
+  peerAsking?: boolean
 }
 
 interface DispatchDAGGraphProps {
@@ -100,6 +104,10 @@ function planToNodes(
   editable: boolean,
   selectedTaskId?: string | null,
 ): Node[] {
+  const peerAsking = dispatch.peerActivity?.filter((a) => a.status === 'asking') ?? []
+  const peerAnswered = dispatch.peerActivity?.filter(
+    (a) => a.status === 'answered' && Date.now() - a.timestamp < 5000,
+  ) ?? []
   return plan.map((task) => {
     const status: DispatchTaskStatus =
       dispatch.reviewStatus === 'rejected'
@@ -120,6 +128,12 @@ function planToNodes(
         retryInfo: dispatch.retryInfo?.[task.id],
         editable,
         selected: selectedTaskId === task.id,
+        peerAsking: peerAsking.filter(
+          (a) => a.fromTaskId === task.id || a.toTaskId === task.id,
+        ),
+        peerAnswered: peerAnswered.filter(
+          (a) => a.fromTaskId === task.id || a.toTaskId === task.id,
+        ),
       } as TaskNodeData,
     }
   })
@@ -132,19 +146,41 @@ function planToEdges(
   onDelete?: (edgeId: string) => void,
 ): Edge[] {
   const edges: Edge[] = []
+  const askingPairs = new Set(
+    (dispatch.peerActivity ?? [])
+      .filter((a) => a.status === 'asking' && a.toTaskId)
+      .map((a) => `${a.fromTaskId}->${a.toTaskId}`),
+  )
   for (const task of plan) {
     const deps = task.dependsOn ?? []
     for (const dep of deps) {
       const targetRunning = dispatch.taskStatus[task.id] === 'running'
+      const peerKey = `${dep}->${task.id}`
+      const reversePeerKey = `${task.id}->${dep}`
+      const isPeerAsking = askingPairs.has(peerKey) || askingPairs.has(reversePeerKey)
       edges.push({
         id: `e_${dep}_${task.id}`,
         source: dep,
         target: task.id,
         type: 'editable',
-        animated: targetRunning,
-        data: { editable, onDelete } as EdgeData,
+        animated: targetRunning || isPeerAsking,
+        data: { editable, onDelete, peerAsking: isPeerAsking } as EdgeData,
       })
     }
+  }
+  // Also add edges for peer communication between non-adjacent nodes
+  for (const act of dispatch.peerActivity ?? []) {
+    if (act.status !== 'asking' || !act.toTaskId) continue
+    const edgeId = `peer_${act.fromTaskId}_${act.toTaskId}`
+    if (edges.some((e) => e.id === edgeId)) continue
+    edges.push({
+      id: edgeId,
+      source: act.fromTaskId,
+      target: act.toTaskId,
+      type: 'editable',
+      animated: true,
+      data: { editable: false, peerAsking: true } as EdgeData,
+    })
   }
   return edges
 }
@@ -267,6 +303,8 @@ function TaskNode({ data }: NodeProps) {
   const isComplete = d.status === 'complete'
   const isPending = d.status === 'pending' && !d.editable
   const hasPending = (d.pendingApprovalCount ?? 0) > 0
+  const hasPeerAsking = (d.peerAsking ?? []).length > 0
+  const hasPeerAnswered = (d.peerAnswered ?? []).length > 0
   return (
     <div
       className={cn(
@@ -276,6 +314,7 @@ function TaskNode({ data }: NodeProps) {
         isComplete && 'dag-node-complete',
         isPending && 'dag-node-pending',
         d.selected && 'ring-2 ring-primary',
+        hasPeerAsking && 'ring-2 ring-blue-400/50',
       )}
       style={{ width: NODE_WIDTH }}
     >
@@ -285,6 +324,22 @@ function TaskNode({ data }: NodeProps) {
           <Bell className="size-3" />
           {d.pendingApprovalCount! > 1 && (
             <span className="dag-approval-count">{d.pendingApprovalCount}</span>
+          )}
+        </div>
+      )}
+      {(hasPeerAsking || hasPeerAnswered) && (
+        <div
+          className={cn(
+            'dag-peer-badge',
+            hasPeerAsking ? 'dag-peer-asking' : 'dag-peer-answered',
+          )}
+          title={d.peerAsking?.[0]?.question ?? d.peerAnswered?.[0]?.answer}
+        >
+          <MessageCircle className="size-3" />
+          {(d.peerAsking?.length ?? 0) + (d.peerAnswered?.length ?? 0) > 1 && (
+            <span className="dag-peer-count">
+              {(d.peerAsking?.length ?? 0) + (d.peerAnswered?.length ?? 0)}
+            </span>
           )}
         </div>
       )}
@@ -348,15 +403,31 @@ function EditableEdge(props: EdgeProps) {
 
   const targetRunning = d?.targetStatus === 'running'
   const flowComplete = d?.sourceStatus === 'complete' && d?.targetStatus === 'complete'
+  const isPeerAsking = d?.peerAsking === true
 
   return (
     <>
       <BaseEdge
         id={id}
         path={edgePath}
-        style={flowComplete ? { stroke: 'var(--success)', strokeWidth: 1.5 } : undefined}
+        style={
+          isPeerAsking
+            ? { stroke: 'var(--blue-400, #60a5fa)', strokeWidth: 2, strokeDasharray: '6 3' }
+            : flowComplete
+              ? { stroke: 'var(--success)', strokeWidth: 1.5 }
+              : undefined
+        }
       />
-      {targetRunning && (
+      {isPeerAsking && (
+        <path
+          d={edgePath}
+          fill="none"
+          stroke="#60a5fa"
+          strokeWidth={2.5}
+          className="dag-edge-flowing"
+        />
+      )}
+      {targetRunning && !isPeerAsking && (
         <path
           d={edgePath}
           fill="none"
@@ -611,18 +682,28 @@ function DAGGraphInner({
       edges.map((e) => {
         const sourceStatus = dispatch.taskStatus[e.source] ?? 'pending'
         const targetStatus = dispatch.taskStatus[e.target] ?? 'pending'
+        const isPeerEdge = e.id.startsWith('peer_')
+        const hasPeerAsking =
+          isPeerEdge ||
+          (dispatch.peerActivity ?? []).some(
+            (a) =>
+              a.status === 'asking' &&
+              ((a.fromTaskId === e.source && a.toTaskId === e.target) ||
+                (a.fromTaskId === e.target && a.toTaskId === e.source)),
+          )
         return {
           ...e,
-          animated: targetStatus === 'running',
+          animated: targetStatus === 'running' || hasPeerAsking,
           data: {
             ...(e.data as EdgeData),
-            onDelete: handleDeleteEdge,
+            onDelete: isPeerEdge ? undefined : handleDeleteEdge,
             sourceStatus,
             targetStatus,
+            peerAsking: hasPeerAsking,
           } as EdgeData,
         }
       }),
-    [edges, handleDeleteEdge, dispatch.taskStatus],
+    [edges, handleDeleteEdge, dispatch.taskStatus, dispatch.peerActivity],
   )
 
   const onConnect = useCallback(
@@ -791,11 +872,15 @@ function DAGGraphInner({
     )
   }, [selectedTaskId, setNodes])
 
-  // Sync dispatch taskStatus → node data (without full re-layout)
+  // Sync dispatch taskStatus + peerActivity → node data (without full re-layout)
   // planSignature only captures plan structure changes, not status changes.
   // Without this, node status stays at initial value and animations never trigger.
   useEffect(() => {
     if (editable) return
+    const peerAsking = dispatch.peerActivity?.filter((a) => a.status === 'asking') ?? []
+    const peerAnswered = dispatch.peerActivity?.filter(
+      (a) => a.status === 'answered' && Date.now() - a.timestamp < 5000,
+    ) ?? []
     setNodes((nds) =>
       nds.map((n) => {
         const data = n.data as TaskNodeData
@@ -806,11 +891,19 @@ function DAGGraphInner({
         const newWorktree = dispatch.worktreeByTask?.[n.id]
         const newRetryInfo = dispatch.retryInfo?.[n.id]
         const newPendingCount = pendingApprovals?.[n.id] ?? 0
+        const newPeerAsking = peerAsking.filter(
+          (a) => a.fromTaskId === n.id || a.toTaskId === n.id,
+        )
+        const newPeerAnswered = peerAnswered.filter(
+          (a) => a.fromTaskId === n.id || a.toTaskId === n.id,
+        )
         if (
           data.status === newStatus &&
           data.worktree === newWorktree &&
           data.retryInfo === newRetryInfo &&
-          (data.pendingApprovalCount ?? 0) === newPendingCount
+          (data.pendingApprovalCount ?? 0) === newPendingCount &&
+          (data.peerAsking ?? []).length === newPeerAsking.length &&
+          (data.peerAnswered ?? []).length === newPeerAnswered.length
         )
           return n
         return {
@@ -821,11 +914,13 @@ function DAGGraphInner({
             worktree: newWorktree,
             retryInfo: newRetryInfo,
             pendingApprovalCount: newPendingCount,
+            peerAsking: newPeerAsking,
+            peerAnswered: newPeerAnswered,
           } as TaskNodeData,
         }
       }),
     )
-  }, [dispatch.taskStatus, dispatch.worktreeByTask, dispatch.retryInfo, dispatch.reviewStatus, pendingApprovals, editable, setNodes])
+  }, [dispatch.taskStatus, dispatch.worktreeByTask, dispatch.retryInfo, dispatch.reviewStatus, dispatch.peerActivity, pendingApprovals, editable, setNodes])
 
   const onNodeClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {

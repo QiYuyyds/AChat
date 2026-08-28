@@ -61,6 +61,16 @@ export interface WorkspaceEnvState {
   error?: string
 }
 
+export interface PeerActivity {
+  fromTaskId: string
+  toTaskId?: string
+  question: string
+  status: 'asking' | 'answered' | 'unavailable' | 'limit_reached' | 'mailed'
+  answer?: string
+  askCount?: number
+  timestamp: number
+}
+
 export interface DispatchState {
   runId: string                                    // Orchestrator 的 runId
   messageId: string                                // 触发 plan 的 Orchestrator message id
@@ -76,6 +86,7 @@ export interface DispatchState {
     mergeStatus?: 'success' | 'conflict'
     resolutionStatus?: 'success' | 'llm_resolved' | 'manual_resolved' | 'abandoned' | 'conflict'
   }>
+  peerActivity?: PeerActivity[]
 }
 
 /** Undo stack entry — stores a message and an async undo function. */
@@ -1365,6 +1376,37 @@ export const useAppStore = create<AppState>()(
               maxAttempts: event.maxAttempts,
               error: event.error,
             }
+            return
+          }
+
+          case 'dispatch.peer': {
+            const d = s.dispatchesByRunId[event.parentRunId]
+            if (!d) return
+            d.peerActivity ??= []
+            // Replace existing entry with same fromTaskId+toTaskId pair, or append
+            const idx = d.peerActivity.findIndex(
+              (a) =>
+                a.fromTaskId === event.fromTaskId &&
+                a.toTaskId === event.toTaskId &&
+                a.status === 'asking',
+            )
+            const entry: PeerActivity = {
+              fromTaskId: event.fromTaskId,
+              toTaskId: event.toTaskId,
+              question: event.question,
+              status: event.status,
+              answer: event.answer,
+              askCount: event.askCount,
+              timestamp: Date.now(),
+            }
+            if (idx >= 0) {
+              d.peerActivity[idx] = entry
+            } else {
+              d.peerActivity.push(entry)
+            }
+            // Auto-clean: remove entries older than 30s or terminal entries > 5s
+            const cutoff = Date.now() - 30000
+            d.peerActivity = d.peerActivity.filter((a) => a.timestamp > cutoff)
             return
           }
 

@@ -315,6 +315,28 @@ class DispatchRetryEvent(BaseEvent):
     model_config = {"populate_by_name": True}
 
 
+class DispatchPeerEvent(BaseEvent):
+    """Event when a sub-agent calls ask_peer to communicate with another DAG node.
+
+    Covers two paths:
+    - Path A (sync mini-run): fromTaskId asks peerTaskId a question, awaits answer
+    - Path B (async mailbox): fromTaskId leaves a message for the parent agent
+
+    The frontend uses this to animate the DAG graph edges between nodes.
+    """
+
+    type: Literal["dispatch.peer"] = "dispatch.peer"
+    parent_run_id: str = Field(alias="parentRunId")
+    from_task_id: str = Field(alias="fromTaskId")
+    to_task_id: str | None = Field(default=None, alias="toTaskId")
+    question: str
+    status: Literal["asking", "answered", "unavailable", "limit_reached", "mailed"]
+    answer: str | None = None
+    ask_count: int | None = Field(default=None, alias="askCount")
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Approval Events ─────────────────────────────────────
 class FsWritePendingEvent(BaseEvent):
     """Event when a file write is pending approval."""
@@ -713,6 +735,7 @@ StreamEvent = Annotated[
         DispatchStartEvent,
         DispatchEndEvent,
         DispatchRetryEvent,
+        DispatchPeerEvent,
         # Approval events
         FsWritePendingEvent,
         FsWriteResolvedEvent,

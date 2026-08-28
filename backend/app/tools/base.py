@@ -37,6 +37,10 @@ class ToolContext:
     dispatch_mode: str = "solo"
     # multi-user: owning user for SSE event filtering and data isolation
     user_id: str | None = None
+    # DAG context (only set for subagent mode within a DAG)
+    dag_id: str | None = None
+    dag_task_id: str | None = None
+    parent_run_id: str | None = None
 
 
 @dataclass

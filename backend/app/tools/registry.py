@@ -15,6 +15,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.services import deploy_command_service
+from app.tools.ask_peer import ask_peer_tool
 from app.tools.ask_user import ask_user_tool
 from app.tools.base import ToolContext, ToolDef, ToolResult, err
 from app.tools.bash import bash_tool
@@ -57,6 +58,7 @@ from app.tools.memory_store import (
 )
 from app.tools.read_artifact import read_artifact_tool
 from app.tools.read_attachment import read_attachment_tool
+from app.tools.report_result import report_result_tool
 from app.tools.skills import load_skill_tool, write_skill_tool
 from app.tools.task_dispatch import task_dispatch_tool
 from app.tools.task_tools import (
@@ -259,6 +261,8 @@ def _build_registry() -> ToolRegistry:
     reg.register(task_complete_tool)
     reg.register(task_move_tool)
     reg.register(task_comment_tool)
+    reg.register(report_result_tool)
+    reg.register(ask_peer_tool)
     return reg
 
 

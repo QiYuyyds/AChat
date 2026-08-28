@@ -641,6 +641,49 @@
   text-align: center;
 }
 
+@keyframes dag-peer-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 color-mix(in oklch, #60a5fa 40%, transparent);
+  }
+  50% {
+    transform: scale(1.12);
+    box-shadow: 0 0 0 5px color-mix(in oklch, #60a5fa 0%, transparent);
+  }
+}
+.dag-peer-badge {
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 6px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: none;
+  animation: dag-peer-pulse 1.2s ease-in-out infinite;
+}
+.dag-peer-asking {
+  background: #60a5fa;
+  color: white;
+  box-shadow: 0 2px 6px -1px color-mix(in oklch, #60a5fa 50%, transparent);
+}
+.dag-peer-answered {
+  background: #34d399;
+  color: white;
+  box-shadow: 0 2px 6px -1px color-mix(in oklch, #34d399 50%, transparent);
+  animation: none;
+}
+.dag-peer-count {
+  font-size: 9px;
+  min-width: 10px;
+  text-align: center;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dag-node-running,
   .dag-shimmer-track::before,
@@ -648,7 +691,8 @@
   .dag-node-complete,
   .dag-edge-flowing,
   .dag-node-pending,
-  .dag-approval-badge {
+  .dag-approval-badge,
+  .dag-peer-badge {
     animation: none;
   }
 }

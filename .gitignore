@@ -97,6 +97,10 @@ next-env.d.ts
 # OpenSpec 变更与规格文档（本地工作区，不推送到远程）
 /openspec/
 
+# Eval harness (开发中，暂不提交)
+/backend/app/eval_harness/
+/docs/eval-harness-design.md
+
 # AI 工具配置与本地资源（不上传）
 /skills/
 /resources/

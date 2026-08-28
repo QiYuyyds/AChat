@@ -73,6 +73,8 @@ from app.utils.workspace_utils import get_effective_cwd
 
 logger = logging.getLogger(__name__)
 
+TERMINAL_TOOLS: frozenset[str] = frozenset({"report_result"})
+
 
 # ─── PromptAssembler integration (lazy, degrades gracefully) ─────────────────
 def _get_prompt_assembler():
@@ -399,6 +401,11 @@ class RunArgs:
     user_id: str | None = None
     # ModelProfile id selected per-message (plan B); None → use user's default profile
     model_profile_id: str | None = None
+    # DAG context: identifies the DAG and node this run belongs to
+    dag_id: str | None = None
+    dag_task_id: str | None = None
+    # override injection: when non-None, overrides adapter_input after build
+    override_messages: list[dict] | None = None
 
 
 @dataclass
@@ -823,6 +830,9 @@ async def _run_react_loop(  # noqa: C901
     dispatch_depth: int = 0,
     dispatch_mode: str = "solo",
     user_id: str | None = None,
+    dag_id: str | None = None,
+    dag_task_id: str | None = None,
+    parent_run_id: str | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """ReAct loop for SDK adapters: call_once → yield events → execute tools → repeat.
 
@@ -883,6 +893,9 @@ async def _run_react_loop(  # noqa: C901
         dispatch_depth=dispatch_depth,
         dispatch_mode=dispatch_mode,
         user_id=user_id,
+        dag_id=dag_id,
+        dag_task_id=dag_task_id,
+        parent_run_id=parent_run_id,
     )
 
     tool_call_cache: dict[str, Any] = {}
@@ -1282,6 +1295,51 @@ async def _run_react_loop(  # noqa: C901
                         messages.append(extra_msg)
 
             term.record_tool_calls(exec_names, exec_fps, exec_errors)
+
+            # ── Terminal tool check (e.g. report_result) ──
+            # If any executed tool is a terminal tool, end the loop immediately.
+            # All tool_results have already been appended to messages above.
+            terminal_calls = [tc for tc in tool_calls if tc.name in TERMINAL_TOOLS]
+            if terminal_calls:
+                for ev in deferred_events:
+                    yield ev
+                yield TurnMetricEvent(
+                    conversation_id=conversation_id,
+                    timestamp=now_ms(),
+                    run_id=run_id,
+                    turn=turn,
+                    tokens=TurnTokenBreakdown(
+                        input_tokens=turn_input_tokens,
+                        output_tokens=turn_output_tokens,
+                        cache_read_tokens=turn_cache_read_tokens,
+                    ),
+                    tool_calls=[tc.name for tc in tool_calls],
+                    duration_ms=int((time.monotonic() - turn_start) * 1000),
+                )
+                if hook_registry and hook_registry.has_handlers(HookEvent.POST_TURN):
+                    await hook_registry.dispatch(HookContext(
+                        event=HookEvent.POST_TURN,
+                        run_id=run_id,
+                        agent_id=agent_id,
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        turn_number=turn,
+                        message_id=message_id,
+                        tool_calls=[{"id": tc.id, "name": tc.name, "args": tc.args} for tc in tool_calls],
+                        finish_reason=None,
+                        messages=messages,
+                    ))
+                if hook_registry and hook_registry.has_handlers(HookEvent.ON_STOP):
+                    await hook_registry.dispatch(HookContext(
+                        event=HookEvent.ON_STOP,
+                        run_id=run_id,
+                        agent_id=agent_id,
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        turn_number=turn,
+                    ))
+                yield _emit_run_usage(StopReason.COMPLETE)
+                break
 
             for ev in deferred_events:
                 yield ev
@@ -2024,6 +2082,13 @@ async def execute_simple_run(
             worktree_path=args.override_workspace_path,
         )
 
+    # ── Cache system_prompt to AgentSessionRegistry (for DAG nodes) ──
+    if args.dag_task_id and adapter_input.system_prompt:
+        from app.services.agent_session_registry import agent_session_registry
+        agent_session_registry.set_system_prompt(
+            args.dag_task_id, adapter_input.system_prompt
+        )
+
     # ── Persist effective_prompt for cache-stable history reconstruction ──
     # The effective_prompt (with dynamic_prefix + [current_time]) must be
     # persisted so that build_history_for can replay the exact same user
@@ -2065,6 +2130,20 @@ async def execute_simple_run(
                     run_id, resume_from_turn, len(adapter_input.messages),
                 )
 
+        # ── Override injection point (for mini-run / retry) ──
+        if args.override_messages is not None:
+            adapter_input.messages = args.override_messages
+            logger.info(
+                "[AgentRunner] override_messages applied: run=%s messages=%d",
+                run_id, len(adapter_input.messages),
+            )
+        if args.override_system_prompt is not None:
+            adapter_input.system_prompt = args.override_system_prompt
+            logger.info(
+                "[AgentRunner] override_system_prompt applied: run=%s",
+                run_id,
+            )
+
         # ── MCP lifecycle: connect, discover tools, inject into adapter_input ──
         mcp_manager: Any | None = None
         mcp_configs = await _resolve_mcp_configs(agent)
@@ -2093,6 +2172,9 @@ async def execute_simple_run(
                 dispatch_depth=args.dispatch_depth,
                 dispatch_mode=args.dispatch_mode,
                 user_id=args.user_id,
+                dag_id=args.dag_id,
+                dag_task_id=args.dag_task_id,
+                parent_run_id=args.parent_run_id,
             )
             result = await consume_stream(
                 stream, args.agent_id, run_id,

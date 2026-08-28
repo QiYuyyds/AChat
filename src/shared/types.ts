@@ -546,6 +546,16 @@ export type StreamEvent = BaseEvent &
         maxAttempts: number
         error?: string
       }
+    | {
+        type: 'dispatch.peer'
+        parentRunId: string
+        fromTaskId: string
+        toTaskId?: string
+        question: string
+        status: 'asking' | 'answered' | 'unavailable' | 'limit_reached' | 'mailed'
+        answer?: string
+        askCount?: number
+      }
     | { type: 'fs_write.pending'; pendingWrite: PendingWrite }
     | { type: 'fs_write.resolved'; pendingId: string; applied: boolean }
     | { type: 'bash_command.pending'; pendingCommand: PendingBashCommand }

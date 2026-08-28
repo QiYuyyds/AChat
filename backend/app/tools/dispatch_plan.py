@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import Any
 
 from sqlalchemy import select
@@ -38,6 +39,25 @@ _PARAMETERS: dict[str, Any] = {
     "type": "object",
     "required": ["tasks"],
     "properties": {
+        "mode": {
+            "type": "string",
+            "enum": ["full", "retry"],
+            "default": "full",
+            "description": (
+                "full = execute a new DAG from scratch; retry = re-run only "
+                "failed nodes, reusing the conversation history and "
+                "system_prompt from the original DAG's successful nodes. "
+                "When mode=retry, originalDagId must be provided."
+            ),
+        },
+        "originalDagId": {
+            "type": "string",
+            "description": (
+                "Required when mode=retry. The DAG ID from the previous "
+                "dispatch_plan return value. Used to look up original "
+                "sessions for history reuse."
+            ),
+        },
         "tasks": {
             "type": "array",
             "minItems": 1,
@@ -240,6 +260,14 @@ async def _await_plan_approval(
 
 async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     raw_tasks = args.get("tasks") if isinstance(args, dict) else None
+    mode = args.get("mode", "full") if isinstance(args, dict) else "full"
+    original_dag_id = args.get("originalDagId") if isinstance(args, dict) else None
+
+    if mode not in ("full", "retry"):
+        return err(f"Invalid mode '{mode}'; must be 'full' or 'retry'")
+
+    if mode == "retry" and not original_dag_id:
+        return err("originalDagId is required when mode='retry'")
 
     parsed = _parse_plan_items(raw_tasks)
     if isinstance(parsed, str):
@@ -348,6 +376,9 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     all_clone = all(item.agent_id == ctx.agent_id for item in items)
     visibility = "hidden" if all_clone else "visible"
 
+    dag_id = uuid.uuid4().hex
+    all_task_ids = [item.id for item in items]
+
     dag_ctx = DagExecContext(
         conversation_id=ctx.conversation_id,
         trigger_message_id=trigger_message_id,
@@ -357,6 +388,10 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         dispatch_visibility=visibility,
         user_id=ctx.user_id,
         workspace_path=ctx.workspace_path,
+        dag_id=dag_id,
+        all_task_ids=all_task_ids,
+        original_dag_id=original_dag_id if mode == "retry" else None,
+        retry_mode=(mode == "retry"),
     )
 
     logger.info(
@@ -376,17 +411,33 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         len(results),
     )
 
-    return ok(
-        {
-            "tasks": {
-                nr.task_id: {
-                    "status": nr.status,
-                    "summary": nr.summary,
-                }
-                for nr in results.values()
+    # Drain mailbox: collect async messages left by sub-agents via ask_peer
+    from app.services.agent_session_registry import agent_session_registry
+
+    mailbox_msgs = agent_session_registry.drain_mailbox(ctx.run_id)
+
+    result_data: dict[str, Any] = {
+        "dagId": dag_id,
+        "tasks": {
+            nr.task_id: {
+                "status": nr.status,
+                "summary": nr.summary,
+                "workspaceChanges": nr.workspace_changes,
+                "artifactIds": nr.artifact_ids,
+                "keyDecisions": nr.key_decisions,
+                **(
+                    {"errorDetail": nr.error_detail}
+                    if nr.status in ("failed", "aborted") and nr.error_detail
+                    else {}
+                ),
             }
-        }
-    )
+            for nr in results.values()
+        },
+    }
+    if mailbox_msgs:
+        result_data["mailbox"] = mailbox_msgs
+
+    return ok(result_data)
 
 
 dispatch_plan_tool = ToolDef(
@@ -398,7 +449,12 @@ dispatch_plan_tool = ToolDef(
         "independent tasks run in parallel, dependent tasks wait for their "
         "upstream tasks. Use this for multi-task work with known dependencies "
         "(e.g. PRD → design → frontend+backend → integration test). For a "
-        "single immediate dispatch, use task_dispatch instead."
+        "single immediate dispatch, use task_dispatch instead.\n\n"
+        "Parameters:\n"
+        "- mode: 'full' (default, new DAG) or 'retry' (re-run failed nodes "
+        "with reused history from the original DAG)\n"
+        "- originalDagId: required when mode='retry'; the dagId from the "
+        "previous dispatch_plan return value"
     ),
     parameters=_PARAMETERS,
     handler=_handler,

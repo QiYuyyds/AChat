@@ -66,6 +66,8 @@ class LoopRunResult:
     run_id: str | None = None  # child run ID (for dispatch events)
     stop_reason: str | None = None
     stop_reason_label: str | None = None
+    workspace_changes: list[str] = field(default_factory=list)
+    key_decisions: list[str] = field(default_factory=list)
 
 
 # ─── Coordinated mode system prompt ───────────────────────────────────────────
@@ -282,6 +284,25 @@ _SUBAGENT_SUFFIX = """
 ### 何时不用
 - 简单任务直接做
 - 子任务间有强依赖
+
+### 完成任务时必须调用 report_result
+当你完成任务时，**不要直接结束回复**，而是调用 `report_result` 工具提交结构化结果。
+- `summary`：面向下游 Agent 或主 Agent 的摘要，需包含关键结论和产出说明
+- `filesChanged`：你新增或修改的文件路径列表
+- `artifacts`：你产出的 artifact ID 列表（如有）
+- `keyDecisions`：关键决策或发现（如有）
+调用 `report_result` 后系统会自动结束你的执行，不需要再写"我完成了"之类的文本。
+
+**重要**：调用 `report_result` 时不要在同一轮中同时调用其他工具。`report_result` 是终态工具，
+调用后系统会立即终止你的执行——同一轮中的其他工具虽然会执行，但你不会看到它们的结果。
+请先完成所有需要的工具调用（如 fs_write / bash），在最后一轮单独调用 `report_result`。
+
+### 横向通信（ask_peer）
+当上游产出缺少关键信息且无法自行推断时，可通过 `ask_peer` 工具向同 DAG 内的已完成节点提问。
+- `peerTaskId`：目标节点 ID（省略时向主 Agent 异步留言，不期望收到回复）
+- `question`：提问内容，需自包含——目标 Agent 只看到问题文本
+
+**注意**：仅当确实需要上游信息才能继续工作时使用。优先自行推断或用工具探索。
 """
 
 
@@ -415,6 +436,14 @@ async def _run_subagent_loop(
     if dispatch_enabled and "task_dispatch" not in tool_names:
         tool_names.append("task_dispatch")
 
+    # report_result is always injected for subagent mode (not gated by depth)
+    if "report_result" not in tool_names:
+        tool_names.append("report_result")
+
+    # ask_peer is injected only when below max depth (mini-run needs depth budget)
+    if dispatch_enabled and "ask_peer" not in tool_names:
+        tool_names.append("ask_peer")
+
     subagent_prompt = build_subagent_system_prompt(agent.system_prompt)
     subagent_args = replace(
         args,
@@ -519,6 +548,10 @@ async def spawn_subagent_loop(
     dispatch_depth: int = 0,
     dispatch_visibility: str = "visible",
     user_id: str | None = None,
+    dag_id: str | None = None,
+    dag_task_id: str | None = None,
+    override_messages: list[dict] | None = None,
+    override_system_prompt: str | None = None,
 ) -> LoopRunResult:
     """Spawn a subagent loop for a dispatched task.
 
@@ -532,6 +565,10 @@ async def spawn_subagent_loop(
         dispatch_depth: Recursion depth (parent's depth + 1).
         dispatch_visibility: "visible" for group-member dispatch, "hidden" for
             clone-self dispatch.
+        override_messages: When non-None, replaces adapter_input.messages
+            (used by retry mode to inject rebuilt history).
+        override_system_prompt: When non-None, replaces adapter_input.system_prompt
+            (used by retry mode to reuse the original system_prompt).
     """
     from app.observability import start_span
     args = RunArgs(
@@ -545,6 +582,10 @@ async def spawn_subagent_loop(
         dispatch_depth=dispatch_depth,
         dispatch_visibility=dispatch_visibility,
         user_id=user_id,
+        dag_id=dag_id,
+        dag_task_id=dag_task_id,
+        override_messages=override_messages,
+        override_system_prompt=override_system_prompt,
     )
 
     child_run_id, child_task, _child_cancel = run_with_args(args)
@@ -574,10 +615,25 @@ async def spawn_subagent_loop(
                 run_id=child_run_id,
             )
 
-        # Extract the final text from the run's output messages
-        text = await _extract_run_final_text(
-            child_run_id, conversation_id, run_result.output_message_ids
-        )
+        # Check for structured result from report_result terminal tool
+        from app.tools.report_result import _report_result_cache
+
+        payload = _report_result_cache.pop(child_run_id, None)
+
+        if payload is not None:
+            text = payload.summary
+            artifact_ids = payload.artifacts
+            workspace_changes = payload.files_changed
+            key_decisions = payload.key_decisions
+        else:
+            # Fallback: extract final text from the run's output messages
+            text = await _extract_run_final_text(
+                child_run_id, conversation_id, run_result.output_message_ids
+            )
+            artifact_ids = run_result.artifact_ids
+            workspace_changes = []
+            key_decisions = []
+
         text = text or "(subagent produced no text output)"
         stop_reason = getattr(run_result, "stop_reason", None)
         if stop_reason and stop_reason != "complete":
@@ -587,11 +643,13 @@ async def spawn_subagent_loop(
         return LoopRunResult(
             status=run_result.status,
             text=text,
-            artifact_ids=run_result.artifact_ids,
+            artifact_ids=artifact_ids,
             output_message_ids=run_result.output_message_ids,
             run_id=child_run_id,
             stop_reason=stop_reason,
             stop_reason_label=getattr(run_result, "stop_reason_label", None),
+            workspace_changes=workspace_changes,
+            key_decisions=key_decisions,
         )
 
 

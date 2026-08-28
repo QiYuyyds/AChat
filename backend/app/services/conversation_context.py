@@ -294,6 +294,69 @@ async def _get_session_note(conversation_id: str) -> SessionNote | None:
 # ─── Public API ─────────────────────────────────────────────────────────────
 
 
+async def build_run_messages(
+    run_id: str,
+    conversation_id: str,
+    agent_id: str,
+    *,
+    include_hidden: bool = False,
+) -> list[ChatMessage]:
+    """Rebuild chat messages from Message table for a specific run.
+
+    Unlike ``build_history_for`` which queries by conversation_id, this queries
+    by ``run_id`` — needed for mini-run context reconstruction where only the
+    target run's messages (including hidden ones) are relevant.
+
+    When ``include_hidden=False`` (default), filters ``hidden == False``
+    (preserving current ``build_history_for`` behavior).
+    When ``include_hidden=True``, includes all messages (mini-run needs
+    hidden messages for full context reconstruction).
+    """
+    async with get_local_db() as db:
+        stmt = (
+            select(Message)
+            .where(
+                Message.run_id == run_id,
+                Message.status == "complete",
+            )
+            .order_by(Message.created_at)
+        )
+        if not include_hidden:
+            stmt = stmt.where(Message.hidden == False)  # noqa: E712
+        msgs = (await db.execute(stmt)).scalars().all()
+
+        # Load conversation for agent_names (multi-agent rendering)
+        conv = (
+            await db.execute(
+                select(Conversation).where(Conversation.id == conversation_id)
+            )
+        ).scalars().first()
+
+        agent_names: dict[str, str] = {}
+        if conv is not None and len(conv.agent_ids_list) > 1:
+            rows = (
+                await db.execute(
+                    select(Agent.id, Agent.name).where(
+                        Agent.id.in_(conv.agent_ids_list)
+                    )
+                )
+            ).all()
+            for row in rows:
+                agent_names[row.id] = row.name
+
+        artifact_ids = _collect_artifact_ids(msgs)
+        artifact_titles = await _load_artifact_titles(db, artifact_ids)
+
+        db.expunge_all()
+
+    out: list[ChatMessage] = []
+    for msg in msgs:
+        serialized = _serialize_message(msg, agent_id, artifact_titles, agent_names)
+        if serialized:
+            out.extend(serialized)
+    return out
+
+
 async def build_history_for(
     agent_id: str,
     conversation_id: str,
