@@ -4,6 +4,7 @@ import { ArrowLeft, FileText, Loader2, Trash2, Upload } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { Markdown } from '@/components/markdown'
+import { RagGraphPanel } from '@/components/rag-graph-panel'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -44,17 +45,21 @@ const SOURCE_LABELS: Record<string, string> = {
  */
 function preprocessContent(contentMd: string, parser: string | undefined): string {
   if (!contentMd) return ''
+  let result = contentMd
   if (parser && parser !== 'plain_text') {
-    return contentMd.replace(
+    result = result.replace(
       /^---\s*page\s*(\d+)\s*---$/gim,
       '\n\n---\n\n**\u00a0 Page $1**\n\n',
     )
   }
-  return contentMd
+  // Ensure image paths starting with /api/ are preserved (resolveImageSrc in Markdown handles them)
+  // Legacy relative paths like "images/xxx.png" are also handled by resolveImageSrc
+  return result
 }
 
 const DETAIL_TABS = [
   { value: 'content' as const, label: '内容' },
+  { value: 'graph' as const, label: '知识图谱' },
   { value: 'versions' as const, label: '版本历史' },
 ]
 
@@ -74,7 +79,7 @@ export function DocumentDetail({
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [uploadOpen, setUploadOpen] = useState(false)
-  const [detailTab, setDetailTab] = useState<'content' | 'versions'>('content')
+  const [detailTab, setDetailTab] = useState<'content' | 'graph' | 'versions'>('content')
 
   const load = async () => {
     setLoading(true)
@@ -198,7 +203,7 @@ export function DocumentDetail({
       <div className="flex shrink-0 items-center justify-between border-b px-5 py-2.5">
         <div className="relative flex w-fit items-center rounded-lg bg-muted p-0.5">
           <span
-            className="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-2px)] rounded-md bg-background shadow-[var(--shadow-sm),var(--inset-hi)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
+            className="pointer-events-none absolute top-0.5 bottom-0.5 left-0.5 w-[calc(33.333%-1.5px)] rounded-md bg-background shadow-[var(--shadow-sm),var(--inset-hi)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]"
             style={{ transform: `translateX(${activeTabIndex * 100}%)` }}
           />
           {DETAIL_TABS.map((t) => {
@@ -232,6 +237,11 @@ export function DocumentDetail({
       </div>
 
       {/* Content */}
+      {detailTab === 'graph' ? (
+        <div className="min-h-0 flex-1">
+          <RagGraphPanel />
+        </div>
+      ) : (
       <ScrollArea className="min-h-0 flex-1">
         <div key={detailTab} className="tab-content-enter">
           {detailTab === 'content' ? (
@@ -347,6 +357,7 @@ export function DocumentDetail({
           )}
         </div>
       </ScrollArea>
+      )}
 
       {/* Upload new version dialog */}
       <UploadDocumentDialog

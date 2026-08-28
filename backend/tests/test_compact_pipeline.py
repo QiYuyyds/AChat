@@ -15,6 +15,9 @@ import logging
 import pytest
 
 from app.services.compact_pipeline import (
+    _build_mask_marker,
+    _is_whitelisted,
+    _stage1_mask,
     estimate_messages_tokens,
     find_turn_boundaries,
     keep_recent_turns,
@@ -413,13 +416,13 @@ def test_summarize_unknown_tool_fallback():
 
 
 def test_pipeline_stage1_preserves_recent_turns():
-    """Stage 1: last 2 turns complete, old turns' tool_results summarized."""
+    """Stage 1 (mask): last 3 turns complete, old turns' tool_results masked."""
     tool_names = ("fs_list", "fs_read", "bash", "fs_grep", "code_explore")
     messages = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "go"},
     ]
-    for t in range(4):
+    for t in range(5):
         messages.extend(_make_turn(t, tool_names=tool_names, result_content="result " * 100))
 
     original_len = len(messages)
@@ -432,8 +435,8 @@ def test_pipeline_stage1_preserves_recent_turns():
     assert result[0]["role"] == "system"
     assert result[1]["role"] == "user"
 
-    # last 2 turns (turns 2,3) are intact: each turn = 1 assistant + 5 tools
-    recent_start = len(result) - 2 * (1 + len(tool_names))
+    # last 3 turns (turns 2,3,4) are intact: each turn = 1 assistant + 5 tools
+    recent_start = len(result) - 3 * (1 + len(tool_names))
     recent = result[recent_start:]
     # first message of recent should be an assistant with tool_calls
     assert recent[0]["role"] == "assistant"
@@ -442,34 +445,35 @@ def test_pipeline_stage1_preserves_recent_turns():
     recent_tools = [m for m in recent if m.get("role") == "tool"]
     assert all(len(m.get("content", "")) > 50 for m in recent_tools)
 
-    # old turns' tool messages should be summarized (shorter content)
+    # old turns' tool messages should be masked (shorter content with mask marker)
     old_tools = [
         m for m in result[:recent_start]
         if isinstance(m, dict) and m.get("role") == "tool"
     ]
-    # at least some old tool results should have been shortened
-    shortened = [m for m in old_tools if len(m.get("content", "")) < 100]
-    assert len(shortened) > 0, "old tool_results should be summarized"
+    masked = [m for m in old_tools if "[masked" in m.get("content", "")]
+    assert len(masked) > 0, "old tool_results should be masked"
+
+    # code_explore results in old turns should NOT be masked (whitelisted)
+    # Find code_explore tool results in old segment by looking for call IDs
+    # starting with call_0_4 or call_1_4 (code_explore is index 4)
+    for m in old_tools:
+        # Check if this is a code_explore result (still has original long content)
+        if len(m.get("content", "")) > 50 and "[masked" not in m.get("content", ""):
+            # This should be a whitelisted tool (code_explore)
+            continue
+
+    # fs_read with mode=full should be masked, but the test uses default args
+    # (path only, no mode), so mode defaults to "" which is not outline/head
 
 
 def test_pipeline_stage1_skips_code_explore():
-    """Stage 1 must not prune code_explore results (always preserved)."""
+    """Stage 1 (mask) must not mask code_explore results (always preserved)."""
     code_explore_content = "code explore " * 1000  # ~13k chars
     messages = [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "go"},
     ]
-    for t in range(4):
-        assistant = _make_assistant_with_tool_calls(t, tool_names=("code_explore",))
-        messages.append(assistant)
-        messages.append(_make_tool_result(t, 0, code_explore_content))
-        messages.append(_make_tool_result(t, 0, code_explore_content))  # extra to make a turn
-    # Fix tool_call_id matching: rebuild properly
-    messages = [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "go"},
-    ]
-    for t in range(4):
+    for t in range(5):
         assistant = {
             "role": "assistant",
             "content": f"turn {t}",
@@ -487,13 +491,13 @@ def test_pipeline_stage1_skips_code_explore():
 
 
 def test_pipeline_stage3_fold_uses_turn_boundary():
-    """Stage 3: 4+ turns → 1 fold marker + last 2 turns, no orphan tool_use/tool_result."""
+    """Stage 3: 4+ turns → 1 fold marker + last 3 turns, no orphan tool_use/tool_result."""
     tool_names = ("fs_list", "fs_read", "bash")
     messages = [
         {"role": "system", "content": "You are an agent."},
         {"role": "user", "content": "Explore."},
     ]
-    for t in range(5):
+    for t in range(6):
         messages.extend(_make_turn(t, tool_names=tool_names, result_content="data " * 50))
 
     result = run_compact_pipeline(messages, stage=3)
@@ -505,10 +509,10 @@ def test_pipeline_stage3_fold_uses_turn_boundary():
     assert result[1]["role"] == "system"
     assert "[folded" in result[1]["content"]
 
-    # remaining messages = last 2 turns = 2 * (1 + 3) = 8
+    # remaining messages = last 3 turns = 3 * (1 + 3) = 12
     recent = result[2:]
-    assert len(recent) == 8
-    # recent starts with assistant (turn 4)
+    assert len(recent) == 12
+    # recent starts with assistant (turn 5)
     assert recent[0]["role"] == "assistant"
     assert recent[0].get("tool_calls")
 
@@ -551,12 +555,11 @@ def test_pipeline_stage3_fallback_when_no_turns(caplog):
     assert any("falling back" in r.message for r in caplog.records)
 
 
-def test_pipeline_stage2_reprunes_more_aggressively():
-    """Stage 2 re-prunes stage-1 summaries: further token reduction.
+def test_pipeline_stage2_collapses_to_mask():
+    """When universal mask is enabled, stage 2 collapses to mask (same as stage 1).
 
-    Stage 2 is designed to run on the output of stage 1, not the original
-    messages. We apply stage 1 first, then stage 2 on the stage-1 result,
-    and verify further token reduction.
+    With the new three-stage pipeline, stage 2 is removed. When feature flag
+    is True, ``run_compact_pipeline(stage=2)`` delegates to ``_stage1_mask``.
     """
     import copy
 
@@ -566,17 +569,17 @@ def test_pipeline_stage2_reprunes_more_aggressively():
         {"role": "user", "content": "go"},
     ]
     big_result = json.dumps([{"name": f"f{i}", "size": 100, "depth": 3, "isDirectory": i % 3 == 0} for i in range(200)])
-    for t in range(4):
+    for t in range(5):
         messages.extend(_make_turn(t, tool_names=tool_names, result_content=big_result))
 
     stage1 = run_compact_pipeline(copy.deepcopy(messages), stage=1)
-    # Stage 2 runs on stage 1's output (re-pruning).
-    stage2_from_s1 = run_compact_pipeline(copy.deepcopy(stage1), stage=2)
+    # Stage 2 when feature flag is True → same as mask
+    stage2 = run_compact_pipeline(copy.deepcopy(messages), stage=2)
 
     s1_tokens = estimate_messages_tokens(stage1)
-    s2_tokens = estimate_messages_tokens(stage2_from_s1)
-    # stage 2 should produce fewer tokens than stage 1
-    assert s2_tokens < s1_tokens, f"stage 2 ({s2_tokens}) should be < stage 1 ({s1_tokens})"
+    s2_tokens = estimate_messages_tokens(stage2)
+    # Both should produce similar token counts (both mask old tool results)
+    assert s2_tokens <= s1_tokens * 1.1, f"stage 2 ({s2_tokens}) should be similar to stage 1 ({s1_tokens})"
 
 
 def test_pipeline_invalid_stage_raises():
@@ -588,12 +591,12 @@ def test_pipeline_invalid_stage_raises():
 
 
 def test_eight_turn_seven_tool_pipeline():
-    """E2E: 8 turns × 7 tools = 56 messages. Stages escalate correctly.
+    """E2E: 8 turns × 7 tools. Stages escalate correctly with universal mask.
 
     Constructs a realistic scenario with fs_list / fs_read full / bash /
-    code_explore tool results. Verifies that stage 1 reduces tokens while
-    keeping recent turns intact, stage 2 reduces further, and stage 3 folds
-    older turns into a marker while preserving the last 2 turns.
+    code_explore tool results. Verifies that stage 1 (mask) reduces tokens
+    while keeping recent 3 turns intact, and stage 3 folds older turns into
+    a marker while preserving the last 3 turns.
     """
     import copy
 
@@ -654,29 +657,24 @@ def test_eight_turn_seven_tool_pipeline():
     original_tokens = estimate_messages_tokens(messages)
     assert original_tokens > 0
 
-    # Stage 1: summarize old tool results, keep recent 2 turns
+    # Stage 1 (mask): mask old tool results, keep recent 3 turns
     s1 = run_compact_pipeline(copy.deepcopy(messages), stage=1)
     s1_tokens = estimate_messages_tokens(s1)
     assert s1_tokens < original_tokens, "stage 1 should reduce tokens"
 
-    # Recent 2 turns (turns 6,7) must be intact — same tool_call_ids
+    # Recent 3 turns (turns 5,6,7) must be intact — same tool_call_ids
     s1_recent_tools = {m["tool_call_id"] for m in s1 if isinstance(m, dict) and m.get("role") == "tool"}
-    expected_recent_ids = {f"call_{t}_{i}" for t in (6, 7) for i in range(len(tool_names))}
+    expected_recent_ids = {f"call_{t}_{i}" for t in (5, 6, 7) for i in range(len(tool_names))}
     assert expected_recent_ids.issubset(s1_recent_tools), "recent turns' tool results must be preserved"
 
     # code_explore results in recent turns must be verbatim
     for m in s1:
         if isinstance(m, dict) and m.get("role") == "tool":
             tid = m.get("tool_call_id", "")
-            if tid.startswith("call_6_4") or tid.startswith("call_7_4"):  # code_explore is index 4
+            if tid.startswith("call_5_4") or tid.startswith("call_6_4") or tid.startswith("call_7_4"):  # code_explore is index 4
                 assert m["content"] == code_explore_result, "code_explore must be verbatim"
 
-    # Stage 2: further reduction
-    s2 = run_compact_pipeline(copy.deepcopy(s1), stage=2)
-    s2_tokens = estimate_messages_tokens(s2)
-    assert s2_tokens < s1_tokens, "stage 2 should reduce further"
-
-    # Stage 3: fold older turns, keep recent 2 + system prompt
+    # Stage 3: fold older turns, keep recent 3 + system prompt
     s3 = run_compact_pipeline(copy.deepcopy(messages), stage=3)
     s3_tokens = estimate_messages_tokens(s3)
     assert s3_tokens < original_tokens, "stage 3 should reduce tokens"
@@ -686,7 +684,7 @@ def test_eight_turn_seven_tool_pipeline():
     assert s3[0]["content"] == "You are a helpful agent."
     # Fold marker present
     assert any(isinstance(m, dict) and m.get("role") == "system" and "[folded" in m.get("content", "") for m in s3)
-    # Recent 2 turns intact
+    # Recent 3 turns intact
     s3_recent_ids = {m["tool_call_id"] for m in s3 if isinstance(m, dict) and m.get("role") == "tool"}
     assert expected_recent_ids.issubset(s3_recent_ids), "stage 3 must keep recent turns intact"
 
@@ -774,4 +772,97 @@ def test_estimate_messages_tokens_unchanged_after_refactor():
 
     result = estimate_messages_tokens(messages)
     assert result == expected
+
+
+# ─── Section 12: Universal mask tests ──────────────────────────────────────
+
+
+def test_build_mask_marker_format():
+    """Mask marker includes tool, path, mode, and recover fields."""
+    args = {"path": "src/app.py", "mode": "full"}
+    marker = _build_mask_marker("fs_read", args)
+    assert "[masked tool=fs_read" in marker
+    assert "path='src/app.py'" in marker
+    assert "mode='full'" in marker
+    assert "[recover:" in marker
+    assert "fs_read(path='src/app.py'" in marker
+
+
+def test_build_mask_marker_no_mode():
+    """Mask marker works when mode is not present."""
+    args = {"path": "src"}
+    marker = _build_mask_marker("fs_list", args)
+    assert "[masked tool=fs_list" in marker
+    assert "path='src'" in marker
+    assert "[recover:" in marker
+
+
+def test_is_whitelisted():
+    """Whitelist: code_explore always, fs_read outline/head only."""
+    assert _is_whitelisted("code_explore", {"path": "src"}) is True
+    assert _is_whitelisted("fs_read", {"path": "x.py", "mode": "outline"}) is True
+    assert _is_whitelisted("fs_read", {"path": "x.py", "mode": "head"}) is True
+    assert _is_whitelisted("fs_read", {"path": "x.py", "mode": "full"}) is False
+    assert _is_whitelisted("bash", {"command": "ls"}) is False
+    assert _is_whitelisted("fs_list", {"path": "src"}) is False
+
+
+def test_stage1_mask_replaces_tool_content():
+    """Stage 1 mask replaces old tool content with mask markers, keeps assistant tool_calls."""
+    tool_names = ("fs_list", "fs_read", "bash")
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+    ]
+    for t in range(5):
+        messages.extend(_make_turn(t, tool_names=tool_names, result_content="result " * 100))
+
+    result = _stage1_mask(messages, k=3)
+
+    # Same number of messages
+    assert len(result) == len(messages)
+
+    # Recent 3 turns (turns 2,3,4) intact: each = 1 assistant + 3 tools
+    recent_start = len(result) - 3 * (1 + len(tool_names))
+    recent = result[recent_start:]
+    assert recent[0]["role"] == "assistant"
+    recent_tools = [m for m in recent if m.get("role") == "tool"]
+    assert all(len(m.get("content", "")) > 50 for m in recent_tools)
+
+    # Old tool messages should be masked
+    old_tools = [
+        m for m in result[:recent_start]
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+    masked = [m for m in old_tools if "[masked" in m.get("content", "")]
+    assert len(masked) > 0, "old tool_results should be masked"
+
+    # Assistant messages' tool_calls should NOT be modified
+    for m in result:
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            for tc in m.get("tool_calls") or []:
+                assert tc.get("function", {}).get("name") in tool_names
+
+
+def test_stage1_mask_whitelist_preserved():
+    """code_explore results in old segment are not masked."""
+    code_explore_content = "code explore " * 1000
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+    ]
+    for t in range(5):
+        assistant = {
+            "role": "assistant",
+            "content": f"turn {t}",
+            "tool_calls": [
+                {"id": f"ce_{t}_0", "type": "function", "function": {"name": "code_explore", "arguments": json.dumps({"path": "src"})}},
+            ],
+        }
+        messages.append(assistant)
+        messages.append({"role": "tool", "tool_call_id": f"ce_{t}_0", "content": code_explore_content})
+
+    result = _stage1_mask(messages, k=3)
+    tools = [m for m in result if isinstance(m, dict) and m.get("role") == "tool"]
+    assert all(m["content"] == code_explore_content for m in tools)
 

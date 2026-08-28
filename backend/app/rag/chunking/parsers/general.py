@@ -13,6 +13,6 @@ def chunk_markdown(content: str, config: dict) -> list[str]:
     chunk_overlap = int(config.get("chunk_overlap", 50))
     separators = config.get("separators")
 
-    splitter = RecursiveSplitter(chunk_size, chunk_overlap, separators)
+    splitter = RecursiveSplitter(chunk_size, chunk_overlap, separators, protect_tables=True)
     chunks = splitter.split(content)
     return [c.content for c in chunks]

@@ -128,7 +128,7 @@ async def rag_delete_document_handler(args: Any, ctx: ToolContext) -> ToolResult
         from app.main import _document_service  # type: ignore[attr-defined]
         if _document_service is None:
             return err("Document service not initialized")
-        deleted_chunks = await _document_service.delete_document(document_id)
+        deleted_chunks = await _document_service.delete_document(document_id, user_id=ctx.user_id or "")
         return ok({
             "document_id": document_id,
             "deleted_chunks": deleted_chunks,

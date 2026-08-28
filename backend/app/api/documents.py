@@ -12,10 +12,11 @@ Routes:
 """
 
 from fastapi import APIRouter, Depends, Form, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.auth.dependencies import get_current_user
 from app.auth.ownership import verify_document_ownership
+from app.config import get_settings
 from app.db.models import User
 from app.schemas import (
     CreateFolderRequest,
@@ -261,7 +262,7 @@ async def delete_document(document_id: str, user: User = Depends(get_current_use
     """Soft-delete document + clean up RAG chunks."""
     svc = _get_service()
     try:
-        deleted = await svc.delete_document(document_id)
+        deleted = await svc.delete_document(document_id, user_id=user.id)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=404)  # type: ignore
     return DeleteDocumentResponse(ok=True, deleted_chunks=deleted)
@@ -367,6 +368,64 @@ async def preview_document(
         images=meta.get("images", []),
         parser=meta.get("parser"),
         pages=meta.get("pages"),
+    )
+
+
+# ─── Image file serving ─────────────────────────────────────────────────
+
+
+
+_CONTENT_TYPE_MAP = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
+
+
+@router.get("/documents/{document_id}/images/{filename:path}")
+async def serve_document_image(
+    document_id: str,
+    filename: str,
+    user: User = Depends(get_current_user),
+):
+    """Serve a persisted document image file."""
+    await verify_document_ownership(document_id, user.id)
+
+    # Path safety: reject path traversal
+    if ".." in filename or filename.startswith("/") or filename.startswith("\\"):
+        return JSONResponse(
+            {"error": "Invalid filename"}, status_code=404,
+        )
+
+    # Resolve image path
+    settings = get_settings()
+    image_dir = settings.data_path / "documents" / document_id / "images"
+    image_path = (image_dir / filename).resolve()
+
+    # Ensure resolved path is within the image directory
+    try:
+        image_path.relative_to(image_dir.resolve())
+    except ValueError:
+        return JSONResponse(
+            {"error": "Invalid file path"}, status_code=404,
+        )
+
+    if not image_path.exists() or not image_path.is_file():
+        return JSONResponse(
+            {"error": f"Image not found: {filename}"}, status_code=404,
+        )
+
+    # Determine content type from extension
+    ext = image_path.suffix.lower()
+    media_type = _CONTENT_TYPE_MAP.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        path=str(image_path),
+        media_type=media_type,
+        filename=filename,
     )
 
 

@@ -1,8 +1,8 @@
 """Conversations API routes.
 
-Thin HTTP layer over conversation_service / deploy_command_service /
-context_compaction_service. Wire format is camelCase; service results are
-Pydantic models or dataclasses of Pydantic models, serialized via by_alias.
+Thin HTTP layer over conversation_service / deploy_command_service.
+Wire format is camelCase; service results are Pydantic models or dataclasses
+of Pydantic models, serialized via by_alias.
 """
 
 from typing import Any
@@ -318,37 +318,40 @@ async def fork_conversation(
     )
 
 
-# ─── /conversations/{id}/compact ─────────────────────────────────────────────
-@router.post("/conversations/{conversation_id}/compact")
-async def compact(conversation_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
+# ─── /conversations/{id}/session-note ─────────────────────────────────────────
+@router.get("/conversations/{conversation_id}/session-note")
+async def get_session_note(
+    conversation_id: str, user: User = Depends(get_current_user)
+) -> JSONResponse:
     await verify_conversation_ownership(conversation_id, user.id)
-    import logging
+    from app.memory.session_memory import SessionMemory
+    from app.memory.session_note import SessionNote
 
-    from app.services import context_compaction_service
+    session_mem = await SessionMemory().get(conversation_id)
+    if session_mem is None:
+        return JSONResponse(content={"note": None, "coversUpTo": None})
 
-    _log = logging.getLogger(__name__)
-    try:
-        result = await context_compaction_service.compact_conversation(conversation_id)
-    except context_compaction_service.CompactionSkipped as skip:
+    note = SessionNote.from_yaml(session_mem.summary)
+    if note is None:
         return JSONResponse(
-            content={
-                "skipped": True,
-                "reason": skip.reason,
-                "message": skip.message.model_dump(by_alias=True) if skip.message else None,
-            }
+            content={"note": None, "coversUpTo": session_mem.covers_up_to}
         )
-    except ValueError as err:
-        _log.warning("[compact] 400 for conv=%s: %s", conversation_id, err)
-        return _err(str(err), 400)
-    except Exception as err:  # noqa: BLE001 - surface unexpected failures clearly
-        _log.exception("[compact] unexpected error for conv=%s", conversation_id)
-        return _err(f"压缩失败：{err}", 500)
+
     return JSONResponse(
         content={
-            "summary": result.summary.model_dump(by_alias=True),
-            "message": result.message.model_dump(by_alias=True) if result.message else None,
-            "ctxBefore": result.ctx_before,
-            "ctxAfter": result.ctx_after,
+            "note": {
+                "title": note.title,
+                "currentState": note.current_state,
+                "keyDecisions": note.key_decisions,
+                "filesTouched": note.files_touched,
+                "commandsRun": note.commands_run,
+                "artifactsProduced": note.artifacts_produced,
+                "blockers": note.blockers,
+                "openQuestions": note.open_questions,
+                "nextSteps": note.next_steps,
+                "architectureUnderstanding": note.architecture_understanding,
+            },
+            "coversUpTo": note.covers_up_to or session_mem.covers_up_to,
         }
     )
 

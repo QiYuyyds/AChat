@@ -215,7 +215,7 @@ class RagTaskWorker:
         if not document_id:
             return {"status": "skipped", "reason": "no document_id"}
 
-        deleted = await ds.delete_versions_by_document(document_id)
+        deleted = await ds.delete_versions_by_document(document_id, user_id=task.user_id or "")
         return {"deleted_chunks": deleted}
 
     async def _handle_failure(self, task: RagTask, error: Exception) -> None:

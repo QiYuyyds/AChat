@@ -19,6 +19,7 @@ from sqlalchemy import and_, asc, desc, select
 
 from app.db.engine import get_local_db
 from app.db.models import ContextSummary, Message
+from app.memory.session_note import SessionNote, _enforce_section_limits
 from app.services.transcript_renderer import (
     estimate_full_message_tokens,
     render_tool_aware_transcript,
@@ -28,10 +29,95 @@ from app.utils.model_registry import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
-# Thresholds (matching Claude Code's validated values)
-MINIMUM_TOKENS_TO_INIT = 10_000
-MINIMUM_TOKENS_BETWEEN_UPDATE = 5_000
-TOOL_CALLS_BETWEEN_UPDATES = 3
+# Thresholds (lowered for short-conversation coverage)
+MINIMUM_TOKENS_TO_INIT = 3_000
+MINIMUM_TOKENS_BETWEEN_UPDATE = 3_000
+TOOL_CALLS_BETWEEN_UPDATES = 2
+
+_SESSION_NOTE_SYSTEM_PROMPT = """你是会话笔记助手。请从对话内容中提取结构化信息，更新已有笔记。
+
+你将看到:
+1. 已有笔记 (YAML 格式)
+2. 新增对话内容 (自上次提取以来的消息)
+
+请输出**合并后的完整笔记** (YAML 格式)。
+
+## 分 section 处理规则
+
+不同 section 有不同的更新语义:
+
+### title (覆盖)
+- 如果新对话的主题更清晰，更新标题
+- 否则保留原标题
+
+### current_state (覆盖)
+- 始终用最新状态覆盖
+- 旧状态信息如果有价值，移入 key_decisions 或 architecture_understanding
+
+### key_decisions (追加 + 去重 + 标记解决)
+- 新决策追加到列表末尾，带时间戳 [HH:MM]
+- 如果新对话推翻了旧决策，在旧决策后标注 [已更新]，新决策正常追加
+- 完全相同的决策不重复追加
+- 超过 20 条时，合并同类项 (如多个 "改了 X 文件" → "改了 6 个文件")
+
+### files_touched (追加 + 去重)
+- 新文件追加到列表末尾
+- 同一文件多次操作只保留一条 (用最新状态: 已读/已改)
+- 超过 30 条时，只保留最近 30 条
+
+### commands_run (追加 + 去重)
+- 重要命令追加 (跳过简单 cd/ls)
+- 相同命令不重复
+- 超过 20 条时，只保留最近 20 条
+
+### artifacts_produced (追加 + 去重)
+- 新产物追加
+- 超过 10 条时，只保留最近 10 条
+
+### blockers (覆盖 + 标记解决)
+- 已解决的 blocker 标注 [已解决]，不移除 (保留历史)
+- 新 blocker 追加
+- 超过 10 条时，移除已解决超过 5 条的旧 blocker
+
+### open_questions (覆盖 + 标记解决)
+- 已回答的问题标注 [已回答]，不移除
+- 新问题追加
+- 超过 10 条时，移除已回答超过 5 条的旧问题
+
+### next_steps (覆盖)
+- 始终用最新的 next steps 覆盖
+- 已完成的 step 不需要保留
+
+### architecture_understanding (覆盖)
+- 用最新理解覆盖
+- 如果新增内容只是补充细节，合并到已有理解中
+
+## 输出格式
+
+```yaml
+title: 简短会话标题
+current_state: 当前正在做什么（1-2 句）
+key_decisions:
+  - "[14:32] 决策内容"
+  - "[15:07] [已更新] 旧决策"
+files_touched:
+  - "path/to/file.py (已读/已改, N 行)"
+commands_run:
+  - "command (结果摘要)"
+artifacts_produced:
+  - "path/to/artifact (类型)"
+blockers:
+  - "阻塞项 [已解决]"
+open_questions:
+  - "待解决问题 [已回答]"
+next_steps:
+  - "下一步"
+architecture_understanding: |
+  架构理解与代码结构发现
+```
+
+如果某个 section 没有新增内容，保留已有内容不变。
+"""
 
 
 @dataclass
@@ -98,10 +184,44 @@ class SessionMemory:
             or tool_calls_since >= TOOL_CALLS_BETWEEN_UPDATES
         )
 
-    async def extract(self, conversation_id: str) -> None:
-        """Run incremental extraction: recent messages + existing summary → new summary.
+    async def should_extract_short(self, conversation_id: str) -> bool:
+        """Check whether short-conversation first extraction should trigger.
 
-        Updates the session memory record in-place. Silently skips on failure.
+        Conditions (all must be true):
+        - ``_generate_fn`` is available
+        - No existing session Note (first extraction only)
+        - At a natural breakpoint
+        - >= 2 tool turns (no token threshold)
+        """
+        if self._generate_fn is None:
+            return False
+
+        existing = await self.get(conversation_id)
+        if existing is not None:
+            return False
+
+        messages = await _load_messages_since(conversation_id, None)
+        if not messages:
+            return False
+
+        if not _at_natural_breakpoint(messages):
+            return False
+
+        tool_call_count = _count_tool_uses(messages)
+        return tool_call_count >= TOOL_CALLS_BETWEEN_UPDATES
+
+    async def extract(self, conversation_id: str) -> None:
+        """Run incremental extraction using Plan C (LLM full output + per-section merge).
+
+        Flow:
+        1. Load existing note (YAML) + new messages since covers_up_to
+        2. Build Plan C prompt: existing YAML + new transcript
+        3. LLM outputs merged complete YAML
+        4. Parse via SessionNote.from_yaml; on failure keep existing note
+        5. Post-process: _enforce_section_limits
+        6. Upsert
+
+        Silently skips on failure. Existing note is preserved on YAML parse failure.
         """
         if self._generate_fn is None:
             return
@@ -120,40 +240,43 @@ class SessionMemory:
 
             prior_summary = existing.summary if existing else None
 
-            system_prompt = (
-                "你是会话摘要助手。以下是当前会话的已有摘要和新增对话内容。"
-                "请将新增内容整合进已有摘要，保持摘要简洁但信息完整。"
-                "务必保留：用户核心目标、关键决策、已产出产物、待跟进事项。"
-                "同时保留：已探索的文件/目录结构（路径 + 关键发现）、"
-                "执行过的关键命令及其结果摘要、"
-                "架构理解与代码结构发现。"
-                "只输出摘要正文。"
-            )
+            system_prompt = _SESSION_NOTE_SYSTEM_PROMPT
             user_msg = (
-                f"已有摘要：\n{prior_summary}\n\n"
+                f"# 已有笔记\n\n{prior_summary}\n\n"
                 if prior_summary
-                else "（暂无已有摘要，这是首次提取）\n\n"
+                else "# 已有笔记\n\n# (new note)\n\n"
             )
-            user_msg += f"新增内容：\n{recent_transcript}\n\n输出：更新后的摘要"
+            user_msg += f"# 新增对话\n\n{recent_transcript}\n\n"
+            user_msg += "请输出合并后的完整笔记 (YAML 格式)。"
 
-            new_summary = await asyncio.to_thread(
+            raw_output = await asyncio.to_thread(
                 self._generate_fn, system_prompt, user_msg
             )
-            new_summary = (new_summary or "").strip()
-            if not new_summary:
-                logger.warning("[session-memory] LLM returned empty summary, skipping")
+            raw_output = (raw_output or "").strip()
+            if not raw_output:
+                logger.warning("[session-memory] LLM returned empty output, skipping")
+                return
+
+            new_note = SessionNote.from_yaml(raw_output)
+            if new_note is None:
+                logger.warning(
+                    "[session-memory] LLM output is not valid YAML, keeping existing note"
+                )
                 return
 
             last_msg = messages[-1]
-            new_covers_up_to = float(last_msg.created_at)
+            new_note.covers_up_to = float(last_msg.created_at)
+
+            new_note = _enforce_section_limits(new_note)
+            new_summary = new_note.to_yaml()
 
             await self._upsert(
-                conversation_id, new_summary, new_covers_up_to
+                conversation_id, new_summary, new_note.covers_up_to
             )
             logger.info(
-                "[session-memory] conv=%s updated summary, covers_up_to=%.0f, msg_count=%d",
+                "[session-memory] conv=%s updated session note, covers_up_to=%.0f, msg_count=%d",
                 conversation_id,
-                new_covers_up_to,
+                new_note.covers_up_to,
                 len(messages),
             )
         except Exception as e:

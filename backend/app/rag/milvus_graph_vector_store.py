@@ -4,6 +4,7 @@
   - content: VARCHAR, enable_analyzer=True, analyzer_params={"type":"chinese"}
   - embedding: FLOAT_VECTOR, COSINE, IVF_FLAT
   - content_sparse: SPARSE_FLOAT_VECTOR + Function(BM25) + SPARSE_INVERTED_INDEX
+  - user_id: VARCHAR, 用于按用户隔离检索
 
 triple Collection 额外有 source_id / target_id 字段。
 
@@ -86,6 +87,7 @@ class MilvusGraphVectorStore:
         schema.add_field("doc_hash", DataType.VARCHAR, max_length=64)
         schema.add_field("chunk_id", DataType.INT64)
         schema.add_field("pg_id", DataType.INT64)
+        schema.add_field("user_id", DataType.VARCHAR, max_length=64)
 
         schema.add_function(Function(
             name="content_bm25",
@@ -135,6 +137,7 @@ class MilvusGraphVectorStore:
         schema.add_field("doc_hash", DataType.VARCHAR, max_length=64)
         schema.add_field("chunk_id", DataType.INT64)
         schema.add_field("pg_id", DataType.INT64)
+        schema.add_field("user_id", DataType.VARCHAR, max_length=64)
 
         schema.add_function(Function(
             name="content_bm25",
@@ -169,6 +172,7 @@ class MilvusGraphVectorStore:
         """批量写入 entity 向量 + BM25。
 
         每个 entity dict 需含: id, content, embedding, entity_type, doc_hash, chunk_id, pg_id
+        可选: user_id
         """
         if not entities or not cls.available():
             return
@@ -187,6 +191,7 @@ class MilvusGraphVectorStore:
 
         每个 triple dict 需含: id, content, embedding, source_id, target_id,
         relation_type, doc_hash, chunk_id, pg_id
+        可选: user_id
         """
         if not triples or not cls.available():
             return
@@ -205,10 +210,13 @@ class MilvusGraphVectorStore:
         query_text: str,
         query_embedding: list[float],
         top_k: int,
+        *,
+        user_id: str = "",
     ) -> list[dict]:
         """向量召回 entity：dense embedding + BM25 hybrid search。
 
         返回格式: [{"id": str, "content": str, "score": float, "entity_type": str, "pg_id": int}]
+        user_id 非空时按 user_id filter 过滤结果。
         """
         if not cls.available():
             return []
@@ -223,17 +231,21 @@ class MilvusGraphVectorStore:
 
             client.load_collection(_ENTITY_COLLECTION)
 
+            filter_expr = f'user_id == "{user_id}"' if user_id else ""
+
             vector_req = AnnSearchRequest(
                 data=[query_embedding],
                 anns_field="embedding",
                 param={"metric_type": "COSINE", "params": {"nprobe": 10}},
                 limit=top_k,
+                filter=filter_expr,
             )
             bm25_req = AnnSearchRequest(
                 data=[query_text],
                 anns_field="content_sparse",
                 param={"metric_type": "BM25", "params": {"drop_ratio_search": 0.0}},
                 limit=top_k,
+                filter=filter_expr,
             )
             reranker = WeightedRanker(0.7, 0.3)
             results = client.hybrid_search(
@@ -241,7 +253,8 @@ class MilvusGraphVectorStore:
                 reqs=[vector_req, bm25_req],
                 rerank=reranker,
                 limit=top_k,
-                output_fields=["content", "entity_type", "pg_id", "doc_hash", "chunk_id"],
+                output_fields=["content", "entity_type", "pg_id", "doc_hash", "chunk_id", "user_id"],
+                filter=filter_expr,
             )
             return [
                 {
@@ -263,10 +276,13 @@ class MilvusGraphVectorStore:
         query_text: str,
         query_embedding: list[float],
         top_k: int,
+        *,
+        user_id: str = "",
     ) -> list[dict]:
         """向量召回 triple：dense embedding + BM25 hybrid search。
 
         返回格式: [{"id": str, "content": str, "score": float, "source_id": str, "target_id": str, "pg_id": int}]
+        user_id 非空时按 user_id filter 过滤结果。
         """
         if not cls.available():
             return []
@@ -281,17 +297,21 @@ class MilvusGraphVectorStore:
 
             client.load_collection(_TRIPLE_COLLECTION)
 
+            filter_expr = f'user_id == "{user_id}"' if user_id else ""
+
             vector_req = AnnSearchRequest(
                 data=[query_embedding],
                 anns_field="embedding",
                 param={"metric_type": "COSINE", "params": {"nprobe": 10}},
                 limit=top_k,
+                filter=filter_expr,
             )
             bm25_req = AnnSearchRequest(
                 data=[query_text],
                 anns_field="content_sparse",
                 param={"metric_type": "BM25", "params": {"drop_ratio_search": 0.0}},
                 limit=top_k,
+                filter=filter_expr,
             )
             reranker = WeightedRanker(0.7, 0.3)
             results = client.hybrid_search(
@@ -299,7 +319,8 @@ class MilvusGraphVectorStore:
                 reqs=[vector_req, bm25_req],
                 rerank=reranker,
                 limit=top_k,
-                output_fields=["content", "source_id", "target_id", "relation_type", "pg_id", "doc_hash", "chunk_id"],
+                output_fields=["content", "source_id", "target_id", "relation_type", "pg_id", "doc_hash", "chunk_id", "user_id"],
+                filter=filter_expr,
             )
             return [
                 {
@@ -315,3 +336,41 @@ class MilvusGraphVectorStore:
         except Exception as e:
             logger.warning("MilvusGraphVectorStore: search_triples failed: %s", e)
             return []
+
+    # ── Delete by IDs ──
+
+    @classmethod
+    async def delete_by_ids(
+        cls,
+        entity_ids: list[str],
+        triple_ids: list[str] | None = None,
+    ) -> None:
+        """按 ID 批量删除 entity 和 triple 向量。
+
+        用于文档删除时清理 MilvusGraphVectorStore 中的图谱向量。
+        """
+        if not cls.available():
+            return
+        cls._ensure_collections()
+        client = cls._client
+        assert client is not None
+
+        if entity_ids:
+            try:
+                if client.has_collection(_ENTITY_COLLECTION):
+                    client.delete(_ENTITY_COLLECTION, entity_ids)
+                    logger.debug(
+                        "MilvusGraphVectorStore: deleted %d entity vectors", len(entity_ids),
+                    )
+            except Exception as e:
+                logger.warning("MilvusGraphVectorStore: delete entity vectors failed: %s", e)
+
+        if triple_ids:
+            try:
+                if client.has_collection(_TRIPLE_COLLECTION):
+                    client.delete(_TRIPLE_COLLECTION, triple_ids)
+                    logger.debug(
+                        "MilvusGraphVectorStore: deleted %d triple vectors", len(triple_ids),
+                    )
+            except Exception as e:
+                logger.warning("MilvusGraphVectorStore: delete triple vectors failed: %s", e)

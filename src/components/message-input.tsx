@@ -1,7 +1,6 @@
 'use client'
 
 import {
-  Archive,
   AlertTriangle,
   ArrowUp,
   Bot,
@@ -41,7 +40,6 @@ import type { ModelProfile } from '@/shared/types'
 import {
   abortRun,
   clearConversationHistory as clearConversationHistoryAPI,
-  compactConversation as compactConversationAPI,
   fetchMessages,
   listSkills,
   reviseDispatchPlan,
@@ -71,13 +69,6 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     label: '部署产物',
     description: '部署当前会话的网页产物',
     icon: Rocket,
-  },
-  {
-    id: 'compact',
-    command: '/compact',
-    label: '压缩上下文',
-    description: '将早期对话压缩成后续模型读取的摘要',
-    icon: Archive,
   },
   {
     id: 'help',
@@ -339,16 +330,6 @@ export function MessageInput({
                 : isRunning
                   ? '请先中止或等待排队中的 Agent'
                   : command.description,
-            disabled: sending || isRunning || pending.length > 0 || uploading.length > 0,
-          }
-        }
-        if (command.id === 'compact') {
-          return {
-            ...command,
-            description:
-              pending.length > 0 || uploading.length > 0
-                ? '请先移除附件'
-                : command.description,
             disabled: sending || isRunning || pending.length > 0 || uploading.length > 0,
           }
         }
@@ -614,22 +595,6 @@ export function MessageInput({
     }
   }
 
-  const executeCompactCommand = async () => {
-    if (sending || isRunning || pending.length > 0 || uploading.length > 0) return
-    clearSlashCommandInput()
-    if (pendingQuote) setPendingQuote(null)
-    if (replyTargetId) setReplyTarget(conversationId, null)
-    setSending(true)
-    try {
-      const result = await compactConversationAPI(conversationId)
-      upsertMessage(result.message)
-    } catch (err) {
-      console.error('[MessageInput] compact failed', err)
-    } finally {
-      setSending(false)
-    }
-  }
-
   const executeDeployCommand = async () => {
     if (sending || isRunning || pending.length > 0 || uploading.length > 0) return
     clearSlashCommandInput()
@@ -669,9 +634,6 @@ export function MessageInput({
     switch (command.id) {
       case 'deploy':
         await executeDeployCommand()
-        break
-      case 'compact':
-        await executeCompactCommand()
         break
       case 'help':
         clearSlashCommandInput()

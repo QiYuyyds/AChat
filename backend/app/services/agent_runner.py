@@ -38,9 +38,9 @@ from app.schemas.events import (
     FileWritePreviewCompleteEvent,
     MessageEndEvent,
     MessageStartEvent,
+    PartStartEvent,
     PlanCreatedEvent,
     PlanStepUpdateEvent,
-    PartStartEvent,
     RunEndEvent,
     RunQueuedEvent,
     RunStartEvent,
@@ -53,12 +53,6 @@ from app.schemas.events import (
 from app.schemas.messages import DeployStatusRecord, MessageUsage
 from app.services import runner_registry
 from app.services.attachment_service import get_attachment_absolute_path
-from app.services.context_compaction_service import (
-    CompactionSkipped,
-    compact_conversation,
-    estimate_uncompacted_tokens,
-    prefix_prompt_with_context_summary,
-)
 from app.services.conversation_context import BuildHistoryOptions, build_history_for
 from app.services.event_bus import event_bus
 from app.services.project_artifact import build_project_files
@@ -305,109 +299,6 @@ async def _maybe_generate_summary_hook(
         logger.warning("_maybe_generate_summary_hook error: %s", e)
 
 
-async def _maybe_auto_compact_hook(
-    conversation_id: str,
-    override_prompt: str | None = None,
-    agent_id: str | None = None,
-) -> None:
-    """Background hook: auto-compact conversation context on token threshold.
-
-    Triggers ``compact_conversation(silent=True)`` when the estimated token
-    usage of uncompacted messages exceeds 87% of the model's context window.
-
-    Skipped for sub-agent runs (``override_prompt`` non-empty) to avoid
-    side-effects on the parent conversation's context.
-
-    All exceptions (including ``CompactionSkipped``) are best-effort caught and
-    logged as warnings — this hook MUST NOT affect the run's final status.
-    """
-    # Guard: sub-agent runs (override_prompt non-empty) are exempt
-    if override_prompt:
-        logger.info(
-            "[auto-compact] skipped: override_prompt set (sub-agent run), conv=%s",
-            conversation_id,
-        )
-        return
-
-    # Guard: agent_id is required for token-based trigger
-    if not agent_id:
-        logger.warning(
-            "[auto-compact] conv=%s skipped: agent_id is required for "
-            "token-based trigger",
-            conversation_id,
-        )
-        return
-
-    try:
-        model_limit = await _get_agent_model_limit(agent_id)
-        if not model_limit or model_limit <= 0:
-            return
-
-        token_threshold = int(model_limit * 0.87)
-        estimated_tokens = await estimate_uncompacted_tokens(conversation_id)
-        logger.info(
-            "[auto-compact] conv=%s estimated_tokens=%d token_threshold=%d "
-            "(87%% of %d)",
-            conversation_id,
-            estimated_tokens,
-            token_threshold,
-            model_limit,
-        )
-        if estimated_tokens > token_threshold:
-            result = await compact_conversation(conversation_id, silent=True)
-            logger.info(
-                "[auto-compact] conv=%s compacted (token trigger) "
-                "summary_id=%s ctx_before=%d ctx_after=%d",
-                conversation_id,
-                result.summary.id,
-                result.ctx_before,
-                result.ctx_after,
-            )
-            return
-    except CompactionSkipped as skip:
-        logger.info(
-            "[auto-compact] conv=%s skipped: %s (silent)",
-            conversation_id,
-            skip.reason,
-        )
-    except Exception as e:
-        logger.warning("[auto-compact] conv=%s error: %s", conversation_id, e)
-
-
-async def _get_agent_model_limit(agent_id: str) -> int | None:
-    """Look up the context window for the agent's resolved model.
-
-    Resolves from the user's default ModelProfile (SDK agents) or returns
-    None (CLI agents — auto-compact skips model-limit check).
-    """
-    try:
-        from app.infra.cache_helpers import get_agent_cached
-
-        agent = await get_agent_cached(agent_id)
-        if agent is None:
-            return None
-        # CLI agents: no model limit (CLI manages its own context)
-        if agent.adapter_name in ("claude-code", "codex"):
-            return None
-        # SDK agents: resolve from default ModelProfile
-        async with get_local_db() as db:
-            profile = (
-                await db.execute(
-                    select(ModelProfile)
-                    .where(
-                        ModelProfile.is_default == True,  # noqa: E712
-                    )
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if profile is None:
-                return None
-            limits = get_model_limits(profile.provider, profile.model_id)
-            return limits.effective_context_window
-        return None
-    except Exception as e:
-        logger.warning("[auto-compact] failed to get model limit for agent %s: %s", agent_id, e)
-        return None
 
 
 # ─── IP geolocation for auto location detection ─────────────────────────────
@@ -941,7 +832,6 @@ async def _run_react_loop(  # noqa: C901
     """
     from app.adapters.custom_adapter import _RunUsage, _to_run_usage
     from app.config import get_settings
-    from app.services.compact_markers import CompactSuccessJudge
     from app.services.compact_pipeline import estimate_messages_tokens, run_compact_pipeline
     from app.services.hook_registry import HookContext, HookEvent
     from app.services.react_loop_termination import (
@@ -950,7 +840,6 @@ async def _run_react_loop(  # noqa: C901
         TerminationState,
         build_forced_messages,
         decide_pre_model,
-        mark_compact_result,
         stable_tool_fingerprint,
         stop_reason_label,
     )
@@ -1085,11 +974,11 @@ async def _run_react_loop(  # noqa: C901
                 yield _emit_run_usage(decision.stop_reason or StopReason.BUDGET_EXHAUSTED)
                 break
 
-            # ── Compaction (stages 1/2/3 pipeline OR legacy single-point) ──
-            if decision.action in ("summarize", "prune", "fold", "compact"):
+            # ── Compaction (mask/fold pipeline OR legacy single-point) ──
+            if decision.action in ("mask", "summarize", "prune", "fold", "compact"):
                 pre_compact_count = len(messages)
                 pre_tokens = total_tokens
-                _stage_map = {"summarize": 1, "prune": 2, "fold": 3}
+                _stage_map = {"mask": 1, "summarize": 1, "prune": 2, "fold": 3}
                 try:
                     if compact_pipeline_enabled and decision.action in _stage_map:
                         stage = _stage_map[decision.action]
@@ -1110,18 +999,19 @@ async def _run_react_loop(  # noqa: C901
                         post_tokens = estimate_messages_tokens(messages)
                     else:
                         post_tokens = estimate_tokens(json.dumps(messages, ensure_ascii=False))
-                    # Strict success: token must drop ≥15% (not just len change).
-                    success = CompactSuccessJudge.judge(
-                        pre_tokens, post_tokens, pre_compact_count, len(messages),
-                    )
-                    mark_compact_result(term, success=success)
+                    # Update anti-oscillation state
+                    if decision.action == "mask":
+                        term.last_compact_stage = 1
+                        term.turns_since_compact = 0
+                    elif decision.action == "fold":
+                        term.last_compact_stage = 3
+                        term.turns_since_compact = 0
                     logger.info(
-                        "[AgentRunner] compact result: success=%s %d -> %d tokens",
-                        success, pre_tokens, post_tokens,
+                        "[AgentRunner] compact result: %d -> %d tokens",
+                        pre_tokens, post_tokens,
                     )
                 except Exception as compact_err:  # noqa: BLE001
                     logger.warning("[AgentRunner] compact failed: %s", compact_err)
-                    mark_compact_result(term, success=False)
                 # Re-evaluate after compact on same iteration
                 continue
 
@@ -1301,7 +1191,6 @@ async def _run_react_loop(  # noqa: C901
                     if term.soft_trigger_reason in (
                         StopReason.DUPLICATE_TOOL_BREAKER,
                         StopReason.TOOL_ERROR_BREAKER,
-                        StopReason.COMPACT_FAILURE_BREAKER,
                         StopReason.MAX_TOOL_TURNS,
                     ):
                         # Soft-only recovery for breakers/fuse counts as that reason
@@ -1929,12 +1818,6 @@ async def execute_run(
             asyncio.create_task(
                 _maybe_generate_summary_hook(
                     args.conversation_id, args.agent_id, prompt, result
-                )
-            )
-            # ─── Auto-compact hook (token-based silent compaction) ───
-            asyncio.create_task(
-                _maybe_auto_compact_hook(
-                    args.conversation_id, args.override_prompt, args.agent_id
                 )
             )
             # ─── Online rule evaluation hook ───
@@ -3481,20 +3364,8 @@ async def build_adapter_input(
         except Exception as err:  # noqa: BLE001 - metadata is best-effort
             logger.warning("[agent-runner] session metadata injection failed: %s", err)
 
-    # ── prompt: CLI agents may get a context-summary prefix ──────────
+    # ── prompt: effective prompt is the user prompt (no context-summary prefix) ──
     effective_prompt = prompt
-    if is_cli and not args.override_prompt:
-        try:
-            effective_prompt = await prefix_prompt_with_context_summary(
-                args.conversation_id, prompt
-            )
-        except Exception as err:  # noqa: BLE001 - summary is best-effort
-            logger.warning(
-                "[agent-runner] prefix_prompt_with_context_summary failed; "
-                "continuing without summary: %s",
-                err,
-            )
-            effective_prompt = prompt
 
     # ── dynamic content injection (SDK only; from PromptAssembler) ──
     if dynamic_prefix:

@@ -26,6 +26,8 @@ class ExtractedImage:
     filename: str = ""
     data: bytes = b""
     content_type: str = "image/png"
+    page_index: int | None = None
+    alt_text: str = ""
 
 
 @dataclass

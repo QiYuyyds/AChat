@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from app.services.react_loop_termination import (
+    COMPACT_FOLD_RATIO,
+    COMPACT_MASK_RATIO,
     COMPACT_RATIO,
     HARD_RATIO,
     SOFT_RATIO,
@@ -10,7 +12,7 @@ from app.services.react_loop_termination import (
     TerminationState,
     decide_pre_model,
     format_child_stop_prefix,
-    mark_compact_result,
+    should_compact,
     stable_tool_fingerprint,
     stop_reason_label,
 )
@@ -55,23 +57,15 @@ def test_decide_compact_band():
     assert d.action == "compact"
 
 
-def test_decide_pre_model_stage1_at_0_70():
-    """ratio=0.72 → action='summarize' (stage 1) when pipeline enabled."""
+def test_decide_pre_model_mask_at_0_75():
+    """ratio=0.76 → action='mask' (stage 1) when pipeline enabled."""
     state = TerminationState()
-    tokens = 720  # ratio = 0.72
+    tokens = 760  # ratio = 0.76
     d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000)
-    assert d.action == "summarize"
+    assert d.action == "mask"
 
 
-def test_decide_pre_model_stage2_at_0_80():
-    """ratio=0.82 → action='prune' (stage 2)."""
-    state = TerminationState()
-    tokens = 820
-    d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000)
-    assert d.action == "prune"
-
-
-def test_decide_pre_model_stage3_at_0_88():
+def test_decide_pre_model_fold_at_0_88():
     """ratio=0.89 → action='fold' (stage 3), not legacy 'compact'."""
     state = TerminationState()
     tokens = 890  # ratio = 0.89
@@ -85,16 +79,6 @@ def test_decide_pre_model_legacy_when_disabled():
     tokens = 860  # ratio = 0.86 >= COMPACT_RATIO (0.85)
     d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000, pipeline_enabled=False)
     assert d.action == "compact"
-
-
-def test_decide_stage_skipped_when_compact_disabled():
-    """When compact_disabled=True, stages 1/2/3 are skipped → soft_inject."""
-    state = TerminationState()
-    state.compact_disabled = True
-    tokens = 890  # would be stage 3 if not disabled
-    d = decide_pre_model(state=state, total_tokens=tokens, model_limit=1000)
-    assert d.action == "soft_inject"
-    assert state.soft_trigger_reason == StopReason.COMPACT_FAILURE_BREAKER
 
 
 def test_decide_soft_band():
@@ -152,17 +136,6 @@ def test_tool_error_breaker():
     assert d2.pending_reason == StopReason.TOOL_ERROR_BREAKER
 
 
-def test_compact_failure_breaker():
-    state = TerminationState()
-    mark_compact_result(state, success=False)
-    mark_compact_result(state, success=False)
-    mark_compact_result(state, success=False)
-    assert state.compact_disabled is True
-    d = decide_pre_model(state=state, total_tokens=10, model_limit=1000)
-    assert d.action == "soft_inject"
-    assert state.soft_trigger_reason == StopReason.COMPACT_FAILURE_BREAKER
-
-
 def test_record_tool_calls_fingerprint_streak():
     state = TerminationState()
     fp = stable_tool_fingerprint("fs_list", {"path": ""})
@@ -171,3 +144,87 @@ def test_record_tool_calls_fingerprint_streak():
     state.record_tool_calls(["fs_list"], [fp], [False])
     assert state.consecutive_fingerprint_count == 3
     assert state.tool_turn_count == 3
+    assert state.turns_since_compact == 3
+
+
+# ─── should_compact anti-oscillation tests ──────────────────────────────────
+
+
+def test_should_compact_anti_oscillation():
+    """Verify the 17-turn anti-oscillation scenario.
+
+    Turn 1-4: ratio rises to 0.76 → mask triggers at turn 4.
+    Turn 5-7: ratio stays ~0.76 but turns_since_compact < 4 → skip.
+    Turn 8: turns_since_compact == 4, ratio=0.77 → mask again.
+    Turn 9-10: ratio rises to 0.88 → direct upgrade to fold.
+    Turn 11-17: after fold, no more compaction regardless of ratio.
+    """
+    state = TerminationState()
+
+    # Turns 1-3: ratio below threshold → None
+    for _ in range(3):
+        state.turns_since_compact += 1
+        assert should_compact(state, 0.60) is None
+
+    # Turn 4: ratio hits 0.76 → mask
+    state.turns_since_compact += 1
+    assert should_compact(state, 0.76) == "mask"
+    # Execute mask: update state
+    state.last_compact_stage = 1
+    state.turns_since_compact = 0
+
+    # Turns 5-7: turns_since_compact = 1, 2, 3 (< 4) → skip mask
+    for t in range(3):
+        state.turns_since_compact += 1
+        assert should_compact(state, 0.76) is None, f"turn {t+5} should skip mask"
+
+    # Turn 8: turns_since_compact == 4, ratio=0.77 → mask
+    state.turns_since_compact += 1
+    assert should_compact(state, 0.77) == "mask"
+    state.last_compact_stage = 1
+    state.turns_since_compact = 0
+
+    # Turn 9: ratio=0.86, still within interval → None
+    state.turns_since_compact += 1
+    assert should_compact(state, 0.86) is None
+
+    # Turn 10: ratio=0.88, direct upgrade → fold
+    state.turns_since_compact += 1
+    assert should_compact(state, 0.88) == "fold"
+    state.last_compact_stage = 3
+    state.turns_since_compact = 0
+
+    # Turns 11-17: after fold, no compaction
+    for t in range(7):
+        state.turns_since_compact += 1
+        assert should_compact(state, 0.90) is None, f"turn {t+11} should not compact after fold"
+
+
+def test_should_compact_direct_upgrade():
+    """After mask, ratio ≥ 0.88 → direct fold (skip re-mask)."""
+    state = TerminationState()
+    state.last_compact_stage = 1
+    state.turns_since_compact = 1  # very recent mask
+
+    # Ratio ≥ 0.88 should trigger fold even within minimum interval
+    assert should_compact(state, 0.88) == "fold"
+    assert should_compact(state, 0.95) == "fold"
+
+    # Ratio between mask and fold thresholds, within interval → None
+    state.turns_since_compact = 1
+    assert should_compact(state, 0.76) is None
+
+    # Ratio between mask and fold thresholds, outside interval → mask
+    state.turns_since_compact = 5
+    assert should_compact(state, 0.76) == "mask"
+
+
+def test_should_compact_no_compaction_after_fold():
+    """After fold, no compaction regardless of ratio."""
+    state = TerminationState()
+    state.last_compact_stage = 3
+    state.turns_since_compact = 0
+
+    assert should_compact(state, 0.76) is None
+    assert should_compact(state, 0.88) is None
+    assert should_compact(state, 0.95) is None

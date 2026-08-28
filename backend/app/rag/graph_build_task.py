@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import json
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -18,11 +18,16 @@ from sqlalchemy import update
 
 from app.config import get_settings
 from app.db.engine import get_remote_db
-from app.db.models import Document
+from app.db.models import Document, RagChunk
+from app.graph.graph_utils import (
+    compute_entity_id,
+    compute_triple_id,
+    normalize_entity_name,
+)
 from app.graph.types import ChunkRef
 
 if TYPE_CHECKING:
-    from app.graph.extractor import Extractor
+    from app.graph.extractors.base import GraphExtractor
     from app.graph.kgstore import KGStore
 
 logger = logging.getLogger(__name__)
@@ -45,11 +50,11 @@ class GraphBuildTask:
     """
 
     _kg_store: KGStore | None = None
-    _extractor: Extractor | None = None
+    _extractor: GraphExtractor | None = None
     _embed_fn: EmbedFn | None = None
 
     @classmethod
-    def set_kg_store(cls, kg_store: KGStore, extractor: Extractor) -> None:
+    def set_kg_store(cls, kg_store: KGStore, extractor: GraphExtractor) -> None:
         """注入 KGStore + Extractor（由 main.py 在启动时调用）。"""
         cls._kg_store = kg_store
         cls._extractor = extractor
@@ -67,12 +72,20 @@ class GraphBuildTask:
         return cls._kg_store is not None and cls._extractor is not None
 
     @classmethod
-    async def build(cls, doc_hash: str, chunks: list[ChunkRef], *, document_id: str = "") -> dict:
+    async def build(
+        cls,
+        doc_hash: str,
+        chunks: list[ChunkRef],
+        *,
+        document_id: str = "",
+        user_id: str = "",
+    ) -> dict:
         """构建知识图谱：分批抽取实体 → 并发 Neo4j MERGE → 更新 Document.graph_status。
 
         失败时按 RETRY_DELAYS 间隔重试 MAX_EXTRACTION_ATTEMPTS 次。
         全部失败后 graph_status = 'error_graph'，但不影响文档检索。
         document_id 用于更新 Document.graph_status；为空时尝试通过 doc_hash 反查。
+        user_id 用于 Neo4j 标签隔离和确定性 ID 计算。
         """
         if not cls.available():
             logger.warning("GraphBuildTask not available (KGStore/Extractor not injected)")
@@ -87,13 +100,17 @@ class GraphBuildTask:
         if not document_id:
             document_id = await cls._find_document_id_by_doc_hash(doc_hash)
 
+        # 设置 KGStore 的 user_id
+        if user_id:
+            cls._kg_store.set_user_id(user_id)
+
         # 状态流转：开始 → graph_building
         await cls._update_graph_status(document_id, "graph_building")
 
         last_error: Exception | None = None
         for attempt in range(1, max_attempts + 1):
             try:
-                await cls._build_once(doc_hash, chunks, llm_concurrency)
+                await cls._build_once(doc_hash, chunks, llm_concurrency, user_id=user_id)
                 # 成功 → graph_indexed
                 await cls._update_graph_status(document_id, "graph_indexed")
                 logger.info(
@@ -125,6 +142,8 @@ class GraphBuildTask:
         doc_hash: str,
         chunks: list[ChunkRef],
         llm_concurrency: int,
+        *,
+        user_id: str = "",
     ) -> None:
         """单次构建：分批 extract_batch → Neo4j MERGE。失败抛异常。"""
         kg_store = cls._kg_store
@@ -143,7 +162,7 @@ class GraphBuildTask:
 
             # 并发抽取实体
             results = await extractor.extract_batch(
-                batch, concurrency=llm_concurrency,
+                batch, options={"concurrency": llm_concurrency},
             )
 
             # 构建 chunk-ref 映射，为实体/关系打标 pg_id + chunk_id + doc_hash
@@ -161,11 +180,19 @@ class GraphBuildTask:
                     rel.chunk_id = chunk_ref.id
                     rel.pg_id = chunk_ref.pg_id
 
-                # 并发 Neo4j MERGE
+                # 并发 Neo4j MERGE (Chunk + Entity + MENTIONS + RELATION)
                 await cls._merge_to_neo4j(kg_store, result)
 
                 # 同步写入 MilvusGraphVectorStore（entity + triple）
-                await cls._upsert_to_milvus(doc_hash, chunk_ref, result)
+                await cls._upsert_to_milvus(doc_hash, chunk_ref, result, user_id=user_id)
+
+                # 回写 ent_ids 到 rag_chunks
+                ent_ids = [
+                    compute_entity_id(user_id, normalize_entity_name(ent.name), str(ent.type))
+                    for ent in result.entities
+                ]
+                if ent_ids:
+                    await cls._backfill_ent_ids(chunk_ref.pg_id, ent_ids)
 
             logger.debug(
                 "GraphBuildTask: batch %d-%d/%d done (doc_hash=%s)",
@@ -174,7 +201,10 @@ class GraphBuildTask:
 
     @classmethod
     async def _merge_to_neo4j(cls, kg_store: KGStore, result) -> None:
-        """将一批实体/关系并发写入 Neo4j（使用 KGStore 的 _upsert 方法）。"""
+        """将一批实体/关系并发写入 Neo4j（使用 KGStore 的 _upsert 方法）。
+
+        先 MERGE Chunk 节点 → 再 MERGE Entity + MENTIONS 边 → 最后 MERGE RELATION 边。
+        """
         settings = get_settings()
         neo4j_concurrency = max(1, settings.rag_graph_neo4j_concurrency or 4)
         sem = asyncio.Semaphore(neo4j_concurrency)
@@ -197,8 +227,18 @@ class GraphBuildTask:
             await asyncio.gather(*tasks, return_exceptions=False)
 
     @classmethod
-    async def _upsert_to_milvus(cls, doc_hash: str, chunk_ref: ChunkRef, result) -> None:
-        """将实体和三元组写入 MilvusGraphVectorStore（entity + triple Collection）。"""
+    async def _upsert_to_milvus(
+        cls,
+        doc_hash: str,
+        chunk_ref: ChunkRef,
+        result,
+        *,
+        user_id: str = "",
+    ) -> None:
+        """将实体和三元组写入 MilvusGraphVectorStore（entity + triple Collection）。
+
+        使用确定性 ID：compute_entity_id / compute_triple_id（user-scoped）。
+        """
         if not cls._embed_fn:
             return
         try:
@@ -215,7 +255,9 @@ class GraphBuildTask:
         # 构建 entity dicts
         entity_dicts: list[dict] = []
         for ent in result.entities:
-            ent_id = _make_entity_id(doc_hash, chunk_ref.id, ent.name)
+            normalized = normalize_entity_name(ent.name)
+            label = str(ent.type)
+            ent_id = compute_entity_id(user_id, normalized, label)
             content = f"{ent.name} ({ent.type})"
             try:
                 emb = embed_fn(content)
@@ -232,12 +274,23 @@ class GraphBuildTask:
                 "doc_hash": doc_hash,
                 "chunk_id": chunk_ref.id,
                 "pg_id": chunk_ref.pg_id,
+                "user_id": user_id,
             })
 
         # 构建 triple dicts
         triple_dicts: list[dict] = []
         for rel in result.relations:
-            triple_id = _make_triple_id(doc_hash, chunk_ref.id, rel.from_name, rel.to_name, rel.rel_type)
+            source_normalized = normalize_entity_name(rel.from_name)
+            source_label = str(rel.rel_type)
+            target_normalized = normalize_entity_name(rel.to_name)
+            target_label = str(rel.rel_type)
+
+            source_id = compute_entity_id(user_id, source_normalized, source_label)
+            target_id = compute_entity_id(user_id, target_normalized, target_label)
+            triple_id = compute_triple_id(
+                user_id, source_normalized, source_label,
+                rel.rel_type, target_normalized, target_label,
+            )
             content = f"{rel.from_name} {rel.rel_type} {rel.to_name}"
             try:
                 emb = embed_fn(content)
@@ -250,18 +303,34 @@ class GraphBuildTask:
                 "id": triple_id,
                 "content": content,
                 "embedding": emb,
-                "source_id": _make_entity_id(doc_hash, chunk_ref.id, rel.from_name),
-                "target_id": _make_entity_id(doc_hash, chunk_ref.id, rel.to_name),
+                "source_id": source_id,
+                "target_id": target_id,
                 "relation_type": rel.rel_type,
                 "doc_hash": doc_hash,
                 "chunk_id": chunk_ref.id,
                 "pg_id": chunk_ref.pg_id,
+                "user_id": user_id,
             })
 
         if entity_dicts:
             await MilvusGraphVectorStore.upsert_entities(entity_dicts)
         if triple_dicts:
             await MilvusGraphVectorStore.upsert_triples(triple_dicts)
+
+    @classmethod
+    async def _backfill_ent_ids(cls, pg_id: int, ent_ids: list[str]) -> None:
+        """将 entity_id 列表回写到 rag_chunks.ent_ids 列。"""
+        try:
+            async with get_remote_db() as session:
+                await session.execute(
+                    update(RagChunk)
+                    .where(RagChunk.id == pg_id)
+                    .values(ent_ids=json.dumps(ent_ids, ensure_ascii=False))
+                )
+        except Exception as e:
+            logger.warning(
+                "GraphBuildTask: backfill ent_ids failed for pg_id=%d: %s", pg_id, e,
+            )
 
     @classmethod
     async def _find_document_id_by_doc_hash(cls, doc_hash: str) -> str:
@@ -312,18 +381,6 @@ def _resolve_batch_size(total_chunks: int) -> int:
     if total_chunks > FETCH_MAX_SIZE:
         return FETCH_MAX_SIZE
     return total_chunks
-
-
-def _make_entity_id(doc_hash: str, chunk_id: int, name: str) -> str:
-    """生成 entity 的 Milvus primary key（确定性，幂等 upsert）。"""
-    raw = f"{doc_hash}:{chunk_id}:{name}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
-
-
-def _make_triple_id(doc_hash: str, chunk_id: int, from_name: str, to_name: str, rel_type: str) -> str:
-    """生成 triple 的 Milvus primary key（确定性，幂等 upsert）。"""
-    raw = f"{doc_hash}:{chunk_id}:{from_name}:{rel_type}:{to_name}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
 def _parse_retry_delays(raw: str) -> list[float]:

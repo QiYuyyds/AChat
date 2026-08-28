@@ -203,10 +203,11 @@ class ObsidianSyncService:
         self,
         document_id: str,
         errors: list[dict[str, str]],
+        user_id: str = "",
     ) -> bool:
         """Process a deleted vault file (soft-delete document + clean RAG chunks)."""
         try:
-            await self._doc_svc.delete_document(document_id)
+            await self._doc_svc.delete_document(document_id, user_id=user_id)
             return True
         except Exception as e:
             logger.warning("Failed to delete document %s: %s", document_id, e)
@@ -255,7 +256,7 @@ class ObsidianSyncService:
 
         deleted_count = 0
         for _rel, doc_id in diff["deleted"]:
-            if await self._process_deleted(doc_id, errors):
+            if await self._process_deleted(doc_id, errors, user_id=user_id):
                 deleted_count += 1
 
         report = {

@@ -877,6 +877,10 @@ class RagChunk(Base):
     end_char_pos: Mapped[int | None] = mapped_column(
         Integer, name="end_char_pos", nullable=True
     )
+    # Entity IDs associated with this chunk (JSON array string, for graph vector cleanup)
+    ent_ids: Mapped[str | None] = mapped_column(
+        Text, name="ent_ids", nullable=True
+    )
 
     __table_args__ = (
         Index("idx_rag_doc_hash", "doc_hash"),

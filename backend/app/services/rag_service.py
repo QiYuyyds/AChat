@@ -134,10 +134,11 @@ class RAGService:
     def hybrid(self) -> HybridStore:
         return self._hybrid
 
-    async def delete_by_doc_hash(self, doc_hash: str) -> int:
+    async def delete_by_doc_hash(self, doc_hash: str, *, user_id: str = "") -> int:
         """Delete all RAG chunks with the given doc_hash from PG + Milvus + KG.
 
         Returns the number of PG rows deleted.
+        user_id 用于 KGStore 的 user_label 隔离（设置后 KG 删除会按用户标签隔离）。
         """
         from sqlalchemy import delete, select
 
@@ -169,18 +170,27 @@ class RAGService:
         # 4. Delete from KG (best-effort)
         if self._kg_delete_fn:
             try:
+                # 设置 user_id 到 KGStore（如果传了 user_id）
+                if user_id:
+                    try:
+                        from app.rag.graph_build_task import GraphBuildTask
+                        if GraphBuildTask._kg_store:
+                            GraphBuildTask._kg_store.set_user_id(user_id)
+                    except Exception:
+                        pass
                 await self._kg_delete_fn(doc_hash)
             except Exception as e:
                 logger.warning("KG delete by doc_hash failed: %s", e)
 
         return deleted_count
 
-    async def delete_by_document_id(self, document_id: str) -> int:
+    async def delete_by_document_id(self, document_id: str, *, user_id: str = "") -> int:
         """Delete all RAG chunks for a document (all versions) from PG + Milvus + KG.
 
         Queries rag_chunks by document_id to collect pg_ids + doc_hashes,
         then batch-deletes across all four stores.
         Returns the number of PG rows deleted.
+        user_id 用于 KGStore 的 user_label 隔离。
         """
         from sqlalchemy import delete, select
 
@@ -216,6 +226,14 @@ class RAGService:
 
         # 4. Delete from KG (best-effort) — by each unique doc_hash
         if self._kg_delete_fn:
+            # 设置 user_id 到 KGStore（如果传了 user_id）
+            if user_id:
+                try:
+                    from app.rag.graph_build_task import GraphBuildTask
+                    if GraphBuildTask._kg_store:
+                        GraphBuildTask._kg_store.set_user_id(user_id)
+                except Exception:
+                    pass
             for dh in doc_hashes:
                 try:
                     await self._kg_delete_fn(dh)

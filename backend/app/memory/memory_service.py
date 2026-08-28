@@ -33,6 +33,7 @@ from app.memory.search.node_search import NodeSearch
 from app.memory.search.vector_index import VectorIndex
 from app.memory.search.wikilink_expander import WikilinkExpander
 from app.memory.session_memory import SessionMemory
+from app.memory.summary_llm import get_summary_generate_fn
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +115,18 @@ class MemoryService:
         self.auto_index.set_embed_fn(fn)
 
     def set_generate_fn(self, fn: Callable) -> None:
-        """Inject LLM generate function for memory extraction and pipeline."""
+        """Inject LLM generate function for memory extraction and pipeline.
+
+        The main conversation model is used for auto_memory and auto_dream.
+        SessionMemory uses an independent cheap summary model via
+        ``summary_llm.get_summary_generate_fn()`` instead.
+        """
         self._generate_fn = fn
         self.auto_memory.set_generate_fn(fn)
         self.auto_dream.set_generate_fn(fn)
-        self.session_memory.set_generate_fn(fn)
+        summary_fn = get_summary_generate_fn()
+        if summary_fn is not None:
+            self.session_memory.set_generate_fn(summary_fn)
 
     async def initialize(self) -> None:
         """Initialize workspace, indexes, and preference store."""
@@ -462,7 +470,11 @@ class MemoryService:
 
     async def _safe_extract_session_memory(self, conversation_id: str) -> None:
         try:
-            if await self.session_memory.should_extract(conversation_id):
+            should = (
+                await self.session_memory.should_extract(conversation_id)
+                or await self.session_memory.should_extract_short(conversation_id)
+            )
+            if should:
                 await self.session_memory.extract(conversation_id)
         except Exception as e:
             logger.warning("Session Memory extraction failed: %s", e)

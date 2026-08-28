@@ -87,7 +87,7 @@ async def _delete_document(args: dict[str, Any], user_id: str, ctx: ToolContext)
 
     ds = DocumentService(db=None, rag=None)
     try:
-        await ds.delete_document(document_id)
+        await ds.delete_document(document_id, user_id=user_id)
     except Exception as e:
         return err(f"Failed to delete document: {e}")
 

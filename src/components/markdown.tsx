@@ -6,6 +6,7 @@ import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
 
 import { CodeBlock } from '@/components/code-block'
+import { API_BASE_URL } from '@/lib/config'
 import { cn } from '@/lib/utils'
 
 interface MarkdownProps {
@@ -84,6 +85,14 @@ export function Markdown({ children, className }: MarkdownProps) {
           td: ({ children }) => (
             <td className="border-b border-foreground/10 px-2 py-1 align-top">{children}</td>
           ),
+          img: ({ src, alt }) => (
+            <img
+              src={src ? resolveImageSrc(String(src)) : undefined}
+              alt={alt || ''}
+              className="my-2 max-w-full rounded-md"
+              loading="lazy"
+            />
+          ),
         }}
       >
         {children}
@@ -97,4 +106,12 @@ function isCodeBlockChild(node: ReactNode): boolean {
   if (!isValidElement(node)) return false
   const el = node as ReactElement<{ className?: string }>
   return el.type === CodeBlock || el.props?.className?.startsWith('language-') === true
+}
+
+function resolveImageSrc(src: string): string {
+  if (!src) return src
+  if (src.startsWith('http://') || src.startsWith('https://')) return src
+  if (src.startsWith('/api/')) return API_BASE_URL + src
+  if (src.startsWith('images/')) return `${API_BASE_URL}/api/documents/${src.slice('images/'.length)}`
+  return src
 }

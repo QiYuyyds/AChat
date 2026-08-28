@@ -1,9 +1,10 @@
 'use client'
 
 import { Network as NetworkIcon } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { type GraphData, type GraphNode, fetchMemoryGraph, readMemoryFile } from '@/lib/api/memory'
+import { type GraphData, fetchMemoryGraph, readMemoryFile } from '@/lib/api/memory'
+import { useForceGraph } from '@/lib/hooks/use-force-graph'
 import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 import { cn } from '@/lib/utils'
 
@@ -27,32 +28,12 @@ const BUCKET_LABELS: Record<string, string> = {
 const BUCKETS = ['all', 'procedure', 'personal', 'wiki', 'daily'] as const
 type BucketFilter = (typeof BUCKETS)[number]
 
-// ─── Types ────────────────────────────────────────────────────────────────
-
-interface SimNode extends GraphNode {
-  x: number
-  y: number
-  vx: number
-  vy: number
-  fx: number | null
-  fy: number | null
-}
-
-interface SimLink {
-  source: SimNode
-  target: SimNode
-  predicate: string | null
-}
-
 // ─── Component ─────────────────────────────────────────────────────────────
 
 export function MemoryGraphPanel() {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
   const [data, setData] = useState<GraphData | null>(null)
   const [loading, setLoading] = useState(true)
   const [filterBucket, setFilterBucket] = useState<BucketFilter>('all')
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [detail, setDetail] = useState<{
     path: string
     name: string
@@ -64,15 +45,10 @@ export function MemoryGraphPanel() {
   } | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
-  const transformRef = useRef({ k: 1, x: 0, y: 0 })
-  const selectedRef = useRef<string | null>(null)
-
-  const handleNodeClick = useCallback(async (path: string) => {
-    setSelectedPath(path)
-    selectedRef.current = path
+  const handleNodeClick = useCallback(async (nodeId: string) => {
     setDetailLoading(true)
     try {
-      const d = await readMemoryFile(path)
+      const d = await readMemoryFile(nodeId)
       setDetail({
         path: d.path,
         name: d.name,
@@ -91,9 +67,7 @@ export function MemoryGraphPanel() {
 
   const load = useCallback(async (bucket: BucketFilter) => {
     setLoading(true)
-    setSelectedPath(null)
     setDetail(null)
-    selectedRef.current = null
     try {
       const result = await fetchMemoryGraph({
         bucket: bucket === 'all' ? undefined : bucket,
@@ -114,329 +88,56 @@ export function MemoryGraphPanel() {
     void load(filterBucket)
   })
 
+  // Clear detail when data changes
   useEffect(() => {
-    selectedRef.current = selectedPath
-  }, [selectedPath])
+    setDetail(null)
+  }, [data])
 
-  // Main simulation + rendering + interaction
+  // Adapt memory GraphData to ForceGraphData format
+  const forceData = useMemo(() => {
+    if (!data) return null
+    return {
+      nodes: data.nodes.map((n) => ({
+        id: n.path,
+        name: n.name,
+        type: 'memory',
+        labels: [n.bucket],
+        properties: { bucket: n.bucket, importance: n.importance, tags: n.tags, description: n.description },
+        degree: n.degree,
+      })),
+      edges: data.edges.map((e) => ({
+        id: `${e.source}-${e.target}`,
+        source: e.source,
+        target: e.target,
+        type: e.predicate ?? 'related',
+        properties: {},
+      })),
+    }
+  }, [data])
+
+  const { containerRef, canvasRef, selectedNode } = useForceGraph(forceData, {
+    nodeRadius: (node) => 5 + Math.min(node.degree ?? 0, 8) * 1.8,
+    linkDistance: 120,
+    charge: -250,
+    nodeColor: (node) => BUCKET_COLORS[node.properties.bucket as string] ?? '#6b7280',
+    edgeStyle: (_link, selected) => {
+      const dim = selected !== null
+      return {
+        color: dim ? 'rgba(120,120,140,0.06)' : 'rgba(120,120,140,0.25)',
+        dash: null,
+        width: 1.5,
+      }
+    },
+    nodeLabel: (node) => node.name.length > 14 ? node.name.slice(0, 14) + '…' : node.name,
+    onNodeClick: (nodeId) => void handleNodeClick(nodeId),
+  })
+
+  // Clear detail when selection is cleared by hook
   useEffect(() => {
-    if (!data || data.nodes.length === 0) return
-
-    const canvas = canvasRef.current
-    const container = containerRef.current
-    if (!canvas || !container) return
-
-    const dpr = window.devicePixelRatio || 1
-    const rect = container.getBoundingClientRect()
-    const w = rect.width
-    const h = rect.height
-
-    canvas.width = w * dpr
-    canvas.height = h * dpr
-    canvas.style.width = `${w}px`
-    canvas.style.height = `${h}px`
-
-    const cx = w / 2
-    const cy = h / 2
-    const initRadius = Math.min(w, h) * 0.35
-
-    const simNodes: SimNode[] = data.nodes.map((n, i) => {
-      const angle = (i / data.nodes.length) * Math.PI * 2
-      return {
-        ...n,
-        x: cx + Math.cos(angle) * initRadius,
-        y: cy + Math.sin(angle) * initRadius,
-        vx: 0,
-        vy: 0,
-        fx: null,
-        fy: null,
-      }
-    })
-
-    const nodeMap = new Map(simNodes.map((n) => [n.path, n]))
-    const simLinks: SimLink[] = data.edges
-      .filter((e) => nodeMap.has(e.source) && nodeMap.has(e.target))
-      .map((e) => ({
-        source: nodeMap.get(e.source)!,
-        target: nodeMap.get(e.target)!,
-        predicate: e.predicate,
-      }))
-
-    const neighbors = new Map<string, Set<string>>()
-    for (const n of simNodes) neighbors.set(n.path, new Set())
-    for (const link of simLinks) {
-      neighbors.get(link.source.path)?.add(link.target.path)
-      neighbors.get(link.target.path)?.add(link.source.path)
+    if (!selectedNode) {
+      setDetail(null)
     }
-
-    // ── Rendering setup ───────────────────────────────────────────────────
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    const nodeRadius = (node: SimNode) => 5 + Math.min(node.degree, 8) * 1.8
-
-    const drawOnce = () => {
-      ctx.save()
-      ctx.clearRect(0, 0, w * dpr, h * dpr)
-      ctx.scale(dpr, dpr)
-
-      const t = transformRef.current
-      ctx.translate(t.x, t.y)
-      ctx.scale(t.k, t.k)
-
-      const selected = selectedRef.current
-      const neighborSet = selected ? neighbors.get(selected) : null
-      const isDimmed = (path: string) => {
-        if (!selected) return false
-        if (path === selected) return false
-        return !neighborSet?.has(path)
-      }
-
-      // Draw edges
-      for (const link of simLinks) {
-        const dim = selected
-          ? link.source.path !== selected && link.target.path !== selected
-          : false
-        ctx.beginPath()
-        ctx.moveTo(link.source.x, link.source.y)
-        ctx.lineTo(link.target.x, link.target.y)
-
-        if (link.predicate === 'derived_from') {
-          ctx.setLineDash([5, 4])
-        } else if (link.predicate) {
-          ctx.setLineDash([2, 3])
-        } else {
-          ctx.setLineDash([])
-        }
-        ctx.strokeStyle = dim ? 'rgba(120,120,140,0.06)' : 'rgba(120,120,140,0.25)'
-        ctx.lineWidth = 1.5
-        ctx.stroke()
-      }
-      ctx.setLineDash([])
-
-      // Draw nodes
-      for (const node of simNodes) {
-        const dim = isDimmed(node.path)
-        const isSelected = node.path === selected
-        const color = BUCKET_COLORS[node.bucket] ?? '#6b7280'
-        const r = nodeRadius(node)
-
-        if (isSelected) {
-          ctx.beginPath()
-          ctx.arc(node.x, node.y, r + 6, 0, 2 * Math.PI)
-          ctx.fillStyle = color + '30'
-          ctx.fill()
-        }
-
-        ctx.beginPath()
-        ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
-        ctx.fillStyle = dim ? color + '20' : color
-        ctx.strokeStyle = isSelected ? '#fff' : dim ? color + '30' : color + 'cc'
-        ctx.lineWidth = isSelected ? 2.5 : 1.2
-        ctx.fill()
-        ctx.stroke()
-
-        if (!dim && t.k > 0.8) {
-          const showLabel = node.degree >= 2 || isSelected || t.k > 1.5
-          if (showLabel) {
-            ctx.fillStyle = 'rgba(200,200,210,0.9)'
-            ctx.font = '11px system-ui, sans-serif'
-            ctx.textAlign = 'center'
-            const label = node.name.length > 14 ? node.name.slice(0, 14) + '…' : node.name
-            ctx.fillText(label, node.x, node.y - r - 5)
-          }
-        }
-      }
-
-      ctx.restore()
-    }
-
-    // ── d3-force simulation ────────────────────────────────────────────────
-    let sim: { stop: () => void; alpha: (v: number) => void } | null = null
-
-    void (async () => {
-      const { forceSimulation, forceLink, forceManyBody, forceX, forceY, forceCollide } = await import('d3-force')
-
-      const nodes = simNodes as unknown as Array<{ x: number; y: number; vx: number; vy: number; fx: number | null; fy: number | null; path: string }>
-      const links = simLinks.map((l) => ({ source: l.source, target: l.target, predicate: l.predicate }))
-
-      const chargeForce = forceManyBody().strength(-250)
-      const linkForce = forceLink(links)
-        .id((d: unknown) => (d as SimNode).path)
-        .distance(120)
-        .strength(0.15)
-      const collideForce = forceCollide().radius((d: unknown) => {
-        const node = d as SimNode
-        return 8 + Math.min(node.degree, 8) * 2
-      })
-      const xForce = forceX(cx).strength(0.04)
-      const yForce = forceY(cy).strength(0.04)
-
-      const s = forceSimulation(nodes)
-        .force('charge', chargeForce)
-        .force('link', linkForce)
-        .force('collide', collideForce)
-        .force('x', xForce)
-        .force('y', yForce)
-        .alphaDecay(0.02)
-        .velocityDecay(0.3)
-
-      s.on('tick', drawOnce)
-
-      sim = {
-        stop: () => s.stop(),
-        alpha: (v: number) => { s.alpha(v) },
-      }
-    })()
-
-    // Also draw on raf for smooth pan/zoom (even after sim cools)
-    let rafId = 0
-    const rafDraw = () => {
-      drawOnce()
-      rafId = requestAnimationFrame(rafDraw)
-    }
-    rafId = requestAnimationFrame(rafDraw)
-
-    // ── Interaction ──────────────────────────────────────────────────────────
-
-    const screenToWorld = (sx: number, sy: number) => {
-      const t = transformRef.current
-      return {
-        x: (sx - t.x) / t.k,
-        y: (sy - t.y) / t.k,
-      }
-    }
-
-    const hitTest = (wx: number, wy: number): SimNode | null => {
-      for (const node of simNodes) {
-        const r = nodeRadius(node)
-        const dx = wx - node.x
-        const dy = wy - node.y
-        if (dx * dx + dy * dy <= (r + 3) * (r + 3)) return node
-      }
-      return null
-    }
-
-    let mode: 'idle' | 'panning' | 'dragging' = 'idle'
-    let dragNode: SimNode | null = null
-    let lastX = 0
-    let lastY = 0
-    let downX = 0
-    let downY = 0
-    let moved = false
-
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault()
-      const t = transformRef.current
-      const delta = -e.deltaY * 0.0015
-      const newK = Math.max(0.2, Math.min(8, t.k * (1 + delta)))
-      const cr = canvas.getBoundingClientRect()
-      const mx = e.clientX - cr.left
-      const my = e.clientY - cr.top
-      t.x = mx - ((mx - t.x) / t.k) * newK
-      t.y = my - ((my - t.y) / t.k) * newK
-      t.k = newK
-    }
-
-    const onMouseDown = (e: MouseEvent) => {
-      const cr = canvas.getBoundingClientRect()
-      const sx = e.clientX - cr.left
-      const sy = e.clientY - cr.top
-      const { x: wx, y: wy } = screenToWorld(sx, sy)
-      const hit = hitTest(wx, wy)
-
-      downX = e.clientX
-      downY = e.clientY
-      moved = false
-
-      if (hit) {
-        mode = 'dragging'
-        dragNode = hit
-        hit.fx = hit.x
-        hit.fy = hit.y
-        if (sim) sim.alpha(0.5)
-        canvas.style.cursor = 'grabbing'
-      } else {
-        mode = 'panning'
-        lastX = e.clientX
-        lastY = e.clientY
-        canvas.style.cursor = 'grabbing'
-      }
-    }
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (e.clientX !== downX || e.clientY !== downY) moved = true
-
-      if (mode === 'panning') {
-        const t = transformRef.current
-        t.x += e.clientX - lastX
-        t.y += e.clientY - lastY
-        lastX = e.clientX
-        lastY = e.clientY
-      } else if (mode === 'dragging' && dragNode) {
-        const cr = canvas.getBoundingClientRect()
-        const sx = e.clientX - cr.left
-        const sy = e.clientY - cr.top
-        const { x: wx, y: wy } = screenToWorld(sx, sy)
-        dragNode.fx = wx
-        dragNode.fy = wy
-      }
-    }
-
-    const onMouseUp = (e: MouseEvent) => {
-      if (mode === 'dragging' && dragNode) {
-        dragNode.fx = null
-        dragNode.fy = null
-        dragNode = null
-      }
-
-      if (!moved) {
-        const cr = canvas.getBoundingClientRect()
-        const sx = e.clientX - cr.left
-        const sy = e.clientY - cr.top
-        const { x: wx, y: wy } = screenToWorld(sx, sy)
-        const hit = hitTest(wx, wy)
-
-        if (hit) {
-          void handleNodeClick(hit.path)
-        } else {
-          setSelectedPath(null)
-          setDetail(null)
-          selectedRef.current = null
-        }
-      }
-
-      mode = 'idle'
-      canvas.style.cursor = 'grab'
-    }
-
-    const onDoubleClick = (e: MouseEvent) => {
-      const cr = canvas.getBoundingClientRect()
-      const sx = e.clientX - cr.left
-      const sy = e.clientY - cr.top
-      const { x: wx, y: wy } = screenToWorld(sx, sy)
-      if (!hitTest(wx, wy)) {
-        transformRef.current = { k: 1, x: 0, y: 0 }
-      }
-    }
-
-    canvas.addEventListener('wheel', onWheel, { passive: false })
-    canvas.addEventListener('mousedown', onMouseDown)
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
-    canvas.addEventListener('dblclick', onDoubleClick)
-    canvas.style.cursor = 'grab'
-
-    return () => {
-      cancelAnimationFrame(rafId)
-      sim?.stop()
-      canvas.removeEventListener('wheel', onWheel)
-      canvas.removeEventListener('mousedown', onMouseDown)
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
-      canvas.removeEventListener('dblclick', onDoubleClick)
-    }
-  }, [data, handleNodeClick])
+  }, [selectedNode])
 
   const nodeCount = data?.nodes.length ?? 0
   const edgeCount = data?.edges.length ?? 0
@@ -520,7 +221,7 @@ export function MemoryGraphPanel() {
           <canvas ref={canvasRef} className="absolute inset-0" />
         </div>
 
-        {selectedPath && (
+        {selectedNode && (
           <div className="flex w-72 shrink-0 flex-col overflow-hidden rounded-lg border bg-card shadow-[var(--shadow-sm)]">
             {detailLoading && !detail ? (
               <div className="flex items-center justify-center py-12">

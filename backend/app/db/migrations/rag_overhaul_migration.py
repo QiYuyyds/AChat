@@ -22,6 +22,7 @@ _PG_STATEMENTS = [
     "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS chunk_token_count INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS start_char_pos INTEGER",
     "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS end_char_pos INTEGER",
+    "ALTER TABLE rag_chunks ADD COLUMN IF NOT EXISTS ent_ids TEXT",
 ]
 
 _PG_BACKFILL = [
@@ -38,6 +39,7 @@ _SQLITE_STATEMENTS = [
     "ALTER TABLE rag_chunks ADD COLUMN chunk_token_count INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE rag_chunks ADD COLUMN start_char_pos INTEGER",
     "ALTER TABLE rag_chunks ADD COLUMN end_char_pos INTEGER",
+    "ALTER TABLE rag_chunks ADD COLUMN ent_ids TEXT",
 ]
 
 

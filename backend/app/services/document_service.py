@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -521,16 +522,17 @@ class DocumentService:
 
     # ─── Delete ────────────────────────────────────────────────────────────
 
-    async def delete_versions_by_document(self, document_id: str) -> int:
+    async def delete_versions_by_document(self, document_id: str, *, user_id: str = "") -> int:
         """Delete all RAG chunks for a document (all versions) from PG + ES + Milvus + KG.
 
         Delegates to RAGService.delete_by_document_id for the four-way cleanup.
         Returns the number of PG rows deleted.
+        user_id 用于 KGStore 的 user_label 隔离和 Milvus 向量清理。
         """
         if not self._rag:
             return 0
         try:
-            return await self._rag.delete_by_document_id(document_id)
+            return await self._rag.delete_by_document_id(document_id, user_id=user_id)
         except Exception as e:
             logger.warning(
                 "delete_versions_by_document failed for doc %s: %s",
@@ -539,8 +541,10 @@ class DocumentService:
             )
             return 0
 
-    async def delete_document(self, document_id: str) -> int:
-        """Soft-delete document + clean up RAG chunks. Returns deleted chunk count."""
+    async def delete_document(self, document_id: str, *, user_id: str = "") -> int:
+        """Soft-delete document + clean up RAG chunks. Returns deleted chunk count.
+        user_id 用于 KGStore 的 user_label 隔离和 Milvus 向量清理。
+        """
         async with self._get_db() as session:
             result = await session.execute(
                 select(Document).where(Document.id == document_id)
@@ -573,7 +577,7 @@ class DocumentService:
         if self._rag:
             for ver in versions:
                 dh = _doc_hash(ver.content_md)
-                deleted = await self._rag.delete_by_doc_hash(dh)
+                deleted = await self._rag.delete_by_doc_hash(dh, user_id=user_id or "")
                 total_deleted += deleted
 
         return total_deleted
@@ -614,7 +618,7 @@ class DocumentService:
             content_md = ver.content_md
 
         # Clean old RAG data for this document before re-ingesting
-        await self.delete_versions_by_document(document_id)
+        await self.delete_versions_by_document(document_id, user_id=user_id or "")
         return await self._ingest_content(
             content_md, document_id, version_id, user_id=user_id, preset_id=resolved_preset_id
         )
@@ -744,6 +748,23 @@ class DocumentService:
         extracted_images = getattr(result, "images", None) or []
         if extracted_images:
             doc_id = write_result["document"]["id"]
+            ver_id = write_result["version"]["id"]
+
+            # Insert placeholder links for images without references (e.g. DeepSeek-OCR page renders)
+            content = _insert_image_placeholders(content, extracted_images, doc_id)
+
+            # Rewrite all image links to canonical API path format
+            content = _rewrite_image_links(content, extracted_images, doc_id)
+
+            # Optional: generate LLM captions for images without alt_text
+            if get_settings().rag_image_caption_enabled:
+                content = await self._generate_image_captions(
+                    content, extracted_images, doc_id
+                )
+
+            # Write updated content back to the version
+            await self._update_version_content(ver_id, content)
+
             image_meta = _write_images_to_workspace(doc_id, extracted_images)
             if image_meta:
                 meta["images"] = image_meta
@@ -828,7 +849,7 @@ class DocumentService:
         dh = _doc_hash(content_md)
 
         # Clean old RAG data for this document before ingesting new content
-        await self.delete_versions_by_document(document_id)
+        await self.delete_versions_by_document(document_id, user_id=user_id or "")
 
         # 状态流转：active/parsed → indexing
         await self._try_transition(document_id, "indexing")
@@ -884,7 +905,7 @@ class DocumentService:
                 try:
                     await self._set_graph_status(document_id, "graph_pending")
                     asyncio.create_task(
-                        _trigger_graph_build(dh, chunk_refs, document_id)
+                        _trigger_graph_build(dh, chunk_refs, document_id, user_id=user_id or "")
                     )
                 except Exception as e:
                     logger.warning(
@@ -948,6 +969,94 @@ class DocumentService:
         except Exception as e:
             logger.warning("Failed to update version meta for %s: %s", version_id, e)
 
+    async def _update_version_content(self, version_id: str, content: str) -> None:
+        """Update DocumentVersion.content_md after image link rewriting."""
+        try:
+            async with self._get_db() as session:
+                await session.execute(
+                    update(DocumentVersion)
+                    .where(DocumentVersion.id == version_id)
+                    .values(content_md=content)
+                )
+        except Exception as e:
+            logger.warning("Failed to update version content for %s: %s", version_id, e)
+
+    async def _generate_image_captions(
+        self, content: str, images: list, doc_id: str
+    ) -> str:
+        """Generate LLM captions for images without alt_text and update content."""
+        settings = get_settings()
+        api_key = settings.llm_api_key
+        api_url = settings.llm_api_url
+        model = settings.llm_model
+
+        if not api_key or not api_url or not model:
+            logger.warning("LLM not configured for image caption generation, skipping")
+            return content
+
+        api_prefix = f"/api/documents/{doc_id}/images/"
+        updated_content = content
+
+        for img in images:
+            if img.alt_text:
+                continue
+
+            try:
+                caption = await self._call_llm_for_caption(
+                    api_key, api_url, model, img, updated_content,
+                )
+                if caption:
+                    img.alt_text = caption
+                    old_link = f"![{img.filename}]({api_prefix}{img.filename})"
+                    new_link = f"![{caption}]({api_prefix}{img.filename})"
+                    updated_content = updated_content.replace(old_link, new_link)
+            except Exception as e:
+                logger.warning("Failed to generate caption for %s: %s", img.filename, e)
+
+        return updated_content
+
+    async def _call_llm_for_caption(
+        self, api_key: str, api_url: str, model: str,
+        img, content: str,
+    ) -> str:
+        """Call LLM to generate a caption for an image based on surrounding text."""
+        import httpx
+
+        nearby_text = content[:500] if content else ""
+
+        prompt = (
+            f"Based on the following document context, generate a concise "
+            f"description (max 50 chars) for an image named '{img.filename}'. "
+            f"Document context: {nearby_text}"
+        )
+
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": 60,
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{api_url.rstrip('/')}/chat/completions",
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+            )
+            resp.raise_for_status()
+            body = resp.json()
+
+        choices = body.get("choices", [])
+        if choices:
+            text = choices[0].get("message", {}).get("content", "").strip()
+            return text[:50] if text else ""
+
+        return ""
+
     async def _try_transition(self, document_id: str, target: str) -> None:
         """尝试状态转换，失败时记录日志但不中断主流程。"""
         try:
@@ -968,17 +1077,88 @@ class DocumentService:
 
 
 async def _trigger_graph_build(
-    doc_hash: str, chunk_refs: list[ChunkRef], document_id: str
+    doc_hash: str, chunk_refs: list[ChunkRef], document_id: str,
+    user_id: str = "",
 ) -> None:
     """异步触发 GraphBuildTask（fire-and-forget wrapper）。"""
     try:
         from app.rag.graph_build_task import GraphBuildTask
-        await GraphBuildTask.build(doc_hash, chunk_refs, document_id=document_id)
+        await GraphBuildTask.build(doc_hash, chunk_refs, document_id=document_id, user_id=user_id)
     except Exception as e:
         logger.error("GraphBuildTask failed for doc %s: %s", document_id, e)
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
+
+
+def _rewrite_image_links(content: str, images: list, doc_id: str) -> str:
+    """Rewrite all image links in content to canonical API path format.
+
+    Converts any image link (relative, absolute, ocr-images/...) to
+    /api/documents/<doc_id>/images/<filename>.
+    """
+    if not images:
+        return content
+
+    # Build mapping: any recognizable image reference → canonical API path
+    api_prefix = f"/api/documents/{doc_id}/images/"
+
+    def replace_link(match: re.Match[str]) -> str:
+        alt_text = match.group(1) or ""
+        img_path = match.group(2)
+
+        # Already canonical
+        if img_path.startswith(api_prefix):
+            return match.group(0)
+
+        # Extract filename from various path formats
+        filename = os.path.basename(img_path.replace("\\", "/"))
+
+        # Try to match with known images
+        for img in images:
+            if img.filename == filename:
+                return f"![{alt_text}]({api_prefix}{img.filename})"
+
+        # If not in images list, still rewrite to API path if it looks like an image
+        if filename and any(filename.lower().endswith(ext) for ext in
+                            (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
+            return f"![{alt_text}]({api_prefix}{filename})"
+
+        return match.group(0)
+
+    return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_link, content)
+
+
+def _insert_image_placeholders(content: str, images: list, doc_id: str) -> str:
+    """Insert placeholder image links for images without references in content.
+
+    Used for DeepSeek-OCR page renders where images are extracted but not
+    referenced in the markdown text.
+    """
+    if not images:
+        return content
+
+    api_prefix = f"/api/documents/{doc_id}/images/"
+    existing_refs = set(re.findall(r"!\[[^\]]*\]\(([^)]+)\)", content))
+
+    # Find images that have no reference in the content
+    missing = []
+    for img in images:
+        canonical = f"{api_prefix}{img.filename}"
+        if canonical not in existing_refs and img.filename not in existing_refs:
+            missing.append(img)
+
+    if not missing:
+        return content
+
+    # Sort by page_index and append at the end
+    missing.sort(key=lambda x: x.page_index if x.page_index is not None else 0)
+    placeholders = []
+    for img in missing:
+        alt = img.alt_text or f"page_{img.page_index}" if img.page_index is not None else img.filename
+        placeholders.append(f"![{alt}]({api_prefix}{img.filename})")
+
+    return content + "\n\n" + "\n".join(placeholders)
 
 
 def _write_images_to_workspace(

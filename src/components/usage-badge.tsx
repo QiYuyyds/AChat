@@ -1,10 +1,7 @@
 'use client'
 
-import { Archive, Clock, Coins, Cpu, TrendingUp, Users } from 'lucide-react'
-import { useState } from 'react'
-
+import { Clock, Coins, Cpu, TrendingUp, Users } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { compactConversation } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { getModelLimits, getModelPricing } from '@/shared/model-registry'
 import {
@@ -30,11 +27,7 @@ import { useAppStore, useConversationUsageTotal, type AgentUsageDetail } from '@
 export function UsageBadge({ conversationId }: { conversationId: string }) {
   const total = useConversationUsageTotal(conversationId)
   const agents = useAppStore((s) => s.agents)
-  const conv = useAppStore((s) => s.conversations[conversationId])
-  const upsertMessage = useAppStore((s) => s.upsertMessage)
-  const setCtxOverride = useAppStore((s) => s.setCtxOverride)
   const modelProfiles = useAppStore((s) => s.modelProfiles)
-  const [compacting, setCompacting] = useState(false)
 
   if (total.runCount === 0) return null
 
@@ -52,24 +45,6 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
     }
     return maxCtx
   })()
-
-  const handleCompact = async () => {
-    if (compacting) return
-    setCompacting(true)
-    try {
-      const result = await compactConversation(conversationId)
-      upsertMessage(result.message)
-      // 良性跳过（无事可压）只显示提示消息，不覆盖「当前 ctx」——没省任何 token。
-      if (!result.skipped && result.ctxAfter !== undefined) {
-        // 乐观刷新「当前 ctx」到压缩后估计值；下一次真实 run 用实测值接管。
-        setCtxOverride(conversationId, result.ctxAfter, result.message.createdAt)
-      }
-    } catch (err) {
-      console.error('[UsageBadge] compact failed', err)
-    } finally {
-      setCompacting(false)
-    }
-  }
 
   const agentEntries = Object.entries(total.byAgentDetail).sort(
     (a, b) => b[1].totalTokens - a[1].totalTokens,
@@ -182,16 +157,6 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
               hint="最近一次 prompt 大小（单轮，非累计）"
             />
           )}
-          <button
-            type="button"
-            onClick={() => void handleCompact()}
-            disabled={compacting}
-            className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border bg-card px-2 py-1.5 text-[11px] shadow-[var(--shadow-sm)] transition hover:border-primary/30 hover:bg-accent hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50"
-            title="Compact older conversation history into a summary"
-          >
-            <Archive className="size-3" />
-            {compacting ? '正在压缩...' : '压缩上下文'}
-          </button>
         </div>
 
         <div className="mt-2 rounded-md bg-muted/20 px-2.5 py-1.5 text-[10px] leading-relaxed text-muted-foreground">

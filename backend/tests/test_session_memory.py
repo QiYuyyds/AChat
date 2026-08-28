@@ -65,7 +65,7 @@ async def test_should_extract_returns_false_for_short_conversation():
             "app.memory.session_memory._load_messages_since",
             new_callable=AsyncMock,
         ) as mock_load:
-            # ~1000 tokens, well below 10000
+            # ~1000 tokens, well below 3000 (MINIMUM_TOKENS_TO_INIT)
             mock_load.return_value = [
                 _make_msg("m1", 100, [{"type": "text", "content": "x" * 4000}])
             ]
@@ -85,7 +85,7 @@ async def test_should_extract_returns_true_at_threshold():
             "app.memory.session_memory._load_messages_since",
             new_callable=AsyncMock,
         ) as mock_load:
-            # ~12000 tokens, above 10000 threshold
+            # ~12000 tokens, above 3000 threshold (MINIMUM_TOKENS_TO_INIT)
             mock_load.return_value = [
                 _make_msg("m1", 100, [{"type": "text", "content": "x" * 48000}])
             ]
@@ -125,7 +125,7 @@ async def test_should_extract_returns_true_when_tool_calls_threshold_met():
             "app.memory.session_memory._load_messages_since",
             new_callable=AsyncMock,
         ) as mock_load:
-            # 3 tool_use parts (TOOL_CALLS_BETWEEN_UPDATES = 3)
+            # 3 tool_use parts (>= TOOL_CALLS_BETWEEN_UPDATES = 2)
             mock_load.return_value = [
                 _make_msg("m1", 50, [{"type": "text", "content": "x" * 48000}]),
                 _make_msg("m2", 200, [
@@ -338,14 +338,25 @@ async def test_extract_creates_new_record(db):
         session.add(msg)
 
     def mock_generate(system_prompt, user_msg):
-        return "new session summary"
+        return """```yaml
+title: new session
+current_state: started
+key_decisions: []
+files_touched: []
+commands_run: []
+artifacts_produced: []
+blockers: []
+open_questions: []
+next_steps: []
+architecture_understanding: ""
+```"""
 
     sm = SessionMemory(generate_fn=mock_generate)
     await sm.extract(conv_id)
 
     result = await sm.get(conv_id)
     assert result is not None
-    assert result.summary == "new session summary"
+    assert result.summary is not None
     assert result.covers_up_to is not None
 
 
@@ -412,7 +423,18 @@ async def test_extract_updates_existing_record(db):
         session.add(msg)
 
     def mock_generate(system_prompt, user_msg):
-        return "updated summary"
+        return """```yaml
+title: updated session
+current_state: updated
+key_decisions: []
+files_touched: []
+commands_run: []
+artifacts_produced: []
+blockers: []
+open_questions: []
+next_steps: []
+architecture_understanding: ""
+```"""
 
     sm = SessionMemory(generate_fn=mock_generate)
     await sm.extract(conv_id)
@@ -427,7 +449,7 @@ async def test_extract_updates_existing_record(db):
         )
         rows = result.scalars().all()
         assert len(rows) == 1
-        assert rows[0].summary == "updated summary"
+        assert "updated session" in rows[0].summary
 
 
 # ─── extract: degradation on LLM failure ─────────────────────────────────────
@@ -610,3 +632,130 @@ async def test_extract_transcript_contains_tool_info():
 
     assert "↳ tool_use: fs_list" in captured_args.get("user_msg", "")
     assert "↳ tool_result: [fs_list]" in captured_args.get("user_msg", "")
+
+
+# ─── extract: produces YAML from LLM output ──────────────────────────────
+
+
+_VALID_YAML_OUTPUT = """```yaml
+title: 优化压缩系统
+current_state: 正在讨论结构化 Session Note
+key_decisions:
+  - "[14:32] 用 Milvus BM25"
+files_touched:
+  - "backend/app/memory/session_note.py (已改)"
+commands_run: []
+artifacts_produced: []
+blockers: []
+open_questions: []
+next_steps:
+  - "实现 to_xml"
+architecture_understanding: ""
+```"""
+
+
+@pytest.mark.asyncio
+async def test_extract_produces_yaml():
+    """extract() with valid YAML output → summary is YAML format (SessionNote)."""
+    sm = SessionMemory(generate_fn=lambda s, u: _VALID_YAML_OUTPUT)
+    with patch.object(sm, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = None
+        with patch(
+            "app.memory.session_memory._load_messages_since",
+            new_callable=AsyncMock,
+        ) as mock_load:
+            mock_load.return_value = [
+                _make_msg("m1", 100, [{"type": "text", "content": "hello"}]),
+            ]
+            with patch.object(sm, "_upsert", new_callable=AsyncMock) as mock_upsert:
+                await sm.extract("conv1")
+
+    assert mock_upsert.called
+    call_args = mock_upsert.call_args
+    summary = call_args[0][1]
+    assert "title:" in summary
+    assert "优化压缩系统" in summary
+    assert "key_decisions:" in summary
+
+    from app.memory.session_note import SessionNote
+    parsed = SessionNote.from_yaml(summary)
+    assert parsed is not None
+    assert parsed.title == "优化压缩系统"
+    assert parsed.key_decisions == ["[14:32] 用 Milvus BM25"]
+
+
+@pytest.mark.asyncio
+async def test_extract_fallback_on_yaml_failure():
+    """extract() with non-YAML output → existing note not updated."""
+    existing = SessionMemoryRecord(summary="existing yaml content", covers_up_to=100.0)
+    sm = SessionMemory(generate_fn=lambda s, u: "This is just plain text, not YAML.")
+    with patch.object(sm, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = existing
+        with patch(
+            "app.memory.session_memory._load_messages_since",
+            new_callable=AsyncMock,
+        ) as mock_load:
+            mock_load.return_value = [
+                _make_msg("m1", 200, [{"type": "text", "content": "new stuff"}]),
+            ]
+            with patch.object(sm, "_upsert", new_callable=AsyncMock) as mock_upsert:
+                await sm.extract("conv1")
+
+    assert not mock_upsert.called
+
+
+@pytest.mark.asyncio
+async def test_extract_merges_contradictory_decisions():
+    """extract() with merge YAML → old decision marked [已更新]."""
+    existing_yaml = """```yaml
+title: 数据库选型
+current_state: 讨论中
+key_decisions:
+  - "[14:32] 使用 PostgreSQL"
+files_touched: []
+commands_run: []
+artifacts_produced: []
+blockers: []
+open_questions: []
+next_steps: []
+architecture_understanding: ""
+```"""
+
+    merged_yaml = """```yaml
+title: 数据库选型
+current_state: 改用 SQLite
+key_decisions:
+  - "[14:32] [已更新] 使用 PostgreSQL"
+  - "[15:07] 改用 SQLite"
+files_touched: []
+commands_run: []
+artifacts_produced: []
+blockers: []
+open_questions: []
+next_steps: []
+architecture_understanding: ""
+```"""
+
+    existing = SessionMemoryRecord(summary=existing_yaml, covers_up_to=100.0)
+    sm = SessionMemory(generate_fn=lambda s, u: merged_yaml)
+    with patch.object(sm, "get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = existing
+        with patch(
+            "app.memory.session_memory._load_messages_since",
+            new_callable=AsyncMock,
+        ) as mock_load:
+            mock_load.return_value = [
+                _make_msg("m1", 200, [{"type": "text", "content": "改用 SQLite"}]),
+            ]
+            with patch.object(sm, "_upsert", new_callable=AsyncMock) as mock_upsert:
+                await sm.extract("conv1")
+
+    assert mock_upsert.called
+    call_args = mock_upsert.call_args
+    summary = call_args[0][1]
+
+    from app.memory.session_note import SessionNote
+    parsed = SessionNote.from_yaml(summary)
+    assert parsed is not None
+    assert any("[已更新]" in d for d in parsed.key_decisions)
+    assert any("SQLite" in d for d in parsed.key_decisions)

@@ -132,6 +132,9 @@ interface AppState {
   // ─── 右侧文件浏览器面板（与 artifact preview 互斥）─
   fileExplorerOpen: boolean
 
+  // ─── 右侧会话笔记面板（与文件浏览器 / artifact preview 互斥）─
+  sessionNoteOpen: boolean
+
   // ─── DAG 节点选中的任务 id（右侧 TaskDetailPanel 开合控制）─
   selectedTaskId: string | null
 
@@ -251,6 +254,7 @@ interface AppState {
   removeArtifacts(artifactIds: string[]): void
 
   setFileExplorerOpen(open: boolean): void
+  setSessionNoteOpen(open: boolean): void
   setSelectedTaskId(id: string | null): void
   openFile(conversationId: string, path: string): void
   closeFile(conversationId: string, path: string): void
@@ -339,6 +343,7 @@ export const useAppStore = create<AppState>()(
     activeConversationId: null,
     previewArtifactId: null,
     fileExplorerOpen: true,
+    sessionNoteOpen: false,
     selectedTaskId: null,
     openFilesByConv: {},
     activeTabByConv: {},
@@ -633,6 +638,7 @@ export const useAppStore = create<AppState>()(
       set((s) => {
         s.previewArtifactId = artifactId
         s.fileExplorerOpen = false // 与文件浏览器互斥
+        s.sessionNoteOpen = false // 与会话笔记互斥
       }),
 
     closeArtifactPreview: () =>
@@ -643,7 +649,19 @@ export const useAppStore = create<AppState>()(
     setFileExplorerOpen: (open) =>
       set((s) => {
         s.fileExplorerOpen = open
-        if (open) s.previewArtifactId = null // 与 artifact preview 互斥
+        if (open) {
+          s.previewArtifactId = null // 与 artifact preview 互斥
+          s.sessionNoteOpen = false // 与 session note 互斥
+        }
+      }),
+
+    setSessionNoteOpen: (open) =>
+      set((s) => {
+        s.sessionNoteOpen = open
+        if (open) {
+          s.previewArtifactId = null // 与 artifact preview 互斥
+          s.fileExplorerOpen = false // 与文件浏览器互斥
+        }
       }),
 
     setSelectedTaskId: (id) =>

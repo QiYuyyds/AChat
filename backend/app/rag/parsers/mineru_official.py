@@ -22,7 +22,7 @@ from pathlib import Path
 
 import httpx
 
-from app.rag.parsers.base import BaseDocumentProcessor, ParseResult
+from app.rag.parsers.base import BaseDocumentProcessor, ExtractedImage, ParseResult
 from app.rag.parsers.ocr_zip_utils import process_ocr_zip
 
 logger = logging.getLogger(__name__)
@@ -70,8 +70,8 @@ class MinerUOfficialParser(BaseDocumentProcessor):
             )
 
         try:
-            text = self._process_via_cloud(data, filename)
-            text = self.normalize_text(text)
+            markdown, images = self._process_via_cloud(data, filename)
+            text = self.normalize_text(markdown)
 
             return ParseResult(
                 filename=filename,
@@ -80,6 +80,7 @@ class MinerUOfficialParser(BaseDocumentProcessor):
                 content=text,
                 text_chars=self.rune_len(text),
                 needs_ocr=not text.strip(),
+                images=images,
             )
         except Exception as e:
             logger.warning("MinerU Official processing failed for %s: %s", filename, e)
@@ -90,7 +91,7 @@ class MinerUOfficialParser(BaseDocumentProcessor):
                 needs_ocr=True,
             )
 
-    def _process_via_cloud(self, data: bytes, filename: str) -> str:
+    def _process_via_cloud(self, data: bytes, filename: str) -> tuple[str, list[ExtractedImage]]:
         """Full MinerU Official workflow: upload → poll → download → extract."""
         headers = {
             "Content-Type": "application/json",
@@ -109,7 +110,7 @@ class MinerUOfficialParser(BaseDocumentProcessor):
 
         if not zip_url:
             logger.warning("MinerU Official: no download URL in result")
-            return ""
+            return "", []
 
         # Step 4: Download ZIP and extract markdown + images
         return self._download_and_extract(zip_url, filename)
@@ -211,25 +212,26 @@ class MinerUOfficialParser(BaseDocumentProcessor):
 
         raise RuntimeError("MinerU Official task timed out")
 
-    def _download_and_extract(self, zip_url: str, filename: str) -> str:
+    def _download_and_extract(self, zip_url: str, filename: str) -> tuple[str, list[ExtractedImage]]:
         """Download the result ZIP and extract markdown + images."""
         with httpx.Client(timeout=60.0) as client:
             resp = client.get(zip_url)
 
         if resp.status_code != 200:
             logger.warning("MinerU Official: ZIP download failed: HTTP %d", resp.status_code)
-            return ""
+            return "", []
 
         zip_data = resp.content
 
         # Process ZIP: extract full.md + save images
         image_dir = tempfile.mkdtemp(prefix="mineru_official_images_")
         try:
-            markdown = process_ocr_zip(zip_data, image_output_dir=image_dir)
+            markdown, images = process_ocr_zip(zip_data, image_output_dir=image_dir)
 
             if not markdown.strip():
                 # Fallback: try direct ZIP extraction
                 markdown = self._fallback_extract_markdown(zip_data)
+                images = []
 
             if markdown:
                 logger.info(
@@ -237,10 +239,10 @@ class MinerUOfficialParser(BaseDocumentProcessor):
                     len(markdown), filename,
                 )
 
-            return markdown
+            return markdown, images
         except Exception as e:
             logger.warning("MinerU Official ZIP processing failed: %s", e)
-            return self._fallback_extract_markdown(zip_data)
+            return self._fallback_extract_markdown(zip_data), []
 
     @staticmethod
     def _fallback_extract_markdown(zip_data: bytes) -> str:
