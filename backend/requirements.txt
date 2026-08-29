@@ -38,6 +38,7 @@ httpx>=0.28.0
 python-dotenv>=1.0.1
 pypdf>=5.1.0  # read_attachment PDF text extraction (replaces TS pdf-parse)
 python-frontmatter>=1.1.0  # file-native memory frontmatter
+pyyaml>=6.0.0        # eval harness suite YAML loading
 jieba>=0.42.1  # Chinese tokenization for memory BM25/FTS5
 
 # Document Parser pipeline (ported from AGI-memory)

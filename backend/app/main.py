@@ -101,6 +101,31 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         except ImportError as e:
             logger.warning("Observability: auto-instrumentation skipped (%s)", e)
 
+    # ─── Aeval: inject real AChat runner (change ②, eval_integration) ───
+    # Runs here (not in create_app) because storage init is async and the
+    # trace bridge must install on the initialised OTel provider (§14.1.2).
+    # Needs EVAL_AGENT_ID (被评 agent); missing credentials → 明确告警, 子应用
+    # 保持 503 (POST /runs) 而非崩溃。
+    if settings.eval_harness_enabled:
+        try:
+            from eval_harness.api.app import set_runner
+
+            from eval_integration.config import create_aeval_runner
+
+            runner = await create_aeval_runner(settings)
+            set_runner(runner)
+            logger.info(
+                "Aeval: real AChat runner injected (agent=%s, api_base=%s)",
+                settings.eval_agent_id,
+                settings.eval_api_base or f"http://127.0.0.1:{settings.port}",
+            )
+        except Exception as e:
+            logger.warning("Aeval runner injection failed: %s", e)
+            logger.warning(
+                "Aeval: eval API mounted without a runner — POST /runs returns "
+                "503. Check EVAL_AGENT_ID and related eval_* settings."
+            )
+
     # ─── Infrastructure factory ───
     try:
         from app.infra.factory import build_infrastructure, close_infrastructure
@@ -1114,6 +1139,34 @@ def create_app() -> FastAPI:
     # deployment preview assets served at root /deployments/{id}/... (no /api prefix);
     # the previewPath the agent emits is /deployments/{id}. Frontend proxies via rewrite.
     app.include_router(deployments.router, tags=["deployments"])
+
+    # ─── Aeval evaluation harness (change: add-eval-harness-core) ───
+    # Mounted AFTER the judge routes above: Starlette matches routes in
+    # registration order, so /api/eval/judge/* keeps matching first and the
+    # sub-app's routes (suites/tasks/runs/trials/compare/graders) coexist on
+    # the same prefix without overlap (design doc §10.1).
+    if settings.eval_harness_enabled:
+        try:
+            import sys as _sys
+            from pathlib import Path as _Path
+
+            # eval_harness / eval_integration use top-level `from eval_...`
+            # imports (no app.* reverse dependency), so backend/app must be
+            # importable as a path root. Appended so installed packages keep
+            # priority.
+            _app_dir = str(_Path(__file__).resolve().parent)
+            if _app_dir not in _sys.path:
+                _sys.path.append(_app_dir)
+
+            from eval_harness.api.app import create_app as create_eval_app
+
+            # Real runner injected later in lifespan (needs async DB init +
+            # OTel provider for the trace bridge). Without one, the
+            # storage-backed endpoints work and POST /runs returns 503.
+            app.mount("/api/eval", create_eval_app())
+            logger.info("Eval harness API mounted at /api/eval")
+        except Exception as e:
+            logger.warning("Eval harness mount failed: %s", e)
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:

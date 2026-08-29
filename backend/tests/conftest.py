@@ -10,7 +10,18 @@ existing tests authenticate transparently. Tests that need an unauthenticated
 client can use `raw_client`.
 """
 
+import sys
+from pathlib import Path
+
 import pytest_asyncio
+
+# eval_harness uses top-level `from eval_harness...` imports (spec: no app.*
+# reverse dependency), so backend/app must be a sys.path root in tests. It is
+# APPENDED (not prepended) so installed packages that collide with app/*
+# subpackage names (e.g. the `mcp` PyPI package vs app/mcp) keep priority.
+_APP_DIR = str(Path(__file__).resolve().parent.parent / "app")
+if _APP_DIR not in sys.path:
+    sys.path.append(_APP_DIR)
 
 _TEST_JWT_SECRET = "test-secret-at-least-32-characters-long!!"
 

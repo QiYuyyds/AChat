@@ -199,6 +199,30 @@ class Settings(BaseSettings):
     eval_rule_enabled: bool = True
     eval_judge_enabled: bool = False
 
+    # ─── Aeval evaluation harness (eval_harness sub-app at /api/eval) ───
+    # Disabled by default; when enabled without an injected runner, only the
+    # storage-backed endpoints work and POST /runs returns 503.
+    eval_harness_enabled: bool = False
+
+    # ─── Aeval AChat integration (eval_integration, change ②) ───
+    # Injected runner wiring: create_aeval_runner() reads these. Eval mode
+    # requires an explicit target agent — no default (装配缺凭证时报明确缺失项).
+    eval_agent_id: str = ""
+    # AChat API base the runner calls back into; empty → http://127.0.0.1:<port>.
+    eval_api_base: str = ""
+    # Bearer JWT for the runner's HTTP calls. Empty → mint an in-process token
+    # for the default user (default_user_email).
+    eval_user_token: str = ""
+    # Per-trial completion wait timeout (seconds).
+    eval_run_timeout: float = 300.0
+    # Aeval result storage path; empty → <data_dir>/aeval.db.
+    eval_aeval_db_path: str = ""
+    # Aeval judge LLM (LLM output-quality metrics; AEVAL_JUDGE_* takes
+    # priority, eval_llm_* then the OpenAI key are fallbacks).
+    aeval_judge_api_key: str | None = None
+    aeval_judge_api_url: str | None = None
+    aeval_judge_model: str | None = None
+
     # ─── Obsidian Sync ───
     obsidian_max_embed_depth: int = 2
     obsidian_default_ignore: list[str] = [".obsidian/", "Templates/"]

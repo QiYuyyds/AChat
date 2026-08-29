@@ -1,0 +1,71 @@
+# Aeval 第一个真实链路 Suite (change: add-aeval-integration-dashboard, 任务 4.2)
+#
+# 前置:
+#   1. AChat 后端已启动且配置了可用模型 (backend/.env)
+#   2. EVAL_HARNESS_ENABLED=true 且 EVAL_AGENT_ID=<被评 agent id>
+#   3. Phoenix 已启动 (trace/spans 依赖)
+#
+# 导入方式 (二选一):
+#   a. Dashboard → Suites → YAML 导入
+#   b. python backend/scripts/run_first_suite.py  (导入 + 运行 + 打印汇总)
+#
+# 说明: grader 均为确定性检查 (不依赖 eval LLM), 便于真实链路首次验收。
+
+name: achat-first-suite
+description: AChat 真实 Agent 首个评测套件 — 简单问答 / 文件创建 / 种子文件读取
+version: 1.0.0
+metadata:
+  author: aeval
+  purpose: real-chain acceptance
+
+tasks:
+  - id: simple-qa
+    description: 单轮简单问答 — Agent 能正确回答固定事实问题
+    prompt: 请用一句话回答:HTTP 的默认端口号是多少?回答中请包含具体数字。
+    max_trials: 1
+    graders:
+      - type: code
+        name: code_based
+        config:
+          checks:
+            - type: contains
+              target: transcript
+              value: "80"
+
+  - id: file-creation
+    description: workspace 文件创建 — Agent 在 sandbox workspace 写出指定文件
+    prompt: >
+      请在 workspace 中创建文件 hello.md,内容为一行:
+      "Hello from Aeval!"。创建完成后简单说明你做了什么。
+    max_trials: 1
+    graders:
+      - type: code
+        name: code_based
+        config:
+          checks:
+            - type: contains
+              target: outcome
+              value: "hello.md"
+            - type: contains
+              target: outcome
+              value: "Hello from Aeval!"
+
+  - id: seed-file-qa
+    description: 种子文件读取 — Agent 能读取 env 注入的种子文件并回答内容
+    prompt: >
+      workspace 中有一个文件 project_code.txt,请读取它并回答:项目代号是什么?
+      只回答代号本身。
+    max_trials: 1
+    env:
+      files:
+        project_code.txt: |
+          项目代号: AEVAL-2026
+          用途: 评测框架真实链路验收
+    graders:
+      - type: code
+        name: code_based
+        config:
+          checks:
+            - type: contains
+              target: transcript
+              value: "AEVAL-2026"

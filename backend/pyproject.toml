@@ -48,6 +48,9 @@ dependencies = [
 
     # Memory file-native (frontmatter parsing + Chinese BM25 tokenization)
     "python-frontmatter>=1.1.0",
+
+    # Eval harness (suite YAML loading)
+    "pyyaml>=6.0.0",
     "jieba>=0.42.1",
 ]
 
