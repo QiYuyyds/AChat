@@ -178,3 +178,153 @@ export interface TaskDelta {
   b: number;
   delta: number;
 }
+
+// ── 数据集 (change ③ /api/eval/datasets) ─────────────────────────────────────
+
+export interface DatasetSummary {
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  tags: string[];
+  capability_map: Record<string, number>;
+  item_count: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface DatasetItem {
+  id: string;
+  prompt: string;
+  description: string;
+  graders: GraderConfig[];
+  env: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  source_type: string;
+  source_ref: string;
+  created_at: number;
+}
+
+export interface DatasetChangeLogEntry {
+  version: string;
+  change_type: string;
+  note: string;
+  at: number;
+  item_count: number;
+}
+
+export interface DatasetDetail extends DatasetSummary {
+  items: DatasetItem[];
+  metadata: Record<string, unknown>;
+  change_log: DatasetChangeLogEntry[];
+}
+
+export interface QualityIssue {
+  code: string;
+  severity: string;
+  item_id: string;
+  message: string;
+}
+
+export interface QualityReport {
+  total_items: number;
+  ok: boolean;
+  error_count: number;
+  warning_count: number;
+  errors: QualityIssue[];
+  warnings: QualityIssue[];
+}
+
+export interface CoverageReport {
+  total_items: number;
+  untagged_items: number;
+  coverage: Record<string, number>;
+  insufficient: Array<{ capability: string; item_count: number; coverage: number }>;
+}
+
+export interface SkippedEntry {
+  trace_id?: string;
+  reason?: string;
+  index?: number;
+  error?: string;
+  [key: string]: unknown;
+}
+
+/** POST /datasets/{ref}/from-trace 响应 */
+export interface FromTraceResponse {
+  mining: {
+    strategy: string;
+    candidates: number;
+    inspected: number;
+    mined: number;
+    skipped_count: number;
+    skipped: SkippedEntry[];
+    item_ids: string[];
+  };
+  merged: number;
+  merged_skipped: SkippedEntry[];
+  dataset_id: string;
+  item_count: number;
+}
+
+/** POST /datasets/{ref}/from-llm 响应 */
+export interface FromLLMResponse {
+  generation: {
+    scenario: string;
+    requested: number;
+    generated: number;
+    invalid_count: number;
+    invalid: SkippedEntry[];
+    item_ids: string[];
+  };
+  dataset_id: string;
+  item_count: number;
+}
+
+/** POST /datasets/{ref}/regression-extract 响应 */
+export interface RegressionExtractResponse {
+  extraction: { extracted: number; skipped: SkippedEntry[]; [key: string]: unknown };
+  merge: { merged: number; merged_skipped: SkippedEntry[]; [key: string]: unknown };
+  version: string;
+  bumped: boolean;
+  dataset_id: string;
+  item_count: number;
+}
+
+// ── Task 库 (跨 suite) ───────────────────────────────────────────────────────
+
+export interface TaskListItem {
+  id: string;
+  description: string;
+  suite_name: string;
+  max_trials: number;
+  grader_count: number;
+}
+
+export interface TaskFullDef extends SuiteTask {
+  score_strategy: string;
+  score_threshold: number;
+  tracked_metrics: string[];
+}
+
+export interface TaskDetailResponse {
+  task: TaskFullDef;
+  suite_name: string;
+}
+
+/** GET /tasks/{id}/history 单条 — 该 task 在一次 run 中的聚合结果 */
+export interface TaskHistoryEntry {
+  run_id: string;
+  suite_name: string;
+  started_at: number;
+  trials_passed: number;
+  trials_total: number;
+  avg_score: number;
+  graders: Record<string, number>;
+}
+
+export interface TaskHistoryResponse {
+  task_id: string;
+  suite_name: string;
+  history: TaskHistoryEntry[];
+}

@@ -5,6 +5,11 @@ Modules:
     llm_judge     — LLMFn protocol + tolerant JSON parsing + retry
     answer_relevancy / faithfulness / context_recall / context_precision — P0 metrics
     synthetic_data — Golden + SyntheticDataGenerator (documents → dataset items)
+    batch_evaluation — BatchEvaluator (对已有输出批量打分, P1)
+    prompt_metric  — PromptMetric (Prompt 变体 A/B, P1)
+    report         — 批量/run 结果渲染为 Markdown/JSON 报告 (P1)
+    pytest_plugin  — pytest 集成 (fixtures + suite 门禁; 只依赖 pytest, 不在
+                     此处导入以保持框架可无 pytest 运行 — 用例侧按需注册)
 
 LLM functions are injected as protocols (async (system, user) -> str);
 no LLM SDK is bound in the framework core.
@@ -18,6 +23,16 @@ from eval_harness.metrics.base import (
     MetricGraderAdapter,
     MetricResult,
 )
+from eval_harness.metrics.batch_evaluation import (
+    BatchCaseResult,
+    BatchEvaluationRequest,
+    BatchEvaluationResult,
+    BatchEvaluator,
+    BatchMetricSummary,
+    BatchTestCase,
+    MetricScore,
+    UnknownMetricsError,
+)
 from eval_harness.metrics.context_precision import ContextPrecisionMetric
 from eval_harness.metrics.context_recall import ContextRecallMetric
 from eval_harness.metrics.faithfulness import FaithfulnessMetric
@@ -29,6 +44,14 @@ from eval_harness.metrics.llm_judge import (
     extract_json_object,
     judge_json,
 )
+from eval_harness.metrics.prompt_metric import (
+    PromptComparisonResult,
+    PromptMetric,
+    PromptTemplateError,
+    PromptTrialDetail,
+    PromptVariant,
+)
+from eval_harness.metrics.report import render_batch_report, render_run_report
 from eval_harness.metrics.synthetic_data import Golden, SyntheticDataGenerator
 
 
@@ -69,4 +92,19 @@ __all__ = [
     "Golden",
     "SyntheticDataGenerator",
     "build_default_metrics_registry",
+    "BatchTestCase",
+    "BatchEvaluationRequest",
+    "BatchEvaluationResult",
+    "BatchCaseResult",
+    "BatchMetricSummary",
+    "MetricScore",
+    "BatchEvaluator",
+    "UnknownMetricsError",
+    "PromptVariant",
+    "PromptTrialDetail",
+    "PromptComparisonResult",
+    "PromptMetric",
+    "PromptTemplateError",
+    "render_batch_report",
+    "render_run_report",
 ]

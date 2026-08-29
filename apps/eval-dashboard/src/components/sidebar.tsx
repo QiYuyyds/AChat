@@ -8,6 +8,8 @@ import { cn } from "@/lib/format";
 const NAV = [
   { href: "/", label: "总览" },
   { href: "/suites", label: "Suites" },
+  { href: "/datasets", label: "Datasets" },
+  { href: "/tasks", label: "Task 库" },
   { href: "/compare", label: "A/B 对比" },
   { href: "/settings", label: "Settings" },
 ];

@@ -2297,8 +2297,16 @@ apps/eval-dashboard/
 │   │           └── 导出按钮
 │   │
 │   ├── tasks/
-│   │   ├── page.tsx                     # Task 库
-│   │   └── [id]/page.tsx                # Task 详情 + 历史结果
+│   │   ├── page.tsx                     # Task 库 (跨 suite 列表 + 搜索) ✅ 已实现
+│   │   └── [id]/page.tsx                # Task 详情 + 历史结果 (趋势图/通过明细/run 链接) ✅ 已实现
+│   │
+│   ├── datasets/                        # ★ 数据集管理页组 (§18.7) ✅ 已实现
+│   │   ├── page.tsx                     # 列表: 名称/版本/条目数/标签 + 标签筛选 + 删除确认
+│   │   ├── new/page.tsx                 # 手动表单 + YAML/JSON 导入双 tab (合并原 new/import 两页)
+│   │   └── [ref]/                       # ref = id 或 name (后端双解析)
+│   │       ├── page.tsx                 # 详情: 元信息/覆盖度条形/Item 表格与增删改/操作区
+│   │       │                            #   (质量检查清单/to-suite 跳转/升版对话框/回归提取)
+│   │       └── mine/page.tsx            # 生成向导: Trace Mining + LLM 生成双 tab (两段式)
 │   │
 │   ├── trials/
 │   │   └── [runId]/[taskId]/[trialIndex]/page.tsx  # Trial 下钻
@@ -3193,7 +3201,7 @@ agent-eval/
 | `api/routes/` suites / tasks / runs / trials / compare / graders / cancel / human-scores | ✅ 已有 | change ①; compare 挂 `/api/eval/compare`; **已挂载 main.py** (`eval_harness_enabled` 设置项, 默认关) |
 | 单元/集成测试 (141 个) + 覆盖率脚本 `scripts/check_eval_coverage.sh` | ✅ 已有 | change ①; core/metrics + graders/* + suite 覆盖率 95% (目标 ≥90%) |
 | `dataset/` 数据集构建 | ✅ 已落码 | change ③: `models.py` (EvalDataset/EvalDatasetItem 溯源 + to_suite 复用 Suite 校验器)、`storage.py` (DatasetStorage 协议 + SQLite/Memory, 组合挂载 `storage.datasets`)、`sources/` (manual YAML/JSON 导入、trace_mining 三策略、llm_generator、regression 提取+归一化去重)、`quality.py` (QualityChecker + CoverageAnalyzer)、`version.py` (semver 升版 + change_log)、`api/routes/datasets.py` (/api/eval/datasets CRUD/items/from-trace/from-llm/regression-extract/quality-check/coverage/to-suite/version) |
-| `metrics/` LLM 质量指标 | ✅ 已落码 (P0) | change ③: `base.py` (MetricResult/Metric/BaseLLMMetric + to_grader 桥接)、`llm_judge.py` (LLMFn 协议 + JSON 容错解析 + 重试)、P0 四指标 answer_relevancy / faithfulness / context_recall / context_precision、`synthetic_data.py` (Golden + SyntheticDataGenerator, 分块按字符); P1 (PromptMetric/pytest 插件/批量 API) 按 Phase 1 change ④ 延后 |
+| `metrics/` LLM 质量指标 | ✅ 已落码 (P0+P1) | change ③: `base.py` (MetricResult/Metric/BaseLLMMetric + to_grader 桥接)、`llm_judge.py` (LLMFn 协议 + JSON 容错解析 + 重试)、P0 四指标 answer_relevancy / faithfulness / context_recall / context_precision、`synthetic_data.py` (Golden + SyntheticDataGenerator, 分块按字符); change ④ (add-aeval-metrics-p1): `batch_evaluation.py` (BatchEvaluator — 指标名解析前置/单条异常隔离/Semaphore 并发, 逐指标 thresholds 覆盖)、`prompt_metric.py` (PromptMetric 变体 A/B, v1 求和语义 + 逐 trial 明细)、`pytest_plugin.py` (SyncMetric 同步包装 fixtures + `--eval-suite`/`--eval-threshold` 门禁)、`report.py` (批量/run → Markdown/JSON 纯渲染) + `POST /api/eval/metrics/batch` (未注册指标 422, runner 未装配 503) |
 | `eval_integration/` AChat 接入层 | ✅ 已落码 | change ②: `runner.py` (AChatAgentRunner, HTTP 主路径 + 进程内完成检测/trace_id 桥, §14.1.2)、`environment.py` (AChatWorkspaceEnvironment, §17.5 落定)、`graders/` (achat_artifact/achat_dispatch)、`config.py` (create_aeval_runner, main.py lifespan 注入); `GET /artifacts` 补 `conversation_id` 过滤; 首个 Suite YAML + 验收脚本 `backend/scripts/run_first_suite.py` 就绪 |
 | SSE 流式端点 | ✅ 已落码 | change ②: `api/events.py` run 事件总线 (per-run 队列 fan-out + 终态缓存) + `GET /runs/{run_id}/stream` (快照+增量协议, 15s 心跳, run_complete 收尾) |
 | Dashboard (`apps/eval-dashboard/`) | ✅ 已建 | change ②: Next.js 16 独立应用 (pnpm workspace, 端口 3100); 总览 / Suites+YAML 导入 / Run 报告 (SSE 实时) / Trial 下钻 (transcript/outcome/Phoenix 外链) / A/B 对比 / Settings (连接配置); 刷新恢复 = 快照+增量协议 |
@@ -3212,7 +3220,7 @@ agent-eval/
 | ① add-eval-harness-core | 补齐核心骨架: 环境快照/泄漏检测、TransientError 重试、`core/suite.py`、human / step_level grader、`GraderType.METRIC`、trials/compare API、挂载 `main.py` | 可独立运行的评测核心 + REST API | MockRunner 端到端跑通一个 mini suite, 结果可查询/对比 |
 | ② add-aeval-integration-dashboard | AChat 接入层 (`eval_integration/`) + SSE 流式端点 (§17.3) + Dashboard (总览 / Run 报告 / Trial 下钻 / A-B 对比) | 真实 AChat Agent 可被评测, 进度可视化 | 真实 Agent 跑通第一个 Suite YAML; 刷新页面后状态可恢复 |
 | ③ add-aeval-dataset-metrics | 数据集构建 (5 类数据源 / 质量检查 / 覆盖度 / 版本) + Trace Mining + Metrics 模块 P0 (4 指标 + SyntheticData) | 数据集管理 + 质量闭环 | 数据集 → Suite → Run → 回归样本 闭环跑通 |
-| ④ (可选) Metrics P1 | Prompt A/B / pytest 插件 / 批量评测 API | 增强能力 | — |
+| ④ (可选) Metrics P1 ✅ | Prompt A/B / pytest 插件 / 批量评测 API / 指标报告 | 增强能力 | — |
 
 ### Phase 2: 完善 + 独立
 
@@ -3961,17 +3969,18 @@ class DatasetStorage(Protocol):
 
 ### 18.7 Dashboard 中的数据集管理
 
-在 Dashboard 中新增数据集管理页面:
+在 Dashboard 中新增数据集管理页面 (✅ 已实现 — 实际落地按下方注释有简化: new 与 import 合并为
+一个页面的双 tab, edit 并入详情页的条目 JSON 编辑对话框, mine 向导同时承载 Trace Mining 与
+LLM 生成两个 tab; `ref` 路由参数兼容数据集 id 与 name):
 
 ```
 ├── datasets/
-│   ├── page.tsx                     # 数据集列表
-│   ├── new/page.tsx                 # 创建数据集
-│   ├── [id]/
-│   │   ├── page.tsx                 # 数据集详情 + Item 列表
-│   │   ├── edit/page.tsx            # 编辑数据集
-│   │   └── mine/page.tsx            # Trace Mining 向导
-│   └── import/page.tsx              # 导入数据集
+│   ├── page.tsx                     # 数据集列表 ✅
+│   ├── new/page.tsx                 # 创建/导入数据集 (双 tab: 手动表单 | YAML/JSON) ✅
+│   ├── [ref]/
+│   │   ├── page.tsx                 # 数据集详情 + Item 列表 + 操作区 (质检/to-suite/升版/回归提取) ✅
+│   │   └── mine/page.tsx            # 生成向导 (双 tab: Trace Mining | LLM 生成, 两段式) ✅
+│   └── (edit / import 页并入 new 与详情页, 未单列)
 ```
 
 **数据集列表页原型**:
@@ -6054,20 +6063,20 @@ for task_id, trials in result.trials.items():
 
 #### 18.13.14 实现优先级与工期估算
 
-| 指标/功能 | 优先级 | 工期 | 依赖 |
-|-----------|--------|------|------|
-| base.py (基础协议) | P0 | 0.5d | 无 |
-| llm_judge.py (LLM 基础设施) | P0 | 0.5d | base.py |
-| answer_relevancy.py | P0 | 1d | llm_judge.py |
-| faithfulness.py | P0 | 1d | llm_judge.py |
-| context_recall.py | P0 | 1d | llm_judge.py |
-| context_precision.py | P0 | 1d | llm_judge.py |
-| synthetic_data.py | P0 | 1.5d | llm_judge.py |
-| prompt_metric.py | P1 | 1d | base.py |
-| pytest_plugin.py | P1 | 1d | base.py, batch_evaluation.py |
-| batch_evaluation.py | P1 | 1d | base.py, metrics/* |
-| report.py | P1 | 0.5d | base.py |
-| **总计** | | **9d** | |
+| 指标/功能 | 优先级 | 工期 | 依赖 | 状态 |
+|-----------|--------|------|------|------|
+| base.py (基础协议) | P0 | 0.5d | 无 | ✅ change ③ |
+| llm_judge.py (LLM 基础设施) | P0 | 0.5d | base.py | ✅ change ③ |
+| answer_relevancy.py | P0 | 1d | llm_judge.py | ✅ change ③ |
+| faithfulness.py | P0 | 1d | llm_judge.py | ✅ change ③ |
+| context_recall.py | P0 | 1d | llm_judge.py | ✅ change ③ |
+| context_precision.py | P0 | 1d | llm_judge.py | ✅ change ③ |
+| synthetic_data.py | P0 | 1.5d | llm_judge.py | ✅ change ③ |
+| prompt_metric.py | P1 | 1d | base.py | ✅ change ④ (add-aeval-metrics-p1) |
+| pytest_plugin.py | P1 | 1d | base.py, batch_evaluation.py | ✅ change ④ (add-aeval-metrics-p1) |
+| batch_evaluation.py | P1 | 1d | base.py, metrics/* | ✅ change ④ (add-aeval-metrics-p1) |
+| report.py | P1 | 0.5d | base.py | ✅ change ④ (add-aeval-metrics-p1) |
+| **总计** | | **9d** | | |
 
 ---
 
@@ -6127,5 +6136,6 @@ for task_id, trials in result.trials.items():
 | v0.8 | 2026-08-29 | 精简重复接口定义 (§5 与 §7/§8/§9)；移除 RAG Eval 集成 (通用开源定位)；增强数据集质量闭环 (§18.4.5)；明确开发时运行定位 |
 | v0.9 | 2026-08-29 | 新增 §15.1 与 AChat 的开发期关系 (禁止反向依赖 app.*/技术决策自主/边界组件隔离)；§17.3 落定 SSE + 快照/增量协议, §10 端点同步更新 |
 | v0.10 | 2026-08-29 | §16 新增实现现状快照并改为 change 切分视角；§17 加状态总览表、已决策项落正文 (17.1/17.2/17.4/17.6/17.7 ✅, 17.5/17.9 🔄)；§17.13 审查归档至 docs/eval-harness-design-review.md (正文留映射表)；§10.1 API 命名空间说明；结构修复 (§8.2 重复标题 / 目录子项 / 术语表重复 / Dashboard 位置 apps/) |
+| v0.11 | 2026-08-29 | change add-aeval-metrics-p1 落地 Metrics P1: §16/§18.13.14 标注完成 — batch_evaluation (BatchEvaluator + POST /api/eval/metrics/batch)、prompt_metric (PromptMetric A/B)、pytest_plugin (fixtures + --eval-suite 门禁)、report (Markdown/JSON 渲染) |
 ```
 

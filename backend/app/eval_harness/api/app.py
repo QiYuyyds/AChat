@@ -17,7 +17,7 @@ Usage:
 
 from __future__ import annotations
 
-from eval_harness.api.routes import datasets, graders, runs, suites, tasks
+from eval_harness.api.routes import datasets, graders, metrics, runs, suites, tasks
 from eval_harness.core.runner import EvalRunner
 from fastapi import FastAPI
 
@@ -70,6 +70,8 @@ def create_app(runner: EvalRunner | None = None) -> FastAPI:
     app.include_router(graders.router, prefix="/graders", tags=["graders"])
     # 数据集管理 (change ③: 数据集构建闭环 — CRUD/导入/挖掘/生成/质量/to-suite)
     app.include_router(datasets.router, prefix="/datasets", tags=["datasets"])
+    # 批量评测 (change ④: 对已有输出直接批量打分 — POST /metrics/batch)
+    app.include_router(metrics.router, prefix="/metrics", tags=["metrics"])
 
     @app.get("/health")
     async def health():
