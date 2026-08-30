@@ -32,7 +32,11 @@ async def main(import_only: bool) -> int:
             print(f"  - {task.id}: {task.description}")
         return 0
 
+    from app.db import engine as engine_mod
     from app.eval_integration.config import create_aeval_runner
+
+    # 真实链路需要 backend DB（agent 执行会话/消息落库）——与 app 启动等价
+    await engine_mod.init_db()
 
     runner = await create_aeval_runner()
     print("[aeval] runner assembled — running against real AChat Agent ...")

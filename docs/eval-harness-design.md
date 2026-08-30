@@ -3114,14 +3114,16 @@ bitdance-agenthub-main/
     └── eval-harness-design.md           # 本文档
 ```
 
-### 15.3 独立后 (agent-eval repo)
+### 15.3 独立后 (Aeval repo)
 
 > **决策已落定** (2026-08-30, change `settle-aeval-opensource-decisions`, D1/D2): 独立 repo 采用 **MIT** 许可 + **fresh init** (首个提交进独立 repo, 不携带 AChat AGPL 仓库历史; AChat 侧完整历史保留不受影响); 命名四件套落定为 repo `agent-eval` / Python 包 `agent_eval` / CLI `eval-suite` (§11) / 品牌 **Aeval**, PyPI 包名同步 `agent-eval`。决策到抽取 change 机械动作的映射见 §15.4。
 
+> **✅ 阶段二已完成** (2026-08-30, change `publish-aeval-repo`): 独立 repo 上线 **github.com/QiYuyyds/Aeval** (fresh init 首提交 `feat: Aeval v0.1.0 — initial release`, 不携带 AChat 历史; CI 首跑修复 ruff 欠账与 publish.yml bug 后 pytest 3.11/3.12 + ruff + dashboard build 全绿); v0.1.0 已双渠道发布 — GitHub Release (双语) + PyPI。**执行修正**: PyPI 名 `agent-eval` 实际被占用 (UK Government AISI 的 agenteval; 品牌名 `aeval` 亦被占用), 维护者改选 **`aeval-framework`** — Python 模块 `agent_eval` / CLI `eval-suite` / 品牌 Aeval 不变 (`pip install aeval-framework` → `import agent_eval`, 同 pillow→PIL 惯例), repo 名从建议值 `agent-eval` 现实化为 `Aeval`。
+
 ```
-agent-eval/
+Aeval/
 ├── packages/
-│   └── agent-eval/                      # 单包 (pip install agent-eval; extras [api]/[cli])
+│   └── agent-eval/                      # 单包 (pip install aeval-framework; extras [api]/[cli])
 │       ├── src/agent_eval/
 │       │   ├── core/                    # types / contract / suite / metrics / runner
 │       │   ├── graders/                 # 9 内置评分器 + 注册表
@@ -3167,7 +3169,7 @@ agent-eval/
 └── LICENSE (MIT)
 ```
 
-> **阶段一形态说明** (change `extract-aeval-repo`, 2026-08-30): 上述结构即 AChat 内顶层 `aeval/` 目录的现状。与早先三包草案的差异: **单包 + extras** (`pip install agent-eval[api|cli]`) — 对外契约不变 (PyPI 名 `agent-eval` / console script `eval-suite` / HTTP 路由), 三包拆分可在边界真正需要时再做且不破坏契约 (D1)。
+> **阶段一形态说明** (change `extract-aeval-repo`, 2026-08-30): 上述结构即 AChat 内顶层 `aeval/` 目录的现状。与早先三包草案的差异: **单包 + extras** (`pip install aeval-framework[api|cli]`) — 对外契约不变 (PyPI 名 `agent-eval` / console script `eval-suite` / HTTP 路由), 三包拆分可在边界真正需要时再做且不破坏契约 (D1)。
 
 ### 15.4 独立 repo 抽取输入清单 (change `extract-aeval-repo`)
 
@@ -3184,7 +3186,7 @@ agent-eval/
 
 | 现名 | 目标 | 波及范围 (已核实) |
 |------|------|------|
-| repo / PyPI 包名 | `agent-eval` | GitHub repo 名 / PyPI 包名 |
+| repo / PyPI 包名 | `agent-eval` — **执行现实**: repo `Aeval` / PyPI `aeval-framework` (原建议名被占用, §15.3 修正) | GitHub repo 名 / PyPI 包名 |
 | `backend/app/eval_harness/` | `packages/core/src/agent_eval/` | 57 个 py 文件的框架内 import |
 | `backend/app/eval_integration/` | 接入层随迁 (import `eval_harness` → `agent_eval`) | 7 个文件 |
 | backend/tests 引用 | 框架单测随迁改 import; AChat 侧集成测试保留 | 25 个文件引用 (随迁/保留逐个核定) |
@@ -3201,8 +3203,8 @@ agent-eval/
 
 - README: `README.md` (英文主文件) + `README.zh-CN.md` (中文版, 互相链接)
 - docs/ 六篇 (以本设计文档为源材料裁剪改写, 面向使用者而非设计者): getting-started / integration-guide / grader-reference / yaml-format / cli-reference / architecture
-- 首发 `v0.1.0`; PyPI 发布 `agent-eval` (core/api/cli); Dashboard 不发 PyPI, 随 repo 发布 GitHub Release
-- CONTRIBUTING + GitHub Discussions: v0.1.0 发布时补
+- 首发 `v0.1.0` ✅ 已发布 (2026-08-30): PyPI `aeval-framework` (extras [api]/[cli]; 原拟 `agent-eval` 名被占用) + GitHub Release 双语说明 (功能清单 + Known Limitations); Dashboard 不发 PyPI, 随 repo 发布 GitHub Release
+- CONTRIBUTING + GitHub Discussions: CONTRIBUTING ✅ 已建 (v0.1.0); Discussions 未开 (发布后按需)
 
 ---
 
@@ -3210,7 +3212,7 @@ agent-eval/
 
 ### 当前实现现状 (2026-08-30 快照, change `extract-aeval-repo` 后)
 
-> 框架位于 `aeval/packages/agent-eval/src/agent_eval/` (PyPI 包 `agent-eval` v0.1.0, AChat 侧经 **editable 安装**消费), 无任何对 AChat 内部 (`app.*`) 的反向依赖 (§15.1 规则 1, 以 `aeval/packages/agent-eval/tests/test_import_isolation.py` AST 扫描固化)。sys.path hack 已全部移除 (main.py / conftest ×2 / scripts); `eval_integration` 留守 `backend/app/eval_integration/` (AChat 接入层, import 改 `agent_eval` + 自身 `app.eval_integration` 限定)。随实现推进更新本表。
+> **独立 repo 维护视角** (2026-08-30, change `publish-aeval-repo` 阶段二后): 框架维护于 **github.com/QiYuyyds/Aeval**, PyPI 发行名 **`aeval-framework` v0.1.0** (import `agent_eval` / CLI `eval-suite` 不变); AChat 侧经 **PyPI 依赖**消费 — backend venv 已从 editable 切换为 `pip install "aeval-framework[api,cli]==0.1.0"` 并验证 (95 个 eval 集成测试全绿 + 真实链路冒烟 run 落库可查); `backend/requirements.txt` 不含此依赖 (D4: 可选能力, 随 `eval_harness_enabled` 按需安装)。AChat 内 `aeval/` 过渡目录暂留待删 (任务 6.3 可独立延后)。框架无任何对 AChat 内部 (`app.*`) 的反向依赖 (§15.1 规则 1, 以独立 repo 内 `test_import_isolation.py` AST 扫描固化); `eval_integration` 留守 `backend/app/eval_integration/` (import `agent_eval` + 自身 `app.eval_integration` 限定)。随实现推进更新本表。
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
@@ -6178,4 +6180,5 @@ for task_id, trials in result.trials.items():
 | v0.12 | 2026-08-30 | 开源化四决策落定 (change settle-aeval-opensource-decisions): D1 MIT + fresh init；D2 repo `agent-eval` / 包 `agent_eval` / CLI `eval-suite` / 品牌 Aeval；D3 API 独立部署 `/v1` + 寄宿期 `/api/eval/*` 不变 + 同大版本兼容 (§17.9 ✅)；D4 README 双语 + docs 中文先行 + v0.1.0 + PyPI (§17.12 第一批 ✅)；§15.3 补决策记录, 新增 §15.4 抽取输入清单 (rename 映射/LICENSE/历史/路由/docs 六篇) |
 | v0.13 | 2026-08-30 | change extract-aeval-repo 阶段一执行完毕: §15.3 结构图改单包+extras 形态并标注阶段一现状; §15.4 标注已执行 (含两处执行差异: eval_integration 留守 / 测试 20+6 拆分); 新能力 — CLI `eval-suite` (run/validate/list/show/compare/serve) + 独立 API `create_standalone_app` (`/v1` + `X-Aeval-Version` + `/v1/meta`); rename `eval_harness → agent_eval` 全量落地, 框架迁至 `aeval/packages/agent-eval/src/agent_eval/` (PyPI 包 agent-eval v0.1.0, MIT, editable 安装), sys.path hack 清零; dashboard 迁 `aeval/apps/dashboard`; docs 六篇 + examples×2 + dormant CI; §16 快照更新 (框架测试 349 + AChat 绑定留守 6 文件) |
 | v0.14 | 2026-08-30 | change add-aeval-task-conversation-config: task 级会话配置 — `create_conversation` 参数化 (mode/agent_ids/dispatch_mode), runner 解析 `env.agent_id` / `env.conversation` (优先级 conversation > agent_id > 全局; single⇔1 / group⇔≥2 + 枚举/类型校验, 建会话前失败不静默回退); §17.5 补 env 键约定与校验语义表, §16 现状表同步; examples/achat 补 dispatch 任务示例 |
+| v0.15 | 2026-08-30 | change publish-aeval-repo 阶段二执行完毕: 独立 repo 上线 github.com/QiYuyyds/Aeval (fresh init, 不携带 AChat 历史; CI 首跑修复 ruff 欠账 + publish.yml secrets 上下文 bug 后全绿); v0.1.0 双渠道发布 — GitHub Release (双语) + PyPI **`aeval-framework`** (原拟 `agent-eval` 名被 UK AISI agenteval 占用, 品牌名 `aeval` 亦被占用, 维护者改选; 模块 `agent_eval`/CLI `eval-suite` 不变); 发布物打磨 (README 双语 Known Limitations + 命名说明, CONTRIBUTING, pyproject URLs, staging 脚本 publish_stage.sh); 全新 venv 安装验证全链路通过; AChat 切 PyPI 依赖 (95 eval 测试全绿, 真实链路冒烟 run 落库可查); §15.3/§15.4/§16 标注阶段二完成; requirements.txt 去 editable 改可选按需安装 |
 
