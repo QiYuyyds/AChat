@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from eval_harness.core.types import EvalTask, GraderConfig, GraderType, TrialResult
+from agent_eval.core.types import EvalTask, GraderConfig, GraderType, TrialResult
 
-from eval_integration.graders import AChatArtifactGrader, AChatDispatchGrader
+from app.eval_integration.graders import AChatArtifactGrader, AChatDispatchGrader
 
 
 def _task(grader_name: str, **config) -> EvalTask:

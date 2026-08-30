@@ -1,0 +1,71 @@
+[project]
+name = "agent-eval"
+version = "0.1.0"
+description = "Aeval — open-source agent evaluation framework driven by OTel traces (suites, graders, metrics, storage, API, CLI)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Aeval contributors" }]
+keywords = ["agents", "evaluation", "llm", "otel", "tracing", "testing"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Testing",
+]
+
+dependencies = [
+    "pydantic>=2.10.0",
+    "pyyaml>=6.0.0",
+    "aiosqlite>=0.20.0",
+]
+
+[project.optional-dependencies]
+# REST API / SSE service (create_app / create_standalone_app)
+api = [
+    "fastapi>=0.115.0",
+    "sse-starlette>=2.2.0",
+    "uvicorn[standard]>=0.32.0",
+]
+# eval-suite command line
+cli = [
+    "typer>=0.12.0",
+    "rich>=13.0.0",
+]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.28.0",
+    "ruff>=0.8.0",
+]
+
+[project.scripts]
+eval-suite = "agent_eval.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/agent-eval/agent-eval"
+Documentation = "https://github.com/agent-eval/agent-eval/tree/main/docs"
+Changelog = "https://github.com/agent-eval/agent-eval/blob/main/README.md#changelog"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_eval"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008"]

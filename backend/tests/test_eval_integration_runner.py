@@ -12,13 +12,13 @@ import json
 import httpx
 import pytest
 
-from eval_harness.core.contract import TransientError
-from eval_harness.core.types import EvalTask, GraderConfig, GraderType
+from agent_eval.core.contract import TransientError
+from agent_eval.core.types import EvalTask, GraderConfig, GraderType
 
-from eval_integration.client import AChatApiClient
-from eval_integration.environment import AChatWorkspaceEnvironment
-from eval_integration.errors import AgentRunError
-from eval_integration.runner import AChatAgentRunner, WorkspaceCoordinator
+from app.eval_integration.client import AChatApiClient
+from app.eval_integration.environment import AChatWorkspaceEnvironment
+from app.eval_integration.errors import AgentRunError
+from app.eval_integration.runner import AChatAgentRunner, WorkspaceCoordinator
 
 AGENT_ID = "ag_eval_target"
 
@@ -234,7 +234,7 @@ async def test_run_writes_seed_files_before_prompt():
 
 
 async def test_run_no_trace_when_tracing_disabled(monkeypatch):
-    from eval_integration import runner as runner_mod
+    from app.eval_integration import runner as runner_mod
 
     monkeypatch.setattr(runner_mod.AChatAgentRunner, "_trace_enabled", staticmethod(lambda: False))
     mock = MockAChat()
@@ -246,7 +246,7 @@ async def test_run_no_trace_when_tracing_disabled(monkeypatch):
 
 
 async def test_run_raises_when_trace_unavailable(monkeypatch):
-    from eval_integration import runner as runner_mod
+    from app.eval_integration import runner as runner_mod
 
     monkeypatch.setattr(runner_mod.AChatAgentRunner, "_trace_enabled", staticmethod(lambda: True))
     runner = _make_runner(MockAChat(), trace=None, run_timeout=5.0)

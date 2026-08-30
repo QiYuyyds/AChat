@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from eval_harness.core.contract import EvalContext
-from eval_harness.core.types import EvalTask, GraderResult, GraderType, TrialResult
+from agent_eval.core.contract import EvalContext
+from agent_eval.core.types import EvalTask, GraderResult, GraderType, TrialResult
 
 
 class AChatArtifactGrader:

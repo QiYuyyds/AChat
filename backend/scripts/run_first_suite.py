@@ -13,13 +13,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from eval_harness.core.suite import load_suite  # noqa: E402
+from agent_eval.core.suite import load_suite  # noqa: E402
 
 SUITE_PATH = Path(__file__).resolve().parent.parent / "eval_suites" / "first-suite.yaml"
 
@@ -33,7 +32,7 @@ async def main(import_only: bool) -> int:
             print(f"  - {task.id}: {task.description}")
         return 0
 
-    from eval_integration.config import create_aeval_runner
+    from app.eval_integration.config import create_aeval_runner
 
     runner = await create_aeval_runner()
     print("[aeval] runner assembled — running against real AChat Agent ...")

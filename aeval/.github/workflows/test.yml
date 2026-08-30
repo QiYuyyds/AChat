@@ -1,0 +1,52 @@
+# Aeval CI — test + lint + dashboard build.
+#
+# NOTE: dormant in stage-1 (this file lives at aeval/.github/workflows/ — GitHub
+# only reads workflows from the repo root). Stage-2 (moving Aeval into the
+# standalone agent-eval repo) moves it to <repo-root>/.github/workflows/ to
+# activate. Until then, validation happens locally: pytest + ruff + pnpm build.
+
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package with dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e "packages/agent-eval[api,cli,dev]"
+      - name: Lint (ruff)
+        run: ruff check packages/agent-eval
+      - name: Run tests
+        run: |
+          cd packages/agent-eval
+          pytest tests/ -q --cov=agent_eval --cov-report=term-missing
+
+  dashboard-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build dashboard
+        run: pnpm --filter eval-dashboard build

@@ -1,6 +1,9 @@
 packages:
   - apps/*
   - packages/*
+  # Aeval dashboard (stage-1 layout; stage-2 moves it into the standalone
+  # agent-eval repo and this entry is dropped)
+  - aeval/apps/*
 
 allowBuilds:
   better-sqlite3: true

@@ -9,19 +9,12 @@ Usage:
 
 from __future__ import annotations
 
-import sys
-import time
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
-
-import uvicorn  # noqa: E402
-from fastapi import FastAPI  # noqa: E402
-
-from eval_harness.api.app import create_app  # noqa: E402
-from eval_harness.core.runner import EvalRunner  # noqa: E402
-from eval_harness.examples.mock_runner import MockAgentRunner, MockTraceProvider  # noqa: E402
-from eval_harness.storage.memory import MemoryStorage  # noqa: E402
+import uvicorn
+from agent_eval.api.app import create_app
+from agent_eval.core.runner import EvalRunner
+from agent_eval.examples.mock_runner import MockAgentRunner, MockTraceProvider
+from agent_eval.storage.memory import MemoryStorage
+from fastapi import FastAPI
 
 runner = EvalRunner(
     agent_runner=MockAgentRunner(success_rate=1.0, latency_range=(3.0, 5.0)),

@@ -199,7 +199,7 @@ class Settings(BaseSettings):
     eval_rule_enabled: bool = True
     eval_judge_enabled: bool = False
 
-    # ─── Aeval evaluation harness (eval_harness sub-app at /api/eval) ───
+    # ─── Aeval evaluation harness (agent_eval sub-app at /api/eval) ───
     # Disabled by default; when enabled without an injected runner, only the
     # storage-backed endpoints work and POST /runs returns 503.
     eval_harness_enabled: bool = False

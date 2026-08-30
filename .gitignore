@@ -118,3 +118,12 @@ backend/_*.py
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# Aeval (stage-1 layout inside AChat; becomes standalone agent-eval repo in stage 2)
+/aeval/**/dist/
+/aeval/**/build/
+/aeval/**/*.egg-info/
+/aeval/**/.pytest_cache/
+/aeval/**/.ruff_cache/
+/aeval/**/node_modules/
+/aeval/**/.next/

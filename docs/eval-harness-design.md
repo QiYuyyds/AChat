@@ -3116,45 +3116,39 @@ bitdance-agenthub-main/
 
 ### 15.3 独立后 (agent-eval repo)
 
+> **决策已落定** (2026-08-30, change `settle-aeval-opensource-decisions`, D1/D2): 独立 repo 采用 **MIT** 许可 + **fresh init** (首个提交进独立 repo, 不携带 AChat AGPL 仓库历史; AChat 侧完整历史保留不受影响); 命名四件套落定为 repo `agent-eval` / Python 包 `agent_eval` / CLI `eval-suite` (§11) / 品牌 **Aeval**, PyPI 包名同步 `agent-eval`。决策到抽取 change 机械动作的映射见 §15.4。
+
 ```
 agent-eval/
 ├── packages/
-│   ├── core/                            # pip install agent-eval
-│   │   ├── src/agent_eval/
-│   │   │   ├── core/
-│   │   │   ├── graders/
-│   │   │   ├── trace/
-│   │   │   └── storage/
-│   │   └── pyproject.toml
+│   └── agent-eval/                      # 单包 (pip install agent-eval; extras [api]/[cli])
+│       ├── src/agent_eval/
+│       │   ├── core/                    # types / contract / suite / metrics / runner
+│       │   ├── graders/                 # 9 内置评分器 + 注册表
+│       │   ├── metrics/                 # LLM 质量指标 (base/llm_judge/批量/报告/pytest 插件)
+│       │   ├── dataset/                 # 数据集构建 (sources/quality/version)
+│       │   ├── storage/                 # memory + sqlite
+│       │   ├── trace/                   # phoenix (懒加载, 可选)
+│       │   ├── api/                     # app.py (create_app) + standalone.py (/v1 独立) + routes/
+│       │   ├── examples/                # MockAgentRunner / MockTraceProvider
+│       │   └── cli.py                   # eval-suite (typer)
+│       ├── tests/                       # 框架测试 (随包)
+│       └── pyproject.toml               # extras [api]/[cli]/[dev]; console script eval-suite
 │   │
-│   ├── api/                             # pip install agent-eval[api]
-│   │   ├── src/agent_eval_api/
-│   │   │   ├── app.py
-│   │   │   └── routes/
-│   │   └── pyproject.toml
-│   │
-│   └── cli/                             # pip install agent-eval[cli]
-│       ├── src/agent_eval_cli/
-│       │   └── main.py
-│       └── pyproject.toml
-│
 ├── apps/
 │   └── dashboard/                       # 独立 Next.js 前端
-│       ├── app/
-│       ├── components/
-│       ├── lib/
+│       ├── src/
 │       └── package.json
 │
 ├── examples/
-│   ├── minimal/                         # 最小接入示例
+│   ├── minimal/                         # 最小接入示例 (离线可跑)
 │   │   ├── runner.py
-│   │   └── suite.yaml
-│   ├── achat/                           # AChat 接入示例
-│   │   ├── runner.py
-│   │   └── suite.yaml
-│   └── langgraph/                       # LangGraph 接入示例 (未来)
-│       ├── runner.py
-│       └── suite.yaml
+│   │   ├── suite.yaml
+│   │   └── README.md
+│   └── achat/                           # HTTP Agent 接入示例
+│       ├── http_agent_runner.py
+│       ├── suite.yaml
+│       └── README.md
 │
 ├── docs/
 │   ├── getting-started.md
@@ -3164,30 +3158,59 @@ agent-eval/
 │   ├── cli-reference.md
 │   └── architecture.md
 │
-├── tests/
-│   ├── test_runner.py
-│   ├── test_graders.py
-│   ├── test_metrics.py
-│   ├── test_storage.py
-│   └── test_suite.py
-│
 ├── .github/
 │   └── workflows/
-│       ├── test.yml
-│       └── publish.yml
+│       ├── test.yml                     # dormant (迁至 repo 根激活)
+│       └── publish.yml                  # dormant (tag → PyPI, PYPI_TOKEN gated)
 │
-├── README.md
-├── LICENSE (MIT)
-└── pyproject.toml (workspace root)
+├── README.md (英文) + README.zh-CN.md (中文, 互相链接)
+└── LICENSE (MIT)
 ```
+
+> **阶段一形态说明** (change `extract-aeval-repo`, 2026-08-30): 上述结构即 AChat 内顶层 `aeval/` 目录的现状。与早先三包草案的差异: **单包 + extras** (`pip install agent-eval[api|cli]`) — 对外契约不变 (PyPI 名 `agent-eval` / console script `eval-suite` / HTTP 路由), 三包拆分可在边界真正需要时再做且不破坏契约 (D1)。
+
+### 15.4 独立 repo 抽取输入清单 (change `extract-aeval-repo`)
+
+> 四项开源化决策 (D1-D4, 2026-08-30 落定) 到抽取 change 机械动作的映射。抽取 change 执行时以本节为直接输入; rename 波及范围已核实 (2026-08-30)。
+>
+> **✅ 已执行 (阶段一, 2026-08-30)**: `aeval/` 树建成 (单包 + extras, §15.3 图), rename `eval_harness → agent_eval` 全量落地 (框架内 / eval_integration / 测试 / scripts), editable 安装替代全部 sys.path hack, CLI `eval-suite` 与独立 API `/v1` 交付, docs 六篇就位, dashboard 迁至 `aeval/apps/dashboard`。与原清单的两处执行差异: (1) `eval_integration` **留守 AChat** (import 改 `agent_eval` + 自身改 `app.eval_integration` 限定, 消除对 path hack 的依赖) 而非随迁; (2) backend 测试实际拆分为 20 个随迁 + 6 个 AChat 绑定留守 (挂载回归 / 集成配置 / 集成 runner / 集成 graders / 首套件 YAML / run_collector)。阶段二 (fresh init 迁出独立 repo + push + PyPI + AChat 切 PyPI 依赖) 另立 change `publish-aeval-repo`, 执行前需维护者确认。
+
+**D1 → LICENSE 与历史**
+
+- 独立 repo 根放 `LICENSE` (MIT, 版权行 `Copyright (c) 2026 <维护者>`); Aeval 相关文件在 AChat 内的既有版权声明不冲突 (同一作者)
+- git 历史: fresh init, 首个提交进独立 repo; AChat 仓库完整保留历史不受影响
+
+**D2 → rename 映射** (Dashboard 与 AChat 侧其余代码走 HTTP, 不感知包名)
+
+| 现名 | 目标 | 波及范围 (已核实) |
+|------|------|------|
+| repo / PyPI 包名 | `agent-eval` | GitHub repo 名 / PyPI 包名 |
+| `backend/app/eval_harness/` | `packages/core/src/agent_eval/` | 57 个 py 文件的框架内 import |
+| `backend/app/eval_integration/` | 接入层随迁 (import `eval_harness` → `agent_eval`) | 7 个文件 |
+| backend/tests 引用 | 框架单测随迁改 import; AChat 侧集成测试保留 | 25 个文件引用 (随迁/保留逐个核定) |
+| backend/scripts | 迁移脚本改 import | 4 个: `run_first_suite.py` / `run_dataset_cycle.py` / `dev_eval_api_server.py` / `check_eval_coverage.sh` |
+| CLI 命令 | `eval-suite` | packages/cli entry point (§11 已按此设计) |
+
+**D3 → API 路由**
+
+- 独立部署: `packages/api` 以 `/v1` 前缀暴露 (`include_router(prefix="/v1")`); 响应带 `X-Aeval-Version` 或 `/meta` 端点供 Dashboard 显示 (可选增强)
+- AChat 寄宿期: `/api/eval/*` 挂载不变, 路由代码零改动 (§10.1)
+- 兼容承诺: 同一大版本内 URL 与响应结构向后兼容; 破坏性变更升 `/v2` 并至少维护一个并行期
+
+**D4 → 文档与发布**
+
+- README: `README.md` (英文主文件) + `README.zh-CN.md` (中文版, 互相链接)
+- docs/ 六篇 (以本设计文档为源材料裁剪改写, 面向使用者而非设计者): getting-started / integration-guide / grader-reference / yaml-format / cli-reference / architecture
+- 首发 `v0.1.0`; PyPI 发布 `agent-eval` (core/api/cli); Dashboard 不发 PyPI, 随 repo 发布 GitHub Release
+- CONTRIBUTING + GitHub Discussions: v0.1.0 发布时补
 
 ---
 
 ## 16. 开发路线图
 
-### 当前实现现状 (2026-08-29 快照)
+### 当前实现现状 (2026-08-30 快照, change `extract-aeval-repo` 后)
 
-> 框架位于 `backend/app/eval_harness/`, 无任何对 AChat 内部 (`app.*`) 的反向依赖 (§15.1 规则 1, 以 `tests/test_eval_harness_import.py` AST 扫描固化)。随实现推进更新本表。
+> 框架位于 `aeval/packages/agent-eval/src/agent_eval/` (PyPI 包 `agent-eval` v0.1.0, AChat 侧经 **editable 安装**消费), 无任何对 AChat 内部 (`app.*`) 的反向依赖 (§15.1 规则 1, 以 `aeval/packages/agent-eval/tests/test_import_isolation.py` AST 扫描固化)。sys.path hack 已全部移除 (main.py / conftest ×2 / scripts); `eval_integration` 留守 `backend/app/eval_integration/` (AChat 接入层, import 改 `agent_eval` + 自身 `app.eval_integration` 限定)。随实现推进更新本表。
 
 | 模块 | 状态 | 说明 |
 |------|------|------|
@@ -3197,14 +3220,18 @@ agent-eval/
 | `core/suite.py` (Suite 加载/校验) | ✅ 已建 | change ①; `load_suite(path)` + Pydantic v2 严格校验 |
 | `graders/` 内置 9 个 (含 human / step_level / metric) | ✅ 已有 | change ①; 注册表含 metadata (type/description); human 为 pending 语义 (§8.2); change ③ 补 `metric` 分发 grader (D1: 按 config.metric_name 路由到注入的 metrics 注册表) |
 | `storage/` memory + sqlite (+ 人工评分请求表) | ✅ 已有 | postgres 按 Phase 3 延后 |
-| `trace/` phoenix | ✅ 已有 | phoenix ≥5 移除顶层 `px.Client` → `phoenix.client.Client(base_url=...)` + `client.spans.get_spans_dataframe` (真实链路验收时修复, 列结构兼容) |
+| `trace/` phoenix | ✅ 已有 | phoenix ≥5 移除顶层 `px.Client` → `phoenix.client.Client(base_url=...)` + `client.spans.get_spans_dataframe` (真实链路验收时修复, 列结构兼容); 懒加载, 独立包不携带 phoenix 依赖 |
 | `api/routes/` suites / tasks / runs / trials / compare / graders / cancel / human-scores | ✅ 已有 | change ①; compare 挂 `/api/eval/compare`; **已挂载 main.py** (`eval_harness_enabled` 设置项, 默认关) |
-| 单元/集成测试 (141 个) + 覆盖率脚本 `scripts/check_eval_coverage.sh` | ✅ 已有 | change ①; core/metrics + graders/* + suite 覆盖率 95% (目标 ≥90%) |
+| `api/standalone.py` 独立 API (/v1) | ✅ 已落码 | change extract-aeval-repo (D5): `create_standalone_app()` 复用 `create_app()` 路由整体挂 `/v1`, 响应带 `X-Aeval-Version` 头, `GET /v1/meta` 返回版本+能力清单; 既有 `create_app()` 零改动, 寄宿挂载行为不变 |
+| `cli.py` (`eval-suite` 命令行) | ✅ 已落码 | change extract-aeval-repo (§11): typer 实现 `run` (--trials/--concurrency/--runner, 默认 MockRunner + entry-point 注册点 `agent_eval.runners`) / `validate` / `list runs\|suites` / `show --task` / `compare` / `serve` (--host/--port 默认回环); 退出码语义: 失败任务→1, 用法错误→2; console script + `[cli]` extra (typer/rich) |
+| 单元/集成测试 (框架 349 个: `aeval/packages/agent-eval/tests/`) + 覆盖率脚本 `backend/scripts/check_eval_coverage.sh` (路径已适配) | ✅ 已有 | change ①; core/metrics + graders/* + suite 覆盖率 95% (目标 ≥90%); extract-aeval-repo 迁入 20 个 + 新增 standalone/CLI 29 个; AChat 侧集成/挂载测试留守 `backend/tests/` (eval_mount + eval_integration_* + run_collector_eval) |
 | `dataset/` 数据集构建 | ✅ 已落码 | change ③: `models.py` (EvalDataset/EvalDatasetItem 溯源 + to_suite 复用 Suite 校验器)、`storage.py` (DatasetStorage 协议 + SQLite/Memory, 组合挂载 `storage.datasets`)、`sources/` (manual YAML/JSON 导入、trace_mining 三策略、llm_generator、regression 提取+归一化去重)、`quality.py` (QualityChecker + CoverageAnalyzer)、`version.py` (semver 升版 + change_log)、`api/routes/datasets.py` (/api/eval/datasets CRUD/items/from-trace/from-llm/regression-extract/quality-check/coverage/to-suite/version) |
 | `metrics/` LLM 质量指标 | ✅ 已落码 (P0+P1) | change ③: `base.py` (MetricResult/Metric/BaseLLMMetric + to_grader 桥接)、`llm_judge.py` (LLMFn 协议 + JSON 容错解析 + 重试)、P0 四指标 answer_relevancy / faithfulness / context_recall / context_precision、`synthetic_data.py` (Golden + SyntheticDataGenerator, 分块按字符); change ④ (add-aeval-metrics-p1): `batch_evaluation.py` (BatchEvaluator — 指标名解析前置/单条异常隔离/Semaphore 并发, 逐指标 thresholds 覆盖)、`prompt_metric.py` (PromptMetric 变体 A/B, v1 求和语义 + 逐 trial 明细)、`pytest_plugin.py` (SyncMetric 同步包装 fixtures + `--eval-suite`/`--eval-threshold` 门禁)、`report.py` (批量/run → Markdown/JSON 纯渲染) + `POST /api/eval/metrics/batch` (未注册指标 422, runner 未装配 503) |
-| `eval_integration/` AChat 接入层 | ✅ 已落码 | change ②: `runner.py` (AChatAgentRunner, HTTP 主路径 + 进程内完成检测/trace_id 桥, §14.1.2)、`environment.py` (AChatWorkspaceEnvironment, §17.5 落定)、`graders/` (achat_artifact/achat_dispatch)、`config.py` (create_aeval_runner, main.py lifespan 注入); `GET /artifacts` 补 `conversation_id` 过滤; 首个 Suite YAML + 验收脚本 `backend/scripts/run_first_suite.py` 就绪 |
+| `eval_integration/` AChat 接入层 (留守 `backend/app/eval_integration/`) | ✅ 已落码 | change ②: `runner.py` (AChatAgentRunner, HTTP 主路径 + 进程内完成检测/trace_id 桥, §14.1.2)、`environment.py` (AChatWorkspaceEnvironment, §17.5 落定)、`graders/` (achat_artifact/achat_dispatch)、`config.py` (create_aeval_runner, main.py lifespan 注入); `GET /artifacts` 补 `conversation_id` 过滤; 首个 Suite YAML + 验收脚本 `backend/scripts/run_first_suite.py` 就绪; extract-aeval-repo 起 import 走 `agent_eval` + `app.eval_integration` 限定 |
 | SSE 流式端点 | ✅ 已落码 | change ②: `api/events.py` run 事件总线 (per-run 队列 fan-out + 终态缓存) + `GET /runs/{run_id}/stream` (快照+增量协议, 15s 心跳, run_complete 收尾) |
-| Dashboard (`apps/eval-dashboard/`) | ✅ 已建 | change ②: Next.js 16 独立应用 (pnpm workspace, 端口 3100); 总览 / Suites+YAML 导入 / Run 报告 (SSE 实时) / Trial 下钻 (transcript/outcome/Phoenix 外链) / A/B 对比 / Settings (连接配置); 刷新恢复 = 快照+增量协议 |
+| Dashboard (`aeval/apps/dashboard/`, 自 apps/eval-dashboard 迁入) | ✅ 已建 | change ②: Next.js 16 独立应用 (pnpm workspace glob `aeval/apps/*`, 端口 3100); 总览 / Suites+YAML 导入 / Run 报告 (SSE 实时) / Trial 下钻 (transcript/outcome/Phoenix 外链) / A/B 对比 / Settings (连接配置); 刷新恢复 = 快照+增量协议 |
+| 打包与分发 (`aeval/packages/agent-eval/pyproject.toml`) | ✅ 已建 | change extract-aeval-repo: 包名 `agent-eval` v0.1.0, MIT, extras `[api]`(fastapi/sse-starlette/uvicorn) + `[cli]`(typer/rich) + `[dev]`, console script `eval-suite`; AChat `backend/requirements.txt` 以 `-e ../aeval/packages/agent-eval[api,cli]` 引用; README 双语 + docs 六篇 + dormant CI workflows 就位; 阶段二 (fresh init 迁出 + PyPI) 另立 `publish-aeval-repo` |
+| examples (`aeval/examples/{minimal,achat}/`) | ✅ 已建 | change extract-aeval-repo: minimal = MockRunner + toy suite + 程序化 API demo (离线可跑); achat = HTTP Agent 适配模板 (自 AChatAgentRunner 形态通用化) |
 
 > 真实链路验收 (任务 4.2): ✅ 已通过 (2026-08-29, run_b5a14807878d) — `achat-first-suite` 3/3 通过 (simple-qa / file-creation / seed-file-qa), pass@1=1.0, trace_id 均解析成功并落 Phoenix。复跑命令 `python backend/scripts/run_first_suite.py`; 诊断探针 `backend/scripts/probe_file_creation.py` (读 EVAL_AGENT_ID)。
 > 数据集闭环验收 (change ③ 任务 6.2): `python backend/scripts/run_dataset_cycle.py` (手动数据集 → to-suite → 真实 Agent run → 回归提取 → 升版 minor); 记录见 `docs/eval-dataset-metrics-acceptance.md`。
@@ -3261,10 +3288,10 @@ agent-eval/
 | 17.6 | 评分器组合与权重 | ✅ | hybrid 默认 + threshold task 可覆盖 — §4.1/§6.2 |
 | 17.7 | Phoenix 集成深度 | ✅ | trace 归 Phoenix, Eval 独立存储, 单向链接 Eval→Phoenix — §7 |
 | 17.8 | 多租户与权限 | ✅ | 自部署, 无用户系统/认证/权限 — §17.8 |
-| 17.9 | 版本演进与兼容性 | 🔄 | Suite/Dataset semver 已落 (§4.1); API /v1 前缀未定 |
+| 17.9 | 版本演进与兼容性 | ✅ | Suite/Dataset semver 已落 (§4.1); API 版本化落定: 独立部署 `/v1` + 寄宿期 `/api/eval/*` 不变 + 同大版本兼容 — §17.9 (2026-08-30, D3) |
 | 17.10 | 前端技术选型 | ✅ | Next.js 16 App Router + Tailwind v4/shadcn 风格 + recharts + React Query/Zustand; textarea YAML 编辑 — §17.10 (change ② 落定) |
 | 17.11 | 测试策略 | ✅ | 落定并落码: 核心模块 (metrics/graders/suite) 覆盖率 ≥90% (实测 95%), MockAgentRunner 端到端 mini suite, import 检查固化 §15.1 规则 1 — `backend/scripts/check_eval_coverage.sh`, `tests/test_eval_harness_*` |
-| 17.12 | 开源运营 | ⬜ | 独立 repo 后再议 |
+| 17.12 | 开源运营 | ✅ | 第一批落定 (2026-08-30, D4): README 双语 / docs 中文先行 / v0.1.0 / PyPI / CONTRIBUTING 发布时补 — §17.12; 社区渠道运营发布后启动 |
 
 ### 17.1 EvalRunner 并发模型 ✅
 
@@ -3425,23 +3452,18 @@ Eval Harness: 评测编排 + 评分 + 报告 (suite-level)
 Dashboard: localhost / 内网访问
 ```
 
-### 17.9 版本演进与兼容性 🔄
+### 17.9 版本演进与兼容性 ✅ 已落定 (2026-08-30, change `settle-aeval-opensource-decisions`, D3)
 
 **问题**: Suite YAML 格式和 API 如何向后兼容?
 
-**已决策 (部分)**:
+**已决策**:
 - Suite / Dataset 携带 semver `version` 字段并强校验 (§4.1, §18.3); Dataset 版本管理见 §18.5.1
+- REST API 版本化: 独立部署后根路径 `/v1/...` (FastAPI `include_router(prefix="/v1")`); AChat 寄宿期保持 `/api/eval/*` 挂载不变 (§10.1 — 挂载前缀是实现细节, 路由代码不变)
+- 兼容承诺: 同一大版本内 URL 与响应结构向后兼容; 破坏性变更升 `/v2` 并至少维护一个并行期
+- Dashboard 的 API base 本就可配置 (Settings 页), 切 `/v1` 零成本
+- YAML 破坏性变更的迁移工具: 随独立 repo 阶段按需实施 (实现项, 非决策阻塞)
 
-**仍开放** (独立 repo 前定):
-- REST API 版本化策略 (`/v1` 前缀)
-- YAML 破坏性变更的迁移工具
-
-**设计草案**:
-```
-YAML: 包含 version 字段 (如 version: "1.0")
-API: 版本化 (/api/v1/...)
-兼容性: 同一大版本内向后兼容
-```
+**否决备选**: 不版本化 — 开源后外部消费者锁定行为, 后续任何调整即 breaking, 不符合长期开源定位。
 
 ### 17.10 前端技术选型 ✅ 已落定 (2026-08-29, change `add-aeval-integration-dashboard`, D4)
 
@@ -3473,24 +3495,19 @@ Mock: MockAgentRunner (返回预设 trace)
 性能: 100 tasks × 3 trials 的 benchmark
 ```
 
-### 17.12 开源运营 ⬜
+### 17.12 开源运营 ✅ 第一批已落定 (2026-08-30, change `settle-aeval-opensource-decisions`, D4)
 
 **问题**: 开源后如何运营社区?
 
-**待讨论**:
-- 文档语言: 仅中文 vs 中英双语?
-- 贡献指南: CONTRIBUTING.md 何时准备?
-- 示例项目: 除 AChat 外, 是否需要其他示例?
-- 发布节奏: 版本号策略 (semver)?
-- 沟通渠道: GitHub Discussions vs Discord?
+**已决策 (第一批)**:
+- 文档语言: `README.md` 英文主文件 + `README.zh-CN.md` 中文版 (互相链接); `docs/` 中文先行 (六篇清单见 §15.3/§15.4), 英文随社区需求补
+- 发布节奏: semver, 首发版本 `v0.1.0` (0.x 阶段 API 可微调, 1.0 等外部反馈稳定后)
+- 发布渠道: PyPI 发布 `agent-eval` (core/api/cli); Dashboard 不发 PyPI, 随 repo 发布 GitHub Release
+- 贡献指南: `CONTRIBUTING.md` 于 v0.1.0 发布时补 (决策期仅预留)
+- 社区渠道 (**发布后**): GitHub Discussions 承载问答与反馈, Issues 承载缺陷; Discord 暂不建
+- 示例项目: minimal + achat 随首发, langgraph (未来, 社区需求驱动)
 
-**初步方案**:
-```
-文档: 中英双语 (README 双语, 文档先中文)
-示例: minimal + achat + langgraph (未来)
-版本: semver (0.1.0 起步)
-沟通: GitHub Issues + Discussions
-```
+**后续 (发布后按需)**: 英文 docs、更多示例、运营节奏。
 
 ---
 
@@ -6137,5 +6154,6 @@ for task_id, trials in result.trials.items():
 | v0.9 | 2026-08-29 | 新增 §15.1 与 AChat 的开发期关系 (禁止反向依赖 app.*/技术决策自主/边界组件隔离)；§17.3 落定 SSE + 快照/增量协议, §10 端点同步更新 |
 | v0.10 | 2026-08-29 | §16 新增实现现状快照并改为 change 切分视角；§17 加状态总览表、已决策项落正文 (17.1/17.2/17.4/17.6/17.7 ✅, 17.5/17.9 🔄)；§17.13 审查归档至 docs/eval-harness-design-review.md (正文留映射表)；§10.1 API 命名空间说明；结构修复 (§8.2 重复标题 / 目录子项 / 术语表重复 / Dashboard 位置 apps/) |
 | v0.11 | 2026-08-29 | change add-aeval-metrics-p1 落地 Metrics P1: §16/§18.13.14 标注完成 — batch_evaluation (BatchEvaluator + POST /api/eval/metrics/batch)、prompt_metric (PromptMetric A/B)、pytest_plugin (fixtures + --eval-suite 门禁)、report (Markdown/JSON 渲染) |
-```
+| v0.12 | 2026-08-30 | 开源化四决策落定 (change settle-aeval-opensource-decisions): D1 MIT + fresh init；D2 repo `agent-eval` / 包 `agent_eval` / CLI `eval-suite` / 品牌 Aeval；D3 API 独立部署 `/v1` + 寄宿期 `/api/eval/*` 不变 + 同大版本兼容 (§17.9 ✅)；D4 README 双语 + docs 中文先行 + v0.1.0 + PyPI (§17.12 第一批 ✅)；§15.3 补决策记录, 新增 §15.4 抽取输入清单 (rename 映射/LICENSE/历史/路由/docs 六篇) |
+| v0.13 | 2026-08-30 | change extract-aeval-repo 阶段一执行完毕: §15.3 结构图改单包+extras 形态并标注阶段一现状; §15.4 标注已执行 (含两处执行差异: eval_integration 留守 / 测试 20+6 拆分); 新能力 — CLI `eval-suite` (run/validate/list/show/compare/serve) + 独立 API `create_standalone_app` (`/v1` + `X-Aeval-Version` + `/v1/meta`); rename `eval_harness → agent_eval` 全量落地, 框架迁至 `aeval/packages/agent-eval/src/agent_eval/` (PyPI 包 agent-eval v0.1.0, MIT, editable 安装), sys.path hack 清零; dashboard 迁 `aeval/apps/dashboard`; docs 六篇 + examples×2 + dormant CI; §16 快照更新 (框架测试 349 + AChat 绑定留守 6 文件) |
 

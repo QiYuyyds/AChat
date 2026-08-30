@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from eval_harness.core.types import EvalSuite
+from agent_eval.core.types import EvalSuite
 
 SUITE_PATH = Path(__file__).resolve().parent.parent / "eval_suites" / "first-suite.yaml"
 
 
 def test_first_suite_yaml_loads_and_validates():
-    from eval_harness.core.suite import load_suite
+    from agent_eval.core.suite import load_suite
 
     suite = load_suite(SUITE_PATH)
     assert isinstance(suite, EvalSuite)
@@ -20,7 +20,7 @@ def test_first_suite_yaml_loads_and_validates():
 
 
 def test_first_suite_seed_file_declaration():
-    from eval_harness.core.suite import load_suite
+    from agent_eval.core.suite import load_suite
 
     suite = load_suite(SUITE_PATH)
     seed_task = next(t for t in suite.tasks if t.id == "seed-file-qa")

@@ -26,9 +26,9 @@ from typing import Any
 
 import httpx
 
-from eval_harness.core.contract import TransientError
+from agent_eval.core.contract import TransientError
 
-from eval_integration.errors import AChatApiError
+from app.eval_integration.errors import AChatApiError
 
 logger = logging.getLogger(__name__)
 

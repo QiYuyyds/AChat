@@ -108,9 +108,9 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     # 保持 503 (POST /runs) 而非崩溃。
     if settings.eval_harness_enabled:
         try:
-            from eval_harness.api.app import set_runner
+            from agent_eval.api.app import set_runner
 
-            from eval_integration.config import create_aeval_runner
+            from app.eval_integration.config import create_aeval_runner
 
             runner = await create_aeval_runner(settings)
             set_runner(runner)
@@ -1147,18 +1147,10 @@ def create_app() -> FastAPI:
     # the same prefix without overlap (design doc §10.1).
     if settings.eval_harness_enabled:
         try:
-            import sys as _sys
-            from pathlib import Path as _Path
-
-            # eval_harness / eval_integration use top-level `from eval_...`
-            # imports (no app.* reverse dependency), so backend/app must be
-            # importable as a path root. Appended so installed packages keep
-            # priority.
-            _app_dir = str(_Path(__file__).resolve().parent)
-            if _app_dir not in _sys.path:
-                _sys.path.append(_app_dir)
-
-            from eval_harness.api.app import create_app as create_eval_app
+            # agent_eval is consumed as an installed (editable) package —
+            # no sys.path routing needed. eval_integration is the AChat
+            # adapter layer inside this app package.
+            from agent_eval.api.app import create_app as create_eval_app
 
             # Real runner injected later in lifespan (needs async DB init +
             # OTel provider for the trace bridge). Without one, the

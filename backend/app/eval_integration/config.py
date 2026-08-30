@@ -13,12 +13,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from eval_integration import trace_bridge
-from eval_integration.client import AChatApiClient
-from eval_integration.environment import AChatWorkspaceEnvironment
-from eval_integration.errors import EvalConfigError
-from eval_integration.graders import AChatArtifactGrader, AChatDispatchGrader
-from eval_integration.runner import AChatAgentRunner, WorkspaceCoordinator
+from app.eval_integration import trace_bridge
+from app.eval_integration.client import AChatApiClient
+from app.eval_integration.environment import AChatWorkspaceEnvironment
+from app.eval_integration.errors import EvalConfigError
+from app.eval_integration.graders import AChatArtifactGrader, AChatDispatchGrader
+from app.eval_integration.runner import AChatAgentRunner, WorkspaceCoordinator
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +82,9 @@ def check_credentials(settings: Any) -> None:
 
 
 async def create_aeval_runner(settings: Any = None):
-    """构造 AChat 接入的完整 EvalRunner (eval_harness.core.runner.EvalRunner)。"""
-    from eval_harness.core.runner import EvalRunner
-    from eval_harness.storage.sqlite import SqliteStorage
+    """构造 AChat 接入的完整 EvalRunner (agent_eval.core.runner.EvalRunner)。"""
+    from agent_eval.core.runner import EvalRunner
+    from agent_eval.storage.sqlite import SqliteStorage
 
     if settings is None:
         from app.config import get_settings
@@ -122,7 +122,7 @@ async def create_aeval_runner(settings: Any = None):
 
     # Judge LLM + P0 指标注册表 (change ③): 注入 EvalRunner 供 metric
     # grader 分发; 无凭证时 llm_fn=None → metric grader 返回明确配置错误
-    from eval_harness.metrics import build_default_metrics_registry
+    from agent_eval.metrics import build_default_metrics_registry
 
     llm_fn = make_judge_llm_fn(settings)
     metrics_registry = build_default_metrics_registry(llm_fn=llm_fn)
@@ -145,7 +145,7 @@ def _make_trace_provider(settings: Any) -> Any:
     trace 拉取失败不应整 trial 失败 — outcome/transcript 评分仍可进行;
     span 依赖型 grader 会得到空 spans 并按各自语义判分。
     """
-    from eval_harness.trace.phoenix import PhoenixProvider
+    from agent_eval.trace.phoenix import PhoenixProvider
 
     class TolerantPhoenixProvider(PhoenixProvider):
         _warned = False

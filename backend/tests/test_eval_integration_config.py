@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import pytest
-from eval_harness.core.runner import EvalRunner
-from eval_harness.storage.sqlite import SqliteStorage
+from agent_eval.core.runner import EvalRunner
+from agent_eval.storage.sqlite import SqliteStorage
 
-from eval_integration.client import AChatApiClient
-from eval_integration.config import (
+from app.eval_integration.client import AChatApiClient
+from app.eval_integration.config import (
     check_credentials,
     create_aeval_runner,
     make_judge_llm_fn,
@@ -18,10 +18,10 @@ from eval_integration.config import (
     resolve_api_base,
     resolve_judge_config,
 )
-from eval_integration.environment import AChatWorkspaceEnvironment
-from eval_integration.errors import EvalConfigError
-from eval_integration.graders import AChatArtifactGrader, AChatDispatchGrader
-from eval_integration.runner import AChatAgentRunner
+from app.eval_integration.environment import AChatWorkspaceEnvironment
+from app.eval_integration.errors import EvalConfigError
+from app.eval_integration.graders import AChatArtifactGrader, AChatDispatchGrader
+from app.eval_integration.runner import AChatAgentRunner
 
 
 @pytest.fixture

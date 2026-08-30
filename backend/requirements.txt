@@ -38,7 +38,12 @@ httpx>=0.28.0
 python-dotenv>=1.0.1
 pypdf>=5.1.0  # read_attachment PDF text extraction (replaces TS pdf-parse)
 python-frontmatter>=1.1.0  # file-native memory frontmatter
-pyyaml>=6.0.0        # eval harness suite YAML loading
+pyyaml>=6.0.0        # suite YAML loading (Aeval + AChat)
+
+# Aeval evaluation framework (aeval/ tree, stage-1: editable install from
+# this repo; stage-2 will switch to PyPI). Required for the eval API mount,
+# tests and scripts. [api]=FastAPI service, [cli]=eval-suite command line.
+-e ../aeval/packages/agent-eval[api,cli]
 jieba>=0.42.1  # Chinese tokenization for memory BM25/FTS5
 
 # Document Parser pipeline (ported from AGI-memory)

@@ -20,7 +20,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "app"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 DATASET_DEFINITION = {
     "name": "dataset-cycle-acceptance",
@@ -42,10 +42,10 @@ DATASET_DEFINITION = {
 
 
 async def main(dry_run: bool) -> int:
-    from eval_harness.dataset.quality import DatasetQualityChecker
-    from eval_harness.dataset.sources.manual import parse_dataset_payload
-    from eval_harness.dataset.sources.regression import RegressionExtractor
-    from eval_harness.dataset.version import DatasetVersionManager
+    from agent_eval.dataset.quality import DatasetQualityChecker
+    from agent_eval.dataset.sources.manual import parse_dataset_payload
+    from agent_eval.dataset.sources.regression import RegressionExtractor
+    from agent_eval.dataset.version import DatasetVersionManager
 
     # 1. 手动编写数据集 (进程内定义 → 同一校验路径入库)
     dataset = parse_dataset_payload(DATASET_DEFINITION, source="run_dataset_cycle.py")
@@ -66,7 +66,7 @@ async def main(dry_run: bool) -> int:
         print("[dry-run] stopping before real Agent run")
         return 0
 
-    from eval_integration.config import create_aeval_runner
+    from app.eval_integration.config import create_aeval_runner
 
     runner = await create_aeval_runner()
     print("[aeval] runner assembled — judge LLM "

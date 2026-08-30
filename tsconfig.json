@@ -38,6 +38,6 @@
     ".pnpm-store",
     ".understand-anything",
     "待融合项目",
-    "apps/eval-dashboard"
+    "aeval/apps/dashboard"
   ]
 }

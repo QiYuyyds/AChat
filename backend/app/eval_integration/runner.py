@@ -27,12 +27,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from eval_harness.core.contract import TransientError
-from eval_harness.core.types import EvalTask
+from agent_eval.core.contract import TransientError
+from agent_eval.core.types import EvalTask
 
-from eval_integration.client import AChatApiClient
-from eval_integration.errors import AgentRunError
-from eval_integration import trace_bridge
+from app.eval_integration.client import AChatApiClient
+from app.eval_integration.errors import AgentRunError
+from app.eval_integration import trace_bridge
 
 logger = logging.getLogger(__name__)
 

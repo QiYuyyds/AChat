@@ -23,10 +23,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from eval_harness.core.types import EvalTask
+from agent_eval.core.types import EvalTask
 
-from eval_integration.client import AChatApiClient
-from eval_integration.runner import WorkspaceCoordinator, collect_workspace_listing
+from app.eval_integration.client import AChatApiClient
+from app.eval_integration.runner import WorkspaceCoordinator, collect_workspace_listing
 
 logger = logging.getLogger(__name__)
 
