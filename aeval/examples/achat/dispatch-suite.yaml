@@ -1,0 +1,87 @@
+# Orchestrated 派发 / 多 agent 协作场景示例 (change: add-aeval-task-conversation-config)
+#
+# 演示 task 级会话配置 env 键 (设计文档 §17.5 数据注入约定):
+#   - env.agent_id      task 级切换被评 agent (优先级高于全局 EVAL_AGENT_ID)
+#   - env.conversation  全量覆盖会话形态: mode (single/group) /
+#                       agent_ids (list) / dispatch_mode (solo/orchestrated)
+#   优先级: env.conversation > env.agent_id > 全局默认; 两者并存时
+#   conversation 全量覆盖 (含 agent 选择), env.agent_id 被忽略。
+#
+# 前置:
+#   1. 经 AChat 接入层运行 (create_aeval_runner) — achat_dispatch 为 AChat
+#      侧注册的 custom grader, 通用 `--runner http-agent` 模式没有它
+#   2. TRACE_ENABLED=true — achat_dispatch grader 读取 tool.dispatch spans,
+#      tracing 关闭时 spans 为空 (完成率按 0 计, 不静默)
+#   3. 将示例 agent id 替换为你环境中的真实 agent id
+#
+# 运行: Dashboard → Suites → YAML 导入本文件
+
+name: achat-dispatch-example
+description: AChat orchestrated 派发与 task 级会话配置示例
+version: 1.0.0
+metadata:
+  purpose: dispatch-integration
+  requires: TRACE_ENABLED=true
+
+tasks:
+  - id: dispatch-orchestrated
+    description: >
+      orchestrated 派发 — 编排 agent 把主任务拆解并派发给子 agent 协作完成,
+      achat_dispatch grader 按子任务完成率评分 (阈值 0.8)
+    prompt: >
+      请阅读 workspace 中的 notes.txt,把要点整理成 summary.md。
+      可以把子任务派发给其他 agent 协作完成。
+    max_trials: 1
+    env:
+      files:
+        notes.txt: |
+          项目代号: AEVAL-2026
+          待办: 输出调研要点 / 撰写总结
+      conversation:
+        mode: single
+        dispatch_mode: orchestrated
+    graders:
+      - type: custom
+        name: achat_dispatch
+        config:
+          threshold: 0.8
+
+  - id: dispatch-with-task-agent
+    description: >
+      task 级 agent 切换 — env.agent_id 指定 orchestrator agent (其余 task
+      仍用全局 EVAL_AGENT_ID), 并以 orchestrated 形态派发
+    prompt: >
+      请阅读 workspace 中的 notes.txt,把待办事项拆成两个子任务并派发给
+      其他 agent 协作完成,最后汇总结果。
+    max_trials: 1
+    env:
+      agent_id: ag_orchestrator   # ← 替换为你的 orchestrator agent id
+      conversation:
+        mode: single
+        dispatch_mode: orchestrated
+    graders:
+      - type: custom
+        name: achat_dispatch
+
+  - id: group-collab
+    description: >
+      多 agent 群聊协作 — group 会话 (agent_ids ≥ 2, 同场协作); 只提供
+      agent_ids 不提供 dispatch_mode 时按服务端默认形态运行
+    prompt: >
+      请两位 agent 讨论如何整理 workspace 中的 notes.txt 要点并分工,
+      由其中一位把讨论结论写入 summary.md。
+    max_trials: 1
+    env:
+      conversation:
+        mode: group
+        agent_ids:
+          - ag_researcher   # ← 替换为你的 agent id
+          - ag_writer       # ← 替换为你的 agent id
+    graders:
+      - type: code
+        name: code_based
+        config:
+          checks:
+            - type: contains
+              target: outcome
+              value: "summary.md"

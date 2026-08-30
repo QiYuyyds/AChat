@@ -30,3 +30,12 @@ http-agent = "examples.achat.http_agent_runner:create_runner"
 - 网络超时/抖动包装为 `TransientError` → 框架按指数退避自动重试；其余异常直接判该 trial 失败
 - `task.env`（如种子文件）原样透传给 Agent 端点
 - `trace_id` 可选 —— 传空字符串则跳过 Phoenix 关联
+
+## dispatch / 多 agent 场景（AChat 接入层）
+
+[dispatch-suite.yaml](./dispatch-suite.yaml) 演示 task 级会话配置 env 键（AChat 接入层 `AChatAgentRunner` 消费，设计文档 §17.5）：
+
+- `env.agent_id` — task 级切换被评 agent（优先级高于全局 `EVAL_AGENT_ID`）
+- `env.conversation` — 全量覆盖会话形态（`mode` / `agent_ids` / `dispatch_mode`）；与 `env.agent_id` 并存时 conversation 胜出
+
+注意：`achat_dispatch` grader 仅注册于 AChat 侧装配（`create_aeval_runner`），且读取 `tool.dispatch` spans —— 需 `TRACE_ENABLED=true`，tracing 关闭时完成率按 0 计。非法组合（如 group 但 agent_ids < 2）在建会话前即报错，不静默回退。

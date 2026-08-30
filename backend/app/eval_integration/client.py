@@ -116,18 +116,33 @@ class AChatApiClient:
     # ── Conversations ────────────────────────────────────────────────────
 
     async def create_conversation(
-        self, *, title: str, agent_id: str, fs_write_approval_mode: str = "auto"
+        self,
+        *,
+        title: str,
+        agent_id: str,
+        fs_write_approval_mode: str = "auto",
+        mode: str = "single",
+        agent_ids: list[str] | None = None,
+        dispatch_mode: str | None = None,
     ) -> str:
         """创建 sandbox 会话 (不传 boundPath → 服务端默认全新 sandbox workspace)。
 
         fs_write_approval_mode 默认 auto: 评测会话无人值守, review 审批会让
         fs_write 永久挂起 run (等待人工决定); 仅作用于 eval 会话。
+
+        mode / agent_ids / dispatch_mode 对应 CreateConversationRequest 原生
+        字段 (single|group / ≥1 个 agent / solo|orchestrated); ``agent_ids``
+        提供时覆盖 ``agentIds`` 字段 (group 会话传多个 agent 用), 缺省时回退
+        单 agent 快捷形态 ``[agent_id]``。dispatch_mode 仅在提供时下发。
         """
-        data = await self._request(
-            "POST",
-            "/api/conversations",
-            json={"title": title, "mode": "single", "agentIds": [agent_id]},
-        )
+        payload: dict[str, Any] = {
+            "title": title,
+            "mode": mode,
+            "agentIds": agent_ids if agent_ids is not None else [agent_id],
+        }
+        if dispatch_mode is not None:
+            payload["dispatchMode"] = dispatch_mode
+        data = await self._request("POST", "/api/conversations", json=payload)
         conv = (data or {}).get("conversation") or {}
         conv_id = conv.get("id")
         if not conv_id:

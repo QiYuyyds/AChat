@@ -50,6 +50,11 @@ _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv"}
 # 降级轮询里判失败的消息 status (MessageRecord: streaming/complete/error/aborted/interrupted)
 _FAILED_MESSAGE_STATUSES = {"error", "aborted", "interrupted"}
 
+# task 级会话配置 (env["conversation"]) 合法枚举 — 对照 AChat
+# CreateConversationRequest; guide 模式非评测对象, 不放行。
+_CONVERSATION_MODES = ("single", "group")
+_DISPATCH_MODES = ("solo", "orchestrated")
+
 
 def _extract_text_from_parts(parts: list[dict]) -> str:
     """从消息 parts 提取纯文本 (与 orchestrator_prompts 提取语义一致, 精简版)。"""
@@ -65,6 +70,15 @@ def _extract_text_from_parts(parts: list[dict]) -> str:
         else:
             out.append(f"[{ptype}]")
     return "\n".join(t for t in out if t)
+
+
+@dataclass(frozen=True)
+class ConversationSpec:
+    """task 级会话配置解析结果 — create_conversation 建会话的唯一依据。"""
+
+    mode: str
+    agent_ids: list[str]
+    dispatch_mode: str | None = None
 
 
 @dataclass
@@ -181,9 +195,16 @@ class AChatAgentRunner:
     async def run(self, task: EvalTask) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
         started = time.monotonic()
 
+        spec = self._resolve_conversation(task)
+        lead_agent = spec.agent_ids[0]
+        # task 级覆盖了 agent 时把实际 agent 带进 title, 便于 AChat 侧区分 trial
+        agent_tag = "" if lead_agent == self.agent_id else f"@{lead_agent}"
         conversation_id = await self.client.create_conversation(
-            title=f"{self.conversation_title_prefix} {task.id}".strip(),
-            agent_id=self.agent_id,
+            title=f"{self.conversation_title_prefix} {task.id}{agent_tag}".strip(),
+            agent_id=lead_agent,
+            mode=spec.mode,
+            agent_ids=spec.agent_ids,
+            dispatch_mode=spec.dispatch_mode,
         )
         trial = self.coordinator.begin(conversation_id) if self.coordinator else None
 
@@ -238,6 +259,92 @@ class AChatAgentRunner:
         finally:
             if self.coordinator is None and self.cleanup_conversations:
                 await self._safe_delete(conversation_id)
+
+    # ── task 级会话配置 (env["agent_id"] / env["conversation"]) ──────────
+
+    def _resolve_conversation(self, task: EvalTask) -> ConversationSpec:
+        """解析 task 级会话配置 → ConversationSpec (纯解析, 无 I/O)。
+
+        优先级: env["conversation"] (全量覆盖, 含 agent 选择 — env["agent_id"]
+        被忽略, 避免部分合并的优先级迷宫) > env["agent_id"] > 全局默认
+        self.agent_id。conversation 未给 agent_ids 时回退全局默认 agent。
+
+        非法组合抛 AgentRunError (含违规字段与合法值), 不静默回退 — 评测
+        配置错误必须显性暴露, 否则回归结果失真。在 trial 开始 (建会话前)
+        校验, 错误即该 trial 失败。
+        """
+        env = task.env or {}
+
+        env_agent_id = env.get("agent_id")
+        if env_agent_id is not None and (
+            not isinstance(env_agent_id, str) or not env_agent_id.strip()
+        ):
+            raise AgentRunError(
+                f"EvalTask.env['agent_id'] 必须是非空 string, got "
+                f"{type(env_agent_id).__name__}: {env_agent_id!r}",
+                status="error",
+            )
+
+        conversation = env.get("conversation")
+        if conversation is None:
+            return ConversationSpec(
+                mode="single", agent_ids=[env_agent_id or self.agent_id]
+            )
+
+        if not isinstance(conversation, dict):
+            raise AgentRunError(
+                f"EvalTask.env['conversation'] 必须是 dict (键: mode/agent_ids/"
+                f"/dispatch_mode), got {type(conversation).__name__}: {conversation!r}",
+                status="error",
+            )
+
+        mode = conversation.get("mode", "single")
+        if mode not in _CONVERSATION_MODES:
+            raise AgentRunError(
+                f"EvalTask.env['conversation']['mode']={mode!r} 非法 — "
+                f"合法值: {list(_CONVERSATION_MODES)}",
+                status="error",
+            )
+
+        raw_agent_ids = conversation.get("agent_ids")
+        if raw_agent_ids is None:
+            # conversation 全量覆盖语义: env["agent_id"] 不参与回退
+            agent_ids = [self.agent_id]
+        elif not isinstance(raw_agent_ids, list) or not all(
+            isinstance(a, str) and a.strip() for a in raw_agent_ids
+        ):
+            raise AgentRunError(
+                f"EvalTask.env['conversation']['agent_ids'] 必须是非空 string 列表, "
+                f"got {raw_agent_ids!r}",
+                status="error",
+            )
+        else:
+            agent_ids = raw_agent_ids
+
+        if mode == "single" and len(agent_ids) != 1:
+            raise AgentRunError(
+                f"EvalTask.env['conversation']: mode='single' 要求恰好 1 个 agent "
+                f"(got {len(agent_ids)}: {agent_ids!r})",
+                status="error",
+            )
+        if mode == "group" and len(agent_ids) < 2:
+            raise AgentRunError(
+                f"EvalTask.env['conversation']: mode='group' 要求 agent_ids 至少需要 "
+                f"2 个 (got {len(agent_ids)}: {agent_ids!r})",
+                status="error",
+            )
+
+        dispatch_mode = conversation.get("dispatch_mode")
+        if dispatch_mode is not None and dispatch_mode not in _DISPATCH_MODES:
+            raise AgentRunError(
+                f"EvalTask.env['conversation']['dispatch_mode']={dispatch_mode!r} 非法 "
+                f"— 合法值: {list(_DISPATCH_MODES)}",
+                status="error",
+            )
+
+        return ConversationSpec(
+            mode=mode, agent_ids=list(agent_ids), dispatch_mode=dispatch_mode
+        )
 
     # ── Send + completion ────────────────────────────────────────────────
 

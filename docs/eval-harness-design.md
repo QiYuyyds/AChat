@@ -3227,7 +3227,7 @@ agent-eval/
 | 单元/集成测试 (框架 349 个: `aeval/packages/agent-eval/tests/`) + 覆盖率脚本 `backend/scripts/check_eval_coverage.sh` (路径已适配) | ✅ 已有 | change ①; core/metrics + graders/* + suite 覆盖率 95% (目标 ≥90%); extract-aeval-repo 迁入 20 个 + 新增 standalone/CLI 29 个; AChat 侧集成/挂载测试留守 `backend/tests/` (eval_mount + eval_integration_* + run_collector_eval) |
 | `dataset/` 数据集构建 | ✅ 已落码 | change ③: `models.py` (EvalDataset/EvalDatasetItem 溯源 + to_suite 复用 Suite 校验器)、`storage.py` (DatasetStorage 协议 + SQLite/Memory, 组合挂载 `storage.datasets`)、`sources/` (manual YAML/JSON 导入、trace_mining 三策略、llm_generator、regression 提取+归一化去重)、`quality.py` (QualityChecker + CoverageAnalyzer)、`version.py` (semver 升版 + change_log)、`api/routes/datasets.py` (/api/eval/datasets CRUD/items/from-trace/from-llm/regression-extract/quality-check/coverage/to-suite/version) |
 | `metrics/` LLM 质量指标 | ✅ 已落码 (P0+P1) | change ③: `base.py` (MetricResult/Metric/BaseLLMMetric + to_grader 桥接)、`llm_judge.py` (LLMFn 协议 + JSON 容错解析 + 重试)、P0 四指标 answer_relevancy / faithfulness / context_recall / context_precision、`synthetic_data.py` (Golden + SyntheticDataGenerator, 分块按字符); change ④ (add-aeval-metrics-p1): `batch_evaluation.py` (BatchEvaluator — 指标名解析前置/单条异常隔离/Semaphore 并发, 逐指标 thresholds 覆盖)、`prompt_metric.py` (PromptMetric 变体 A/B, v1 求和语义 + 逐 trial 明细)、`pytest_plugin.py` (SyncMetric 同步包装 fixtures + `--eval-suite`/`--eval-threshold` 门禁)、`report.py` (批量/run → Markdown/JSON 纯渲染) + `POST /api/eval/metrics/batch` (未注册指标 422, runner 未装配 503) |
-| `eval_integration/` AChat 接入层 (留守 `backend/app/eval_integration/`) | ✅ 已落码 | change ②: `runner.py` (AChatAgentRunner, HTTP 主路径 + 进程内完成检测/trace_id 桥, §14.1.2)、`environment.py` (AChatWorkspaceEnvironment, §17.5 落定)、`graders/` (achat_artifact/achat_dispatch)、`config.py` (create_aeval_runner, main.py lifespan 注入); `GET /artifacts` 补 `conversation_id` 过滤; 首个 Suite YAML + 验收脚本 `backend/scripts/run_first_suite.py` 就绪; extract-aeval-repo 起 import 走 `agent_eval` + `app.eval_integration` 限定 |
+| `eval_integration/` AChat 接入层 (留守 `backend/app/eval_integration/`) | ✅ 已落码 | change ②: `runner.py` (AChatAgentRunner, HTTP 主路径 + 进程内完成检测/trace_id 桥, §14.1.2)、`environment.py` (AChatWorkspaceEnvironment, §17.5 落定)、`graders/` (achat_artifact/achat_dispatch)、`config.py` (create_aeval_runner, main.py lifespan 注入); `GET /artifacts` 补 `conversation_id` 过滤; 首个 Suite YAML + 验收脚本 `backend/scripts/run_first_suite.py` 就绪; extract-aeval-repo 起 import 走 `agent_eval` + `app.eval_integration` 限定; add-aeval-task-conversation-config: `create_conversation` 参数化 (mode/agent_ids/dispatch_mode) + task 级会话配置 (runner 解析 `env.agent_id` / `env.conversation`, §17.5 键约定, 非法组合建会话前报错) |
 | SSE 流式端点 | ✅ 已落码 | change ②: `api/events.py` run 事件总线 (per-run 队列 fan-out + 终态缓存) + `GET /runs/{run_id}/stream` (快照+增量协议, 15s 心跳, run_complete 收尾) |
 | Dashboard (`aeval/apps/dashboard/`, 自 apps/eval-dashboard 迁入) | ✅ 已建 | change ②: Next.js 16 独立应用 (pnpm workspace glob `aeval/apps/*`, 端口 3100); 总览 / Suites+YAML 导入 / Run 报告 (SSE 实时) / Trial 下钻 (transcript/outcome/Phoenix 外链) / A/B 对比 / Settings (连接配置); 刷新恢复 = 快照+增量协议 |
 | 打包与分发 (`aeval/packages/agent-eval/pyproject.toml`) | ✅ 已建 | change extract-aeval-repo: 包名 `agent-eval` v0.1.0, MIT, extras `[api]`(fastapi/sse-starlette/uvicorn) + `[cli]`(typer/rich) + `[dev]`, console script `eval-suite`; AChat `backend/requirements.txt` 以 `-e ../aeval/packages/agent-eval[api,cli]` 引用; README 双语 + docs 六篇 + dormant CI workflows 就位; 阶段二 (fresh init 迁出 + PyPI) 另立 `publish-aeval-repo` |
@@ -3284,7 +3284,7 @@ agent-eval/
 | 17.2 | Grader 调度 | ✅ | 串行 + 拓扑 Pipeline + prompt hash 缓存 — §6.1/§6.2 |
 | 17.3 | 进度追踪与实时性 | ✅ | SSE + 快照/增量协议 — §17.3 |
 | 17.4 | 失败处理与重试 | ✅ | TransientError 指数退避; 失败继续; 保留部分结果 — §6.1/§6.2 |
-| 17.5 | 环境隔离 | ✅ | 每 trial 新建 conversation + sandbox workspace; verify_clean 以种子前清单为空 + 种子后基线比对 — §17.5 (change ② 落定) |
+| 17.5 | 环境隔离 | ✅ | 每 trial 新建 conversation + sandbox workspace; verify_clean 以种子前清单为空 + 种子后基线比对 — §17.5 (change ② 落定); task 级会话配置 env.agent_id / env.conversation (change `add-aeval-task-conversation-config`) |
 | 17.6 | 评分器组合与权重 | ✅ | hybrid 默认 + threshold task 可覆盖 — §4.1/§6.2 |
 | 17.7 | Phoenix 集成深度 | ✅ | trace 归 Phoenix, Eval 独立存储, 单向链接 Eval→Phoenix — §7 |
 | 17.8 | 多租户与权限 | ✅ | 自部署, 无用户系统/认证/权限 — §17.8 |
@@ -3375,7 +3375,7 @@ on_failure: "continue"          # 失败继续
 keep_partial_results: bool = True
 ```
 
-### 17.5 环境隔离与数据准备 ✅ 已落定 (2026-08-29, change `add-aeval-integration-dashboard`)
+### 17.5 环境隔离与数据准备 ✅ 已落定 (2026-08-29, change `add-aeval-integration-dashboard`; task 级会话配置 2026-08-30, change `add-aeval-task-conversation-config`)
 
 **问题**: 每次 trial 从干净环境开始, 如何高效隔离?
 
@@ -3386,6 +3386,27 @@ keep_partial_results: bool = True
 - **verify_clean 基线 (落定)**: 种子前 workspace 清单必须为空 (忽略 `.git` 等隐藏条目) — 非空即判定 workspace 隔离退化为共享目录; 会话复用 (跨 trial 同 conversation) 同样判不洁; 种子后→末期清单差异作为参考信息返回 (Agent 产出属预期变更)
 - **数据注入格式 (落定)**: `EvalTask.env["files"] = {path: content}`, runner 在发送 prompt 前经 fs write 端点写入该 trial workspace
 - **fs_write 审批 (落定, 真实链路验收发现)**: AChat 的 fs_write 在 `review` 审批模式下注册 pending write 并等待人工批准 — 评测会话无人值守会永久挂起 run。eval 客户端创建会话后立即 `PATCH fsWriteApprovalMode=auto`, 仅作用于 eval 会话
+- **task 级会话配置 (落定, 2026-08-30, change `add-aeval-task-conversation-config`)**: 被评 agent 与会话形态 (mode / agent_ids / dispatch_mode) 可由 `EvalTask.env` 按 task 指定, 解锁 RAG 换 agent / orchestrated 派发 / 多 agent 群聊场景; 未配置时保持全局默认 (`EVAL_AGENT_ID` 单 agent 会话) 行为不变
+
+**task 级 env 键约定** (仅 `eval_integration` 接入层消费, 框架核心对 env 不感知):
+
+| env 键 | 类型 | 语义 |
+|--------|------|------|
+| `env["agent_id"]` | 非空 string | 覆盖全局 `EVAL_AGENT_ID`: 本 task 以指定 agent 建单 agent 会话 |
+| `env["conversation"]` | dict | 全量覆盖会话创建参数: `mode` (single/group, 缺省 single) / `agent_ids` (非空 string 列表, 缺省回退全局默认 agent) / `dispatch_mode` (solo/orchestrated, 缺省不下发) |
+
+优先级: `env.conversation` > `env.agent_id` > 全局默认。`conversation` 为**全量覆盖** (含 agent 选择, 不做部分合并): 提供时 `env.agent_id` 被忽略, 其缺省 `agent_ids` 时回退全局默认 agent (而非 `env.agent_id`)。
+
+校验语义 (trial 开始、建会话前执行; 非法即该 trial 失败, 不静默回退):
+
+| 规则 | 说明 |
+|------|------|
+| single ⇔ 恰 1 个 agent | `agent_ids` 数量 ≠ 1 报错 |
+| group ⇔ ≥2 个 agent | `agent_ids` 少于 2 个报错 (错误信息含 "agent_ids 至少需要 2 个") |
+| 枚举校验 | mode ∉ {single, group} / dispatch_mode ∉ {solo, orchestrated} 报错 (guide 非评测对象, 不放行) |
+| 类型校验 | `conversation` 非 dict / `agent_ids` 非非空 string 列表 / `agent_id` 非非空 string 均报错 |
+
+错误信息含违规字段路径与合法值。per-trial 隔离语义 (新会话 + sandbox workspace + fs_write auto 审批 + trial 结束清理) 不随会话形态变化; orchestrated 派发场景配 `achat_dispatch` grader 时依赖 spans, 需 `TRACE_ENABLED=true`。
 
 **设计草案**:
 ```
@@ -6156,4 +6177,5 @@ for task_id, trials in result.trials.items():
 | v0.11 | 2026-08-29 | change add-aeval-metrics-p1 落地 Metrics P1: §16/§18.13.14 标注完成 — batch_evaluation (BatchEvaluator + POST /api/eval/metrics/batch)、prompt_metric (PromptMetric A/B)、pytest_plugin (fixtures + --eval-suite 门禁)、report (Markdown/JSON 渲染) |
 | v0.12 | 2026-08-30 | 开源化四决策落定 (change settle-aeval-opensource-decisions): D1 MIT + fresh init；D2 repo `agent-eval` / 包 `agent_eval` / CLI `eval-suite` / 品牌 Aeval；D3 API 独立部署 `/v1` + 寄宿期 `/api/eval/*` 不变 + 同大版本兼容 (§17.9 ✅)；D4 README 双语 + docs 中文先行 + v0.1.0 + PyPI (§17.12 第一批 ✅)；§15.3 补决策记录, 新增 §15.4 抽取输入清单 (rename 映射/LICENSE/历史/路由/docs 六篇) |
 | v0.13 | 2026-08-30 | change extract-aeval-repo 阶段一执行完毕: §15.3 结构图改单包+extras 形态并标注阶段一现状; §15.4 标注已执行 (含两处执行差异: eval_integration 留守 / 测试 20+6 拆分); 新能力 — CLI `eval-suite` (run/validate/list/show/compare/serve) + 独立 API `create_standalone_app` (`/v1` + `X-Aeval-Version` + `/v1/meta`); rename `eval_harness → agent_eval` 全量落地, 框架迁至 `aeval/packages/agent-eval/src/agent_eval/` (PyPI 包 agent-eval v0.1.0, MIT, editable 安装), sys.path hack 清零; dashboard 迁 `aeval/apps/dashboard`; docs 六篇 + examples×2 + dormant CI; §16 快照更新 (框架测试 349 + AChat 绑定留守 6 文件) |
+| v0.14 | 2026-08-30 | change add-aeval-task-conversation-config: task 级会话配置 — `create_conversation` 参数化 (mode/agent_ids/dispatch_mode), runner 解析 `env.agent_id` / `env.conversation` (优先级 conversation > agent_id > 全局; single⇔1 / group⇔≥2 + 枚举/类型校验, 建会话前失败不静默回退); §17.5 补 env 键约定与校验语义表, §16 现状表同步; examples/achat 补 dispatch 任务示例 |
 

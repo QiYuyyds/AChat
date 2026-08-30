@@ -76,6 +76,7 @@ class MockAChat:
         transport_error=False,
     ):
         self.requests: list[tuple[str, str]] = []
+        self.created_conversations: list[dict] = []  # POST /conversations 载荷
         self.written_files: dict[str, str] = {}
         self.deleted: list[str] = []
         self.pre_seed_entries = pre_seed_entries or []
@@ -154,6 +155,7 @@ class MockAChat:
             raise httpx.ConnectError("boom", request=request)
 
         if request.method == "POST" and path == "/api/conversations":
+            self.created_conversations.append(json.loads(request.content))
             return httpx.Response(
                 201, json={"conversation": {"id": self._conv_id()}}
             )
@@ -288,6 +290,122 @@ async def test_transport_error_maps_to_transient():
     runner = _make_runner(mock)
     with pytest.raises(TransientError):
         await runner.run(_task())
+
+
+# ─── task 级会话配置 (env.agent_id / env.conversation) ──────────────────────
+
+
+async def test_no_conversation_config_keeps_default_payload():
+    mock = MockAChat()
+    runner = _make_runner(mock)
+    await runner.run(_task())
+
+    (created,) = mock.created_conversations
+    assert created["mode"] == "single"
+    assert created["agentIds"] == [AGENT_ID]
+    assert "dispatchMode" not in created  # 未配置 → 载荷与既有行为一致
+    assert "@" not in created["title"]  # title 不带 agent 标记
+
+
+async def test_env_agent_id_overrides_global_default():
+    mock = MockAChat()
+    runner = _make_runner(mock)
+    await runner.run(_task({"agent_id": "ag_rag"}))
+
+    (created,) = mock.created_conversations
+    assert created["mode"] == "single"
+    assert created["agentIds"] == ["ag_rag"]
+    assert created["title"].endswith("@ag_rag")
+
+
+async def test_conversation_single_orchestrated_full_override():
+    mock = MockAChat()
+    runner = _make_runner(mock)
+    await runner.run(
+        _task({"conversation": {"mode": "single", "dispatch_mode": "orchestrated"}})
+    )
+
+    (created,) = mock.created_conversations
+    assert created["mode"] == "single"
+    assert created["agentIds"] == [AGENT_ID]  # 未给 agent_ids → 全局默认
+    assert created["dispatchMode"] == "orchestrated"
+
+
+async def test_conversation_mode_defaults_to_single():
+    mock = MockAChat()
+    runner = _make_runner(mock)
+    await runner.run(_task({"conversation": {"agent_ids": [AGENT_ID]}}))
+
+    (created,) = mock.created_conversations
+    assert created["mode"] == "single"
+    assert created["agentIds"] == [AGENT_ID]
+
+
+async def test_conversation_group_with_multiple_agents():
+    mock = MockAChat()
+    runner = _make_runner(mock)
+    await runner.run(
+        _task({"conversation": {"mode": "group", "agent_ids": ["ag_a", "ag_b"]}})
+    )
+
+    (created,) = mock.created_conversations
+    assert created["mode"] == "group"
+    assert created["agentIds"] == ["ag_a", "ag_b"]
+
+
+async def test_conversation_wins_over_env_agent_id():
+    mock = MockAChat()
+    runner = _make_runner(mock)
+    await runner.run(
+        _task(
+            {
+                "agent_id": "ag_fast",
+                "conversation": {"mode": "single", "agent_ids": ["ag_slow"]},
+            }
+        )
+    )
+
+    (created,) = mock.created_conversations
+    assert created["agentIds"] == ["ag_slow"]  # conversation 全量覆盖, agent_id 被忽略
+
+
+async def test_conversation_without_agent_ids_ignores_env_agent_id():
+    mock = MockAChat()
+    runner = _make_runner(mock)
+    await runner.run(_task({"agent_id": "ag_rag", "conversation": {"mode": "single"}}))
+
+    (created,) = mock.created_conversations
+    assert created["agentIds"] == [AGENT_ID]  # 全量覆盖语义: env.agent_id 不参与回退
+
+
+@pytest.mark.parametrize(
+    "env, fragment",
+    [
+        ({"conversation": {"mode": "group", "agent_ids": [AGENT_ID]}},
+         "agent_ids 至少需要 2 个"),
+        ({"conversation": {"mode": "group", "agent_ids": []}},
+         "agent_ids 至少需要 2 个"),
+        ({"conversation": {"mode": "single", "agent_ids": ["a", "b"]}},
+         "恰好 1 个 agent"),
+        ({"conversation": {"mode": "guide"}}, "'guide' 非法"),
+        ({"conversation": {"mode": "single", "dispatch_mode": "magic"}},
+         "'magic' 非法"),
+        ({"conversation": "single"}, "必须是 dict"),
+        ({"conversation": {"mode": "single", "agent_ids": "ag_x"}},
+         "string 列表"),
+        ({"conversation": {"mode": "single", "agent_ids": [42]}},
+         "string 列表"),
+        ({"agent_id": 123}, "必须是非空 string"),
+        ({"agent_id": "  "}, "必须是非空 string"),
+    ],
+)
+async def test_invalid_conversation_config_fails_loudly(env, fragment):
+    mock = MockAChat()
+    runner = _make_runner(mock)
+    with pytest.raises(AgentRunError, match=fragment):
+        await runner.run(_task(env))
+    # 校验发生在建会话前 → 未发出任何请求, 不静默回退到默认会话
+    assert mock.requests == []
 
 
 # ─── 进程内完成检测通道 ──────────────────────────────────────────────────────
