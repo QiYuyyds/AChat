@@ -140,7 +140,7 @@ bitdance-agenthub-main/
 │   ├── stores/           Zustand store (app-store / search-store / auth-store)
 │   ├── shared/           ★ 共享类型 (StreamEvent / MessagePart ...) 前后端契约源
 │   └── db/schema.ts      仅保留前端 import 行类型 (DB 实体由后端 SQLAlchemy 拥有)
-├── electron/             桌面版外壳 (main.ts / paths.ts / server-bootstrap.ts)
+├── electron/             桌面版外壳 (main.ts / preload.ts / paths.ts / server-bootstrap.ts)
 ├── apps/mobile/          移动伴随 App (Capacitor)
 ├── packages/shared/      共享包 (workspace)
 ├── specs/                ★ 20 份编号详细规格 (语言无关契约)
@@ -680,9 +680,9 @@ SDK ReAct loop 每轮迭代后:
 |---|---|---|
 | `specs/` | 20 份编号详细规格（实体 / 事件 / 适配器 / 工具 / 编排 / 统一 Agent Loop ...），**语言无关契约** | 有效 |
 | `openspec/` | OpenSpec 能力契约（19 个 capability spec，含 **user-auth** / **run-internal-compaction** / **worktree-conflict-resolution**）+ 变更提案（`changes/` 下 100+ 提案，含 RAG 大重构 12 个 change） | 有效 |
-| `electron/` | 桌面版（`main.ts` 启动内嵌 Next server） | ⚠️ 待改造：内嵌 Next 已无后端，需改启 Python |
+| `electron/` | 桌面版（main / preload / paths / server-bootstrap）：Next 前端 + Python sidecar 双进程，单库 SQLite + 云端认证代理（Spec 12 v2） | 有效 |
 | `apps/mobile/` | 移动伴随 App（Capacitor / 远程审批，spec 14） | 独立模块 |
-| `scripts/` | 构建 / Electron / SQLite ABI 辅助（`.mjs`） | 前端用 |
+| `scripts/` | 构建 / Electron 辅助（`.mjs`，含 `prepare-python-runtime.mjs` 桌面 Python 运行时组装） | 前端用 |
 | `skills/` | 可复用开发任务模板（add-adapter / add-tool ...） | 参考 |
 | `.agenthub-data/` | 运行时：`workspaces/` + `deployments/` + `skills/` + `worktrees/` | 前后端共用 |
 

@@ -2,7 +2,13 @@ import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron'
 import path from 'node:path'
 
 import { setupDataDir } from './paths'
-import { setSidecarRecoveredListener, shutdownSidecar, startDesktopRuntime, StartupError } from './server-bootstrap'
+import {
+  setSidecarFatalListener,
+  setSidecarRecoveredListener,
+  shutdownSidecar,
+  startDesktopRuntime,
+  StartupError,
+} from './server-bootstrap'
 
 // Electron 默认用 package.json 的 `name` 字段（'bytedance-agenthub'）作为 app 名，
 // 用户数据会落在 ~/Library/Application Support/bytedance-agenthub/。覆盖成 productName 'AChat'，
@@ -54,6 +60,12 @@ if (!gotLock) {
       setSidecarRecoveredListener(() => {
         // sidecar 崩溃后恢复成功 → 重载窗口回到主界面（而非停留在报错状态）
         void win?.webContents.loadURL(lastLoadedUrl)
+      })
+      setSidecarFatalListener((err) => {
+        // 运行中 sidecar 彻底崩溃（重启超限）→ 错误界面而非白屏/崩溃
+        void win?.webContents.loadURL(
+          `data:text/html;charset=utf-8,${encodeURIComponent(startupErrorHtml(err.kind))}`,
+        )
       })
       url = await startDesktopRuntime()
       lastLoadedUrl = url

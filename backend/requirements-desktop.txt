@@ -27,3 +27,15 @@ mcp>=1.0.0
 python-frontmatter>=1.1.0
 pyyaml>=6.0.0
 jieba>=0.42.1
+
+# ─── Observability（app/observability 顶层 import；trace_enabled 默认开） ───
+# instrumentation / openinference 在 main.py 内有 ImportError 降级保护，但体积小、
+# 桌面与 web 行为对齐，一并安装。arize-phoenix 服务端不需要。
+opentelemetry-sdk>=1.28.0
+opentelemetry-exporter-otlp>=1.28.0
+opentelemetry-instrumentation-fastapi>=0.49b0
+opentelemetry-instrumentation-httpx>=0.49b0
+openinference-instrumentation-openai>=0.1.20
+
+# ─── 其他顶层 import（requirements.txt 独有，pyproject 未列） ───
+pathspec>=0.12.0

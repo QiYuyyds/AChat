@@ -42,6 +42,7 @@ let sidecar: ChildProcess | null = null
 let shuttingDown = false
 let restartTimes: number[] = []
 let onRecovered: (() => void) | null = null
+let onFatal: ((err: StartupError) => void) | null = null
 
 // ─── 对外入口 ─────────────────────────────────────────────────────────
 
@@ -70,6 +71,11 @@ export async function startDesktopRuntime(): Promise<string> {
 /** 崩溃恢复后回调（main 用于 reload 窗口）。 */
 export function setSidecarRecoveredListener(listener: (() => void) | null): void {
   onRecovered = listener
+}
+
+/** 运行中 sidecar 彻底崩溃（重启超限）回调（main 用于切换错误界面）。 */
+export function setSidecarFatalListener(listener: ((err: StartupError) => void) | null): void {
+  onFatal = listener
 }
 
 /** app 退出前调用：温和终止 → 5s 宽限 → 强杀进程树。 */
@@ -140,18 +146,26 @@ async function handleUnexpectedExit(runtime: SidecarRuntime): Promise<void> {
   restartTimes = restartTimes.filter((t) => now - t < RESTART_WINDOW_MS)
   restartTimes.push(now)
   if (restartTimes.length > RESTART_LIMIT) {
-    throw new StartupError(
-      'sidecar-crash-loop',
-      `sidecar restarted more than ${RESTART_LIMIT} times within ${RESTART_WINDOW_MS / 1000}s`,
+    // 运行中彻底崩溃：通知 main 呈现错误界面（不能抛进事件处理器形成 unhandled rejection）
+    onFatal?.(
+      new StartupError(
+        'sidecar-crash-loop',
+        `sidecar restarted more than ${RESTART_LIMIT} times within ${RESTART_WINDOW_MS / 1000}s`,
+      ),
     )
+    return
   }
   console.error(`[sidecar] restarting (${restartTimes.length}/${RESTART_LIMIT})`)
   try {
     await spawnAndProbe(runtime)
     onRecovered?.()
   } catch (err) {
-    // 重启失败按崩溃循环上限处理；StartupError 由 main 呈现错误界面
     console.error('[sidecar] restart failed', err)
+    onFatal?.(
+      err instanceof StartupError
+        ? err
+        : new StartupError('sidecar-crash-loop', `sidecar restart failed: ${String(err)}`),
+    )
   }
 }
 
