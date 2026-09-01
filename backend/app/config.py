@@ -4,6 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,6 +16,16 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+    )
+
+    # Desktop mode (AGENTHUB_DESKTOP=1，由 electron sidecar 注入)：单库 SQLite +
+    # 固定本地用户（get_current_user 不验 JWT）+ /api/auth/* 代理到云端部署
+    agenthub_desktop: bool = False
+
+    # 云端部署地址（桌面认证代理目标；构建期/启动环境注入，dev 可覆盖）
+    cloud_api_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CLOUD_API_URL", "AGENTHUB_CLOUD_API_URL"),
     )
 
     # Database (remote PostgreSQL — always required)
@@ -41,9 +52,12 @@ class Settings(BaseSettings):
     # Workspace
     workspace_root: str = "../.agenthub-data/workspaces"
 
-    # AChat data dir (deployments live under <data_dir>/deployments). Mirrors
-    # the TS AGENTHUB_DATA_DIR; defaults to the same dir the SQLite DB sits in.
-    data_dir: str = "../.agenthub-data"
+    # AChat data dir (deployments live under <data_dir>/deployments). Electron
+    # 桌面壳注入 AGENTHUB_DATA_DIR（TS 时代沿用名），本地 dev 走 DATA_DIR。
+    data_dir: str = Field(
+        default="../.agenthub-data",
+        validation_alias=AliasChoices("DATA_DIR", "AGENTHUB_DATA_DIR"),
+    )
 
     # ─── Milvus ───
     milvus_host: str = ""

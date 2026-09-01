@@ -28,7 +28,17 @@ async def _resolve_sse_user(request: Request, token: str | None) -> str | None:
     Token may come from the cookie (same-origin / production) or from the
     ``?token=`` query param (cross-origin dev — EventSource cannot set
     Authorization headers). Returns the user_id or None if unauthenticated.
+
+    桌面模式例外：无条件解析为固定本地用户（platform-security delta）。
     """
+    from app.auth.desktop import LOCAL_USER_ID, get_or_seed_local_user, is_desktop_mode
+
+    if is_desktop_mode():
+        from app.db.engine import get_remote_db
+        async with get_remote_db() as db:
+            user = await get_or_seed_local_user(db)
+        return user.id if user else LOCAL_USER_ID
+
     if not token:
         return None
     try:

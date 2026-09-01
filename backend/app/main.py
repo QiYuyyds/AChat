@@ -1089,6 +1089,13 @@ def create_app() -> FastAPI:
     _allowed_origins = set(settings.cors_origins_list)
     # Also accept localhost variations (127.0.0.1, ::1) for dev environments
     _localhost_variants = {"http://127.0.0.1:3000", "http://[::1]:3000"}
+    # 桌面模式：前端 origin 是 127.0.0.1:<动态端口>，任何 loopback host 均放行
+    # （sidecar 仅绑定 loopback，局域网设备无法伪造该 origin）
+    _desktop_mode = settings.agenthub_desktop
+
+    def _is_loopback_origin(origin: str) -> bool:
+        parsed = urlparse(origin)
+        return parsed.hostname in ("127.0.0.1", "localhost", "::1")
 
     @app.middleware("http")
     async def csrf_origin_check(request: Request, call_next):
@@ -1100,7 +1107,11 @@ def create_app() -> FastAPI:
                 # to scheme://host:port so it matches the allowed-origin entries.
                 parsed = urlparse(raw)
                 origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else raw
-                if origin not in _allowed_origins and origin not in _localhost_variants:
+                if (
+                    origin not in _allowed_origins
+                    and origin not in _localhost_variants
+                    and not (_desktop_mode and _is_loopback_origin(origin))
+                ):
                     return JSONResponse(
                         status_code=403,
                         content={"detail": "Origin not allowed"},
@@ -1142,7 +1153,14 @@ def create_app() -> FastAPI:
     )
     from app.api.mobile import routes as mobile_routes
 
-    app.include_router(auth.router, prefix="/api", tags=["auth"])
+    if settings.agenthub_desktop:
+        # 桌面模式：/api/auth/* 走云端透明代理（真实 auth 路由不挂载，web 语义不变）
+        from app.api import auth_proxy, desktop
+
+        app.include_router(auth_proxy.router, prefix="/api", tags=["auth"])
+        app.include_router(desktop.router, prefix="/api", tags=["desktop"])
+    else:
+        app.include_router(auth.router, prefix="/api", tags=["auth"])
     app.include_router(profile.router, prefix="/api", tags=["profile"])
     app.include_router(conversations.router, prefix="/api", tags=["conversations"])
     app.include_router(code_intelligence.router, prefix="/api", tags=["code-intelligence"])

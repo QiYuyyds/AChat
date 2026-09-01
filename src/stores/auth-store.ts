@@ -108,6 +108,16 @@ function _clearAuthCache(): void {
 
 let refreshPromise: Promise<boolean> | null = null
 
+/** 桌面代理错误体是 {"detail": "..."} JSON；解析出人话，失败退回原文。 */
+function extractErrorMessage(body: string, fallback: string): string {
+  try {
+    const parsed = JSON.parse(body) as { detail?: string }
+    return parsed.detail ?? body
+  } catch {
+    return body || fallback
+  }
+}
+
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   config: DEFAULT_CONFIG,
@@ -121,6 +131,41 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ isAuthenticated: false, showLoginDialog: true })
     }
     window.addEventListener('auth-expired', onAuthExpired as EventListener)
+
+    // 桌面模式分支：/api/desktop/session 存在即桌面形态。有 cloud_session 标记
+    // 直接进入（离线容忍）；无标记进登录页（云端强制登录，经本地 /api/auth/* 代理）。
+    // web 模式该端点 404，走原有 token 流程，行为不变。
+    try {
+      const desktopRes = await fetch(`${API_BASE_URL}/api/desktop/session`, {
+        credentials: 'include',
+      })
+      if (desktopRes.ok) {
+        const desktop = (await desktopRes.json()) as {
+          mode: string
+          loggedIn: boolean
+          user: { email: string; name: string; loggedInAt: number } | null
+        }
+        if (desktop.mode === 'desktop') {
+          if (desktop.loggedIn && desktop.user) {
+            set({
+              user: {
+                id: 'local_desktop_user',
+                email: desktop.user.email,
+                name: desktop.user.name,
+                avatarUrl: null,
+              },
+              isAuthenticated: true,
+              isLoading: false,
+            })
+          } else {
+            set({ user: null, isAuthenticated: false, showLoginDialog: true, isLoading: false })
+          }
+          return
+        }
+      }
+    } catch {
+      // 探测失败（如 dev 后端未启动）→ 落回 web 流程
+    }
 
     const token = getAccessToken()
 
@@ -192,7 +237,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     })
     if (!res.ok) {
       const body = await res.text()
-      throw new Error(body || `Login failed (${res.status})`)
+      throw new Error(extractErrorMessage(body, `Login failed (${res.status})`))
     }
     const data = await res.json()
     storeToken(data.tokens?.access_token ?? '')
@@ -244,7 +289,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     })
     if (!res.ok) {
       const body = await res.text()
-      throw new Error(body || `Registration failed (${res.status})`)
+      throw new Error(extractErrorMessage(body, `Registration failed (${res.status})`))
     }
     const data = await res.json()
     storeToken(data.tokens?.access_token ?? '')

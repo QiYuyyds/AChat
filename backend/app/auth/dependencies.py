@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.desktop import get_or_seed_local_user, is_desktop_mode
 from app.auth.jwt_handler import verify_token
 from app.config import get_settings
 from app.db.engine import get_db_session
@@ -127,7 +128,14 @@ async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ) -> User:
-    """Resolve the authenticated User from the request, or raise 401."""
+    """Resolve the authenticated User from the request, or raise 401.
+
+    桌面模式例外（AGENTHUB_DESKTOP=1）：无条件解析为固定本地用户，不做
+    逐请求 JWT 验证（platform-security delta；本地服务器仅绑定 loopback）。
+    """
+    if is_desktop_mode():
+        return await get_or_seed_local_user(db)
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Not authenticated",
@@ -161,6 +169,9 @@ async def get_current_user_optional(
     Used by endpoints that need to optionally identify the user (e.g. SSE
     in dev mode where the token may come from a query param).
     """
+    if is_desktop_mode():
+        return await get_or_seed_local_user(db)
+
     token = _extract_token(request)
     if not token:
         return None
