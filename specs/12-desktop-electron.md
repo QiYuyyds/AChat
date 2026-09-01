@@ -1,5 +1,7 @@
 # Spec 12 — 桌面版（Electron）
 
+> ⚠️ **本文档为 TS 后端时代的产物，整体待重写为 v2**（OpenSpec change `add-desktop-runtime`，任务 6.5）。进程模型已改为「Next 前端 + Python sidecar 双进程」，TS 时代的 DB bootstrap、better-sqlite3 ABI 舞步、SDK 打包要求全部失效，以 `openspec/changes/add-desktop-runtime/` 的 proposal / design / specs delta 为准。
+>
 > AChat 以 Electron 打包成 macOS `.dmg` / Windows `.exe` 安装包，单文件双击即用，不要求用户预装 Node / pnpm。本 spec 定义打包方案、进程模型、路径迁移、native 依赖处理与故意不做的事。
 >
 > 源文件：`electron/`（main / preload / 类型）、`scripts/electron-*.ts`（打包辅助）、`package.json`（build 字段）、`next.config.ts`（standalone 输出）。
