@@ -12,53 +12,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-import pytest_asyncio
 
 from app.api import auth_proxy
 
 _TEST_JWT_SECRET = "test-secret-at-least-32-characters-long!!"
-
-
-@pytest_asyncio.fixture
-async def desktop_env(tmp_path, monkeypatch):
-    """单库 SQLite + 桌面模式 + 指向 MockTransport 云端的 settings 环境。"""
-    db_file = tmp_path / "desktop.db"
-    data_dir = tmp_path / "data"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_file.as_posix()}")
-    monkeypatch.setenv("DATABASE_LOCAL_URL", "")
-    monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path / "workspaces"))
-    monkeypatch.setenv("JWT_SECRET", _TEST_JWT_SECRET)
-    monkeypatch.setenv("ALLOW_REGISTRATION", "true")
-    monkeypatch.setenv("AGENTHUB_DESKTOP", "1")
-    monkeypatch.setenv("AGENTHUB_DATA_DIR", str(data_dir))
-    monkeypatch.setenv("AGENTHUB_CLOUD_API_URL", "https://cloud.example.com")
-    monkeypatch.setattr(auth_proxy, "_test_transport", None)
-
-    from app.config import get_settings
-
-    get_settings.cache_clear()
-
-    from app.db import engine as engine_mod
-
-    await engine_mod.init_db()
-    try:
-        yield data_dir
-    finally:
-        await engine_mod.close_db()
-        get_settings.cache_clear()
-        auth_proxy.set_test_transport(None)
-
-
-@pytest_asyncio.fixture
-async def desktop_client(desktop_env):
-    """未认证客户端（桌面模式不应需要 JWT）。"""
-    import app.services.agent_runner  # noqa: F401  wires runner into registry
-    from app.main import create_app
-
-    app = create_app()
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
 
 
 def _mock_cloud(handler):

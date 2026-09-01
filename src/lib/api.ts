@@ -1649,3 +1649,36 @@ export async function getSchedulerStatus(): Promise<{
 }> {
   return authJson(`${API_BASE_URL}/api/tasks/scheduler/status`)
 }
+
+// ─── 桌面目录绑定（add-desktop-runtime 任务 5.3 / 5.4）────────
+
+export interface BoundPathValidation {
+  path: string
+  safe: boolean
+  isDir: boolean
+  reason: string | null
+}
+
+/** 校验待绑定路径（拖拽与手动共用，is_path_safe 是唯一安全裁决点）。 */
+export async function validateBoundPath(path: string): Promise<BoundPathValidation> {
+  return json(
+    authFetch(`${API_BASE_URL}/api/workspaces/validate-bound-path`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    }),
+  )
+}
+
+export interface RecentProject {
+  path: string
+  lastUsedAt: number
+}
+
+/** 最近绑定的本地目录（去重、按最近使用排序）。 */
+export async function getRecentProjects(limit = 8): Promise<RecentProject[]> {
+  const res = await json<{ projects: RecentProject[] }>(
+    authFetch(`${API_BASE_URL}/api/workspaces/recent-projects?limit=${limit}`),
+  )
+  return res.projects
+}

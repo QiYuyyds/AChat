@@ -43,8 +43,10 @@ import {
   toggleArchiveConversation as toggleArchiveConversationAPI,
   togglePinConversation as togglePinConversationAPI,
   updateConversationSummary,
+  validateBoundPath,
 } from '@/lib/api'
 import { API_BASE_URL } from '@/lib/config'
+import { getElectronBridge } from '@/lib/electron-bridge'
 import { subscribeUiCommand } from '@/lib/ui-command-events'
 import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 import { cn } from '@/lib/utils'
@@ -71,6 +73,7 @@ export function Sidebar() {
   const mode = useAppStore((s) => s.sidebarMode)
   const setMode = useAppStore((s) => s.setSidebarMode)
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [dialogPreset, setDialogPreset] = useState<{ path?: string; error?: string } | null>(null)
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [renamingId, setRenamingId] = useState<string | null>(null)
@@ -145,6 +148,38 @@ export function Sidebar() {
     fetchAgents().then(setAgents).catch(console.error)
     fetchModelProfiles().then(setModelProfiles).catch(console.error)
   }, [setConversations, setAgents, setModelProfiles])
+
+  // 桌面拖拽绑定（任务 5.3）：拖文件夹进窗口 → is_path_safe 校验 → 预填新建对话。
+  // web 模式（无 preload bridge）仅阻止默认导航，不做绑定。
+  useEffect(() => {
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault()
+    }
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault()
+      const bridge = getElectronBridge()
+      if (!bridge || !e.dataTransfer) return
+      const file = e.dataTransfer.files[0]
+      if (!file) return
+      const path = bridge.getPathForFile(file)
+      if (!path) return
+      validateBoundPath(path)
+        .then((v) => {
+          if (v.safe) setDialogPreset({ path: v.path })
+          else setDialogPreset({ error: `已拒绝绑定「${path}」：${v.reason ?? '路径不安全'}` })
+        })
+        .catch(() => {
+          setDialogPreset({ error: `路径校验失败（${path}），请检查后端服务` })
+        })
+        .finally(() => setDialogOpen(true))
+    }
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [])
 
   // Guide agent side-effect: refresh agents/conversations when guide does management ops
   useGuideSideEffectRefresh('agents', () => { fetchAgents().then(setAgents).catch(console.error) })
@@ -373,7 +408,14 @@ export function Sidebar() {
         <BottomActionBar />
       </div>
 
-      <NewConversationDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      <NewConversationDialog
+        open={dialogOpen}
+        onOpenChange={(next) => {
+          if (!next) setDialogPreset(null)
+          setDialogOpen(next)
+        }}
+        preset={dialogPreset}
+      />
 
       <Dialog open={!!deleteTargetId} onOpenChange={(open) => !open && setDeleteTargetId(null)}>
         <DialogContent>

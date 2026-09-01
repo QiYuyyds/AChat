@@ -1,4 +1,5 @@
-import { app, BrowserWindow, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron'
+import path from 'node:path'
 
 import { setupDataDir } from './paths'
 import { setSidecarRecoveredListener, shutdownSidecar, startDesktopRuntime, StartupError } from './server-bootstrap'
@@ -28,6 +29,18 @@ if (!gotLock) {
   let win: BrowserWindow | null = null
 
   app.whenReady().then(async () => {
+    // 5.1 原生目录选择对话框：preload 白名单 electronAPI.pickDirectory() 的后端
+    ipcMain.handle('dialog:pick-directory', async () => {
+      const target = win ?? BrowserWindow.getAllWindows()[0]
+      if (!target) return null
+      const result = await dialog.showOpenDialog(target, {
+        properties: ['openDirectory', 'createDirectory'],
+        title: '选择要绑定的工作目录',
+      })
+      if (result.canceled || result.filePaths.length === 0) return null
+      return result.filePaths[0]
+    })
+
     // 用户 shell 里若设了 http_proxy / HTTPS_PROXY，Chromium 会继承它去代理 localhost 请求，
     // 导致 BrowserWindow 加载本地 URL 时被代理拦截。强制 direct（proxyRules 空）并显式 bypass 本地。
     await session.defaultSession
@@ -70,6 +83,7 @@ if (!gotLock) {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
+        preload: path.join(__dirname, 'preload.js'),
         devTools: !app.isPackaged,
       },
     })
@@ -80,9 +94,14 @@ if (!gotLock) {
       return { action: 'deny' }
     })
 
-    // b) 拦截站外导航；本地 server origin / 错误页(data:)放行
+    // b) 拦截站外导航；本地 server origin / 错误页(data:)放行。
+    // file: 导航一律拒绝（拖拽文件进窗口的误导航防护，任务 5.3）。
     w.webContents.on('will-navigate', (event, target) => {
       if (target.startsWith('data:')) return
+      if (target.startsWith('file:')) {
+        event.preventDefault()
+        return
+      }
       const origin = new URL(target).origin
       if (lastLoadedUrl && origin !== new URL(lastLoadedUrl).origin) {
         event.preventDefault()
