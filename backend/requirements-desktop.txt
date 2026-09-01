@@ -1,0 +1,29 @@
+# 桌面 sidecar 运行时的 site-packages 清单 —— 与 pyproject.toml [project].dependencies 保持一致。
+# 由 scripts/prepare-python-runtime.mjs 在构建期消费（embedded CPython 内 pip install --no-compile）。
+# 修改 pyproject 依赖时必须同步本文件（桌面分发刻意排除 OCR / milvus / neo4j / asyncpg，
+# 后端对它们全部 lazy import + 独立降级，见 CLAUDE.md §2/§3.8）。
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sse-starlette>=2.2.0
+python-multipart>=0.0.17
+sqlalchemy[asyncio]>=2.0.36
+aiosqlite>=0.20.0
+alembic>=1.14.0
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+anthropic>=0.40.0
+openai>=1.57.0
+nanoid>=2.0.0
+httpx>=0.28.0
+python-dotenv>=1.0.1
+pypdf>=5.1.0
+python-docx>=1.1.0
+python-pptx>=0.6.23
+pypdfium2>=4.30.0
+json-repair>=0.25.0
+bcrypt>=4.2.0
+PyJWT>=2.10.0
+mcp>=1.0.0
+python-frontmatter>=1.1.0
+pyyaml>=6.0.0
+jieba>=0.42.1

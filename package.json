@@ -17,7 +17,8 @@
     "electron:prebuild": "node scripts/electron-prebuild.mjs",
     "electron:dev": "concurrently -k -n NEXT,TSC,ELECTRON -c blue,yellow,magenta \"pnpm dev\" \"pnpm electron:tsc:watch\" \"wait-on -d 200 tcp:127.0.0.1:3000 file:./dist-electron/main.js && node scripts/electron-dev.mjs\"",
     "codegraph:prepare": "node scripts/prepare-codegraph-runtime.mjs",
-    "electron:build": "pnpm build && pnpm electron:prebuild && pnpm electron:tsc && pnpm codegraph:prepare && electron-builder",
+    "python-runtime:prepare": "node scripts/prepare-python-runtime.mjs",
+    "electron:build": "pnpm build && pnpm electron:prebuild && pnpm electron:tsc && pnpm codegraph:prepare && pnpm python-runtime:prepare && electron-builder",
     "mobile:dev": "pnpm --filter @agenthub/mobile dev",
     "mobile:build": "pnpm --filter @agenthub/mobile build",
     "mobile:sync": "pnpm --filter @agenthub/mobile cap:sync",
@@ -118,6 +119,14 @@
       ],
       "extraResources": [
         {
+          "from": "resources/python-runtime/python-runtime-darwin-${arch}.tar.gz",
+          "to": "python-runtime/python-runtime.tar.gz"
+        },
+        {
+          "from": "backend/app",
+          "to": "backend/app"
+        },
+        {
           "from": "resources/codegraph/codegraph-darwin-${arch}.tar.gz",
           "to": "codegraph/runtime.tar.gz"
         },
@@ -143,6 +152,14 @@
         }
       ],
       "extraResources": [
+        {
+          "from": "resources/python-runtime/python-runtime-win32-${arch}.zip",
+          "to": "python-runtime/python-runtime.zip"
+        },
+        {
+          "from": "backend/app",
+          "to": "backend/app"
+        },
         {
           "from": "resources/codegraph/codegraph-win32-${arch}.zip",
           "to": "codegraph/runtime.zip"
