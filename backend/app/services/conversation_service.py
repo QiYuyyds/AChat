@@ -1035,6 +1035,8 @@ async def _send_message_unlocked(
     parent_message_id: str | None = None,
     attachment_ids: list[str] | None = None,
     model_profile_id: str | None = None,
+    user_id: str | None = None,
+    client_message_id: str | None = None,
 ) -> SendMessageResult:
     mentioned_agent_ids = mentioned_agent_ids or []
     attachment_ids = attachment_ids or []
@@ -1046,7 +1048,7 @@ async def _send_message_unlocked(
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
-        conv_user_id = None
+        conv_user_id = user_id
 
         parts: list[dict] = []
         if content and content.strip():
@@ -1087,6 +1089,8 @@ async def _send_message_unlocked(
 
     # Broadcast the new user message so other connected clients insert it live.
     # The sender reconciles via optimistic update + POST return; idempotent by id.
+    # client_message_id echoes the sender's optimistic temp id so the sender can
+    # claim it at event-arrival time instead of waiting for the POST response.
     event_bus.publish(
         MessageAddedEvent(
             conversation_id=conversation_id,
@@ -1104,6 +1108,7 @@ async def _send_message_unlocked(
                 usage=None,
                 created_at=now,
             ),
+            client_message_id=client_message_id,
         ),
         user_id=None,
     )
@@ -1237,6 +1242,8 @@ async def send_message(
     parent_message_id: str | None = None,
     attachment_ids: list[str] | None = None,
     model_profile_id: str | None = None,
+    user_id: str | None = None,
+    client_message_id: str | None = None,
 ) -> SendMessageResult:
     async with _conv_locks.lock_for(conversation_id):
         return await _send_message_unlocked(
@@ -1246,6 +1253,8 @@ async def send_message(
             parent_message_id=parent_message_id,
             attachment_ids=attachment_ids,
             model_profile_id=model_profile_id,
+            user_id=user_id,
+            client_message_id=client_message_id,
         )
 
 
@@ -1341,7 +1350,7 @@ async def abort_run(run_id: str) -> bool:
 
 # ─── Withdraw latest user message ───────────────────────────────────────────
 async def _withdraw_latest_user_message_unlocked(
-    conversation_id: str, message_id: str
+    conversation_id: str, message_id: str, user_id: str | None = None
 ) -> WithdrawResult:
     """Withdraw the latest user message plus everything it triggered downstream.
 
@@ -1359,7 +1368,7 @@ async def _withdraw_latest_user_message_unlocked(
         msg_created_at = msg.created_at
 
         await _require_conversation(db, conversation_id)
-        conv_user_id = None
+        conv_user_id = user_id
 
         latest_user = await _latest_user_message(db, conversation_id)
         if latest_user is None or latest_user.id != message_id:
@@ -1406,20 +1415,24 @@ async def _withdraw_latest_user_message_unlocked(
 
 
 async def withdraw_latest_user_message(
-    conversation_id: str, message_id: str
+    conversation_id: str, message_id: str, user_id: str | None = None
 ) -> WithdrawResult:
     async with _conv_locks.lock_for(conversation_id):
-        return await _withdraw_latest_user_message_unlocked(conversation_id, message_id)
+        return await _withdraw_latest_user_message_unlocked(
+            conversation_id, message_id, user_id
+        )
 
 
 # ─── Regenerate latest response ─────────────────────────────────────────────
-async def _regenerate_latest_response_unlocked(conversation_id: str) -> RegenerateResult:
+async def _regenerate_latest_response_unlocked(
+    conversation_id: str, user_id: str | None = None
+) -> RegenerateResult:
     """Delete everything after the latest user message and re-run responders for it."""
     async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
-        conv_user_id = None
+        conv_user_id = user_id
 
         latest_user = await _latest_user_message(db, conversation_id)
         if latest_user is None:
@@ -1490,14 +1503,17 @@ async def _regenerate_latest_response_unlocked(conversation_id: str) -> Regenera
     )
 
 
-async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
+async def regenerate_latest_response(
+    conversation_id: str, user_id: str | None = None
+) -> RegenerateResult:
     async with _conv_locks.lock_for(conversation_id):
-        return await _regenerate_latest_response_unlocked(conversation_id)
+        return await _regenerate_latest_response_unlocked(conversation_id, user_id)
 
 
 # ─── Edit & resend latest user message ──────────────────────────────────────
 async def edit_and_resend_latest_user_message(
-    conversation_id: str, message_id: str, new_content: str
+    conversation_id: str, message_id: str, new_content: str,
+    user_id: str | None = None,
 ) -> EditAndResendResult:
     """Withdraw the latest user message, then resend with new content.
 
@@ -1524,7 +1540,9 @@ async def edit_and_resend_latest_user_message(
     # Acquire the conversation lock once for both withdraw + send to avoid
     # a self-deadlock (asyncio.Lock is non-reentrant) and to ensure atomicity.
     async with _conv_locks.lock_for(conversation_id):
-        withdrawn = await _withdraw_latest_user_message_unlocked(conversation_id, message_id)
+        withdrawn = await _withdraw_latest_user_message_unlocked(
+            conversation_id, message_id, user_id
+        )
 
         sent = await _send_message_unlocked(
             conversation_id=conversation_id,
@@ -1532,6 +1550,7 @@ async def edit_and_resend_latest_user_message(
             mentioned_agent_ids=original_mentions,
             parent_message_id=original_parent,
             attachment_ids=original_attachment_ids or None,
+            user_id=user_id,
         )
 
     async with get_local_db() as db:

@@ -716,6 +716,8 @@ export interface SendMessageBody {
   parentMessageId?: string
   attachmentIds?: string[]
   modelProfileId?: string | null
+  /** 发送方乐观 temp 消息 id；后端在 message.added 事件上原样回带，用于事件到达即时认领 */
+  clientMessageId?: string
 }
 
 export interface SendMessageResult {

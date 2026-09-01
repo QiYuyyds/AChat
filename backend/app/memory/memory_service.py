@@ -19,6 +19,7 @@ from collections.abc import Callable
 from app.config import Settings
 from app.db.engine import get_db
 from app.db.models import ChatHistory
+from app.memory.access_stats import AccessStats
 from app.memory.file_store.file_catalog import FileCatalog
 from app.memory.file_store.workspace import MemoryWorkspace
 from app.memory.pipeline.auto_dream import AutoDream
@@ -60,6 +61,7 @@ class MemoryService:
         self.wikilink_expander = WikilinkExpander(self.workspace.metadata_dir / "wikilinks.db")
         self.file_catalog = FileCatalog(self.workspace.metadata_dir / "catalog.db")
         self.vector_index = VectorIndex(self.workspace.metadata_dir / "vectors.db")
+        self.access_stats = AccessStats(self.workspace.metadata_dir / "access_stats.db")
         self.chunker = MarkdownChunker(
             chunk_size=settings.memory_chunk_size,
             min_chunk_size=settings.memory_chunk_min_size,
@@ -92,12 +94,19 @@ class MemoryService:
         # Cache last user message per conversation for full-conversation extraction
         self._last_user_msg: dict[str, str] = {}
 
+        # Dream cooldown tracking: timestamp of last dream completion (passive or curator)
+        self._last_dream_completed_at: float | None = None
+
+        # Per-conversation write locks for auto_memory read-modify-write serialization
+        self._auto_memory_locks: dict[str, asyncio.Lock] = {}
+
         self._initialized = False
 
     def _build_search(self) -> HybridSearch:
         return HybridSearch(
             self.settings, self.bm25, self.wikilink_expander, self.workspace.root,
             vector_index=self.vector_index,
+            access_stats=self.access_stats,
         )
 
     @staticmethod
@@ -141,6 +150,7 @@ class MemoryService:
         self.wikilink_expander.initialize()
         self.file_catalog.initialize()
         self.vector_index.initialize()
+        self.access_stats.initialize()
 
         # Reconcile file catalog with filesystem
         try:
@@ -186,6 +196,7 @@ class MemoryService:
                     content=content,
                     created_at=time.time(),
                     user_id=user_id,
+                    conversation_id=conversation_id or None,
                 )
                 session.add(row)
         except Exception as e:
@@ -194,7 +205,8 @@ class MemoryService:
         if role == "assistant":
             # Trigger auto_memory (background)
             if self._generate_fn and len(content) >= 10 and not self._is_trivial_reply(content):
-                user_msg = self._last_user_msg.pop(conversation_id, "")
+                # Read last user message from PG chat_history (persistent, survives restart)
+                user_msg = await self._get_last_user_msg_from_pg(conversation_id)
                 asyncio.create_task(self._safe_auto_memory(
                     user_msg, content, agent_id, conversation_id,
                 ))
@@ -205,10 +217,6 @@ class MemoryService:
 
         if role != "user":
             return
-
-        # Cache user message for auto_memory (retrieved when assistant reply arrives)
-        if conversation_id:
-            self._last_user_msg[conversation_id] = content
 
         # Preference extraction always scopes to the real conversation user.
         if self._generate_fn and not self._is_trivial_reply(content):
@@ -227,8 +235,12 @@ class MemoryService:
     ) -> list[SearchResult]:
         """File-native memory recall via hybrid search."""
         from app.observability import start_span
+        from app.observability.instrumentation import (
+            AGENTHUB_MEMORY_INJECTED_PATHS,
+            AGENTHUB_MEMORY_RESULT_SCORES,
+        )
         k = top_k or self.settings.memory_search_top_k
-        with start_span("memory.recall", source="hybrid_search"):
+        with start_span("memory.recall", source="hybrid_search") as span:
             if self._search is None:
                 logger.warning("recall: search not initialized")
                 return []
@@ -244,6 +256,21 @@ class MemoryService:
             )
             for r in results[:3]:
                 logger.debug("  - %s (score=%.3f source=%s)", r.name, r.score, r.source)
+
+            # Span attributes for recall observability (P3: golden set data)
+            if span.is_recording():
+                injected_paths = [r.path for r in results]
+                span.set_attribute(AGENTHUB_MEMORY_INJECTED_PATHS, injected_paths)
+                score_details = [
+                    {
+                        "path": r.path,
+                        "final": round(r.score, 6),
+                        "scores": r.scores,
+                    }
+                    for r in results
+                ]
+                span.set_attribute(AGENTHUB_MEMORY_RESULT_SCORES, score_details)
+
             return results
 
     async def graph_recall(self, seed_paths: list[str]) -> list[str]:
@@ -276,8 +303,32 @@ class MemoryService:
         )
 
     def check_auto_dream_threshold(self) -> bool:
-        """Check if auto_dream should trigger based on daily card count."""
+        """Check if auto_dream should trigger based on pending daily card count.
+
+        Returns False if within cooldown period of last dream completion.
+        """
+        # Cooldown check: skip if last dream completed within cooldown window
+        if self._last_dream_completed_at is not None:
+            elapsed_minutes = (time.time() - self._last_dream_completed_at) / 60.0
+            if elapsed_minutes < self.settings.memory_dream_cooldown_minutes:
+                logger.debug(
+                    "auto_dream threshold: blocked by cooldown (%.0f min since last dream, need %d min)",
+                    elapsed_minutes, self.settings.memory_dream_cooldown_minutes,
+                )
+                return False
         return self.auto_dream.should_trigger(self.settings.memory_auto_dream_threshold)
+
+    def _record_dream_completed(self) -> None:
+        """Record dream completion timestamp for cooldown tracking."""
+        self._last_dream_completed_at = time.time()
+        logger.info("auto_dream: recorded completion time (cooldown %d min)",
+                     self.settings.memory_dream_cooldown_minutes)
+
+    def get_auto_memory_lock(self, conversation_id: str) -> asyncio.Lock:
+        """Get or create a per-conversation lock for auto_memory serialization."""
+        if conversation_id not in self._auto_memory_locks:
+            self._auto_memory_locks[conversation_id] = asyncio.Lock()
+        return self._auto_memory_locks[conversation_id]
 
     async def close(self) -> None:
         """Clean shutdown."""
@@ -285,6 +336,7 @@ class MemoryService:
         self.wikilink_expander.close()
         self.file_catalog.close()
         self.vector_index.close()
+        self.access_stats.close()
         logger.info("MemoryService closed")
 
     # ─── Graph data ────────────────────────────────────────────────────
@@ -383,44 +435,75 @@ class MemoryService:
 
     # ─── Internal safe wrappers ───────────────────────────────────────────
 
+    async def _get_last_user_msg_from_pg(self, conversation_id: str) -> str:
+        """Read the most recent user message from PG chat_history.
+
+        This replaces the in-memory _last_user_msg cache, surviving restarts
+        and working across multiple workers.
+        """
+        if not conversation_id:
+            return ""
+        try:
+            from sqlalchemy import select
+            async with get_db() as session:
+                stmt = (
+                    select(ChatHistory.content)
+                    .where(
+                        ChatHistory.conversation_id == conversation_id,
+                        ChatHistory.role == "user",
+                    )
+                    .order_by(ChatHistory.created_at.desc())
+                    .limit(1)
+                )
+                result = await session.execute(stmt)
+                return result.scalar_one_or_none() or ""
+        except Exception as e:
+            logger.warning("Failed to read last user msg from PG: %s", e)
+            return ""
+
     async def _safe_auto_memory(
         self, user_msg: str, assistant_msg: str, agent_id: str, conversation_id: str,
     ) -> None:
-        try:
-            result = await self.auto_memory.run(
-                user_msg, assistant_msg,
-                conversation_id=conversation_id, agent_id=agent_id,
-            )
-            if result > 0:
-                # Reindex the newly written/updated daily card (in thread to avoid blocking event loop)
-                from datetime import date
-                today = date.today().isoformat()
-                source_marker = f"session/{conversation_id}.jsonl"
-                today_dir = self.workspace.daily_dir / today
-                if today_dir.exists():
-                    from app.memory.file_store.markdown_io import read_markdown
-                    for f in sorted(today_dir.glob("*.md")):
-                        mem = read_markdown(f)
-                        if mem and source_marker in (mem.frontmatter.source or ""):
-                            await asyncio.to_thread(self.auto_index.index_file, f)
-                            break
-                    else:
-                        # Fallback: try old naming convention
-                        old_name = f"session_{conversation_id[:8]}"
-                        old_path = self.workspace.daily_file_path(old_name, today)
-                        if old_path.exists():
-                            await asyncio.to_thread(self.auto_index.index_file, old_path)
+        # Per-conversation lock serializes read-modify-write on daily cards
+        lock = self.get_auto_memory_lock(conversation_id)
+        async with lock:
+            try:
+                result = await self.auto_memory.run(
+                    user_msg, assistant_msg,
+                    conversation_id=conversation_id, agent_id=agent_id,
+                )
+                if result > 0:
+                    # Reindex the newly written/updated daily card (in thread to avoid blocking event loop)
+                    from datetime import date
+                    today = date.today().isoformat()
+                    source_marker = f"session/{conversation_id}.jsonl"
+                    today_dir = self.workspace.daily_dir / today
+                    if today_dir.exists():
+                        from app.memory.file_store.markdown_io import read_markdown
+                        for f in sorted(today_dir.glob("*.md")):
+                            mem = read_markdown(f)
+                            if mem and source_marker in (mem.frontmatter.source or ""):
+                                await asyncio.to_thread(self.auto_index.index_file, f)
+                                break
+                        else:
+                            # Fallback: try old naming convention
+                            old_name = f"session_{conversation_id[:8]}"
+                            old_path = self.workspace.daily_file_path(old_name, today)
+                            if old_path.exists():
+                                await asyncio.to_thread(self.auto_index.index_file, old_path)
 
-                # Check auto_dream threshold
-                if self.check_auto_dream_threshold():
-                    asyncio.create_task(self._safe_auto_dream())
-        except Exception as e:
-            logger.warning("auto_memory failed: %s", e)
+                    # Check auto_dream threshold
+                    if self.check_auto_dream_threshold():
+                        asyncio.create_task(self._safe_auto_dream())
+            except Exception as e:
+                logger.warning("auto_memory failed: %s", e)
 
     async def _safe_auto_dream(self) -> None:
         try:
             result = await self.trigger_auto_dream()
             logger.info("auto_dream completed: %s", result)
+            # Record completion for cooldown (both passive and curator triggers)
+            self._record_dream_completed()
             # Reindex after dream (in thread to avoid blocking event loop)
             await asyncio.to_thread(self.auto_index.full_reindex)
         except Exception as e:

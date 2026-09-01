@@ -42,6 +42,8 @@ class AgentRunner(Protocol):
         conversation_id: str,
         trigger_message_id: str,
         parent_run_id: str | None = None,
+        user_id: str | None = None,
+        model_profile_id: str | None = None,
     ) -> RunHandle: ...
 
     def abort(self, run_id: str) -> bool: ...
@@ -63,6 +65,8 @@ class _NoopAgentRunner:
         conversation_id: str,
         trigger_message_id: str,
         parent_run_id: str | None = None,
+        user_id: str | None = None,
+        model_profile_id: str | None = None,
     ) -> RunHandle:
         run_id = new_run_id()
         logger.warning(

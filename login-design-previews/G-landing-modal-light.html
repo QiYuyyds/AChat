@@ -711,6 +711,8 @@
   .chip.tool { background: rgba(0,0,0,0.04); color: var(--muted); }
   .chip.artifact { background: rgba(217,119,6,0.08); color: var(--warning); }
   .chip.status { background: var(--success-soft); color: var(--success); }
+  .chip.peer { background: var(--purple-soft); color: var(--purple); }
+  .chip.edge { background: var(--accent-soft); color: var(--accent); }
 
   /* 打字指示器 */
   .typing-row {
@@ -1384,6 +1386,7 @@ pointer-events: auto;
   }
 
   .dag-node {
+    position: relative;
     width: 140px;
     border-radius: 12px;
     border: 1px solid var(--border-bright);
@@ -1507,6 +1510,84 @@ pointer-events: auto;
     color: var(--warning);
   }
 
+  /* 产物输出角标（完成时出现，随边流向下游） */
+  .dag-output {
+    position: absolute;
+    top: -9px;
+    right: -8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+    font-weight: 500;
+    background: var(--bg-elev);
+    border: 1px solid rgba(217,119,6,0.3);
+    color: var(--warning);
+    opacity: 0;
+    transform: translateY(-3px);
+    transition: all 0.4s var(--ease-out);
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .dag-output svg { width: 9px; height: 9px; flex-shrink: 0; }
+
+  .dag-node.dag-complete .dag-output {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* ask_peer 点对点问询气泡（并行任务之间） */
+  .peer-bubble {
+    position: absolute;
+    left: 50%;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 8px;
+    font-size: 9.5px;
+    font-weight: 500;
+    white-space: nowrap;
+    background: var(--bg-elev);
+    box-shadow: var(--shadow-sm);
+    opacity: 0;
+    transform: translate(-50%, 3px) scale(0.95);
+    transition: all 0.35s var(--ease-out);
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .peer-bubble svg { width: 9px; height: 9px; flex-shrink: 0; }
+
+  .peer-bubble.peer-ask {
+    bottom: calc(100% + 6px);
+    color: var(--purple);
+    border: 1px solid rgba(124,58,237,0.3);
+  }
+
+  .peer-bubble.peer-reply {
+    top: calc(100% + 6px);
+    color: rgba(99,102,241,0.9);
+    border: 1px solid rgba(99,102,241,0.3);
+  }
+
+  .dag-node.peer-ask-on .peer-ask,
+  .dag-node.peer-reply-on .peer-reply {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+
+  /* 产物沿边流动的光点 */
+  .dag-flow-dot {
+    fill: rgba(217,119,6,0.85);
+    stroke: rgba(217,119,6,0.25);
+    stroke-width: 4;
+  }
+
   /* Worktree isolation hint bar at bottom of canvas */
   .dag-wt-bar {
     display: flex;
@@ -1542,6 +1623,7 @@ pointer-events: auto;
     .dag-canvas { height: auto; flex-direction: column; gap: 16px; padding: 20px 16px; }
     .dag-column { flex-direction: row; gap: 12px; }
     .dag-lines { display: none; }
+    .peer-bubble { display: none; }
   }
 
   @media (max-width: 520px) {
@@ -2479,6 +2561,7 @@ pointer-events: auto;
   .section-animate.in-view .features-grid .feature-card:nth-child(5) { transition-delay: 0.5s; }
   .section-animate.in-view .features-grid .feature-card:nth-child(6) { transition-delay: 0.6s; }
   .section-animate.in-view .features-grid .feature-card:nth-child(7) { transition-delay: 0.7s; }
+  .section-animate.in-view .features-grid .feature-card:nth-child(8) { transition-delay: 0.8s; }
 
   .concept-pullquote p {
     opacity: 0.3;
@@ -2922,7 +3005,7 @@ pointer-events: auto;
         </svg>
       </div>
       <div class="fc-title">多 Agent 并行调度</div>
-      <div class="fc-desc">Orchestrator 自动拆分任务，分配给最合适的 Agent 并行执行。DAG 波调度 + Worktree 隔离，递归深度上限 3 层</div>
+      <div class="fc-desc">Orchestrator 自动拆分任务，DAG 波调度 + Worktree 隔离并行执行；上游产物沿边流向下游，Agent 之间可点对点问询</div>
     </div>
 
     <div class="feature-card tall">
@@ -2947,7 +3030,7 @@ pointer-events: auto;
         </svg>
       </div>
       <div class="fc-title">本地优先部署</div>
-      <div class="fc-desc">数据自主可控，基础设施可独立降级，Milvus / Neo4j 缺一不阻断</div>
+      <div class="fc-desc">数据自主可控 · 用户认证与多用户数据隔离 · Milvus / Neo4j 等基础设施缺一不阻断</div>
     </div>
 
     <div class="feature-card">
@@ -2958,7 +3041,7 @@ pointer-events: auto;
         </svg>
       </div>
       <div class="fc-title">RAG 混合检索</div>
-      <div class="fc-desc">Milvus 向量 + BM25 全文 + Neo4j 图谱 PPR + 4 种分块预设 + 7 种 OCR 引擎 + RAG 评测</div>
+      <div class="fc-desc">Milvus 向量 + BM25 全文 + Neo4j 图谱 PPR · 4 种分块预设 · 7 种 OCR 引擎 · 图文混排 · RAG 评测</div>
     </div>
 
     <div class="feature-card tinted-teal">
@@ -2981,7 +3064,7 @@ pointer-events: auto;
         </svg>
       </div>
       <div class="fc-title">可观测性</div>
-      <div class="fc-desc">OpenTelemetry + Phoenix 全链路追踪 + 评测系统，trace_enabled 开关即降级</div>
+      <div class="fc-desc">OpenTelemetry + Phoenix 全链路追踪 · 在线规则评测 + 离线 LLM-as-Judge，trace_enabled 开关即降级</div>
     </div>
 
     <div class="feature-card">
@@ -3169,7 +3252,7 @@ pointer-events: auto;
 <section class="section section-animate" id="plan-dag">
   <div class="section-heading">
     <h2>Orchestrator 自动拆分 DAG</h2>
-    <p>需求自动拆解为可并行子任务，按依赖关系调度执行，状态全程可见。</p>
+    <p>需求自动拆解为可并行子任务，按依赖关系波次调度；上游产物沿边流向下游，并行 Agent 之间可点对点问询。</p>
   </div>
 
   <div class="dag-mockup" id="dagMockup">
@@ -3187,8 +3270,16 @@ pointer-events: auto;
           </defs>
           <path class="dag-line pending" data-line="0-1" d="M 170 140 C 250 140, 250 70, 330 70" marker-end="url(#dag-arrow-pending)"/>
           <path class="dag-line pending" data-line="0-2" d="M 170 140 C 250 140, 250 210, 330 210" marker-end="url(#dag-arrow-pending)"/>
-          <path class="dag-line pending" data-line="1-3" d="M 470 70 C 550 70, 550 140, 630 140" marker-end="url(#dag-arrow-pending)"/>
-          <path class="dag-line pending" data-line="2-3" d="M 470 210 C 550 210, 550 140, 630 140" marker-end="url(#dag-arrow-pending)"/>
+          <path class="dag-line pending" data-line="1-3" id="dag-path-1-3" d="M 470 70 C 550 70, 550 140, 630 140" marker-end="url(#dag-arrow-pending)"/>
+          <path class="dag-line pending" data-line="2-3" id="dag-path-2-3" d="M 470 210 C 550 210, 550 140, 630 140" marker-end="url(#dag-arrow-pending)"/>
+          <circle class="dag-flow-dot" r="3.5" opacity="0">
+            <animateMotion id="dagFlow1" dur="1s" begin="indefinite" fill="freeze"><mpath href="#dag-path-1-3"/></animateMotion>
+            <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.8;1" dur="1s" begin="dagFlow1.begin" fill="freeze"/>
+          </circle>
+          <circle class="dag-flow-dot" r="3.5" opacity="0">
+            <animateMotion id="dagFlow2" dur="1s" begin="indefinite" fill="freeze"><mpath href="#dag-path-2-3"/></animateMotion>
+            <animate attributeName="opacity" values="0;1;1;0" keyTimes="0;0.15;0.8;1" dur="1s" begin="dagFlow2.begin" fill="freeze"/>
+          </circle>
         </svg>
       </div>
       <div class="dag-column">
@@ -3217,6 +3308,14 @@ pointer-events: auto;
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><path d="M6 5c4 0 8 1 12 5"/><path d="M6 11c4 0 8 1 12 5"/></svg>
             <span class="wt-branch">agent/xiaode/a1b2c3</span>
           </div>
+          <div class="dag-output">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="m10 13-2 2 2 2M14 13l2 2-2 2"/></svg>
+            <span>auth/jwt.py</span>
+          </div>
+          <div class="peer-bubble peer-reply">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>
+            <span>已回复 · 结构兼容，字段不变</span>
+          </div>
         </div>
         <div class="dag-node dag-pending" data-dag-node="2" data-wt="">
           <div class="dag-node-row">
@@ -3230,6 +3329,14 @@ pointer-events: auto;
           <div class="dag-worktree" data-wt-badge="2">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><path d="M6 5c4 0 8 1 12 5"/><path d="M6 11c4 0 8 1 12 5"/></svg>
             <span class="wt-branch">agent/xiaoke/e5f6g7h</span>
+          </div>
+          <div class="dag-output">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="m10 13-2 2 2 2M14 13l2 2-2 2"/></svg>
+            <span>test_auth.py</span>
+          </div>
+          <div class="peer-bubble peer-ask">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+            <span>ask_peer · token 结构有变化吗？</span>
           </div>
         </div>
       </div>
@@ -3563,7 +3670,7 @@ pointer-events: auto;
     <div class="workflow-step">
       <div class="ws-number">04</div>
       <div class="ws-title">聚合产物</div>
-      <div class="ws-desc">代码、文档、测试统一管理，支持内联预览与二次编辑</div>
+      <div class="ws-desc">上游产物沿边自动汇聚，代码、文档、测试统一管理，支持内联预览与二次编辑</div>
     </div>
   </div>
 </section>
@@ -3606,6 +3713,8 @@ pointer-events: auto;
     codex: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg>',
     wrench: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
     filecode: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="m10 13-2 2 2 2M14 13l2 2-2 2"/></svg>',
+    peer: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>',
+    edge: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
   };
 
@@ -3621,18 +3730,25 @@ pointer-events: auto;
     { role: 'agent', name: '小柯', avatar: 'codex', content: '检索测试覆盖，定位未覆盖分支', chips: [
       { type: 'tool', label: 'fs_grep' }
     ]},
+    { role: 'agent', name: '小柯', avatar: 'codex', content: '写用例前先和小德对齐 token 数据结构', chips: [
+      { type: 'peer', label: 'ask_peer → 小德' }
+    ]},
+    { role: 'agent', name: '小德', avatar: 'claude', content: 'payload 字段保持兼容，测试可以直接沿用', chips: [
+      { type: 'peer', label: '回复 → 小柯' }
+    ]},
     { role: 'agent', name: '小德', avatar: 'claude', content: 'JWT 模块已重构，产物已提交', chips: [
       { type: 'artifact', label: 'auth/jwt.py' }
     ]},
-    { role: 'agent', name: '小柯', avatar: 'codex', content: '覆盖率 42% → 87%，测试产物已生成', chips: [
+    { role: 'agent', name: '小柯', avatar: 'codex', content: '收到上游产物，补全用例，覆盖率 42% → 87%', chips: [
+      { type: 'edge', label: '← auth/jwt.py' },
       { type: 'artifact', label: 'test_auth.py' }
     ]},
-    { role: 'orchestrator', name: 'Orchestrator', avatar: 'orch', content: '任务完成 · 5 个产物已聚合', chips: [
+    { role: 'orchestrator', name: 'Orchestrator', avatar: 'orch', content: '任务完成 · 产物已沿边聚合', chips: [
       { type: 'status', label: '已完成' }
     ]}
   ];
 
-  var HOLD_MS = 3000;
+  var HOLD_MS = 2600;
   var RESET_MS = 700;
   var USER_STEP_MS = 400;
   var AGENT_STEP_MS = 1200;
@@ -3649,7 +3765,7 @@ pointer-events: auto;
     if (msg.chips && msg.chips.length) {
       chipsHtml = '<div class="chips">';
       msg.chips.forEach(function(c) {
-        var iconKey = c.type === 'tool' ? 'wrench' : c.type === 'artifact' ? 'filecode' : 'check';
+        var iconKey = c.type === 'tool' ? 'wrench' : c.type === 'artifact' ? 'filecode' : c.type === 'peer' ? 'peer' : c.type === 'edge' ? 'edge' : 'check';
         chipsHtml += '<span class="chip ' + c.type + '">' + ICONS[iconKey] + c.label + '</span>';
       });
       chipsHtml += '</div>';
@@ -3773,6 +3889,23 @@ pointer-events: auto;
     }
   }
 
+  var REDUCED_MOTION = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function setPeerBubbles(ask, reply) {
+    var askNode = document.querySelector('.dag-node[data-dag-node="2"]');
+    var replyNode = document.querySelector('.dag-node[data-dag-node="1"]');
+    if (askNode) askNode.classList.toggle('peer-ask-on', ask);
+    if (replyNode) replyNode.classList.toggle('peer-reply-on', reply);
+  }
+
+  function triggerDagFlow() {
+    if (REDUCED_MOTION) return;
+    var f1 = document.getElementById('dagFlow1');
+    var f2 = document.getElementById('dagFlow2');
+    try { if (f1) f1.beginElement(); } catch (e) {}
+    setTimeout(function() { try { if (f2) f2.beginElement(); } catch (e) {} }, 180);
+  }
+
   function dagTick() {
     if (dagState === 0) {
       setDagNode(0, 'running');
@@ -3790,21 +3923,28 @@ pointer-events: auto;
       setDagNode(2, 'running');
       setWtState(1, 'active');
       setWtState(2, 'active');
+      setTimeout(function() { setPeerBubbles(true, false); }, 500);
+      setTimeout(function() { setPeerBubbles(false, true); }, 1350);
       dagState = 2;
       setTimeout(dagTick, 2000);
     } else if (dagState === 2) {
+      setPeerBubbles(false, false);
       setDagNode(1, 'complete');
       setDagNode(2, 'complete');
+      setWtState(1, 'merged');
+      setWtState(2, 'merged');
+      triggerDagFlow();
+      dagState = 3;
+      setTimeout(dagTick, 1100);
+    } else if (dagState === 3) {
       setDagLine(2, 'done');
       setDagLine(3, 'done');
       setDagNode(3, 'running');
-      setWtState(1, 'merged');
-      setWtState(2, 'merged');
-      dagState = 3;
-      setTimeout(dagTick, 1500);
-    } else if (dagState === 3) {
-      setDagNode(3, 'complete');
       dagState = 4;
+      setTimeout(dagTick, 1500);
+    } else if (dagState === 4) {
+      setDagNode(3, 'complete');
+      dagState = 5;
       setTimeout(dagTick, 3000);
     } else {
       dagNodes.forEach(function(n) {
@@ -3818,6 +3958,7 @@ pointer-events: auto;
       });
       setWtState(1, null);
       setWtState(2, null);
+      setPeerBubbles(false, false);
       dagState = 0;
       setTimeout(dagTick, 800);
     }

@@ -32,7 +32,10 @@
 - **Document + Version 知识库**（全局文档版本化、解析入库、按需召回）
 - **Obsidian 知识同步**（vault 同步 + 预处理 + RAG 入库）
 - **外部 MCP 接入**（MCP Server 配置管理 + client_manager + 调用审批）
-- **Run 内压缩**（五阶段递进压缩 pipeline，纯结构化裁剪无 LLM）
+- **Run 内压缩**（通用掩码压缩 pipeline：≥ 0.75 掩码旧工具结果 / ≥ 0.88 折叠旧轮次，纯结构化裁剪无 LLM）
+- **会话笔记**（结构化 10 段 YAML Session Note，替代旧无结构摘要，UI 面板可查）
+- **DAG 内 Agent 通信**（`ask_peer` 兄弟会话提问 · `report_result` 结构化汇报 terminal tool · `AgentSessionRegistry` 注册表）
+- **Aeval Agent 评测框架**（独立 PyPI 包 `aeval-framework` + `eval_integration` 接入层 + `/api/eval` 独立评测子应用 + 声明式套件）
 - **Worktree 隔离**（DAG 波调度并行任务用 git worktree 隔离）
 - **全局任务看板**（Task Board · 持久化任务池 · Kanban UI · asyncio 后台调度器自动派发 todo 任务给 Agent）
 
@@ -158,11 +161,12 @@ message.parts = [
 Custom agent（SDK 路线）的工具分两层：
 
 - **Baseline 工具（9 个，必备不可选）**：`read_attachment` / `ask_user` / `fs_list` / `fs_read` / `fs_write` / `fs_edit` / `fs_grep` / `fs_glob` / `bash`。这些工具在运行时由 `agent_runner.execute_simple_run` 自动合并，**不存入 `agent.tool_names`**。
-- **可选工具（14 个，UI 勾选）**：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `web_search` / `rag_search` / `memory_proactive` / `task_list` / `task_get` / `task_create` / `task_claim` / `task_complete` / `task_move` / `task_comment`。这些存入 `agent.tool_names`。
-- 运行时合并：`effective_tools = BASELINE_AGENT_TOOLS + agent.tool_names + 自动注入工具`
+- **可选工具（6 个，UI 勾选）**：`write_artifact` / `deploy_artifact` / `deploy_workspace` / `read_artifact` / `web_search` / `rag_search`。这些存入 `agent.tool_names`。
+- **按运行形态注入（不可勾选）**：`task_dispatch` / `dispatch_plan` 按运行模式分配；7 个 task 工具仅由 TaskScheduler 派发的运行注入（普通对话运行中过滤）；8 个 `manage_*` 仅注入 guide agent；`ask_peer` / `report_result` 用于 DAG 内子 Agent 通信
+- 运行时合并：`effective_tools = BASELINE_AGENT_TOOLS + agent.tool_names + 按运行形态自动注入`
 - CLI agent（Claude Code / Codex）**不参与** baseline 合并，使用各自 CLI 内置工具集
 - 前端 `src/shared/agent-builder-config.ts` 与后端 `backend/app/api/agents.py` 的 `_BASELINE_AGENT_TOOLS` 必须保持一致
-- 工具注册表共 **45 个**工具（含 baseline + optional + guide 管理 + task 工具 + 派发 + 计划等），定义在 `backend/app/tools/registry.py`
+- 工具注册表共 **47 个**工具（含 baseline + optional + guide 管理 + task 工具 + 派发 + 计划 + DAG 通信等），定义在 `backend/app/tools/registry.py`
 
 ### 3.8 RAG 是可选增强；记忆是文件原生
 
@@ -226,12 +230,22 @@ Task Board 是持久化的全局任务池，独立于会话但可绑定会话。
 - **数据模型**：`tasks` 表（id / title / description / status / priority / labels / assignee_agent_id / creator_type / conversation_id / workspace_mode / version 乐观并发 / failure_count / sort_order / due_date）+ `task_comments` 表（评论）。两张表路由到**本地 SQLite**
 - **状态流转**：`backlog` → `todo` → `in_progress` → `in_review` → `done`；另有 `blocked` / `canceled` 终态
 - **乐观并发控制**：`version` 列 + `if_version` 前置检查，冲突返回 409
-- **Agent 工具（7 个 opt-in）**：`task_list` / `task_get` / `task_create` / `task_claim` / `task_complete` / `task_move` / `task_comment`。存入 `agent.tool_names`，非 baseline
+- **Agent 工具（7 个，调度器注入）**：`task_list` / `task_get` / `task_create` / `task_claim` / `task_complete` / `task_move` / `task_comment`。**仅在 TaskScheduler 派发的运行中注入**（普通对话运行中过滤，不可在 UI 勾选）
 - **Guide 管理工具**：`manage_tasks`（第 8 个管理工具，仅 guide agent）
 - **调度器**：`TaskSchedulerService` — asyncio 后台任务，定期扫描 `todo` 状态任务，通过 `run_with_args` → `execute_run` → `run_agent_loop(mode='solo')` 派发给指派 Agent；自动注入 5 个 task 工具（task_complete/comment/list/get/move）；用户级 start/stop 控制
 - **API**：`backend/app/api/tasks.py`（CRUD + move/assign + comments + scheduler 控制）
 - **前端**：Kanban UI（`task-board-view.tsx` + 9 个子组件）+ `task-sidebar-nav.tsx` 侧栏导航
 - **侧栏 mode**：`SidebarMode` 新增 `'tasks'`（7 个 mode 之一）
+
+### 3.13 Aeval 评测框架是外部独立包，通过接入层消费
+
+Agent 评测框架 **Aeval** 已抽取为独立 PyPI 包 `aeval-framework`（import 名 `agent_eval`），框架代码（编排 / grader / metrics / storage / API / CLI / Dashboard）**不在本仓库中**。AChat 只保留接入层与配置：
+
+- **接入层**：`backend/app/eval_integration/` — `create_aeval_runner()` 把 AChatAgentRunner + AChatWorkspaceEnvironment + Artifact/Dispatch graders + SQLite 存储 + PhoenixProvider 装配进 EvalRunner；`RunTraceBridge` 打通 AChat trace ↔ 评测 trial 的 trace_id。不要把框架代码搬进本仓库
+- **挂载**：`EVAL_HARNESS_ENABLED=true` 时 `main.py` 在 `/api/eval` 挂载 `agent_eval.api.app.create_eval_app()` 子应用（suites / tasks / runs / trials / compare / graders），与 `/api/eval/judge/*`（可观测性侧 LLM-as-Judge）路由共存；缺凭证时子应用保持 503，不崩溃
+- **默认关闭、按需安装**：框架包不在默认依赖（`pip install "aeval-framework[api,cli]"`），`eval_harness_enabled` 默认 False；评测数据写独立 SQLite（默认 `<data_dir>/aeval.db`），不进主双 DB
+- **评测套件**：声明式 YAML 在 `backend/eval_suites/`；套件 env 支持按 task 选择被评 agent 与会话形态
+- 设计文档见 `docs/eval-harness-design.md`
 
 ---
 
@@ -453,7 +467,7 @@ Key 来源按优先级（详见 `backend/app/services/agent_runner.py:build_adap
 - `specs/conversation-context/spec.md` — 跨 run 上下文
 - `specs/mobile-companion/spec.md` — 移动伴随 App
 - `specs/user-auth/spec.md` — 用户认证与多用户隔离
-- `specs/run-internal-compaction/spec.md` — ReAct loop 内压缩（五阶段 pipeline）
+- `specs/run-internal-compaction/spec.md` — ReAct loop 内压缩（通用掩码 pipeline：≥ 0.75 掩码 / ≥ 0.88 折叠）
 - `specs/guide-agent/spec.md` — ★ 小A Guide Agent（全局悬浮助手 + 8 个管理工具 + 双活跃会话模型）
 - `specs/model-profiles/spec.md` — ★ ModelProfile 用户级模型配置（独立于 Agent 实体 + 运行时解析 + 连通性测试 + 迁移）
 - `specs/worktree-conflict-resolution/spec.md` — Worktree 三层递进冲突解决（Auto → LLM → Human）
@@ -463,6 +477,8 @@ Key 来源按优先级（详见 `backend/app/services/agent_runner.py:build_adap
 > ⚠️ Task Board（全局任务看板）代码已落地（`backend/app/api/tasks.py` + `backend/app/services/task_service.py` + `backend/app/services/task_scheduler.py` + `backend/app/tools/task_tools.py` + 前端 Kanban UI），但 OpenSpec spec 尚未建立。
 >
 > ⚠️ `rag_search` 迁移为 Agent 级工具的 OpenSpec change 尚在 `openspec/changes/` 未 archive（见 `move-rag-to-agent-tool/`）。
+>
+> ⚠️ Aeval 评测框架代码已落地（`backend/app/eval_integration/` + `/api/eval` 子应用挂载 + `backend/eval_suites/`），框架本体在 PyPI 包 `aeval-framework`（见 §3.13），OpenSpec spec 尚未建立（设计文档 `docs/eval-harness-design.md`）。
 >
 > ⚠️ RAG 大重构相关 change 尚在 `openspec/changes/` 未 archive（见 `rag-overhaul-foundation/` / `rag-parser-registry/` / `rag-chunking-presets/` / `rag-graph-v2/` / `rag-eval-system/` / `rag-task-queue/` / `rag-file-lifecycle/` / `rag-milvus-bm25-migration/` / `rag-retrieval-enhancement/` / `rag-retrieval-v2/` / `rag-frontend-strategy-controls/` / `rag-graph-build-task/`）。
 

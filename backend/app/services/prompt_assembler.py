@@ -540,6 +540,9 @@ class RecallSource(ContextSource):
             results = await self._memory.recall(
                 q.text, top_k=slot.filter.top_k or 3, agent_id=q.agent_id,
             )
+            # Exclude archived/superseded from auto-injection (RecallSource).
+            # memory_recall tool path remains unfiltered (handled in tools/memory_store.py).
+            _EXCLUDED_STATUSES = {"archived", "superseded"}
             return [
                 ContextItem(
                     text=item.content,
@@ -551,6 +554,7 @@ class RecallSource(ContextSource):
                     },
                 )
                 for item in results
+                if item.frontmatter.get("status", "active") not in _EXCLUDED_STATUSES
             ]
         except Exception as e:
             logger.warning("RecallSource fetch failed: %s", e)

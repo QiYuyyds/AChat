@@ -516,7 +516,12 @@ export type StreamEvent = BaseEvent &
     | { type: 'message.start'; messageId: string; agentId: string; runId: string }
     | { type: 'message.end'; messageId: string }
     | { type: 'message.usage'; messageId: string; usage: MessageUsageEvent }
-    | { type: 'message.added'; message: MessageRecord }
+    | {
+        type: 'message.added'
+        message: MessageRecord
+        /** 发送方回执：POST 时带的乐观 temp 消息 id，服务端原样回带；未传时为 null/缺省 */
+        clientMessageId?: string | null
+      }
     | { type: 'message.removed'; messageIds: string[]; artifactIds: string[] }
     | { type: 'part.start'; messageId: string; partIndex: number; part: MessagePart }
     | { type: 'part.delta'; messageId: string; partIndex: number; delta: PartDelta }

@@ -87,6 +87,9 @@ class SendMessageRequest(BaseModel):
     parent_message_id: str | None = Field(default=None, alias="parentMessageId")
     attachment_ids: list[str] | None = Field(default=None, alias="attachmentIds")
     model_profile_id: str | None = Field(default=None, alias="modelProfileId")
+    # Sender's optimistic temp message id (temp_*). Echoed back on the broadcast
+    # message.added event so the sender can reconcile at event-arrival time.
+    client_message_id: str | None = Field(default=None, alias="clientMessageId")
 
     model_config = {"populate_by_name": True, "protected_namespaces": ()}
 

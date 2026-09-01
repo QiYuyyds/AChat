@@ -135,9 +135,11 @@ class Settings(BaseSettings):
     memory_workspace_dir: str = ""  # empty → defaults to <data_dir>/memory
     memory_auto_dream_threshold: int = 5
     memory_auto_dream_cron: str = "23:00"
+    memory_curator_enabled: bool = True
     memory_auto_dream_max_units: int = 5
     memory_dream_topic_count: int = 3
     memory_dream_topic_diversity_days: int = 7
+    memory_dream_cooldown_minutes: int = 360
     memory_search_top_k: int = 10
     memory_bm25_weight: float = 0.3
     memory_vector_weight: float = 0.7
@@ -146,6 +148,12 @@ class Settings(BaseSettings):
     memory_rrf_k: int = 60
     memory_chunk_size: int = 512
     memory_chunk_min_size: int = 100
+    # Memory lifecycle (decay / archive / rerank / TTL)
+    memory_decay_half_life_days: int = 30
+    memory_archive_score: float = 0.1
+    memory_archive_grace_days: int = 14
+    memory_daily_ttl_days: int = 30
+    memory_rerank_enabled: bool = True
 
     @property
     def memory_workspace_path(self) -> Path:

@@ -74,7 +74,7 @@ async def edit_message(message_id: str, req: Request, user: User = Depends(get_c
     await verify_conversation_ownership(parsed.conversation_id, user.id)
     try:
         result = await conversation_service.edit_and_resend_latest_user_message(
-            parsed.conversation_id, message_id, parsed.content
+            parsed.conversation_id, message_id, parsed.content, user_id=user.id
         )
     except ValueError as err:
         message = str(err)
@@ -98,7 +98,7 @@ async def withdraw_message(message_id: str, req: Request, user: User = Depends(g
     await verify_conversation_ownership(parsed.conversation_id, user.id)
     try:
         result = await conversation_service.withdraw_latest_user_message(
-            parsed.conversation_id, message_id
+            parsed.conversation_id, message_id, user_id=user.id
         )
     except ValueError as err:
         message = str(err)

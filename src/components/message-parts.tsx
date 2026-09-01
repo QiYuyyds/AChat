@@ -385,10 +385,14 @@ function TextPart({
 }) {
   if (!content) return null
 
+  // 用户消息发送失败：红色描边替代 primary 实底，文案由 message-item 的失败标注补充
+  const userError = isUser && messageStatus === 'error'
   const bubbleClass = cn(
-    isUser
+    isUser && !userError
       ? 'rounded-2xl rounded-br-md bg-primary text-primary-foreground px-3.5 py-1.5 [&_p]:my-0 [&_p]:leading-relaxed'
       : '',
+    userError &&
+      'rounded-2xl rounded-br-md border border-destructive/60 bg-destructive/10 px-3.5 py-1.5 text-destructive [&_p]:my-0 [&_p]:leading-relaxed',
     !isUser && messageStatus === 'error' && 'rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3',
     !isUser && (messageStatus === 'aborted' || messageStatus === 'interrupted') && 'rounded-lg border border-muted-foreground/40 bg-muted/60 px-4 py-3',
   )
@@ -414,7 +418,7 @@ function TextPart({
         seg.kind === 'quote' ? (
           <QuotedSelectionCard key={i} {...seg} />
         ) : (
-          <Markdown key={i} className={isUser ? 'text-primary-foreground' : undefined}>{seg.text}</Markdown>
+          <Markdown key={i} className={isUser ? (messageStatus === 'error' ? 'text-destructive' : 'text-primary-foreground') : undefined}>{seg.text}</Markdown>
         ),
       )}
     </div>

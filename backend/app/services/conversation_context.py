@@ -17,6 +17,7 @@ independently — no double-compaction risk.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -463,6 +464,36 @@ async def _build_history_with_assembler(
 # ─── Unified pipeline (tiered injection) ────────────────────────────────────
 
 
+def _sum_dict_message_tokens(messages: list[ChatMessage]) -> int:
+    """Pure helper: total token estimate for OpenAI-format chat dicts.
+
+    Runs inside a worker thread (via ``asyncio.to_thread``) so long
+    conversations don't block the event loop
+    (speed-up-first-token-latency, decision 3).
+    """
+    return sum(
+        estimate_dict_message_tokens(m, include_reasoning=False)
+        for m in messages
+    )
+
+
+def _estimate_serialized_tokens(
+    serialized_list: list[list[ChatMessage]],
+) -> list[int]:
+    """Pure helper: per-message token sums for a batch of serialized messages.
+
+    Same-origin estimation as :func:`_sum_dict_message_tokens`; batched into
+    one ``asyncio.to_thread`` call.
+    """
+    return [
+        sum(
+            estimate_dict_message_tokens(m, include_reasoning=False)
+            for m in serialized
+        )
+        for serialized in serialized_list
+    ]
+
+
 async def _build_history_unified(
     agent_id: str,
     conversation_id: str,
@@ -566,7 +597,10 @@ async def _build_history_unified(
         note_msg = _build_session_note_message(session_mem)
         return [note_msg] if note_msg else []
 
-    loaded_tokens = estimate_full_message_tokens(merged)
+    # Full-message token estimation is pure CPU over local (expunged) lists —
+    # run it off the event loop; long conversations cost tens to hundreds of ms
+    # (speed-up-first-token-latency, decision 3).
+    loaded_tokens = await asyncio.to_thread(estimate_full_message_tokens, merged)
     prompt_estimate = opts.prompt_estimate or 0
     ratio = (loaded_tokens + prompt_estimate) / _CONTEXT_WINDOW
 
@@ -617,10 +651,7 @@ async def _build_history_unified(
         result_msgs.extend(compact_dicts)
 
         if token_budget is not None and token_budget > 0:
-            total = sum(
-                estimate_dict_message_tokens(m, include_reasoning=False)
-                for m in result_msgs
-            )
+            total = await asyncio.to_thread(_sum_dict_message_tokens, result_msgs)
             while len(result_msgs) > 1 and total > token_budget:
                 msg = result_msgs.pop(0)
                 if msg is not note_msg:
@@ -642,22 +673,30 @@ async def _build_history_unified(
                 ),
             )
         )
+    serialized_pairs: list[tuple[str, bool, list[ChatMessage]]] = []
     for msg in merged:
         serialized = _serialize_message(msg, agent_id, artifact_titles, agent_names)
         if not serialized:
             continue
-        tokens = sum(
-            estimate_dict_message_tokens(m, include_reasoning=False)
-            for m in serialized
+        serialized_pairs.append((msg.id, msg.id in pinned_id_set, serialized))
+
+    # Batch per-message token estimation into one worker-thread call (pure CPU
+    # over local lists; long conversations otherwise block the event loop).
+    if serialized_pairs:
+        token_sums = await asyncio.to_thread(
+            _estimate_serialized_tokens, [s for _, _, s in serialized_pairs]
         )
-        items.append(
-            _Item(
-                msg_id=msg.id,
-                is_pinned=msg.id in pinned_id_set,
-                serialized=serialized,
-                tokens=tokens,
+        for (msg_id, is_pinned, serialized), tokens in zip(
+            serialized_pairs, token_sums
+        ):
+            items.append(
+                _Item(
+                    msg_id=msg_id,
+                    is_pinned=is_pinned,
+                    serialized=serialized,
+                    tokens=tokens,
+                )
             )
-        )
 
     if token_budget is not None and token_budget > 0:
         total = sum(it.tokens for it in items)

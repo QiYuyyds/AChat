@@ -1159,6 +1159,21 @@ export const useAppStore = create<AppState>()(
           }
 
           case 'message.added': {
+            // 发送方即时认领：事件携带 clientMessageId 且本地仍有该乐观 temp 消息时，
+            // 在同一 set() 内原子地把 tempId 换成 realId（桶中原位替换 / 去重），
+            // 不等 POST 响应兜底——两行永不共存于同一帧。与 replaceLocalMessageId
+            // 语义一致，但权威行由下方事件 upsert 直接写入，无需复制 temp 内容。
+            const clientMessageId = event.clientMessageId
+            if (clientMessageId && s.messages[clientMessageId]) {
+              for (const convId in s.messageIdsByConv) {
+                const arr = s.messageIdsByConv[convId]
+                const idx = arr.indexOf(clientMessageId)
+                if (idx < 0) continue
+                if (arr.includes(event.message.id)) arr.splice(idx, 1)
+                else arr[idx] = event.message.id
+              }
+              delete s.messages[clientMessageId]
+            }
             // 其它客户端创建的用户消息（如手机端发、桌面端在看）。按 id 幂等 upsert：
             // 发送方自己已对账过同 id，这里无副作用；第二个客户端靠这条插入。
             s.messages[event.message.id] = { ...event.message, hidden: event.message.hidden ?? false }

@@ -229,6 +229,8 @@ async def send_message(conversation_id: str, req: Request, user: User = Depends(
             parent_message_id=body.parent_message_id,
             attachment_ids=body.attachment_ids,
             model_profile_id=body.model_profile_id,
+            client_message_id=body.client_message_id,
+            user_id=user.id,
         )
     except ValueError as err:
         return _err(str(err), 400)
@@ -264,7 +266,9 @@ async def clear_conversation_history(conversation_id: str, user: User = Depends(
 async def regenerate(conversation_id: str, user: User = Depends(get_current_user)) -> JSONResponse:
     await verify_conversation_ownership(conversation_id, user.id)
     try:
-        result = await conversation_service.regenerate_latest_response(conversation_id)
+        result = await conversation_service.regenerate_latest_response(
+            conversation_id, user_id=user.id
+        )
     except ValueError as err:
         return _err(str(err), 400)
     return JSONResponse(

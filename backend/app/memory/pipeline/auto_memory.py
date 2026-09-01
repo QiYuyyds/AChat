@@ -435,13 +435,13 @@ class AutoMemory:
         write_markdown(filepath, fm, body)
         logger.info("auto_memory: created daily card %s (name=%s)", filepath, display_name)
 
-        # Update file catalog
+        # Update file catalog with pending marker (mtime=0 signals "needs dream processing")
         if self.file_catalog:
             try:
                 rel = str(filepath.resolve().relative_to(self.workspace.root.resolve()))
             except ValueError:
                 rel = str(filepath)
-            self.file_catalog.upsert(rel, bucket="daily")
+            self.file_catalog.upsert(rel, st_mtime=0.0, bucket="daily")
 
         return 1
 
@@ -565,23 +565,23 @@ class AutoMemory:
                 if links:
                     self.wikilink_expander.add_edges_detailed(str(new_rel), links)
 
-            # Update file catalog
+            # Update file catalog with pending marker (mtime=0 signals "needs dream processing")
             if self.file_catalog:
                 self.file_catalog.remove(str(old_rel))
-                self.file_catalog.upsert(str(new_rel), bucket="daily")
+                self.file_catalog.upsert(str(new_rel), st_mtime=0.0, bucket="daily")
 
             logger.info("auto_memory: renamed and retargeted %s → %s", filepath, new_filepath)
         else:
             write_markdown(filepath, fm, body)
             logger.info("auto_memory: updated daily card %s", filepath)
 
-            # Update file catalog
+            # Update file catalog with pending marker (mtime=0 signals "needs dream processing")
             if self.file_catalog:
                 try:
                     rel = str(filepath.resolve().relative_to(self.workspace.root.resolve()))
                 except ValueError:
                     rel = str(filepath)
-                self.file_catalog.upsert(rel, bucket="daily")
+                self.file_catalog.upsert(rel, st_mtime=0.0, bucket="daily")
 
         return 1
 

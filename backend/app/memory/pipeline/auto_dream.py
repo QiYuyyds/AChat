@@ -82,6 +82,22 @@ NEVER put long song lists, chapter stats, author bios, or project delivery logs 
 ## Cross-File Merging
 When multiple daily files teach the same abstraction, merge into one unit.
 
+## SUPERSEDE Detection (Temporal Semantics)
+When the user EXPLICITLY expresses a CHANGE of state/preference (present-tense
+negation/replacement phrasing like "I don't like X anymore", "switched to Y"),
+mark the unit with `"action": "SUPERSEDE"` and set the stable_key to the SAME
+topic-level key as the card being replaced.
+
+CRITICAL DISTINCTION:
+- SUPERSEDE triggers ONLY on present-state negation/replacement: "不喜欢 X 了" / "改用 Y 了" / "no longer use X" / "switched to Y"
+- Past-tense recollections ("我以前很喜欢 X" / "I used to love X") MUST NOT trigger SUPERSEDE → use CORROBORATE instead
+- The old facts are preserved in the daily layer (provenance); only the digest card is rewritten to current state
+
+In the unit output, include an "action" field:
+- "CREATE" (default if no matching key)
+- "CORROBORATE" | "REFINE" | "CORRECT" (existing actions)
+- "SUPERSEDE" (explicit state change — rewrite current digest card)
+
 ## Output Format
 Return JSON with a "units" array and a "topic_candidates" array:
 
@@ -128,6 +144,7 @@ You are a Memory Integration Engine for PROCEDURE-type memories (how-to, runbook
 - **CORROBORATE**: Existing memory is confirmed — output only the NEW evidence/source to append
 - **REFINE**: Existing memory can be improved — output only the NEW details to append
 - **CORRECT**: Existing memory is wrong — output the COMPLETE corrected replacement body
+- **SUPERSEDE**: User explicitly changed state/preference — rewrite the COMPLETE body to the CURRENT state. Old facts must NOT be carried over (history lives in daily layer). New `derived_from` pointing to the current daily card is REQUIRED. Importance takes the NEW unit's value (not max with old).
 
 ## Body Shape: Runbook
 For CREATE and CORRECT, write the complete body as a structured runbook:
@@ -182,6 +199,7 @@ You are a Memory Integration Engine for WIKI-type memories (concepts, knowledge 
 - **CORROBORATE**: Existing memory is confirmed — output only the NEW evidence/source to append
 - **REFINE**: Existing memory can be improved — output only the NEW details to append
 - **CORRECT**: Existing memory is wrong — output the COMPLETE corrected replacement body
+- **SUPERSEDE**: User explicitly changed state/preference — rewrite the COMPLETE body to the CURRENT state. Old facts must NOT be carried over (history lives in daily layer). New `derived_from` pointing to the current daily card is REQUIRED. Importance takes the NEW unit's value (not max with old).
 
 ## Body Shape: Encyclopedia
 For CREATE and CORRECT, write the complete body as an encyclopedia entry:
@@ -232,6 +250,7 @@ You are a Memory Integration Engine for PERSONAL-type memories
 - **CORROBORATE**: confirm existing — only NEW evidence/source to append
 - **REFINE**: improve existing — only NEW details to append
 - **CORRECT**: replace with complete corrected short body
+- **SUPERSEDE**: User explicitly changed state/preference — rewrite the COMPLETE body to the CURRENT state. Old facts must NOT be carried over (history lives in daily layer via derived_from). New `derived_from` pointing to the current daily card is REQUIRED. Importance takes the NEW unit's value (not max with old).
 
 ## Body Shape (KEEP SHORT)
 ```
@@ -267,6 +286,32 @@ Return JSON:
 }
 
 Match the language of the input.
+"""
+
+_MERGE_UPDATE_PROMPT = """\
+You are a Memory Merge Engine. A digest memory card has accumulated multiple
+"## Update (date)" sections. Your task is to integrate ALL update sections into
+the main body, producing a single coherent updated document.
+
+## Rules
+1. Merge all update content into the main body — do not simply concatenate
+2. Remove redundant or superseded information
+3. Preserve the most current state as the primary content
+4. Keep the update structure (wikilinks, derived_from) intact
+5. After merging, the "## Update" sections should be removed (they are now in the body)
+
+## Output Format
+Return JSON:
+{
+  "merged_body": "<the complete merged markdown body with all updates integrated>"
+}
+
+If the updates cannot be meaningfully merged, return:
+{
+  "merged_body": "<original body with updates appended>"
+}
+
+Match the language of the input document.
 """
 
 _TOPICS_SYSTEM_PROMPT = """\
@@ -660,7 +705,7 @@ class AutoDream:
             self.file_catalog.upsert(str(filepath), bucket=bucket)
         return "created"
 
-    def _write_update(
+    async def _write_update(
         self,
         *,
         top_path: Path,
@@ -683,13 +728,24 @@ class AutoDream:
         if action in ("CORROBORATE", "REFINE"):
             update_count = mem.body.count("## Update (")
             if update_count >= 3:
-                logger.info(
-                    "auto_dream %s: skip append — %s already has %d updates",
-                    action,
-                    name,
-                    update_count,
-                )
-                updated_content = mem.body
+                # Merge path: call LLM to integrate all updates into the body
+                merged = await self._try_merge_updates(mem.body, final_content, today)
+                if merged:
+                    updated_content = merged
+                    logger.info(
+                        "auto_dream %s: merged %d updates into body for %s",
+                        action, update_count, name,
+                    )
+                else:
+                    # Fallback: append as new update section (allow temporarily >3)
+                    updated_content = (
+                        mem.body.rstrip()
+                        + f"\n\n---\n## Update ({today})\n\n{final_content}"
+                    )
+                    logger.info(
+                        "auto_dream %s: merge failed, appended update to %s",
+                        action, name,
+                    )
             elif final_content not in mem.body:
                 updated_content = (
                     mem.body.rstrip()
@@ -714,6 +770,105 @@ class AutoDream:
         if self.file_catalog:
             self.file_catalog.upsert(str(top_path), bucket=bucket)
         return action.lower()
+
+    def _write_supersede(
+        self,
+        *,
+        top_path: Path,
+        name: str,
+        tags: list[str],
+        importance: float,
+        stable_key: str,
+        today: str,
+        final_content: str,
+        bucket: str,
+        source_paths: list[str],
+    ) -> str:
+        """SUPERSEDE program path: rewrite existing card to current state.
+
+        - Body is fully replaced with final_content (old facts NOT carried over)
+        - derived_from is preserved and new link(s) appended
+        - importance takes the NEW unit's value (NOT max with old)
+        - updated_at is refreshed
+        - status becomes 'superseded' is NOT set here — the card remains active
+          but its content now reflects the current state
+        """
+        mem = read_markdown(top_path)
+        if mem is None:
+            return "skipped"
+        if mem.frontmatter.status == "archived":
+            return "skipped"
+
+        # Build new derived_from links from source_paths
+        new_derives = [
+            f"derived_from:: [[{src}]]" for src in source_paths[:3] if src
+        ]
+        # Preserve existing derived_from links and add new ones
+        existing_derives = [
+            line for line in mem.body.splitlines()
+            if line.strip().startswith("derived_from::")
+        ]
+        all_derives = list(dict.fromkeys(existing_derives + new_derives))
+
+        # Ensure derived_from is in the final content
+        content_lines = final_content.splitlines()
+        # Remove any existing derived_from from final_content (we'll consolidate)
+        body_lines = [
+            line for line in content_lines if not line.strip().startswith("derived_from::")
+        ]
+        updated_content = "\n".join(body_lines).rstrip()
+        if all_derives:
+            updated_content += "\n" + "\n".join(all_derives)
+
+        # Update frontmatter: importance takes NEW value (not max)
+        mem.frontmatter.importance = importance
+        mem.frontmatter.tags = list(dict.fromkeys(mem.frontmatter.tags + tags))[:10]
+        mem.frontmatter.updated_at = today
+        mem.frontmatter.stable_key = stable_key
+        # Mark as superseded in status
+        mem.frontmatter.status = "superseded"
+
+        write_markdown(top_path, mem.frontmatter, updated_content)
+        logger.info("auto_dream SUPERSEDE: %s → %s (importance=%.2f)", name, top_path, importance)
+        if self.file_catalog:
+            self.file_catalog.upsert(str(top_path), bucket=bucket)
+        return "superseded"
+
+    async def _try_merge_updates(
+        self, current_body: str, new_content: str, today: str
+    ) -> str | None:
+        """Attempt to merge accumulated Update sections into the main body.
+
+        Returns the merged body on success, None on failure (caller should
+        fallback to appending).
+        """
+        if not self._generate_fn:
+            return None
+        prompt = (
+            f"## Current Document Body\n{current_body}\n\n"
+            f"## New Update Content\n{new_content}\n\n"
+            "Merge all '## Update (date)' sections into the main body."
+        )
+        try:
+            raw = await asyncio.to_thread(self._generate_fn, _MERGE_UPDATE_PROMPT, prompt)
+        except Exception as e:
+            logger.warning("auto_dream merge LLM call failed: %s", e)
+            return None
+
+        raw = _strip_code_fence(raw)
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.debug("auto_dream merge: LLM output not valid JSON: %s", raw[:200])
+            return None
+
+        if not isinstance(parsed, dict):
+            return None
+
+        merged = str(parsed.get("merged_body", "")).strip()
+        if not merged:
+            return None
+        return merged
 
     async def _dream_integrate(self, unit: dict) -> str:
         """Integrate one unit: stable_key merge → per-bucket LLM → write."""
@@ -831,11 +986,27 @@ class AutoDream:
                 if link not in final_content:
                     final_content = final_content.rstrip() + f"\n{link}"
 
+        # SUPERSEDE program path: rewrite existing card to current state
+        if action == "SUPERSEDE" and merge_path is not None:
+            result = self._write_supersede(
+                top_path=merge_path,
+                name=name,
+                tags=tags,
+                importance=importance,
+                stable_key=stable_key,
+                today=today,
+                final_content=final_content,
+                bucket=bucket,
+                source_paths=source_paths,
+            )
+            if result != "skipped":
+                return result
+
         # stable_key hit always merges, even if LLM says CREATE
         if merge_path is not None:
             if action == "CREATE":
                 action = "REFINE"
-            result = self._write_update(
+            result = await self._write_update(
                 top_path=merge_path,
                 action=action,
                 name=name,
@@ -851,7 +1022,7 @@ class AutoDream:
 
         if action != "CREATE" and same_nodes:
             top_path = Path(same_nodes[0].path)
-            result = self._write_update(
+            result = await self._write_update(
                 top_path=top_path,
                 action=action,
                 name=name,
@@ -1047,5 +1218,11 @@ class AutoDream:
         return result[:3]
 
     def should_trigger(self, threshold: int) -> bool:
-        """Check if auto_dream should trigger based on daily card count."""
-        return self.workspace.count_unprocessed_daily_cards() >= threshold
+        """Check if auto_dream should trigger based on pending daily card count.
+
+        Uses count_changed (pending markers with mtime=0) instead of the
+        old full-count approach, so only genuinely new/changed cards trigger.
+        """
+        if self.file_catalog is None:
+            return False
+        return self.file_catalog.count_changed(bucket="daily") >= threshold

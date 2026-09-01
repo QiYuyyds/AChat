@@ -51,7 +51,7 @@ from app.schemas.events import (
     TurnTokenBreakdown,
 )
 from app.schemas.messages import DeployStatusRecord, MessageUsage
-from app.services import runner_registry
+from app.services import runner_registry, ttft_tracker
 from app.services.attachment_service import get_attachment_absolute_path
 from app.services.conversation_context import BuildHistoryOptions, build_history_for
 from app.services.event_bus import event_bus
@@ -304,23 +304,76 @@ async def _maybe_generate_summary_hook(
 
 
 # ─── IP geolocation for auto location detection ─────────────────────────────
+#
+# First-token latency (openspec/changes/speed-up-first-token-latency): the
+# geolocation probe must never run on the first-token critical path. The
+# critical path reads ONLY the process cache (``_detect_location`` — sync,
+# returns "Unknown" when not ready); the network probe runs exclusively in a
+# background task, kicked off at backend startup (lifespan) and re-kicked on
+# demand when a critical-path read finds the cache cold.
 
 _cached_location: str | None = None
 """Module-level cache for detected location. Persists for the process lifetime."""
 
+_location_failed_at: float | None = None
+"""``time.monotonic()`` of the last failed probe; None when the cache is clean
+or the last probe succeeded. Gates background retries behind the TTL."""
 
-async def _detect_location() -> str:
-    """Best-effort IP geolocation to detect the user's city.
+_LOCATION_RETRY_TTL_SECONDS = 600.0
+"""After a failed probe, wait this long before allowing a background retry."""
 
-    Uses ip-api.com (free, no API key, 45 req/min limit). Results are cached
-    at module level so we only call the API once per process.
+_location_probe_task: asyncio.Task | None = None
+"""In-flight background probe task (dedup guard); done/cancelled tasks are stale."""
 
-    Returns the detected city name (in zh-CN when available), or "Unknown"
-    if detection fails (offline, timeout, API error).
+
+def _detect_location() -> str:
+    """Cache-only read of the detected location — never waits on the network.
+
+    Returns the detected city when the background probe has already succeeded,
+    otherwise "Unknown" immediately while (re)scheduling the background probe.
+    The first-token critical path (build_adapter_input → [session] block)
+    performs zero network I/O here.
     """
-    global _cached_location
+    global _location_probe_task
     if _cached_location is not None:
         return _cached_location
+    # Cache cold (probe pending or last attempt failed) — probe in background.
+    _location_probe_task = _schedule_location_probe()
+    return "Unknown"
+
+
+def warm_location_cache() -> None:
+    """Kick off the background location probe (startup warmup entry point).
+
+    Called from the FastAPI lifespan when ``default_location == 'auto'`` so
+    the first message of a session usually finds the cache already warm.
+    """
+    global _location_probe_task
+    _location_probe_task = _schedule_location_probe()
+
+
+def _schedule_location_probe() -> asyncio.Task | None:
+    """Start a background probe task unless one is in flight or the retry TTL
+    since the last failure has not elapsed. Returns the task (or stale None)."""
+    global _location_probe_task
+    if _location_probe_task is not None and not _location_probe_task.done():
+        return _location_probe_task
+    if (
+        _location_failed_at is not None
+        and (time.monotonic() - _location_failed_at) < _LOCATION_RETRY_TTL_SECONDS
+    ):
+        return None
+    _location_probe_task = asyncio.create_task(_probe_location())
+    return _location_probe_task
+
+
+async def _probe_location() -> None:
+    """Background IP geolocation probe; writes the module cache on success.
+
+    Failure (offline, timeout, API error) records a timestamp so retries are
+    TTL-gated, and leaves the cache unset — reads keep returning "Unknown".
+    """
+    global _cached_location, _location_failed_at
     try:
         import httpx
 
@@ -334,12 +387,12 @@ async def _detect_location() -> str:
                 city = data.get("city", "")
                 if city:
                     _cached_location = city
+                    _location_failed_at = None
                     logger.info("[session] auto-detected location: %s", city)
-                    return city
-    except Exception as err:
+                    return
+    except Exception as err:  # noqa: BLE001 - best-effort probe
         logger.debug("[session] location auto-detection failed: %s", err)
-    _cached_location = "Unknown"
-    return _cached_location
+    _location_failed_at = time.monotonic()
 
 
 def _blunt_metadata(
@@ -1832,6 +1885,9 @@ async def execute_run(
         ),
         user_id=args.user_id,
     )
+    # TTFT measurement: start of the user-perceived first-token window
+    # (run.start is what triggers the frontend "正在响应..." indicator).
+    ttft_tracker.mark(run_id, "run_start")
 
     from app.observability import start_span
     with start_span(
@@ -2081,6 +2137,8 @@ async def execute_simple_run(
             args.override_system_prompt, attachments,
             worktree_path=args.override_workspace_path,
         )
+    # TTFT measurement: context (history rebuild + prompt assembly) is ready.
+    ttft_tracker.mark(run_id, "context_ready")
 
     # ── Cache system_prompt to AgentSessionRegistry (for DAG nodes) ──
     if args.dag_task_id and adapter_input.system_prompt:
@@ -2306,6 +2364,50 @@ _VISIBLE_EVENT_TYPES = frozenset({
 })
 
 
+def _log_ttft_breakdown(run_id: str) -> None:
+    """Log the ``[ttft]`` first-token latency breakdown for a run's first message.
+
+    Segments: run_start → context_ready → request_sent → first_chunk →
+    first_delta, plus turn-1 provider usage (input / prefix-cache hit tokens)
+    to distinguish "local slow" from "provider prefill slow". Missing segments
+    (CLI adapters, empty responses) print as "-". Diagnostic only — the mark
+    entry is consumed here.
+    """
+    marks = ttft_tracker.take(run_id)
+    if marks is None or "run_start" not in marks:
+        return
+
+    def _seg(start: str, end: str) -> str:
+        if start in marks and end in marks:
+            return f"{marks[end] - marks[start]}ms"
+        return "-"
+
+    total = (
+        f"{marks['first_delta'] - marks['run_start']}ms"
+        if "first_delta" in marks
+        else "-"
+    )
+    usage_part = ""
+    if "usage_input_tokens" in marks:
+        usage_part = (
+            f" | turn1 usage: input={marks['usage_input_tokens']}"
+            f" cache_hit={marks['usage_cache_read_tokens']}"
+            f" cache_miss={marks['usage_input_tokens'] - marks['usage_cache_read_tokens']}"
+        )
+    logger.info(
+        "[ttft] run=%s breakdown: run_start→context_ready=%s "
+        "context_ready→request_sent=%s request_sent→first_chunk=%s "
+        "first_chunk→first_delta=%s total=%s%s",
+        run_id,
+        _seg("run_start", "context_ready"),
+        _seg("context_ready", "request_sent"),
+        _seg("request_sent", "first_chunk"),
+        _seg("first_chunk", "first_delta"),
+        total,
+        usage_part,
+    )
+
+
 async def consume_stream(
     stream: AsyncIterable[StreamEvent],
     agent_id: str,
@@ -2325,6 +2427,9 @@ async def consume_stream(
     _plan_stats_payload: dict | None = None
     stop_reason: str | None = None
     stop_reason_label: str | None = None
+    # TTFT measurement: log the breakdown once, at this run's first message.end
+    # (end of ReAct turn 1 — turn-1 usage has already passed by then).
+    ttft_logged = False
 
     # Direct-write mode: persist all events to local SQLite (dual-DB) or remote PG (server mode).
     # Redis Stream write-behind has been removed in the dual-DB migration.
@@ -2343,6 +2448,13 @@ async def consume_stream(
                 if getattr(event, "stop_reason", None):
                     stop_reason = event.stop_reason
                     stop_reason_label = getattr(event, "stop_reason_label", None)
+            # TTFT measurement: first part.delta published to SSE for this run;
+            # breakdown logged when the run's first message completes.
+            if event.type == "part.delta":
+                ttft_tracker.mark(run_id, "first_delta")
+            elif event.type == "message.end" and not ttft_logged:
+                ttft_logged = True
+                _log_ttft_breakdown(run_id)
 
             # Publish to SSE before persisting — SSE delivery is never blocked
             # by remote database write latency.
@@ -3346,8 +3458,13 @@ async def build_adapter_input(
         effective_api_base_url = None
         cli_extra_env = {}
 
-    # ── cross-run history: SDK only (CLI agents use session resume) ──
+    # ── cross-run history ‖ PromptAssembler enrichment (SDK only) ─────────
+    # Both blocks are best-effort with independent data sources (SQLite history
+    # rebuild vs. memory/plan retrieval) and all their inputs are ready here,
+    # so they run concurrently via gather: on long conversations the
+    # context-prep segment costs ~max(history, assemble) instead of the sum.
     history: list[dict] = []
+    dynamic_prefix = ""
     if is_sdk and not args.override_prompt:
         async with get_local_db() as db:
             conv = (
@@ -3367,8 +3484,9 @@ async def build_adapter_input(
             estimate_tokens(system_prompt_with_workspace) + estimate_tokens(prompt) + 512
         )
         history_budget = max(0, limits.effective_context_window - limits.output_reserve - prompt_estimate)
-        try:
-            history = await build_history_for(
+
+        async def _build_history() -> list[dict]:
+            return await build_history_for(
                 agent.id,
                 args.conversation_id,
                 BuildHistoryOptions(
@@ -3379,54 +3497,66 @@ async def build_adapter_input(
                 ),
                 user_id=args.user_id or "",
             )
-        except Exception as err:  # noqa: BLE001 - degrade to no-history rather than crash
+
+        async def _assemble() -> tuple[str, str, str, str]:
+            """Run PromptAssembler enrichment; returns (enriched, dynamic, mode, slot_summary)."""
+            from app.services.prompt_assembler import Query
+            mode = "tool" if tool_names else "chat"
+            q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id, agent_id=args.agent_id, user_id=args.user_id or "")
+            ctx = await assembler.assemble(q)
+            enriched = ctx.render_static()
+            dynamic = ctx.render_dynamic()
+            _slot_summary = ", ".join(
+                f"{fs.kind}={'skip' if fs.skipped else len(fs.items)}"
+                for fs in ctx.filled
+            )
+            return enriched, dynamic, mode, _slot_summary
+
+        # Guide agents skip the assembler (management tools for explicit
+        # queries — ProfileSource/ToolStateSource DB lookups are pure overhead).
+        assembler = None if is_guide else _get_prompt_assembler()
+        if assembler is not None:
+            history_res, assemble_res = await asyncio.gather(
+                _build_history(), _assemble(), return_exceptions=True
+            )
+        else:
+            history_res = await _build_history()
+            assemble_res = None
+
+        # Degrade semantics unchanged: history failure → empty history;
+        # assemble failure → no enrichment.
+        if isinstance(history_res, BaseException):
             logger.warning(
                 "[agent-runner] build_history_for failed; continuing without history: %s",
-                err,
+                history_res,
             )
-            history = []
-
-    # ── PromptAssembler enrichment (SDK only; CLI agents self-manage context;
-    #     guide agents skip — they use management tools for explicit queries,
-    #     so ProfileSource/ToolStateSource DB lookups are pure overhead) ─
-    dynamic_prefix = ""
-    if is_sdk and not is_guide:
-        assembler = _get_prompt_assembler()
-        if assembler and not args.override_prompt:
-            try:
-                from app.services.prompt_assembler import Query
-                if tool_names:
-                    mode = "tool"
-                else:
-                    mode = "chat"
-                q = Query(mode=mode, text=prompt, conversation_id=args.conversation_id, agent_id=args.agent_id, user_id=args.user_id or "")
-                ctx = await assembler.assemble(q)
-                enriched = ctx.render_static()
-                if enriched:
-                    system_prompt_with_workspace += "\n\n" + enriched
-                dynamic_prefix = ctx.render_dynamic()
-                _slot_summary = ", ".join(
-                    f"{fs.kind}={'skip' if fs.skipped else len(fs.items)}"
-                    for fs in ctx.filled
-                )
-                logger.info(
-                    "[cache-debug] mode=%s static_len=%d dynamic_len=%d sys_prompt_hash=%d "
-                    "slots=[%s]",
-                    mode, len(enriched), len(dynamic_prefix),
-                    hash(system_prompt_with_workspace), _slot_summary,
-                )
-            except Exception as err:  # noqa: BLE001 - assembler is best-effort
-                logger.warning("[agent-runner] PromptAssembler enrichment failed: %s", err)
+        else:
+            history = history_res
+        if isinstance(assemble_res, BaseException):
+            logger.warning("[agent-runner] PromptAssembler enrichment failed: %s", assemble_res)
+        elif assemble_res is not None:
+            enriched, dynamic_prefix, mode, _slot_summary = assemble_res
+            if enriched:
+                system_prompt_with_workspace += "\n\n" + enriched
+            logger.info(
+                "[cache-debug] mode=%s static_len=%d dynamic_len=%d sys_prompt_hash=%d "
+                "slots=[%s]",
+                mode, len(enriched), len(dynamic_prefix),
+                hash(system_prompt_with_workspace), _slot_summary,
+            )
 
     # ── session metadata: static fields (SDK only; cache-stable prefix) ──
     _meta_time_bucket: str | None = None
     if is_sdk:
         try:
             _settings = get_settings()
-            # Auto-detect location via IP geolocation when configured as 'auto'
+            # Auto-detect location via IP geolocation when configured as 'auto'.
+            # Cache-only read (never blocks on the network — the probe runs in
+            # a background task started at backend startup); an unready cache
+            # yields "Unknown" for this run.
             _loc = _settings.default_location
             if _loc == "auto":
-                _loc = await _detect_location()
+                _loc = _detect_location()
             _lang, _tz, _loc_out, _time_bucket = _blunt_metadata(
                 _settings.default_language,
                 _settings.default_timezone,
@@ -3890,6 +4020,7 @@ def _build_agent_hub_tool_guidance(
                 '正确案例：用户说"上次那个项目"，调用 memory_recall({ query: "用户上次提到的项目" }) 确认具体指什么。',
                 "query 写法：用自然语言问题或具体关键词，不要只写分类标签如\"偏好\"。",
                 "注意：记忆存储是自动的（对话后系统自动提取），你只需负责召回；召回结果为空说明没有相关记忆，不要反复重试。",
+                "查询指引：当前状态/偏好 → 直接看 personal 卡（digest 层，表示\"现在为真\"）；以前/历史 → 关注卡片 derived_from 指向的 daily 卡（情节记忆，可通过 wikilink 回溯）。",
             ]
         )
 

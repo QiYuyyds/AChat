@@ -73,6 +73,18 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     settings = get_settings()
 
+    # ─── Location warmup (first-token latency) ───
+    # With default_location='auto', kick off the IP-geolocation probe in the
+    # background NOW so the first message finds the cache warm instead of
+    # injecting "Unknown" (see speed-up-first-token-latency, decision 1).
+    if settings.default_location == "auto":
+        try:
+            from app.services.agent_runner import warm_location_cache
+            warm_location_cache()
+            logger.info("Location warmup scheduled (default_location='auto')")
+        except Exception as e:
+            logger.warning("Location warmup failed: %s", e)
+
     # ─── Optional source intelligence ───
     try:
         from app.code_intelligence.bootstrap import (
@@ -134,6 +146,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         logger.warning("Infrastructure build failed: %s", e)
 
     # ─── MemoryService ───
+    _curator_job = None
     try:
         from app.memory.memory_service import MemoryService
         _memory_service = MemoryService(settings)
@@ -141,6 +154,17 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning("MemoryService init failed: %s", e)
         _memory_service = None
+
+    # ─── CuratorJob (nightly memory lifecycle) ───
+    if _memory_service and settings.memory_curator_enabled:
+        try:
+            from app.memory.curator import CuratorJob
+            _curator_job = CuratorJob(settings, _memory_service)
+            await _curator_job.start()
+            logger.info("CuratorJob scheduled (cron=%s)", settings.memory_auto_dream_cron)
+        except Exception as e:
+            logger.warning("CuratorJob init failed: %s", e)
+            _curator_job = None
 
     # ─── RAG overhaul schema migration (before RAGService init) ───
     try:
@@ -374,7 +398,18 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         await shutdown_code_intelligence_service()
     except Exception:
         pass
+    # Best-effort close of cached LLM HTTP clients (connection pools).
+    try:
+        from app.adapters.custom_adapter import close_cached_clients
+        await close_cached_clients()
+    except Exception:
+        pass
     shutdown_observability()
+    if _curator_job:
+        try:
+            await _curator_job.stop()
+        except Exception:
+            pass
     if _memory_service:
         try:
             await _memory_service.close()

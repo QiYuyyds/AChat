@@ -785,11 +785,17 @@ export function MessageInput({
         parentMessageId: parentId,
         attachmentIds,
         modelProfileId: hasSdkAgent ? (selectedProfileId ?? undefined) : undefined,
+        // 乐观 temp id 作为回执：message.added 事件到达时即时认领，避免双行闪动
+        clientMessageId: tempId,
       })
       replaceLocalMessageId(tempId, result.messageId)
       upsertReturnedMessages(result.messages)
     } catch (err) {
       console.error('[MessageInput] send failed', err)
+      // POST 失败（网络/超时/非 2xx）：把乐观消息标记为发送失败，不再静默残留。
+      // temp 已被 message.added 认领（后端实际已落库）时 messages[tempId] 为空，跳过。
+      const temp = useAppStore.getState().messages[tempId]
+      if (temp) upsertMessage({ ...temp, status: 'error' })
     } finally {
       setSending(false)
     }

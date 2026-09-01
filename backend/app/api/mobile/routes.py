@@ -155,6 +155,11 @@ def _require_mobile_auth(req: Request) -> JSONResponse | None:
 # ─── Request bodies ─────────────────────────────────────────────────────────
 class _ContentBody(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
+    # Optional sender receipt (clientMessageId) echoed back on message.added;
+    # consumed only by the send route, ignored by edit-and-resend.
+    client_message_id: str | None = Field(default=None, alias="clientMessageId")
+
+    model_config = {"populate_by_name": True}
 
 
 class _PendingWriteActionBody(BaseModel):
@@ -461,7 +466,10 @@ async def mobile_send_message(req: Request, conversation_id: str, user: User = D
         )
     try:
         result = await conversation_service.send_message(
-            conversation_id=conversation_id, content=body.content
+            conversation_id=conversation_id,
+            content=body.content,
+            client_message_id=body.client_message_id,
+            user_id=user.id,
         )
     except Exception as err:  # noqa: BLE001
         return _mobile_json(req, {"error": str(err)}, status=400)
@@ -485,7 +493,7 @@ async def mobile_edit_message(
         )
     try:
         result = await conversation_service.edit_and_resend_latest_user_message(
-            conversation_id, message_id, body.content
+            conversation_id, message_id, body.content, user_id=user.id
         )
     except Exception as err:  # noqa: BLE001
         return _mobile_json(req, {"error": str(err)}, status=400)
@@ -509,7 +517,7 @@ async def mobile_withdraw_message(
 ) -> Response:
     try:
         result = await conversation_service.withdraw_latest_user_message(
-            conversation_id, message_id
+            conversation_id, message_id, user_id=user.id
         )
     except Exception as err:  # noqa: BLE001
         return _mobile_json(req, {"error": str(err)}, status=400)
@@ -527,7 +535,9 @@ async def mobile_withdraw_message(
 @router.post("/mobile/conversations/{conversation_id}/regenerate")
 async def mobile_regenerate(req: Request, conversation_id: str, user: User = Depends(mobile_auth)) -> Response:
     try:
-        result = await conversation_service.regenerate_latest_response(conversation_id)
+        result = await conversation_service.regenerate_latest_response(
+            conversation_id, user_id=user.id
+        )
     except Exception as err:  # noqa: BLE001
         return _mobile_json(req, {"error": str(err)}, status=400)
     return _mobile_json(

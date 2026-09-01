@@ -28,7 +28,7 @@ from app.adapters.base import (
     AgentPlatformAdapter,
 )
 from app.adapters.custom_provider_client import resolve_custom_provider_client_config
-from app.db.engine import get_db
+from app.db.engine import get_db, get_local_db
 from app.db.models import Artifact
 from app.infra.cache_metrics import cache_metrics
 from app.schemas.artifacts import ArtifactRecord
@@ -47,6 +47,8 @@ from app.schemas.events import (
     ToolResultEvent,
 )
 from app.schemas.messages import DeployStatusRecord, MessageUsage, RunUsage
+from app.services.ttft_tracker import mark as ttft_mark
+from app.services.ttft_tracker import record_turn1_usage as ttft_record_turn1_usage
 from app.tools.base import ToolContext, ToolDef
 from app.tools.registry import tool_registry
 from app.utils.clock import now_ms
@@ -117,22 +119,126 @@ def resolve_cache_style(provider: str, cache_style: str | None, detected_cache_s
     return 'deepseek'
 
 
+# ─── usage cache-field resolution (unified priority chain) ─────
+#
+# Candidate paths for cache tokens on OpenAI-compatible Chat Completions usage
+# objects, in resolution priority order (legacy top-level fields first,
+# OpenAI-standard nested fields last). Shared by the value helpers and
+# cache-style detection so the two lists cannot drift.
+
+_CACHE_READ_TOP_LEVEL: tuple[str, ...] = ('prompt_cache_hit_tokens', 'cached_tokens')
+_CACHE_CREATION_TOP_LEVEL: tuple[str, ...] = (
+    'cache_creation_input_tokens',
+    'cache_creation_tokens',
+)
+# OpenAI-standard nested container (vendors may add extras like cache_write_tokens).
+_CACHE_DETAILS_CONTAINER = 'prompt_tokens_details'
+_CACHE_READ_NESTED = 'cached_tokens'
+_CACHE_CREATION_NESTED = 'cache_write_tokens'
+
+
+def _usage_field_present(usage: object, name: str) -> bool:
+    """Existence check for detection: field present with ANY value (0 counts)."""
+    return getattr(usage, name, None) is not None
+
+
+def _nested_usage_field(usage: object, container: str, name: str) -> int:
+    """Read ``usage.<container>.<name>`` with _usage_field semantics (reject bool, default 0)."""
+    value = getattr(getattr(usage, container, None), name, None)
+    if isinstance(value, bool):
+        return 0
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
+def _usage_cache_read(usage: object) -> int:
+    """Resolve cache-read tokens via the shared priority chain.
+
+    Zero-valued candidates fall through to later ones — harmless, since real
+    wire formats reporting 0 top-level report 0 nested as well.
+    """
+    for name in _CACHE_READ_TOP_LEVEL:
+        value = _usage_field(usage, name)
+        if value:
+            return value
+    return _nested_usage_field(usage, _CACHE_DETAILS_CONTAINER, _CACHE_READ_NESTED)
+
+
+def _usage_cache_creation(usage: object) -> int:
+    """Resolve cache-creation tokens via the shared priority chain (see _usage_cache_read)."""
+    for name in _CACHE_CREATION_TOP_LEVEL:
+        value = _usage_field(usage, name)
+        if value:
+            return value
+    return _nested_usage_field(usage, _CACHE_DETAILS_CONTAINER, _CACHE_CREATION_NESTED)
+
+
+# First-usage observation log (design D4): dedup by model_id for the process
+# lifetime; bounded by the number of distinct models.
+_SEEN_USAGE_SHAPE_MODELS: set[str] = set()
+
+
+def _usage_shape_fields(usage: object) -> list[str]:
+    """Field names present on a usage object — names only, one nesting level."""
+    if isinstance(usage, dict):
+        data: dict = usage
+    elif callable(getattr(usage, "model_dump", None)):
+        data = usage.model_dump(exclude_none=True)
+    elif hasattr(usage, "__dict__"):
+        data = {k: v for k, v in vars(usage).items() if v is not None}
+    else:
+        return []
+    if not isinstance(data, dict):
+        return []
+    fields: list[str] = []
+    for key, value in data.items():
+        fields.append(key)
+        if isinstance(value, dict):
+            fields.extend(f"{key}.{sub}" for sub in value)
+        elif hasattr(value, "model_dump"):
+            nested = value.model_dump(exclude_none=True)
+            if isinstance(nested, dict):
+                fields.extend(f"{key}.{sub}" for sub in nested)
+    return fields
+
+
+def _log_usage_shape_once(model_id: str, usage: object) -> None:
+    """DEBUG-log the usage field names on a model's first usage in this process.
+
+    Names only (incl. one nested level), never values — keeps payloads small
+    and potential secrets out of logs while making unknown vendor formats
+    discoverable without packet capture.
+    """
+    if model_id in _SEEN_USAGE_SHAPE_MODELS:
+        return
+    _SEEN_USAGE_SHAPE_MODELS.add(model_id)
+    try:
+        fields = sorted(_usage_shape_fields(usage))
+    except Exception:  # noqa: BLE001 - observability must never break the stream
+        logger.debug("[usage-shape] failed to inspect usage fields", exc_info=True)
+        return
+    logger.debug("[usage-shape] model=%s fields=%s", model_id, fields)
+
+
 def detect_cache_style_from_usage(usage: object | None) -> str | None:
-    """Auto-detect cacheStyle from LLM response usage fields.
+    """Auto-detect cacheStyle from usage field *presence* (not hit counts).
+
+    Layered classification: top-level cache-creation fields → 'anthropic';
+    top-level hit/cached fields or the nested `prompt_tokens_details` object →
+    'deepseek' (OpenAI-family semantics); no cache fields → 'none'; usage None
+    → None (undetermined). Presence-based so a zero-valued first turn (cache
+    fill) still classifies. Nested `cache_write_tokens` alone does NOT imply
+    'anthropic' — vendors like LongCat report it inside `prompt_tokens_details`,
+    often 0; anthropic evidence must be top-level.
 
     Returns 'anthropic' / 'deepseek' / 'none' / None (when usage is null).
     """
     if usage is None:
         return None
-    cache_creation = _usage_field(usage, 'cache_creation_input_tokens') or _usage_field(
-        usage, 'cache_creation_tokens'
-    )
-    if cache_creation > 0:
+    if any(_usage_field_present(usage, name) for name in _CACHE_CREATION_TOP_LEVEL):
         return 'anthropic'
-    cached = _usage_field(usage, 'prompt_cache_hit_tokens') or _usage_field(
-        usage, 'cached_tokens'
-    )
-    if cached > 0:
+    if any(_usage_field_present(usage, name) for name in _CACHE_READ_TOP_LEVEL) or (
+        _usage_field_present(usage, _CACHE_DETAILS_CONTAINER)
+    ):
         return 'deepseek'
     return 'none'
 
@@ -509,6 +615,12 @@ class CustomAdapter(AgentPlatformAdapter):
 
         max_tokens = _compute_max_tokens(model_provider, model_id, messages)
 
+        # TTFT measurement (openspec/changes/speed-up-first-token-latency):
+        # mark request-sent / first-chunk; they feed the [ttft] breakdown log.
+        request_sent_ms = now_ms()
+        ttft_mark(input.run_id, "request_sent")
+        first_chunk_seen = False
+
         try:
             stream = await client.chat.completions.create(
                 model=model_id,
@@ -534,16 +646,23 @@ class CustomAdapter(AgentPlatformAdapter):
         async for chunk in stream:
             if cancel_event.is_set():
                 return
+            if not first_chunk_seen:
+                first_chunk_seen = True
+                first_chunk_ms = now_ms()
+                ttft_mark(input.run_id, "first_chunk")
+                _record_first_token_span(
+                    input.run_id, model_id, request_sent_ms, first_chunk_ms
+                )
             usage = getattr(chunk, "usage", None)
             if usage:
+                _log_usage_shape_once(model_id, usage)
                 inp = _usage_field(usage, "prompt_tokens")
                 out = _usage_field(usage, "completion_tokens")
-                cached = _usage_field(usage, "prompt_cache_hit_tokens") or _usage_field(
-                    usage, "cached_tokens"
-                )
-                cache_created = _usage_field(usage, "cache_creation_input_tokens") or _usage_field(
-                    usage, "cache_creation_tokens"
-                )
+                cached = _usage_cache_read(usage)
+                # Turn-1 provider prefix-cache tokens (first write wins, so only
+                # this run's first LLM call contributes to the [ttft] log).
+                ttft_record_turn1_usage(input.run_id, inp, cached)
+                cache_created = _usage_cache_creation(usage)
                 # Auto-detect cacheStyle for openai-compatible on first usage
                 if (
                     model_provider == 'openai-compatible'
@@ -554,6 +673,15 @@ class CustomAdapter(AgentPlatformAdapter):
                     if detected:
                         msg_usage.cache_style = detected
                         _detected_this_run = True
+                        # Async writeback to ModelProfile.detected_cache_style,
+                        # aligned with stream(). 'none' is not persisted so the
+                        # profile stays un-learned and the next run re-detects.
+                        if input.model_profile_id and detected != 'none':
+                            asyncio.create_task(
+                                _persist_detected_cache_style(
+                                    input.model_profile_id, detected
+                                )
+                            )
                 msg_usage.input_tokens += inp
                 msg_usage.output_tokens += out
                 msg_usage.cache_read_tokens += cached
@@ -924,14 +1052,11 @@ class CustomAdapter(AgentPlatformAdapter):
                 # DeepSeek also carries prompt_cache_hit_tokens / prompt_cache_miss_tokens.
                 usage = getattr(chunk, "usage", None)
                 if usage:
+                    _log_usage_shape_once(model_id, usage)
                     inp = _usage_field(usage, "prompt_tokens")
                     out = _usage_field(usage, "completion_tokens")
-                    cached = _usage_field(usage, "prompt_cache_hit_tokens") or _usage_field(
-                        usage, "cached_tokens"
-                    )
-                    cache_created = _usage_field(usage, "cache_creation_input_tokens") or _usage_field(
-                        usage, "cache_creation_tokens"
-                    )
+                    cached = _usage_cache_read(usage)
+                    cache_created = _usage_cache_creation(usage)
                     msg_usage.input_tokens += inp
                     msg_usage.output_tokens += out
                     msg_usage.cache_read_tokens += cached
@@ -953,8 +1078,10 @@ class CustomAdapter(AgentPlatformAdapter):
                             run_usage.cache_style = detected
                             msg_usage.cache_style = detected
                             _detected_this_run = True
-                            # Async writeback to ModelProfile.detected_cache_style
-                            if input.model_profile_id:
+                            # Async writeback to ModelProfile.detected_cache_style;
+                            # 'none' is not persisted so the profile stays
+                            # un-learned and the next run re-detects.
+                            if input.model_profile_id and detected != 'none':
                                 asyncio.create_task(
                                     _persist_detected_cache_style(
                                         input.model_profile_id, detected
@@ -1260,6 +1387,31 @@ class CustomAdapter(AgentPlatformAdapter):
 # ─── helpers ──────────────────────────────────────────────
 
 
+def _record_first_token_span(
+    run_id: str, model_id: str, request_sent_ms: int, first_chunk_ms: int
+) -> None:
+    """Report request→first-chunk timing as span events on the existing tracer.
+
+    A short-lived ``llm.first_token`` span carries both timestamps as span
+    events (visible in Phoenix) plus the ``agenthub.ttft_ms`` attribute.
+    """
+    from app.observability import start_span
+    from app.observability.instrumentation import AGENTHUB_TTFT_MS
+
+    with start_span("llm.first_token", run_id=run_id, model=model_id) as span:
+        span.add_event(
+            "ttft.request_sent",
+            {"timestamp_ms": request_sent_ms},
+            timestamp=request_sent_ms,
+        )
+        span.add_event(
+            "ttft.first_chunk",
+            {"timestamp_ms": first_chunk_ms},
+            timestamp=first_chunk_ms,
+        )
+        span.set_attribute(AGENTHUB_TTFT_MS, first_chunk_ms - request_sent_ms)
+
+
 def _compute_max_tokens(
     model_provider: str, model_id: str, messages: list[dict]
 ) -> int | None:
@@ -1272,15 +1424,47 @@ def _compute_max_tokens(
     return max(computed, 256)
 
 
+_client_cache: dict[tuple[str, str, str | None], AsyncOpenAI] = {}
+"""Cached AsyncOpenAI clients keyed by (provider, resolved api_key, resolved base_url).
+
+No active eviction: single-user deployments have very few key combinations;
+api_key/base_url changes naturally produce a new key. All cached clients are
+closed best-effort at process shutdown (``close_cached_clients``, wired into
+the FastAPI lifespan)."""
+
+
 def _build_client(
     provider: str, override_key: str | None, api_base_url: str | None
 ) -> AsyncOpenAI:
     config = resolve_custom_provider_client_config(provider, override_key, api_base_url)
-    return AsyncOpenAI(
-        api_key=config.api_key,
-        base_url=config.base_url,
-        max_retries=MAX_API_RETRIES,
-    )
+    # Module-level client cache keyed by the FULL resolved construction input.
+    # A new AsyncOpenAI per ReAct round pays a fresh TCP+TLS handshake every
+    # call; reusing one client per key combination keeps its httpx connection
+    # pool (keep-alive) warm across rounds and runs. AsyncOpenAI is safe to
+    # share across concurrent coroutines (officially supported).
+    cache_key = (provider, config.api_key, config.base_url)
+    client = _client_cache.get(cache_key)
+    if client is None:
+        client = AsyncOpenAI(
+            api_key=config.api_key,
+            base_url=config.base_url,
+            max_retries=MAX_API_RETRIES,
+        )
+        _client_cache[cache_key] = client
+    return client
+
+
+async def close_cached_clients() -> None:
+    """Best-effort close of all cached AsyncOpenAI clients (lifespan shutdown)."""
+    for cache_key, client in list(_client_cache.items()):
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001 - shutdown is best-effort
+            logger.debug(
+                "[CustomAdapter] failed to close cached client for %s", cache_key[0],
+                exc_info=True,
+            )
+    _client_cache.clear()
 
 
 def _to_api_tool(t: ToolDef) -> dict:
@@ -1398,7 +1582,9 @@ def _build_multimodal_user_content(
 async def _persist_detected_cache_style(model_profile_id: str, cache_style: str) -> None:
     """Write back detected_cache_style to the ModelProfile (idempotent)."""
     try:
-        async with get_db() as session:
+        # model_profiles is a local-SQLite table (see table_routing.LOCAL_TABLES);
+        # get_local_db() keeps the write in dual-DB mode (claude_adapter does the same).
+        async with get_local_db() as session:
             from app.db.models import ModelProfile
             profile = await session.get(ModelProfile, model_profile_id)
             if profile is not None and profile.detected_cache_style != cache_style:

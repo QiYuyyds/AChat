@@ -1024,6 +1024,10 @@ class TestDreamTopics:
             settings.memory_bm25_weight = 0.7
             settings.memory_wikilink_weight = 0.3
             settings.memory_rrf_k = 60
+            # 本测试覆盖 RRF + 归档降权的既有行为；rerank（importance×decay×recency）
+            # 属 add-memory-lifecycle 的行为，由 test_memory_lifecycle 覆盖。
+            settings.memory_rerank_enabled = False
+            settings.memory_daily_ttl_days = 0
 
             workspace = MemoryWorkspace(settings)
             workspace.initialize()
@@ -1077,6 +1081,10 @@ class TestDreamTopics:
             settings.memory_bm25_weight = 0.7
             settings.memory_wikilink_weight = 0.3
             settings.memory_rrf_k = 60
+            # 本测试覆盖 RRF + 归档降权的既有行为；rerank（importance×decay×recency）
+            # 属 add-memory-lifecycle 的行为，由 test_memory_lifecycle 覆盖。
+            settings.memory_rerank_enabled = False
+            settings.memory_daily_ttl_days = 0
 
             workspace = MemoryWorkspace(settings)
             workspace.initialize()
@@ -1246,6 +1254,10 @@ class TestArchivedDeprioritization:
             settings.memory_bm25_weight = 0.7
             settings.memory_wikilink_weight = 0.3
             settings.memory_rrf_k = 60
+            # 本测试覆盖 RRF + 归档降权的既有行为；rerank（importance×decay×recency）
+            # 属 add-memory-lifecycle 的行为，由 test_memory_lifecycle 覆盖。
+            settings.memory_rerank_enabled = False
+            settings.memory_daily_ttl_days = 0
 
             workspace = MemoryWorkspace(settings)
             workspace.initialize()

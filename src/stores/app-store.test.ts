@@ -222,6 +222,146 @@ describe('app-store run failure cleanup', () => {
   })
 })
 
+describe('app-store message.added clientMessageId claim', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  function userMessage(id: string, createdAt: number): MessageRow {
+    return {
+      id,
+      conversationId: 'conv_1',
+      role: 'user',
+      agentId: null,
+      parts: [{ type: 'text', content: 'hello' }],
+      status: 'complete',
+      parentMessageId: null,
+      mentionedAgentIds: [],
+      runId: null,
+      usage: null,
+      hidden: false,
+      createdAt,
+    }
+  }
+
+  it('claims the optimistic temp message at event arrival (single atomic update, no double row)', () => {
+    useAppStore.getState().addLocalUserMessage({
+      tempId: 'temp_1',
+      conversationId: 'conv_1',
+      content: 'hello',
+      mentionedAgentIds: [],
+      attachments: [],
+    })
+
+    useAppStore.getState().applyEvent({
+      type: 'message.added',
+      conversationId: 'conv_1',
+      timestamp: 2,
+      clientMessageId: 'temp_1',
+      message: userMessage('msg_real', 2),
+    })
+
+    const state = useAppStore.getState()
+    expect(state.messages.temp_1).toBeUndefined()
+    expect(state.messages.msg_real).toMatchObject({ id: 'msg_real', role: 'user' })
+    expect(state.messageIdsByConv.conv_1).toEqual(['msg_real'])
+  })
+
+  it('claims the temp even when the real id was already inserted by another path', () => {
+    useAppStore.getState().addLocalUserMessage({
+      tempId: 'temp_1',
+      conversationId: 'conv_1',
+      content: 'hello',
+      mentionedAgentIds: [],
+      attachments: [],
+    })
+    // 另一入口抢先按 realId 插入（如 fetch 对账）：认领必须去重而不是留下两行
+    useAppStore.getState().upsertMessage(userMessage('msg_real', 2))
+
+    useAppStore.getState().applyEvent({
+      type: 'message.added',
+      conversationId: 'conv_1',
+      timestamp: 3,
+      clientMessageId: 'temp_1',
+      message: userMessage('msg_real', 2),
+    })
+
+    const state = useAppStore.getState()
+    expect(state.messages.temp_1).toBeUndefined()
+    expect(state.messageIdsByConv.conv_1).toEqual(['msg_real'])
+  })
+
+  it('upserts idempotently when clientMessageId matches no local message', () => {
+    // 第二个客户端：它没有为这条消息做乐观插入
+    useAppStore.getState().applyEvent({
+      type: 'message.added',
+      conversationId: 'conv_1',
+      timestamp: 2,
+      clientMessageId: 'temp_unknown',
+      message: userMessage('msg_real', 2),
+    })
+
+    const state = useAppStore.getState()
+    expect(state.messages.msg_real).toBeDefined()
+    expect(state.messageIdsByConv.conv_1).toEqual(['msg_real'])
+  })
+
+  it('keeps current behavior for events without clientMessageId', () => {
+    useAppStore.getState().applyEvent({
+      type: 'message.added',
+      conversationId: 'conv_1',
+      timestamp: 2,
+      clientMessageId: null,
+      message: userMessage('msg_real', 2),
+    })
+
+    expect(useAppStore.getState().messageIdsByConv.conv_1).toEqual(['msg_real'])
+  })
+
+  it('POST-response fallback still reconciles when the event never claimed the temp', () => {
+    useAppStore.getState().addLocalUserMessage({
+      tempId: 'temp_1',
+      conversationId: 'conv_1',
+      content: 'hello',
+      mentionedAgentIds: [],
+      attachments: [],
+    })
+
+    // 兜底路径：SSE 未达（或晚于 POST），POST 响应先回
+    useAppStore.getState().replaceLocalMessageId('temp_1', 'msg_real')
+
+    const state = useAppStore.getState()
+    expect(state.messages.temp_1).toBeUndefined()
+    expect(state.messages.msg_real).toMatchObject({ id: 'msg_real', role: 'user' })
+    expect(state.messageIdsByConv.conv_1).toEqual(['msg_real'])
+  })
+
+  it('POST-response fallback is a no-op after the event already claimed the temp', () => {
+    useAppStore.getState().addLocalUserMessage({
+      tempId: 'temp_1',
+      conversationId: 'conv_1',
+      content: 'hello',
+      mentionedAgentIds: [],
+      attachments: [],
+    })
+    useAppStore.getState().applyEvent({
+      type: 'message.added',
+      conversationId: 'conv_1',
+      timestamp: 2,
+      clientMessageId: 'temp_1',
+      message: userMessage('msg_real', 2),
+    })
+
+    // SSE 先到认领，POST 响应后到：不得误删 realId 或改变桶
+    useAppStore.getState().replaceLocalMessageId('temp_1', 'msg_real')
+
+    const state = useAppStore.getState()
+    expect(state.messages.msg_real).toBeDefined()
+    expect(state.messages.temp_1).toBeUndefined()
+    expect(state.messageIdsByConv.conv_1).toEqual(['msg_real'])
+  })
+})
+
 describe('app-store timestamp capture', () => {
   beforeEach(() => {
     resetStore()

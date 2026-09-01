@@ -16,7 +16,7 @@
 
 AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的多 Agent 协作工作空间，把 AI 协作做成 IM 群聊式的体验。
 
-它不把每次 agent 运行当成一段孤立的终端记录，而是围绕「会话」来组织工作：Agent 是联系人，会话是工作空间，文件与产物是共享上下文，Orchestrator 还能把一项工作拆给多个 Agent 并行完成。同时集成了用户认证与多用户隔离、双 DB 架构（本地 SQLite + 远端 PostgreSQL）、RAG 混合检索（Milvus dense + sparse BM25 + Neo4j 知识图谱 PPR + entity/triple 向量召回 + RRF 融合）、RAG 文件生命周期（11 状态状态机 + 异步任务队列）、RAG 评测系统（LLM-as-Judge + 独立 eval LLM 配置）、OCR 引擎注册表（7 种引擎 + auto 模式）、RAG 分块预设（4 种策略）、分层记忆系统（含结构化记忆增强）和 Document 知识库，让 Agent 拥有跨会话的知识与记忆能力。
+它不把每次 agent 运行当成一段孤立的终端记录，而是围绕「会话」来组织工作：Agent 是联系人，会话是工作空间，文件与产物是共享上下文，Orchestrator 还能把一项工作拆给多个 Agent 并行完成。同时集成了用户认证与多用户隔离、双 DB 架构（本地 SQLite + 远端 PostgreSQL）、RAG 混合检索（Milvus dense + sparse BM25 + Neo4j 知识图谱 PPR + entity/triple 向量召回 + RRF 融合）、RAG 文件生命周期（11 状态状态机 + 异步任务队列）、RAG 评测系统（LLM-as-Judge + 独立 eval LLM 配置）、OCR 引擎注册表（7 种引擎 + auto 模式）、RAG 分块预设（4 种策略）、分层记忆系统（含结构化记忆增强）和 Document 知识库，让 Agent 拥有跨会话的知识与记忆能力；并接入独立的 Aeval Agent 评测框架（套件编排 + grader 评分 + pass@k/pass^k 多 trial 聚合 + 内置 Dashboard），支持对 Agent 做回归评测。
 
 <p align="center">
     <img src="docs/AChat封面.gif" alt="AChat 封面" width="100%" />
@@ -44,6 +44,7 @@ AChat 是一个基于前端（Next.js + React）和 Python（FastAPI）实现的
   - [Run 内压缩](#run-内压缩)
   - [生命周期 Hooks 与 Checkpoint](#生命周期-hooks-与-checkpoint)
   - [Agent 可观测性与评测](#agent-可观测性与评测)
+  - [Aeval Agent 评测框架](#aeval-agent-评测框架)
 - [技术栈](#技术栈)
 - [环境要求](#环境要求)
 - [快速开始](#快速开始)
@@ -113,7 +114,7 @@ AChat 正是为这套工作流而生。它默认本地运行，采用双 DB 架�
 
 > Claude Code 与 Codex 走 **CLI 子进程路线**：工具执行、沙箱、审批由 CLI 自管，AChat 只翻译事件流。后续还规划接入 Hermes、OpenClaw、OpenCode 等 CLI agent。迁移方案见 `openspec/changes/migrate-claude-codex-to-cli/`。
 
-你可以在 UI 里创建自定义 Agent，自带模型、provider、system prompt、base URL、API key、工具集和 Skills。Custom Agent 提供 4 种角色预设（程序员 / 调研员 / 协调者 / 写作），每种预设自带匹配的 system prompt 和工具推荐。所有 custom agent 自带 9 个基础工具（文件读写、bash、ask_user 等），另可从 14 个可选工具中勾选（产物创建、部署、web 搜索、知识库检索、任务管理等）。Agent 的模型配置通过 ModelProfile 管理（独立于 Agent 实体，可复用）。
+你可以在 UI 里创建自定义 Agent，自带模型、provider、system prompt、base URL、API key、工具集和 Skills。Custom Agent 提供 4 种角色预设（程序员 / 调研员 / 协调者 / 写作），每种预设自带匹配的 system prompt 和工具推荐。所有 custom agent 自带 9 个基础工具（文件读写、bash、ask_user 等），另可从 6 个可选工具中勾选（产物创建 / 部署 / web 搜索 / 知识库检索）。Agent 的模型配置通过 ModelProfile 管理（独立于 Agent 实体，可复用）。
 
 ### 小A 全局悬浮助手
 
@@ -135,6 +136,7 @@ AChat 使用统一 Agent Loop：所有 Agent（solo / coordinated / subagent）�
 - **Solo 模式**：单聊会话默认。Agent 拥有自己的工具集，还可以通过 `task_dispatch` 克隆自己来处理子任务（递归深度上限 `MAX_DISPATCH_DEPTH = 3`）。
 - **Coordinated 模式**：群聊中 Orchestrator 的模式。除了 `task_dispatch`，还拥有 `dispatch_plan` 工具来声明结构化 DAG（拓扑排序 + 波调度并行执行 + 级联跳过）。
 - **Subagent 模式**：`task_dispatch` / `dispatch_plan` 触发的子 Agent 运行。使用隔离的任务提示，不注入对话历史；clone-self 派发的消息 `hidden=true`，不显示在聊天视图。
+- **DAG 内 Agent 通信**：波调度并行的子 Agent 通过 `ask_peer` 向同 DAG 的兄弟会话提问（后端重建对方对话历史并跑一次 mini-run 返回答案；未指定目标时问题进入父 Agent 邮箱，DAG 结束后统一查看），通过 `report_result` 提交结构化结果（summary / key_decisions / files_changed / artifacts）并立即终止本轮。`AgentSessionRegistry` 维护 DAG 内 task_id → 会话映射（300s TTL），防循环限制对同一 peer 最多提问 3 次。
 
 Orchestrator 可以：
 
@@ -153,7 +155,7 @@ AChat 内置一个持久化的全局任务看板，独立于会话但可绑定�
 
 - **Kanban UI**：7 个状态列（backlog → todo → in_progress → in_review → done，另有 blocked / canceled），支持拖拽、筛选、隐藏列、右键菜单、撤销提示。
 - **乐观并发控制**：每个任务带 `version` 列，更新时做 `if_version` 前置检查，冲突返回 409。
-- **Agent 工具（7 个 opt-in）**：`task_list` / `task_get` / `task_create` / `task_claim` / `task_complete` / `task_move` / `task_comment`，Agent 可在对话中创建、领取、完成、评论任务。
+- **任务工具（7 个，调度器注入）**：`task_list` / `task_get` / `task_create` / `task_claim` / `task_complete` / `task_move` / `task_comment`。这些工具仅在 TaskScheduler 自动派发的 Agent 运行中注入，普通对话运行中会被过滤（不可在 UI 勾选）；用户也可以让小A 通过 `manage_tasks` 管理任务。
 - **asyncio 后台调度器**：`TaskSchedulerService` 定期扫描 `todo` 状态任务，自动派发给指派 Agent（通过 `run_agent_loop(mode='solo')`），用户级 start/stop 控制。
 - **Guide 管理工具**：小A 可通过 `manage_tasks` 管理任务（list / create / update / move / assign / delete / scheduler 控制）。
 
@@ -207,6 +209,7 @@ Agent 拥有跨会话的记忆能力：
 
 - **短期记忆（STM）**：滑动窗口内的对话历史。
 - **会话记忆（SessionMemory）**：跨 run 的会话级上下文。
+- **会话笔记（Session Note）**：结构化 10 段 YAML 会话笔记（关键决策 / 触及文件 / 运行命令 / 产出物等），替代旧的无结构文本摘要；以 YAML 存储、XML 形式注入 LLM，解析失败时回退纯文本注入。UI 提供会话笔记面板，可随时查看当前会话的沉淀。
 - **长期记忆（LTM）**：文件原生架构（Markdown + frontmatter + wikilinks），三级生命周期（session → daily → digest）。检索走 SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合 + wikilink 后处理扩展。★ 结构化记忆增强：新增 `summary` / `keywords` / `content_scope` 三字段，embedding 从 `embed(content)` 改为 `embed(summary)`。
 - **用户偏好（Preference）**：从对话中提取的 KV 偏好（PG 表）。
 - **自动固化与衰减**：`auto_memory` pipeline（对话→daily 卡片）+ `auto_dream` pipeline（daily→digest 精炼），按触发阈值固化，自动去重清理。★ `MEMORY_ENABLED=false` 环境变量可关闭记忆 pipeline（节省 API 调用，用于 RAG 测试场景）。
@@ -248,15 +251,14 @@ Agent 可以创建并引用结构化产物：
 
 ### Run 内压缩
 
-SDK Agent 在 ReAct loop 中内置五阶段递进压缩 pipeline，在 context window 占用达到阈值时自动触发：
+SDK Agent 在 ReAct loop 中内置递进压缩 pipeline，在 context window 占用达到阈值时自动触发：
 
-- Stage 1（ratio ≥ 0.70）：语义摘要旧 tool 结果
-- Stage 2（ratio ≥ 0.80）：更激进地重裁 Stage 1 摘要
+- Stage 1（ratio ≥ 0.75）：通用掩码旧 tool 结果（结构化摘要替代原始输出）
 - Stage 3（ratio ≥ 0.88）：将更旧轮次折叠为单个 marker
 - Stage 4（ratio ≥ 0.93）：软收尾注入
 - Stage 5（ratio ≥ 0.95）：强制终止
 
-Stage 1/2/3 为纯结构化裁剪（无 LLM 调用），独立于跨 run 的上下文压缩。
+Stage 1/3 为纯结构化裁剪（无 LLM 调用），原 Stage 2 已并入 Stage 1（掩码后无需单独重裁）；管线基于统一的 CompactMessage 抽象，Run 内压缩与跨 run 压缩共用同一套折叠逻辑。token 估算只计 `content` / `tool_calls` / `reasoning_content`，不含 JSON 结构字段。
 
 ### 生命周期 Hooks 与 Checkpoint
 
@@ -278,6 +280,17 @@ AChat 集成了基于 OpenTelemetry 的全链路追踪和评测系统：
 - **离线 LLM-as-Judge 评测**（默认关闭，手动触发）：`POST /api/eval/judge/{trace_id}` 从 Phoenix 拉取指定 trace，调用 LLM 深度评判 9 个维度（工具选择准确性 / 子任务粒度 / 聚合忠实度 / 回答忠实度等）。
 - **评测指标体系**：Agent 全过程评测（5 维度：任务完成 / 工具调用质量 / 步骤效率 / 提示词效果 / 回答质量）+ 多 Agent 协作评测（4 维度：任务拆解 / 调度效率 / 子 Agent 质量 / 聚合质量）。
 - **`trace_enabled` 开关**：关闭时所有埋点变为 no-op，不影响主链路。Phoenix 不可达时 OTel SDK 缓冲后静默丢弃，不报错。
+
+### Aeval Agent 评测框架
+
+Aeval 是一个开源的 Agent 评测框架（OTel trace 驱动：套件编排 + grader 评分 + pass@k / pass^k 多 trial 聚合），已抽取为独立 PyPI 包 `aeval-framework`（import 名 `agent_eval`），框架代码不在本仓库中。AChat 通过接入层消费它：
+
+- **接入层（`backend/app/eval_integration/`）**：`create_aeval_runner()` 把 AChat 的 agent 运行器、workspace 环境、Artifact / Dispatch grader、SQLite 存储、Phoenix trace 装配进 EvalRunner；进程内 RunTraceBridge 打通 AChat trace ↔ 评测 trial 的 trace_id 主通道。
+- **独立评测 API**：`EVAL_HARNESS_ENABLED=true` 时在 `/api/eval` 挂载独立子应用（suites / tasks / runs / trials / compare / graders），与可观测性侧的 `/api/eval/judge/*` 路由共存不冲突。
+- **声明式评测套件**：`backend/eval_suites/*.yaml` 描述评测任务与断言；`eval_suites/eval-kb/` 提供评测专用知识库 fixture。套件 env 支持按 task 选择被评 agent 与会话形态。
+- **结果存储分离**：评测数据写独立 SQLite（默认 `.agenthub-data/aeval.db`），不进主双 DB；LLM 输出质量评分走 `AEVAL_JUDGE_*` 配置（回退 `EVAL_LLM_*`）。
+- **框架内置 Dashboard**：数据集 / 任务库 / 运行 / 试用 / 对比 / 报告一站式查看，也可通过 `eval-suite` CLI 独立启动 API + Dashboard。
+- **默认关闭、按需安装**：框架包不在默认依赖中，启用前 `pip install "aeval-framework[api,cli]"`，并配置 `EVAL_HARNESS_ENABLED=true` 与 `EVAL_AGENT_ID`（被评 agent）等环境变量。缺凭证时评测子应用保持 503 而非崩溃，不影响主链路。
 
 ### 桌面与移动端
 
@@ -307,6 +320,7 @@ AChat 集成了基于 OpenTelemetry 的全链路追踪和评测系统：
 - Pydantic v2 数据验证
 - 认证: bcrypt + PyJWT（JWT HttpOnly cookie）
 - AI 适配器: Claude Code / Codex 走 **CLI 子进程路线**（stream-json / JSON-RPC 2.0）；Custom 走 `openai` Python SDK（Chat Completions + 自驱 tool loop）；AChat MCP bridge 暴露平台工具给 CLI agent
+- Agent 评测: Aeval 独立框架（`aeval-framework[api,cli]`，PyPI 按需安装）+ OTel/Phoenix 在线规则评测与离线 LLM-as-Judge
 
 ### 基础设施（Docker Compose，可降级）
 - PostgreSQL 16 — 关系型主库（远端）
@@ -339,6 +353,7 @@ Next.js 锁定在 `16.2.6`。如果你要改动框架层的行为，先读 `node
 - Tavily API key（Web 搜索工具）
 - Embedding API key（RAG / 记忆语义检索）
 - RAG 评测系统独立 LLM 配置（`EVAL_LLM_API_KEY` / `EVAL_DATASET_LLM_API_KEY`，见 `backend/.env.example`）
+- Aeval 评测框架（可选）：`pip install "aeval-framework[api,cli]"` + `EVAL_HARNESS_ENABLED=true` + `EVAL_AGENT_ID`（被评 agent）
 
 ---
 
@@ -585,6 +600,7 @@ AChat 采用前后端分离架构：
 │    AuthMiddleware (JWT/CSRF)、              │
 │    WorktreeService (git worktree 隔离 + 三层冲突解决) │
 │    Observability (OTel + Phoenix)         │
+│    eval_integration (Aeval 评测接入层)      │
 │  L2 Agent Platform Adapters               │
 │    ClaudeCLI、CodexCLI、Custom、Mock       │
 │  L1 Persistence                           │
@@ -598,7 +614,7 @@ AChat 采用前后端分离架构：
 └──────────────────────────────────────────┘
 ```
 
-核心契约是 `StreamEvent`。适配器输出、工具活动、产物创建、待审批、调度状态、用量更新，都先汇入这个事件模型，再通过 SSE 到达前端 UI。工具执行经过 `HookRegistry` 拦截（pre/post），支持审批拦截、自动压缩、检查点保存等可插拔 Hook。SDK Agent 运行时自动合并 9 个 baseline 工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment），确保所有 custom agent 都具备基础文件操作能力；另有 14 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search/rag_search/memory_proactive/task_list/task_get/task_create/task_claim/task_complete/task_move/task_comment）按需勾选。工具注册表共 45 个工具。
+核心契约是 `StreamEvent`。适配器输出、工具活动、产物创建、待审批、调度状态、用量更新，都先汇入这个事件模型，再通过 SSE 到达前端 UI。工具执行经过 `HookRegistry` 拦截（pre/post），支持审批拦截、自动压缩、检查点保存等可插拔 Hook。SDK Agent 运行时自动合并 9 个 baseline 工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment），确保所有 custom agent 都具备基础文件操作能力；另有 6 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search/rag_search）在 Agent 创建/编辑时勾选，其余工具按运行形态注入：`task_dispatch` / `dispatch_plan` 按运行模式分配，7 个任务工具仅由 TaskScheduler 派发的运行注入，8 个 `manage_*` 仅注入 Guide Agent，`ask_peer` / `report_result` 用于 DAG 内子 Agent 通信。工具注册表共 47 个工具。
 
 关键文档：
 

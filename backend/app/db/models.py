@@ -901,6 +901,9 @@ class ChatHistory(Base):
     user_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("users.id"), name="user_id", nullable=True
     )
+    conversation_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
 
 
 # ---------------------------------------------------------------------------

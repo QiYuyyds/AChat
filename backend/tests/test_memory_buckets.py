@@ -76,8 +76,9 @@ def test_stable_key_identity_and_interest():
     assert make_stable_key("personal", "用户身份：重庆邮电大学实验室负责人") == (
         "user.identity.profile"
     )
+    # Topic-level: object suffix (doudou) is stripped for personal bucket
     assert make_stable_key("personal", "音乐兴趣：关注 DOUDOU 偏现场版") == (
-        "user.interest.music.doudou"
+        "user.interest.music"
     )
     assert make_stable_key("wiki", "甘肃旅行指南").startswith("wiki.")
 

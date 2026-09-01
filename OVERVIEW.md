@@ -14,7 +14,7 @@
 
 > 把多 Agent 协作做成 IM 群聊体验 —— Agent 是「联系人」，对话是「工作空间」，Orchestrator 是「群里的项目经理」。
 
-前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus dense+sparse BM25 + Neo4j PPR + entity/triple 向量 + RRF 融合）、**RAG 文件生命周期**（11 状态状态机 + 异步任务队列 + 乐观并发 + 虚拟目录树）、**RAG 评测系统**（dataset CRUD + benchmark 自动生成 + LLM-as-Judge + 独立 eval LLM）、**OCR 引擎注册表**（7 种引擎 + auto 模式）、**RAG 分块预设**（general / qa / semantic / separator 四种策略 + 用户级配置）、**文件原生记忆系统**（auto_memory / auto_dream pipeline + SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合）、**Document + Version 知识库**、**代码图谱智能**、**执行计划工具**、**全局任务看板**（Task Board + Kanban UI + asyncio 调度器）、**Obsidian 知识同步**、**外部 MCP 接入**、**Run 内压缩**，并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
+前后端分离本地运行（前端 Next.js :3000，后端 Python FastAPI :8000，PostgreSQL 主库）。经多次演进，五层架构完整落地，功能闭环已跑通。后端已集成 **用户认证与多用户隔离**（JWT + bcrypt）、**RAG 混合检索**（Milvus dense+sparse BM25 + Neo4j PPR + entity/triple 向量 + RRF 融合）、**RAG 文件生命周期**（11 状态状态机 + 异步任务队列 + 乐观并发 + 虚拟目录树）、**RAG 评测系统**（dataset CRUD + benchmark 自动生成 + LLM-as-Judge + 独立 eval LLM）、**OCR 引擎注册表**（7 种引擎 + auto 模式）、**RAG 分块预设**（general / qa / semantic / separator 四种策略 + 用户级配置）、**文件原生记忆系统**（auto_memory / auto_dream pipeline + SQLite FTS5 BM25 + SQLite BLOB 向量 cosine + RRF 融合）、**Document + Version 知识库**、**代码图谱智能**、**执行计划工具**、**全局任务看板**（Task Board + Kanban UI + asyncio 调度器）、**Obsidian 知识同步**、**外部 MCP 接入**、**Run 内压缩**（通用掩码管线 + 会话笔记）、**DAG 内 Agent 通信**（ask_peer / report_result + AgentSessionRegistry）、**Aeval Agent 评测框架**（独立 PyPI 包 `aeval-framework` + `eval_integration` 接入层），并保留 Electron 桌面打包 + 移动端伴随 App 脚手架。
 
 ### 2. 五层架构 + 数据流
 
@@ -38,7 +38,9 @@ L3 Application Services                  backend/app/services/
    ├ CompactPipeline（Run 内压缩）       backend/app/services/compact_pipeline.py
    ├ WorktreeService（隔离）             backend/app/services/worktree_service.py
    ├ Observability（OTel + Phoenix）     backend/app/observability/ ← 全链路追踪 + 评测
-   └ EvalService（在线规则 + 离线Judge） backend/app/api/eval.py
+   ├ EvalService（在线规则 + 离线Judge） backend/app/api/eval.py
+   ├ Aeval 接入层（评测框架装配）        backend/app/eval_integration/ ← 独立 PyPI 包接入
+   └ AgentSessionRegistry（DAG 会话）    backend/app/services/agent_session_registry.py
    ↑↓
 L2 Agent Platform Adapters              backend/app/adapters/
    ├ ClaudeCLIAdapter / CodexCLIAdapter (CLI 子进程路线)
@@ -60,7 +62,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 - **Artifact 独立于 Message**，有自己的生命周期与版本链（`specs/04`）。
 - **所有 Agent 走统一 Agent Loop**（`specs/19`）：solo / coordinated / subagent 三种模式共用 `run_agent_loop`，任何 Agent 都能通过 `task_dispatch` 克隆自己处理子任务，Orchestrator 额外拥有 `dispatch_plan`（DAG 派发）。旧三阶段流程（plan_tasks / report_task_result / verify gate）已删除。
 - **工具执行经 HookRegistry 拦截**：`execute_with_hooks` 在 pre/post 阶段分发 Hook，支持 deny/modify/inject/allow 控制流。Agent 通过 `hook_names` 字段启用特定 Hook 组。
-- **Custom Agent 工具架构**：9 个 baseline 工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment）对所有 custom agent 必备且不可选；14 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search/rag_search/memory_proactive/task_list/task_get/task_create/task_claim/task_complete/task_move/task_comment）由 `agent.tool_names` 增量配置。运行时合并：`baseline + tool_names + 自动注入`。工具注册表共 45 个工具。
+- **Custom Agent 工具架构**：9 个 baseline 工具（fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash/ask_user/read_attachment）对所有 custom agent 必备且不可选；6 个可选工具（write_artifact/deploy_artifact/deploy_workspace/read_artifact/web_search/rag_search）在 Agent 创建/编辑时勾选。运行时合并：`baseline + tool_names + 按运行形态自动注入`（task_dispatch/dispatch_plan 按模式分配，7 个 task 工具仅 TaskScheduler 派发的运行注入，8 个 manage_* 仅 guide agent，ask_peer/report_result 用于 DAG 内通信）。工具注册表共 47 个工具。
 - **Guide Agent（小A）隔离**：`is_guide=True` 的 Agent 跳过 baseline 合并，只注入 8 个管理工具（含 manage_tasks）+ `ask_user`；非 guide agent 即使 `tool_names` 误配管理工具也会被过滤。`mode='guide'` 会话不出现在 `list_conversations`、不可删除、不出现在全局搜索。
 
 ### 3. 功能现状矩阵
@@ -73,10 +75,10 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | CodexCLIAdapter | 🔧 | `spawn codex app-server --listen stdio://`，JSON-RPC 2.0；代码就绪，端到端验证待完成 |
 | CustomAgentAdapter | ✅ | OpenAI 兼容（DeepSeek/OpenAI/火山方舟）+ 自驱 tool loop（SDK 路线） |
 | MockAdapter | ✅ | 开发期不烧 token |
-| 自建 Agent | ✅ | 4 角色预设（coder/researcher/orchestrator/writer）· 9 baseline + 14 可选工具 · 表单/对话式创建 |
+| 自建 Agent | ✅ | 4 角色预设（coder/researcher/orchestrator/writer）· 9 baseline + 6 可选工具 · 表单/对话式创建 |
 | **小A Guide Agent** | ✅ | ★ 全局悬浮助手· builtin + `is_guide=True` · 8 个管理工具（含 manage_tasks）· mode='guide' 隐藏会话 · 双活跃会话模型 · 开箱即用（DEEPSEEK 兜底） |
 | Orchestrator 编排 | ✅ | 统一 Agent Loop（solo/coordinated/subagent）· `task_dispatch` 克隆派发 · `dispatch_plan` DAG 调度 · 递归深度限制 · 可选计划审批 |
-| 工具系统（45 个） | ✅ | write/read/update_artifact · deploy_artifact/deploy_workspace · read_attachment · fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash · code_explore · task_dispatch/dispatch_plan · create_plan/plan_step/add_plan_steps · ask_user · web_search · memory_recall/memory_store/memory_proactive · rag_search/ingest/list/delete · load_skill/write_skill · ★ manage_agents/manage_skills/manage_mcp/manage_documents/manage_memory/manage_profile/manage_conversations/manage_tasks（仅 guide agent）· ★ task_list/task_get/task_create/task_claim/task_complete/task_move/task_comment（opt-in task 工具） |
+| 工具系统（47 个） | ✅ | write/read/update_artifact · deploy_artifact/deploy_workspace · read_attachment · fs_read/fs_write/fs_edit/fs_list/fs_glob/fs_grep/bash · code_explore · task_dispatch/dispatch_plan · create_plan/plan_step/add_plan_steps · ask_user · ★ ask_peer/report_result（DAG 内 Agent 通信） · web_search · memory_recall/memory_store/memory_proactive · rag_search/ingest/list/delete · load_skill/write_skill · ★ manage_agents/manage_skills/manage_mcp/manage_documents/manage_memory/manage_profile/manage_conversations/manage_tasks（仅 guide agent）· ★ task_list/task_get/task_create/task_claim/task_complete/task_move/task_comment（仅 TaskScheduler 派发的运行注入） |
 | Agent Skills | ✅ | custom agent 装备 skill · 渐进式披露 · `load_skill` 按需读正文 |
 | Artifact 预览/编辑 | ✅ | web_app / document / image / ppt(真 .pptx 导出) / code_file / diff · 版本链 · 选区改写 · 面板内编辑 · update_artifact 增量更新 |
 | Workspace 沙箱 | ✅ | sandbox/local 双模式 · fs_write 审批 · 双平台 Bash 黑名单 |
@@ -102,12 +104,12 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **外部 MCP 接入** | ✅ | MCP Server 配置管理 · client_manager · 调用审批 · mcp_bridge 暴露平台工具给 CLI agent |
 | **PromptAssembler** | ✅ | 上下文组装：Profile(偏好) + Recall(记忆) + Constraints(约束) 注入 Agent |
 | **Web 搜索** | ✅ | Tavily API（`web_search` 工具，需 `TAVILY_API_KEY`） |
-| **Run 内压缩** | ✅ | compact_pipeline 五阶段递进压缩（ratio 阈值 0.70/0.80/0.88/0.93/0.95）· compact_markers 标记构建 · 纯结构化裁剪无 LLM |
+| **Run 内压缩** | ✅ | compact_pipeline 通用掩码压缩（stage 1 ratio ≥ 0.75 掩码旧工具结果 · stage 3 ≥ 0.88 折叠旧轮次为 marker）· stage 4/5（≥ 0.93 软收尾 / ≥ 0.95 强制终止）在 react_loop_termination · 纯结构化裁剪无 LLM · 原 Stage 2 已并入 Stage 1 |
 | **生命周期 Hooks 系统** | ✅ | 7 个内置 Hook（审计/压缩/检查点/记忆/技能/摘要/审批）· 10 个生命周期事件 · Agent 按 `hook_names` 启用 |
 | **双活跃会话模型** | ✅ | ★ 工作会话（activeConversationId）+ guide 会话（guideConversationId）并行 · GuideFloatingPanel 悬浮组件 · 拖拽/缩放/收起/快捷键 · localStorage 持久化 · 移动端全屏 |
 | **Checkpoint 检查点** | ✅ | SDK Agent turn 级检查点保存与恢复（`agent_run_checkpoints` 表）|
 | **统一转录渲染** | ✅ | transcript_renderer 统一消息流渲染逻辑 |
-| **全局任务看板** | ✅ | ★ Task Board · 持久化任务池（tasks + task_comments 表）· Kanban UI（7 状态列）· 乐观并发控制（version 列）· asyncio 后台调度器自动派发 todo 任务给 Agent · 7 个 opt-in task 工具 + manage_tasks guide 管理工具 |
+| **全局任务看板** | ✅ | ★ Task Board · 持久化任务池（tasks + task_comments 表）· Kanban UI（7 状态列）· 乐观并发控制（version 列）· asyncio 后台调度器自动派发 todo 任务给 Agent · 7 个 task 工具（调度器注入）+ manage_tasks guide 管理工具 |
 | **ModelProfile** | ✅ | ★ 用户级模型配置（独立于 Agent 实体）· 运行时解析（显式 → 默认 → 拒绝）· 连通性测试 · 迁移机制 |
 | Electron 桌面版 | ⚠️ | 打包脚本就绪；内嵌 Next 已无后端，需改启 Python |
 | 移动端伴随 App | ⏳ | 响应式 Web 已适配；Capacitor 原生壳脚手架已建，配对通信待打通 |
@@ -115,8 +117,12 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | ~~Redis 元数据缓存 + 异步 DB~~ | ❌ 已移除 | 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代 |
 | **记忆管理 UI** | ✅ | 记忆库面板 · 长期记忆/偏好/短期记忆三面板 · 查看/删除/固化 |
 | **Agent 可观测性与评测** | ✅ | OpenTelemetry 全链路追踪(Level 4 深度埋点) · Arize Phoenix(:6006) · 在线规则评测(默认开) · 离线 LLM-as-Judge(手动触发) · 5+4 维评测指标体系 |
+| **Aeval Agent 评测框架** | ✅ | ★ 独立 PyPI 包 `aeval-framework`（import 名 `agent_eval`，默认不装）· `EVAL_HARNESS_ENABLED` 开启后 /api/eval 挂载子应用（suites/tasks/runs/trials/compare/graders）· `eval_integration/` 接入层（AChatAgentRunner + Workspace 环境 + Artifact/Dispatch graders + Phoenix trace bridge）· 声明式套件（`backend/eval_suites/*.yaml`）· 独立 SQLite 存储（aeval.db）· 框架内置 Dashboard + `eval-suite` CLI |
+| **DAG 内 Agent 通信** | ✅ | ★ `ask_peer` 兄弟会话提问（重建历史跑 mini-run / 父邮箱兜底）· `report_result` 结构化汇报（terminal tool，立即终止）· `AgentSessionRegistry` 会话注册表（300s TTL）· 防循环 per-peer 最多 3 次 |
+| **会话笔记（Session Note）** | ✅ | ★ 结构化 10 段 YAML 会话笔记 · 替代旧无结构文本摘要 · YAML 存储 / XML 注入 / 解析失败回退纯文本 · UI 会话笔记面板 |
+| **图谱可视化 API** | ✅ | ★ `api/graph.py` stats / subgraph / labels 端点 · 模块化抽取器框架（`graph/extractors/` ABC + Factory + LLM 实现）|
 | **Thinking/Tool 耗时 UI** | ✅ | 实时显示思考与工具调用耗时 |
-| 测试覆盖 | 🟡 | 后端 pytest（141 测试文件, ruff 全绿）；前端 Vitest 纯函数；E2E 待补 |
+| 测试覆盖 | 🟡 | 后端 pytest（178 测试文件, ruff 全绿）；前端 Vitest 纯函数；E2E 待补 |
 
 ---
 
@@ -191,7 +197,8 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `runs_misc.py` | run 中止 / usage summary |
 | `documents.py` | ★ Document + Version 知识库 CRUD |
 | `skills.py` | Skills 上传 / 列表 / 加载 |
-| `eval.py` | ★ Agent 评测（`POST /api/eval/judge/{trace_id}` 手动触发 LLM-as-Judge） |
+| `eval.py` | ★ Agent 评测（`POST /api/eval/judge/{trace_id}` 手动触发 LLM-as-Judge）；`EVAL_HARNESS_ENABLED` 开启时同前缀挂载 Aeval 子应用（suites/tasks/runs/trials/compare/graders） |
+| `graph.py` | ★ 图谱可视化 API（stats / subgraph / labels） |
 | `deployments.py` | 本地静态发布预览 URL |
 | `code_intelligence.py` | ★ 代码图谱智能（启用/同步/重建索引 · 状态查询） |
 | `mcp.py` | ★ 外部 MCP Server 配置管理（CRUD · 调用） |
@@ -207,13 +214,14 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **AgentRunner** | `agent_runner.py` | per-run 生命周期、选 adapter、`build_adapter_input`、历史注入、token 预算、baseline 工具合并 —— **L3 核心** |
 | **AgentLoop** | `agent_loop.py` | ★ `run_agent_loop`（solo/coordinated/subagent 三模式统一循环）· `spawn_subagent_loop`（递归子 Agent 派发）· prompt builders |
 | DAG 执行器 | `dag_executor.py` | ★ `validate_dag` / `topological_waves` / `execute_dag`（DAG 验证 + 波调度 + 并行执行） |
+| DAG 会话注册 | `agent_session_registry.py` | ★ task_id → AgentSession 映射（`ask_peer` 查找兄弟会话）· 父 Agent 邮箱 · 300s TTL 清理 |
 | Worktree 隔离 | `worktree_service.py` | ★ DAG 波调度并行任务的 git worktree 隔离（创建→merge-back→清理）· 非 git 目录拷贝降级 |
 | Workspace 环境隔离 | `workspace_env_service.py` | ★ 按会话/用户隔离环境变量 |
 | Orchestrator stub | `orchestrator.py` · `orchestrator_prompts.py` | 旧三阶段已移除，仅保留 stub 与工具函数 |
 | 会话服务 | `conversation_service.py` | 会话/消息持久化 |
 | 跨 run 上下文 | `conversation_context.py` | MessagePart → ChatMessage 序列化、pinned 注入 |
 | 上下文压缩 | `context_compaction_service.py` | 手动压缩历史为摘要 |
-| ★ Run 内压缩 | `compact_pipeline.py` · `compact_markers.py` | ★ 五阶段递进压缩（ratio 阈值 0.70/0.80/0.88/0.93/0.95）· 纯结构化裁剪无 LLM |
+| ★ Run 内压缩 | `compact_pipeline.py` · `compact_markers.py` | ★ 通用掩码压缩（stage 1 ratio ≥ 0.75 掩码旧工具结果 · stage 3 ≥ 0.88 折叠旧轮次）· 纯结构化裁剪无 LLM · 原 Stage 2 已并入 Stage 1 |
 | ReAct 终止 | `react_loop_termination.py` | ★ ReAct loop 终止逻辑（stage 4 软收尾 + stage 5 强制终止） |
 | 统一转录渲染 | `transcript_renderer.py` | ★ 统一消息流渲染逻辑 |
 | 事件总线 | `event_bus.py` | asyncio.Queue 扇出，推 SSE |
@@ -230,7 +238,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 部署命令 | `deploy_command_service.py` | 部署斜杠命令 |
 | Token 分析 | `usage_summary_service.py` | Token 用量聚合 |
 | 网络发现 | `network_hints.py` | 移动端 LAN/Tailscale 发现 |
-| **RAG 服务** | `rag_service.py` | ★ 混合检索（Milvus+ES+KG+RRF）+ ingest + delete |
+| **RAG 服务** | `rag_service.py` | ★ 混合检索（Milvus dense+sparse + KG + RRF）+ ingest + delete |
 | **Document 服务** | `document_service.py` | ★ Document + Version CRUD + 入库 RAG |
 | **Obsidian 同步** | `obsidian_sync_service.py` | ★ Obsidian vault 同步 + 预处理 |
 | **PromptAssembler** | `prompt_assembler.py` | ★ 上下文组装（Profile + Recall + Constraints） |
@@ -289,7 +297,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `client_manager.py` | ★ 外部 MCP Server 连接管理（stdio/SSE 传输 · 工具发现 · 调用代理） |
 
 ### 工具系统（`backend/app/tools/`）
-`base.py`（ToolContext + ToolDef） · `registry.py`（注册 45 个工具） · `write_artifact.py` · `read_artifact.py` · `update_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_edit.py` · `fs_list.py` · `fs_glob.py` · `fs_grep.py` · `bash.py` · `code_explore.py`（代码图谱探索） · `task_dispatch.py`（子 Agent 派发） · `dispatch_plan.py`（DAG 派发） · `execution_plan.py`（create_plan/plan_step/add_plan_steps 执行计划） · `ask_user.py` · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `memory_store.py`（主动记忆存储） · `skills.py`（load_skill/write_skill） · ★ `manage_base.py`（管理工具公共基类） · ★ `manage_agents.py` / `manage_skills.py` / `manage_mcp.py` / `manage_documents.py` / `manage_memory.py` / `manage_profile.py` / `manage_conversations.py` / `manage_tasks.py`（8 个 guide agent 专用管理工具） · ★ `task_tools.py`（7 个 opt-in task 工具：task_list/get/create/claim/complete/move/comment） · `rate_limiter.py`。详见 `specs/07`。
+`base.py`（ToolContext + ToolDef） · `registry.py`（注册 47 个工具） · `write_artifact.py` · `read_artifact.py` · `update_artifact.py` · `deploy_artifact.py` · `deploy_workspace.py` · `read_attachment.py` · `fs_read.py` · `fs_write.py` · `fs_edit.py` · `fs_list.py` · `fs_glob.py` · `fs_grep.py` · `bash.py` · `code_explore.py`（代码图谱探索） · `task_dispatch.py`（子 Agent 派发） · `dispatch_plan.py`（DAG 派发） · `execution_plan.py`（create_plan/plan_step/add_plan_steps 执行计划） · `ask_user.py` · ★ `ask_peer.py`（DAG 内兄弟会话提问） · ★ `report_result.py`（子 Agent 结构化汇报，terminal tool） · `web_search.py` · `memory_rag.py`（memory_recall + rag_search/ingest/list/delete） · `memory_store.py`（主动记忆存储） · `skills.py`（load_skill/write_skill） · ★ `manage_base.py`（管理工具公共基类） · ★ `manage_agents.py` / `manage_skills.py` / `manage_mcp.py` / `manage_documents.py` / `manage_memory.py` / `manage_profile.py` / `manage_conversations.py` / `manage_tasks.py`（8 个 guide agent 专用管理工具） · ★ `task_tools.py`（7 个 task 工具：task_list/get/create/claim/complete/move/comment，仅 TaskScheduler 派发的运行注入） · `rate_limiter.py`。详见 `specs/07`。
 
 ### RAG 引擎（`backend/app/rag/`）
 | 文件 | 职责 |
@@ -312,6 +320,19 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 > **已移除**：`rewriter.py`（Query Rewriting 已删除）
 > **已移除**：Elasticsearch 全文检索（由 Milvus 原生 BM25 sparse vector 替代）
 
+### 评测接入（`backend/app/eval_integration/`）
+| 文件 | 职责 |
+|---|---|
+| `config.py` | ★ Aeval 装配入口 `create_aeval_runner()`（从 settings 读凭证 → EvalRunner；缺凭证报 `EvalConfigError`）|
+| `runner.py` | ★ `AChatAgentRunner` + `WorkspaceCoordinator`（评测任务 → AChat agent 运行的桥接）|
+| `environment.py` | ★ `AChatWorkspaceEnvironment`（评测 workspace 环境隔离）|
+| `graders/` | ★ AChat grader（Artifact / Dispatch 评分）|
+| `client.py` | ★ `AChatApiClient`（评测回调 API 客户端 + Bearer token provider）|
+| `trace_bridge.py` | ★ 进程内 `RunTraceBridge`（AChat trace ↔ 评测 trial 的 trace_id 主通道）|
+| `errors.py` | EvalConfigError 等异常 |
+
+> 框架本体在 PyPI 包 `aeval-framework`（import 名 `agent_eval`，含 API / CLI / graders / metrics / storage / trace），不在本仓库。声明式套件在 `backend/eval_suites/*.yaml`（`eval-kb/` 为评测专用知识库 fixture）。`EVAL_HARNESS_ENABLED=true` 时 `main.py` 在 `/api/eval` 挂载 `agent_eval.api.app.create_eval_app()` 子应用。
+
 ### 记忆系统（`backend/app/memory/`）
 | 文件 | 职责 |
 |---|---|
@@ -321,18 +342,23 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | `pipeline/` | auto_memory + auto_index + auto_dream + proactive |
 | `preference.py` | 用户偏好（PG KV 表，保留不动） |
 | `session_memory.py` | 会话摘要（上下文压缩，保留不动） |
+| `session_note.py` | ★ 结构化 10 段 YAML 会话笔记（YAML 存储 / XML 注入 / 解析失败回退纯文本 `<session_memory>`）|
 | `memory_writer_compat.py` | Preference 提取工具（从旧 memory_writer 保留） |
 ### 知识图谱（`backend/app/graph/`）
 | 文件 | 职责 |
 |---|---|
 | `kgstore.py` | KGStore：文档 → 实体/关系抽取 → Neo4j 入图 → 子图检索 |
-| `extractor.py` | LLM 驱动的实体/关系抽取 |
+| `extractors/` | ★ 模块化抽取器框架（`base.py` GraphExtractor ABC + `factory.py` 注册工厂 + `llm.py` LLM 实现，支持批量抽取与自定义扩展）|
+| `graph_utils.py` | ★ 图谱工具函数 |
+| `extractor.py` | LLM 驱动的实体/关系抽取（旧入口，保留兼容）|
 | `types.py` | 图谱类型定义 |
+
+> 可视化端点在 `backend/app/api/graph.py`（stats / subgraph / labels），供前端图谱视图消费。
 
 ### 基础设施层（`backend/app/infra/`）
 | 文件 | 职责 |
 |---|---|
-| `factory.py` | `build_infrastructure()`：配置驱动，独立降级（Milvus/ES/Neo4j/Kafka · ~~Redis~~ 已移除） |
+| `factory.py` | `build_infrastructure()`：配置驱动，独立降级（Milvus/Neo4j/Kafka · ~~Redis~~ 已移除 · ~~ES~~ 已移除） |
 | `hybrid.py` | HybridStore 抽象（向量 + 全文 + 图谱统一接口） |
 | `cache.py` | ★ 已移除（no-op stub，Redis KV 缓存被进程内 dict TTL 替代） |
 | `cache_helpers.py` | ★ 缓存实体查找（Agent/Settings/Workspace/GlobalSettings cached） |
@@ -368,7 +394,7 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 - 移动：`apps/mobile/`（Capacitor 伴随客户端，monorepo workspace `@agenthub/mobile`）。`specs/14`。
 
 ### 测试
-- 后端：`backend/tests/`（pytest，141 测试文件，`asyncio_mode = "auto"`，ruff 全绿；含 auth/CSRF/SSE 认证/隔离/异步写入/恢复扫描/压缩管线/worktree 测试）。
+- 后端：`backend/tests/`（pytest，178 测试文件，`asyncio_mode = "auto"`，ruff 全绿；含 auth/CSRF/SSE 认证/隔离/异步写入/恢复扫描/压缩管线/worktree/client_message_id/user_id 传递测试）。
 - 前端单元：`src/**/*.test.ts` / `src/**/*.test.tsx`（Vitest 纯函数）。
 
 ---
@@ -376,15 +402,20 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 ## 附 · 当前现状（易过时，以 git 为准）
 
 ### ✅ 近期完成
+- **★ Aeval Agent 评测框架（独立包化）**：抽取为独立 PyPI 包 `aeval-framework`（import 名 `agent_eval`，含 API/CLI/graders/metrics/storage/trace）· AChat 侧保留 `eval_integration/` 接入层（AChatAgentRunner + Workspace 环境 + Artifact/Dispatch graders + RunTraceBridge）· `EVAL_HARNESS_ENABLED` 开启后 `/api/eval` 挂载子应用（suites/tasks/runs/trials/compare/graders）· task 级会话配置（套件 env 支持选择被评 agent 与会话形态）· Metrics P1 + 数据集/任务库 Dashboard（框架内置）· 声明式套件 `backend/eval_suites/*.yaml` · 独立 SQLite 存储（aeval.db）
+- **★ 压缩管线重写 + 会话笔记**：compact_pipeline 重写为通用掩码管线（stage 1 ratio ≥ 0.75 掩码旧工具结果 / stage 3 ≥ 0.88 折叠旧轮次，原 Stage 2 并入 Stage 1）· CompactMessage 统一抽象（Run 内压缩与 Layer 3 跨 run 压缩共用）· `session_note.py` 结构化 10 段 YAML 会话笔记（YAML 存储 / XML 注入 / UI 面板 + API）
+- **★ DAG 内 Agent 通信**：`ask_peer` 兄弟会话提问（重建对方历史跑 mini-run / 父邮箱兜底，per-peer 限 3 次）· `report_result` 结构化汇报 terminal tool（立即终止 + spawn_subagent_loop 提取）· `agent_session_registry.py` DAG 会话注册表（300s TTL）
+- **★ KGStore 可视化与模块化抽取器**：`api/graph.py` stats/subgraph/labels 可视化端点 · `graph/extractors/` 抽象基类 + 注册工厂 + LLM 批量抽取 · RAG parser 改进
+- **★ 消息去重与 user_id 传递**：`client_message_id` 幂等去重（修复重发/重连时消息重复渲染）· user_id 全链路传递补齐（含 mobile routes）· 新增 `test_client_message_id.py` / `test_user_id_propagation.py`
 - **★ RAG 大重构**：ES 全文检索移除 → Milvus 原生 BM25 sparse vector 替代 · `rewriter.py` 移除 · `parser_registry.py` OCR 引擎注册表（7 种引擎 + auto 模式）· `parsers/` 目录 OCR 引擎实现 · `chunking/` 4 种分块预设（general/qa/semantic/separator）· `file_lifecycle.py` 11 状态状态机 + 乐观并发 · `graph_build_task.py` 异步图谱构建 · `graph_retrieval.py` PPR + entity/triple vector 检索 · `milvus_graph_vector_store.py` 图谱 entity/triple Milvus 向量存储 · `rag_tasks` 表 + `RagTaskWorker` asyncio 后台任务队列 · `eval/` RAG 评测系统（dataset CRUD + benchmark 自动生成 + LLM-as-Judge + 独立 eval LLM）· `db/migrations/` schema 迁移脚本 · DB 22→27 张表 + 路由 13+9→14+13 · `MEMORY_ENABLED` 环境变量开关
-- **★ 全局任务看板（Task Board）**：持久化任务池（`tasks` + `task_comments` 表）· Kanban UI（7 状态列：backlog/todo/in_progress/in_review/done/blocked/canceled）· 乐观并发控制（version 列 + if_version 前置检查）· asyncio 后台调度器（`TaskSchedulerService` 定期扫描 todo → dispatch 给 Agent）· 7 个 opt-in task 工具 + `manage_tasks` guide 管理工具 · 侧栏新增 `'tasks'` mode
+- **★ 全局任务看板（Task Board）**：持久化任务池（`tasks` + `task_comments` 表）· Kanban UI（7 状态列：backlog/todo/in_progress/in_review/done/blocked/canceled）· 乐观并发控制（version 列 + if_version 前置检查）· asyncio 后台调度器（`TaskSchedulerService` 定期扫描 todo → dispatch 给 Agent）· 7 个 task 工具（调度器注入）+ `manage_tasks` guide 管理工具 · 侧栏新增 `'tasks'` mode
 - **★ 记忆向量检索**：`vector_index.py` SQLite BLOB 向量存储 + 暴力 cosine 相似度搜索 · `hybrid_search.py` 升级为 BM25 + Vector 双路召回 + RRF 融合 + wikilink 后处理
 - **★ 小A Guide Agent（全局悬浮助手）**：builtin + `is_guide=True` Agent（`ag_guide_builtin`）· 启动种子机制（幂等）· `guide_prompt.py` 约束管理边界 · 8 个管理工具（manage_agents/skills/mcp/documents/memory/profile/conversations/tasks）· `manage_memory(action=optimize)` LLM 驱动智能记忆整理 · `mode='guide'` 隐藏会话（不出现在 list/搜索/不可删）· `GuideSideEffectEvent` 副作用事件 · `GuideFloatingPanel` 悬浮组件（拖拽/缩放/收起/`Ctrl/Cmd+G` 快捷键/移动端全屏）· 双活跃会话模型（工作 + guide 并行）· 开箱即用（`GUIDE_AGENT_*` 环境变量配置，默认 deepseek 兜底）
 - **★ ModelProfile**：用户级模型配置（独立于 Agent 实体）· 运行时解析（显式 → 默认 → 拒绝）· 连通性测试（`POST /api/model-profiles/{id}/test`）· 迁移机制（`_migrate_agent_model_profiles`）
-- **Agent 角色预设重设**：9 个预设推翻重设为 4 个（coder/researcher/orchestrator/writer）· 引入 `BASELINE_AGENT_TOOLS`（9 个工具对所有 custom agent 必备，UI 不可选）· UI 可选工具从 14 个缩减为 5 个 · systemPromptTemplate 职责收窄 · 修复 `_build_agent_hub_tool_guidance` 的 has_file_tools 块 bug
+- **Agent 角色预设重设**：9 个预设推翻重设为 4 个（coder/researcher/orchestrator/writer）· 引入 `BASELINE_AGENT_TOOLS`（9 个工具对所有 custom agent 必备，UI 不可选）· UI 可选工具从 14 个缩减为 5 个（后增补 rag_search 至 6 个）· systemPromptTemplate 职责收窄 · 修复 `_build_agent_hub_tool_guidance` 的 has_file_tools 块 bug
 - **代码图谱智能系统**：CodeGraph 本地运行时管理 · `code_explore` 工具 · 索引管理（启用/同步/重建）· 后台异步编排 + 防抖同步 · 状态机 · 前端控制开关
 - **执行计划工具**：`create_plan` / `plan_step` / `add_plan_steps` 三个工具 · 结构化计划卡片 UI · 步骤状态实时更新 · plan_registry/plan_dispatch_mapping/plan_usage_service 服务支撑
-- **Run 内压缩（五阶段 pipeline）**：`compact_pipeline.py` 递进压缩（ratio 阈值 0.70/0.80/0.88/0.93/0.95）· `compact_markers.py` 标记构建 · 纯结构化裁剪无 LLM · `react_loop_termination.py` stage 4/5 终止逻辑
+- **Run 内压缩**：`compact_pipeline.py` 通用掩码压缩（stage 1 ratio ≥ 0.75 掩码 / stage 3 ≥ 0.88 折叠）· `compact_markers.py` 标记构建 · 纯结构化裁剪无 LLM · `react_loop_termination.py` stage 4/5 终止逻辑
 - **Worktree 隔离**：DAG 波调度并行任务用 git worktree 隔离 · 非 git 目录用目录拷贝降级 · 自动 merge-back · 冲突标记
 - **Workspace 环境隔离**：`workspace_env_service.py` 按会话/用户隔离环境变量
 - **统一转录渲染器**：`transcript_renderer.py` 统一消息流渲染逻辑
@@ -425,6 +456,9 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 > 迁移方案见 `openspec/changes/migrate-claude-codex-to-cli/`。CLI 路线将厂商 CLI 作为子进程拉起，工具执行/沙箱/审批由 CLI 自管，AChat 仅翻译事件流。
 
 ### 📋 待办
+- ★ speed-up-first-token-latency（首 token 延迟优化，OpenSpec change in-progress）
+- ★ dag-incremental-retry（DAG 增量重试，OpenSpec change in-progress）
+- ★ Aeval 评测框架 spec 建立（设计文档见 `docs/eval-harness-design.md`，OpenSpec spec 未建立）
 - OpenSpec 主 specs 同步（persistence 需更新以反映 RAG 大重构：27 张表 + 路由 14+13 + ES 移除 + Milvus BM25 + 新增 rag_tasks/eval 表 + Document 新字段）
 - OpenSpec 主 specs 同步（orchestrator / tools / stream-events / core-domain 需更新以反映统一 Agent Loop）
 - OpenSpec 主 specs 同步（persistence / platform-security / frontend 需更新以反映用户认证与多用户隔离）
@@ -448,4 +482,4 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 
 ---
 
-*最后更新：2026-08-19 · 同步 RAG 大重构（ES 移除 → Milvus BM25、OCR 引擎注册表、分块预设、文件生命周期、任务队列、图谱 v2、评测系统、DB 22→27 张表 + 路由 14+13）、MEMORY_ENABLED 环境变量等。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*
+*最后更新：2026-08-30 · 同步 Aeval 评测框架独立包化（aeval-framework + eval_integration 接入层 + /api/eval 子应用）、压缩管线重写（通用掩码 + 会话笔记）、DAG 内 Agent 通信（ask_peer / report_result + AgentSessionRegistry）、KGStore 可视化与模块化抽取器、client_message_id 去重与 user_id 传递、工具注册表 45→47 等。改动较大后请同步本文件的「功能矩阵」与「当前现状」两节。*

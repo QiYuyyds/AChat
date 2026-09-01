@@ -146,6 +146,12 @@ class MessageAddedEvent(BaseEvent):
 
     type: Literal["message.added"] = "message.added"
     message: MessageRecord
+    # Sender receipt: the clientMessageId supplied with the POST request, echoed
+    # verbatim so the sender can claim its optimistic temp message immediately.
+    # None when the sender did not supply one (backward compatible).
+    client_message_id: str | None = Field(default=None, alias="clientMessageId")
+
+    model_config = {"populate_by_name": True}
 
 
 class MessageRemovedEvent(BaseEvent):

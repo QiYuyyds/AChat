@@ -237,10 +237,9 @@ async def test_sdk_static_metadata_in_system_prompt(db, custom_agent_setup, monk
     mock_assembler = MagicMock()
     mock_assembler.assemble = AsyncMock(return_value=test_ctx)
     monkeypatch.setattr(agent_runner, "_get_prompt_assembler", lambda: mock_assembler)
-    # Mock IP geolocation to return a fixed city (avoids real network call)
-    monkeypatch.setattr(agent_runner, "_detect_location", AsyncMock(return_value="重庆"))
-    # Reset module-level cache so the mock is used
-    agent_runner._cached_location = None
+    # Warm the location cache with a fixed city (auto-restored by monkeypatch);
+    # the critical-path read is cache-only and performs no network call.
+    monkeypatch.setattr(agent_runner, "_cached_location", "重庆")
 
     from sqlalchemy import select
 
@@ -298,10 +297,9 @@ async def test_sdk_dynamic_metadata_in_user_tail(db, custom_agent_setup, monkeyp
     mock_assembler = MagicMock()
     mock_assembler.assemble = AsyncMock(return_value=test_ctx)
     monkeypatch.setattr(agent_runner, "_get_prompt_assembler", lambda: mock_assembler)
-    # Mock IP geolocation to return a fixed city (avoids real network call)
-    monkeypatch.setattr(agent_runner, "_detect_location", AsyncMock(return_value="重庆"))
-    # Reset module-level cache so the mock is used
-    agent_runner._cached_location = None
+    # Warm the location cache with a fixed city (auto-restored by monkeypatch);
+    # the critical-path read is cache-only and performs no network call.
+    monkeypatch.setattr(agent_runner, "_cached_location", "重庆")
 
     from sqlalchemy import select
 
