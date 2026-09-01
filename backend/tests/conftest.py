@@ -27,9 +27,10 @@ async def db(tmp_path, monkeypatch):
     monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path / "workspaces"))
     monkeypatch.setenv("JWT_SECRET", _TEST_JWT_SECRET)
     monkeypatch.setenv("ALLOW_REGISTRATION", "true")
-    # Use the same SQLite file for both local and remote tables in tests.
-    # This ensures all tables (local + remote) are created on one engine.
-    monkeypatch.setenv("DATABASE_LOCAL_URL", f"sqlite+aiosqlite:///{db_file.as_posix()}")
+    # Single-DB mode (DATABASE_LOCAL_URL unset): all 27 tables live on one
+    # engine, matching the desktop deployment. The engine falls back to the
+    # remote session factory for local tables in this mode.
+    monkeypatch.setenv("DATABASE_LOCAL_URL", "")
 
     from app.config import get_settings
 
