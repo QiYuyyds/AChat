@@ -124,10 +124,12 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
             from app.eval_integration.config import create_aeval_runner
 
-            runner = await create_aeval_runner(settings)
+            # 同进程嵌入: in_process 通道在这里才成立 (独立脚本请用默认 http)
+            runner = await create_aeval_runner(settings, completion_channel="in_process")
             set_runner(runner)
             logger.info(
-                "Aeval: real AChat runner injected (agent=%s, api_base=%s)",
+                "Aeval: real AChat runner injected (agent=%s, api_base=%s, "
+                "completion=in_process)",
                 settings.eval_agent_id,
                 settings.eval_api_base or f"http://127.0.0.1:{settings.port}",
             )

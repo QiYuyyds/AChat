@@ -18,7 +18,11 @@ from app.eval_integration.client import AChatApiClient
 from app.eval_integration.environment import AChatWorkspaceEnvironment
 from app.eval_integration.errors import EvalConfigError
 from app.eval_integration.graders import AChatArtifactGrader, AChatDispatchGrader
-from app.eval_integration.runner import AChatAgentRunner, WorkspaceCoordinator
+from app.eval_integration.runner import (
+    AChatAgentRunner,
+    CompletionChannel,
+    WorkspaceCoordinator,
+)
 from app.observability.instrumentation import (
     AGENTHUB_CONVERSATION_ID,
     AGENTHUB_INPUT_TOKENS,
@@ -139,8 +143,16 @@ def check_credentials(settings: Any) -> None:
         )
 
 
-async def create_aeval_runner(settings: Any = None):
-    """构造 AChat 接入的完整 EvalRunner (agent_eval.core.runner.EvalRunner)。"""
+async def create_aeval_runner(
+    settings: Any = None,
+    *,
+    completion_channel: CompletionChannel = "http",
+):
+    """构造 AChat 接入的完整 EvalRunner (agent_eval.core.runner.EvalRunner)。
+
+    ``completion_channel`` 默认 ``http``: 进程内通道要求 agent 执行与评测器同进程,
+    只有服务端自己挂载评测子应用时成立 (见 app/main.py 显式传 in_process)。
+    """
     from agent_eval.core.runner import EvalRunner
     from agent_eval.storage.sqlite import SqliteStorage
 
@@ -160,6 +172,7 @@ async def create_aeval_runner(settings: Any = None):
         settings.eval_agent_id,
         run_timeout=settings.eval_run_timeout,
         coordinator=coordinator,
+        completion_channel=completion_channel,
         # 会话删除由环境管理器 teardown 负责
         cleanup_conversations=False,
     )

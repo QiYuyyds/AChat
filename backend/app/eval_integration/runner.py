@@ -36,7 +36,7 @@ from app.eval_integration import trace_bridge
 
 logger = logging.getLogger(__name__)
 
-CompletionChannel = Literal["auto", "in_process", "http"]
+CompletionChannel = Literal["in_process", "http"]
 
 # workspace 递归收集上限 (防失控)
 _MAX_OUTCOME_FILES = 50
@@ -157,7 +157,7 @@ class AChatAgentRunner:
         *,
         run_timeout: float = 300.0,
         poll_interval: float = 2.0,
-        completion_channel: CompletionChannel = "auto",
+        completion_channel: CompletionChannel = "http",
         trace_wait_timeout: float = 10.0,
         trace_resolver: Any = None,
         coordinator: WorkspaceCoordinator | None = None,
@@ -353,13 +353,13 @@ class AChatAgentRunner:
     ) -> list[str]:
         """发送 prompt 并等待完成, 返回 run_ids。
 
+        ``in_process`` 只有当 agent 执行与本评测器在**同一进程**时才可用
+        (事件在服务进程发布, 独立脚本订阅不到); 由嵌入方显式声明, 不做猜测。
         进程内通道先订阅 event_bus 再发送 (防丢快速失败 run 的 RunEndEvent);
         发送前失败 (订阅不可用等) 自动降级 HTTP 轮询; 发送后失败不重发
         (重复发送有副作用), 直接上抛。
         """
         channel = self.completion_channel
-        if channel == "auto":
-            channel = "in_process" if self._event_bus_available() else "http"
 
         if channel == "http":
             send = await self.client.send_message(conversation_id, prompt)
@@ -460,15 +460,6 @@ class AChatAgentRunner:
             err.elapsed_ms = (time.monotonic() - started) * 1000
         return err
 
-    @staticmethod
-    def _event_bus_available() -> bool:
-        try:
-            from app.services.event_bus import event_bus  # noqa: F401
-
-            return True
-        except Exception:  # noqa: BLE001
-            return False
-
     # ── trace_id ─────────────────────────────────────────────────────────
 
     async def _resolve_trace_id(self, run_ids: list[str]) -> str:
@@ -487,9 +478,13 @@ class AChatAgentRunner:
         if self._trace_resolver is not None:
             tid = await self._trace_resolver(run_id)
         else:
-            tid = await trace_bridge.wait_for_trace_id(
-                run_id, timeout=self.trace_wait_timeout
-            )
+            tid = None
+            # 进程内桥只在同进程时才可能命中: 走 HTTP 通道意味着 agent 在另一个
+            # 进程, 等它只会白烧 trace_wait_timeout 秒再落到 Phoenix 回查。
+            if self.completion_channel == "in_process":
+                tid = await trace_bridge.wait_for_trace_id(
+                    run_id, timeout=self.trace_wait_timeout
+                )
             if tid is None:
                 tid = await self._phoenix_trace_id(run_id)
         if not tid:
@@ -512,7 +507,13 @@ class AChatAgentRunner:
             return False
 
     async def _phoenix_trace_id(self, run_id: str) -> str | None:
-        """按 span 的 run_id 属性过滤 Phoenix span 表 (裸名 run_id / 约定 agenthub.run_id)。"""
+        """按 span 的 run_id 找 trace_id。
+
+        Phoenix 的 dataframe **没有** ``attributes`` 列: 属性是 ``attributes.<name>``
+        摊平列, 而宿主的点号键被收进 ``attributes.agenthub`` 这个嵌套 dict。所以既
+        不能判 ``"attributes" in df.columns``, 也不能 ``a.get("agenthub.run_id")``
+        —— 两种写法都会永远取不到 (这就是本函数此前必定返回 None 的原因)。
+        """
         try:
             from phoenix.client import Client as PhoenixClient
 
@@ -524,18 +525,28 @@ class AChatAgentRunner:
                 df = await asyncio.to_thread(
                     lambda: client.spans.get_spans_dataframe(project_name="default")
                 )
-                if df is not None and not df.empty and "attributes" in df.columns:
-                    mask = df["attributes"].apply(
-                        lambda a: isinstance(a, dict)
-                        and (a.get("agenthub.run_id") == run_id or a.get("run_id") == run_id)
-                    )
-                    rows = df[mask]
-                    if not rows.empty:
-                        return str(rows.iloc[0].get("context.trace_id", "") or "") or None
+                if df is not None and not df.empty:
+                    for record in df.to_dict("records"):
+                        if self._record_run_id(record) == run_id:
+                            return str(record.get("context.trace_id") or "") or None
                 await asyncio.sleep(2.0)
         except Exception as e:  # noqa: BLE001 - Phoenix 不可用不阻断, 由上层定夺
             logger.warning("Phoenix trace_id fallback failed: %s", e)
         return None
+
+    @staticmethod
+    def _record_run_id(record: dict[str, Any]) -> str:
+        """从一行 span 记录里取出 run_id, 兼容嵌套与摊平两种交付形状。"""
+        nested = record.get("attributes.agenthub")
+        if isinstance(nested, dict):
+            value = nested.get("run_id")
+            if value:
+                return str(value)
+        for column in ("attributes.agenthub.run_id", "attributes.run_id"):
+            value = record.get(column)
+            if value:
+                return str(value)
+        return ""
 
     # ── Transcript / outcome ─────────────────────────────────────────────
 
