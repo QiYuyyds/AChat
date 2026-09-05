@@ -101,6 +101,10 @@ async def test_create_aeval_runner_assembles_full_stack(eval_settings):
     # 并发默认 1 (§17.5 隔离正确性优先)
     assert runner.concurrency == 1
 
+    # 外层超时必须严格宽于内层: 两者相等时外层永远抢先, 宿主只剩一句
+    # 无信息的 "Trial timed out", 内层那条能指出卡在哪个阶段的诊断从不出现。
+    assert runner.per_trial_timeout > runner.agent_runner.run_timeout
+
     # trace 翻译表已接入宿主词汇: Aeval 默认只认 gen_ai.*, 少了这一步所有过程
     # 字段都会被判「证据缺失」→ trial 记 invalid → 通过率 insufficient_data。
     # 宿主条目排在候选链首位, gen_ai 标准名保留为兜底 (埋点迁移期两者都能读)。

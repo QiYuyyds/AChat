@@ -66,7 +66,12 @@ async def main(dry_run: bool) -> int:
         print("[dry-run] stopping before real Agent run")
         return 0
 
+    from app.db import engine as engine_mod
     from app.eval_integration.config import create_aeval_runner
+
+    # 真实 run 需要 backend DB 落会话/消息; 缺这步只会得到 "Database not
+    # initialized", 而不是任何能力结论 (run_first_suite.py 已有同一处理)。
+    await engine_mod.init_db()
 
     runner = await create_aeval_runner()
     print("[aeval] runner assembled — judge LLM "

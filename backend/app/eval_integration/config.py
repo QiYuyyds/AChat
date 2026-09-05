@@ -193,6 +193,10 @@ async def create_aeval_runner(settings: Any = None):
         environment=environment,
         graders=[AChatArtifactGrader(), AChatDispatchGrader()],
         concurrency=1,  # §17.5: 隔离正确性优先, 并发默认 1
+        # 外层必须比 AChatAgentRunner 的 run_timeout 宽。两侧都取 300s 时外层永远
+        # 抢先, 只剩一句无信息的 "Trial timed out after 300.0s", 而内层那条能说明
+        # 卡在哪个阶段的诊断从未有机会出现。
+        per_trial_timeout=settings.eval_run_timeout + 60,
         metrics_registry=metrics_registry,
         llm_fn=llm_fn,
     )
