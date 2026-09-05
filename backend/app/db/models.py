@@ -697,6 +697,16 @@ class GlobalSettings(Base):
     deployment_public_base_url: Mapped[str | None] = mapped_column(
         String, name="deployment_public_base_url", nullable=True
     )
+    # Infra connection overrides (rag-infra-config): NULL = 未配置，回落 env。
+    # 命名与 env 一一对应（MILVUS_HOST 等），解析优先级 global_settings → env。
+    milvus_host: Mapped[str | None] = mapped_column(String, name="milvus_host", nullable=True)
+    milvus_port: Mapped[int | None] = mapped_column(Integer, name="milvus_port", nullable=True)
+    neo4j_uri: Mapped[str | None] = mapped_column(String, name="neo4j_uri", nullable=True)
+    neo4j_user: Mapped[str | None] = mapped_column(String, name="neo4j_user", nullable=True)
+    neo4j_password: Mapped[str | None] = mapped_column(
+        String, name="neo4j_password", nullable=True
+    )
+    enable_graph: Mapped[bool | None] = mapped_column(Boolean, name="enable_graph", nullable=True)
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
 
 

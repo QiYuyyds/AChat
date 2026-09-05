@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -49,11 +50,20 @@ async def main(import_only: bool) -> int:
 
     summary = result.summary
     if summary is not None:
-        print(f"[aeval] pass@1={summary.pass_at_k.get(1)} "
-              f"avg_score={summary.avg_score:.3f}")
+        # pass@k / avg_score 在新口径下可能是 None (有效样本不足 = 证据不足,
+        # 不是 0 分)。直接 :.3f 格式化 None 会抛 TypeError。
+        def _fmt(value: Any, spec: str = "{:.3f}") -> str:
+            return "证据不足" if value is None else spec.format(value)
+
+        print(f"[aeval] pass@1={_fmt(summary.pass_at_k.get(1), '{:.1%}')} "
+              f"avg_score={_fmt(summary.avg_score)} "
+              f"(valid={summary.valid_trials} invalid={summary.invalid_trials} "
+              f"pending={summary.pending_trials})")
         for ts in summary.task_summaries:
             print(f"  - {ts.task_id}: trials={ts.total_trials} "
-                  f"pass@1={ts.pass_at_k.get(1)} avg={ts.avg_score:.3f} "
+                  f"pass@1={_fmt(ts.pass_at_k.get(1), '{:.1%}')} "
+                  f"avg={_fmt(ts.avg_score)} "
+                  f"valid={ts.valid_trials} invalid={ts.invalid_trials} "
                   f"failures={ts.failures}")
 
     failed = [tid for tid, trials in result.trials.items()

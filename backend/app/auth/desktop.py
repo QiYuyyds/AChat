@@ -58,6 +58,10 @@ async def get_or_seed_local_user(db: AsyncSession) -> User:
     db.add(user)
     try:
         await db.flush()
+        # 立即提交：依赖注入 session 的 commit 在请求结束后才执行，期间
+        # 未提交的 seed INSERT 持有 SQLite 写锁 —— 同一请求内其他 session
+        # （如 global_settings 写入）会等满 busy_timeout(30s) 后报 locked。
+        await db.commit()
     except IntegrityError:
         # 并发首启的竞态：另一请求已 seed，回退到读取
         await db.rollback()

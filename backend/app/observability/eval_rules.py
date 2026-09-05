@@ -202,6 +202,39 @@ def _span_has_error(span: Any) -> bool:
     return str(status_code) == "StatusCode.ERROR" or "ERROR" in str(status_code)
 
 
+_phoenix_clients: dict[str, Any] = {}
+
+
+def _get_phoenix_client(endpoint: str) -> Any:
+    """Lazily import phoenix and cache Client per endpoint.
+
+    Must only be called inside ``asyncio.to_thread`` — the import and
+    Client construction are synchronous and potentially slow.
+    """
+    cached = _phoenix_clients.get(endpoint)
+    if cached is not None:
+        return cached
+    import phoenix as px  # heavy import — deferred to first eval
+
+    client = px.Client(endpoint=endpoint)
+    _phoenix_clients[endpoint] = client
+    return client
+
+
+def _sync_write_evals(endpoint: str, trace_id: str, scores: list[EvalScore]) -> None:
+    """Synchronous Phoenix eval-write — run via ``to_thread`` only."""
+    from phoenix.trace import SpanEvaluations
+
+    client = _get_phoenix_client(endpoint)
+    for score in scores:
+        client.log_evaluations(
+            SpanEvaluations(
+                eval_name=score.name,
+                scores=[(trace_id, score.score, score.explanation)],
+            ),
+        )
+
+
 async def run_eval_and_log(trace_id: str, spans: list[Any]) -> None:
     """Run rule evaluations and write results to Phoenix.
 
@@ -223,22 +256,30 @@ async def run_eval_and_log(trace_id: str, spans: list[Any]) -> None:
 
 
 async def _write_evals_to_phoenix(trace_id: str, scores: list[EvalScore]) -> None:
-    """Write evaluation scores to Phoenix as trace-level annotations."""
+    """Write evaluation scores to Phoenix as trace-level annotations.
+
+    All synchronous I/O (phoenix import, Client construction, HTTP POSTs)
+    is offloaded to a worker thread with a hard timeout to prevent
+    event-loop blockage.
+    """
     settings = get_settings()
     try:
-        import phoenix as px
-        from phoenix.trace import SpanEvaluations
-
-        client = px.Client(endpoint=settings.phoenix_ui_url)
-        for score in scores:
-            # Phoenix eval API expects a name, score, and explanation
-            client.log_evaluations(
-                SpanEvaluations(
-                    eval_name=score.name,
-                    scores=[(trace_id, score.score, score.explanation)],
-                ),
-            )
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                _sync_write_evals,
+                settings.phoenix_ui_url,
+                trace_id,
+                scores,
+            ),
+            timeout=settings.eval_write_timeout_seconds,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Phoenix eval write timed out after %ss for trace %s",
+            settings.eval_write_timeout_seconds,
+            trace_id,
+        )
     except ImportError:
         logger.debug("phoenix SDK not installed, skipping eval write")
     except Exception as e:
-        logger.warning("Phoenix eval write failed: %s", e)
+        logger.warning("Phoenix eval write failed for trace %s: %s", trace_id, e)

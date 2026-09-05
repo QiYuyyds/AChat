@@ -2,7 +2,7 @@
 
 从 AChat settings 读取 api_base / agent_id / 凭证 / Phoenix endpoint,
 构造完整 EvalRunner (AChatAgentRunner + AChatWorkspaceEnvironment +
-AChat graders + SQLite 存储 + PhoenixProvider)。
+AChat graders + SQLite 存储 + PhoenixProvider + agenthub.* 属性翻译表)。
 
 缺凭证时报 EvalConfigError 并列出全部缺失项。装配同时安装进程内
 RunTraceBridge (§14.1.2 trace_id 主通道)。
@@ -19,8 +19,66 @@ from app.eval_integration.environment import AChatWorkspaceEnvironment
 from app.eval_integration.errors import EvalConfigError
 from app.eval_integration.graders import AChatArtifactGrader, AChatDispatchGrader
 from app.eval_integration.runner import AChatAgentRunner, WorkspaceCoordinator
+from app.observability.instrumentation import (
+    AGENTHUB_CONVERSATION_ID,
+    AGENTHUB_INPUT_TOKENS,
+    AGENTHUB_MODEL,
+    AGENTHUB_OUTPUT_TOKENS,
+    AGENTHUB_SUCCESS,
+    AGENTHUB_TOOL_NAME,
+)
 
 logger = logging.getLogger(__name__)
+
+# Aeval 的 trace 归一化默认只认 OTel GenAI 属性名 (`gen_ai.*`), 而本项目落到
+# Phoenix 的词汇实际有三套: LLM span 走 OpenInference (`llm.*`), 业务属性被按
+# 前缀收进一个名为 `agenthub` 的嵌套 dict, 少数走裸键。不注入这张表, 所有过程
+# 字段都会被判为「证据缺失」→ trial 记 invalid → 通过率 insufficient_data,
+# 且门禁直接拒绝信任整场 run。
+#
+# candidates 按序取首个命中, 故首位放实测有数据的名字:
+#   tool.name / tool.success ← 宿主 `agenthub.tool_name` 等点号键 (Phoenix 存成
+#     嵌套 dict, provider 侧已还原为点号键; 实测 tool_call_count 因此从 0 变 2)
+#   usage.* / model          ← OpenInference 名, 实测 199/199 条 LLM span 有值;
+#     `agenthub.input_tokens` 一类虽有常量与写入代码, 实测 0/1000, 仅作兜底
+#
+# cache_read / reasoning 是 input / output 的**子集** (实测 total = prompt +
+# completion 在 199/199 条上恒成立, 且 cache_read ≤ prompt、reasoning ≤
+# completion)。Aeval 的成本折算按子集口径先从父桶扣出再各自计价, 所以映射上来
+# 不会重复计费; 若哪天换成 input 不含缓存读的 provider, 改 PriceTable 的
+# detail_semantics="disjoint", 而不是删这两条。
+#
+# 刻意不映射:
+#   usage.total_tokens ← 挂在 agent.finalize span 上; 带 token 属性的 span 会被
+#     归一化判成 LLM 调用, 白给 n_turns +1。n_total_tokens 本就是 in+out 的派生
+#     别名, 不映射不丢数据。
+#   tool.arguments     ← agenthub.args_summary 是宿主自算的摘要, 不是原始入参;
+#     映过去会让参数正确性跑在未知口径上, 还与 Aeval 侧脱敏语义叠加两次。
+#   error.type         ← agenthub.error 是错误消息原文, 不是错误分类。
+TRACE_MAPPING_ENTRIES: dict[str, str | list[str]] = {
+    "tool.name": AGENTHUB_TOOL_NAME,
+    "tool.success": AGENTHUB_SUCCESS,
+    "usage.input_tokens": ["llm.token_count.prompt", AGENTHUB_INPUT_TOKENS],
+    "usage.output_tokens": ["llm.token_count.completion", AGENTHUB_OUTPUT_TOKENS],
+    "usage.cache_read_tokens": ["llm.token_count.prompt_details.cache_read"],
+    "usage.reasoning_tokens": ["llm.token_count.completion_details.reasoning"],
+    "model": ["llm.model_name", AGENTHUB_MODEL],
+    "session.id": AGENTHUB_CONVERSATION_ID,
+    "span.role": "openinference.span.kind",
+}
+
+# 写进每个 run 的 mapping_version; 增删条目时递增, 用于跨 run 口径复核。
+TRACE_MAPPING_VERSION = "agenthub-2"
+
+
+def build_trace_mapping():
+    """构造 AChat 的属性翻译表 (内置 OTel GenAI 条目 + 宿主条目)。"""
+    from agent_eval.trace.mapping import default_mapping
+
+    return default_mapping(
+        extra_entries=TRACE_MAPPING_ENTRIES,
+        version=TRACE_MAPPING_VERSION,
+    )
 
 
 def resolve_api_base(settings: Any) -> str:
@@ -130,6 +188,7 @@ async def create_aeval_runner(settings: Any = None):
     return EvalRunner(
         agent_runner=agent_runner,
         trace_provider=_make_trace_provider(settings),
+        trace_mapping=build_trace_mapping(),
         storage=storage,
         environment=environment,
         graders=[AChatArtifactGrader(), AChatDispatchGrader()],

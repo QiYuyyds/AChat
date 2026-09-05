@@ -63,6 +63,7 @@ next-env.d.ts
 
 # AgentHub runtime data
 /.agenthub-data/
+/.agenthub-data-desktop/
 /.agenthub-data-e2e/
 /.tmp/
 /drizzle/

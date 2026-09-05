@@ -220,6 +220,8 @@ class Settings(BaseSettings):
     phoenix_ui_url: str = "http://localhost:6006"
     eval_rule_enabled: bool = True
     eval_judge_enabled: bool = False
+    # Hard timeout for Phoenix eval-score writes (prevents event-loop blockage)
+    eval_write_timeout_seconds: float = 30.0
 
     # ─── Aeval evaluation harness (agent_eval sub-app at /api/eval) ───
     # Disabled by default; when enabled without an injected runner, only the

@@ -589,6 +589,40 @@ class ChangePasswordRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# ─── Infra Config (rag-infra-config) ───────────────────
+class InfraConfigUpdate(BaseModel):
+    """PATCH-style update for infra connection overrides (global_settings).
+
+    Absent field → unchanged. ``neo4jPassword`` uses the secrets-form
+    convention: "" or the mask echo → unchanged (空=未修改); a new value
+    replaces it. Other string fields accept None to clear (回落 env).
+    """
+
+    milvus_host: str | None = Field(default=None, alias="milvusHost")
+    milvus_port: int | None = Field(default=None, alias="milvusPort", ge=1, le=65535)
+    neo4j_uri: str | None = Field(default=None, alias="neo4jUri")
+    neo4j_user: str | None = Field(default=None, alias="neo4jUser")
+    neo4j_password: str | None = Field(default=None, alias="neo4jPassword")
+    enable_graph: bool | None = Field(default=None, alias="enableGraph")
+
+    model_config = {"populate_by_name": True}
+
+
+class InfraConfigTestRequest(BaseModel):
+    """Connection-test request: un-persisted params, tested as-is.
+
+    ``neo4jPassword`` equal to the mask echo means "use the stored password".
+    """
+
+    milvus_host: str | None = Field(default=None, alias="milvusHost")
+    milvus_port: int | None = Field(default=None, alias="milvusPort", ge=1, le=65535)
+    neo4j_uri: str | None = Field(default=None, alias="neo4jUri")
+    neo4j_user: str | None = Field(default=None, alias="neo4jUser")
+    neo4j_password: str | None = Field(default=None, alias="neo4jPassword")
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Error Response ─────────────────────────────────────
 class ErrorResponse(BaseModel):
     """Standard error response."""

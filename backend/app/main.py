@@ -138,6 +138,14 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
                 "503. Check EVAL_AGENT_ID and related eval_* settings."
             )
 
+    # ─── global_settings infra columns migration (must precede factory build —
+    # build_infrastructure reads the new columns via global_settings_service) ───
+    try:
+        from app.db.migrations.global_settings_infra import migrate_global_settings_infra
+        await migrate_global_settings_infra()
+    except Exception as e:
+        logger.warning("global_settings infra config migration failed: %s", e)
+
     # ─── Infrastructure factory ───
     try:
         from app.infra.factory import build_infrastructure, close_infrastructure
@@ -1131,6 +1139,7 @@ def create_app() -> FastAPI:
         eval,
         fs,
         graph,
+        infra,
         mcp,
         memory,
         messages,
@@ -1189,6 +1198,7 @@ def create_app() -> FastAPI:
     app.include_router(rag_eval.router, prefix="/api", tags=["rag-eval"])
     app.include_router(rag_tasks.router, prefix="/api", tags=["rag-tasks"])
     app.include_router(rag_config.router, prefix="/api", tags=["rag-config"])
+    app.include_router(infra.router, prefix="/api", tags=["infra"])
     # deployment preview assets served at root /deployments/{id}/... (no /api prefix);
     # the previewPath the agent emits is /deployments/{id}. Frontend proxies via rewrite.
     app.include_router(deployments.router, tags=["deployments"])

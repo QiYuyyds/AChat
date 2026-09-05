@@ -11,6 +11,9 @@ from agent_eval.storage.sqlite import SqliteStorage
 
 from app.eval_integration.client import AChatApiClient
 from app.eval_integration.config import (
+    TRACE_MAPPING_ENTRIES,
+    TRACE_MAPPING_VERSION,
+    build_trace_mapping,
     check_credentials,
     create_aeval_runner,
     make_judge_llm_fn,
@@ -98,7 +101,59 @@ async def test_create_aeval_runner_assembles_full_stack(eval_settings):
     # 并发默认 1 (§17.5 隔离正确性优先)
     assert runner.concurrency == 1
 
+    # trace 翻译表已接入宿主词汇: Aeval 默认只认 gen_ai.*, 少了这一步所有过程
+    # 字段都会被判「证据缺失」→ trial 记 invalid → 通过率 insufficient_data。
+    # 宿主条目排在候选链首位, gen_ai 标准名保留为兜底 (埋点迁移期两者都能读)。
+    assert runner.trace_mapping.candidates("tool.name")[0] == "agenthub.tool_name"
+    assert "gen_ai.tool.name" in runner.trace_mapping.candidates("tool.name")
+    assert runner.trace_mapping.version == TRACE_MAPPING_VERSION
+
     await runner.agent_runner.client.aclose()
+
+
+def test_trace_mapping_entries_are_real_attributes():
+    """宿主前缀的候选必须来自 instrumentation 常量; 其余必须是公共约定词汇。"""
+    from app.observability import instrumentation
+
+    defined = {
+        value
+        for key, value in vars(instrumentation).items()
+        if key.startswith("AGENTHUB_") and isinstance(value, str)
+    }
+    public_prefixes = ("gen_ai.", "llm.", "openinference.", "error.type")
+
+    candidates = [
+        name
+        for entry in TRACE_MAPPING_ENTRIES.values()
+        for name in ([entry] if isinstance(entry, str) else list(entry))
+    ]
+    for name in candidates:
+        if name.startswith("agenthub."):
+            assert name in defined, f"{name} 不是宿主已定义的属性常量"
+        else:
+            assert name.startswith(public_prefixes), f"意外的属性词汇来源: {name}"
+
+
+def test_llm_token_fields_prefer_openinference_names():
+    """实测只有 OpenInference 名有值 (199/199 LLM span), 必须排在候选首位。"""
+    mapping = build_trace_mapping()
+
+    assert mapping.candidates("usage.input_tokens")[0] == "llm.token_count.prompt"
+    assert mapping.candidates("usage.output_tokens")[0] == "llm.token_count.completion"
+    assert mapping.candidates("model")[0] == "llm.model_name"
+    assert mapping.candidates("span.role")[0] == "openinference.span.kind"
+
+
+def test_trace_mapping_omits_fields_that_would_corrupt_counts():
+    """刻意未映射的字段保持无条目 —— 映上去会静默改变指标口径。"""
+    mapping = build_trace_mapping()
+
+    # agenthub.total_tokens 挂在 agent-run span 上, 映进来会让该 span 被判成
+    # LLM 调用、n_turns 白加一; n_total_tokens 本就是 in+out 的派生别名。
+    assert "agenthub.total_tokens" not in mapping.candidates("usage.total_tokens")
+    # args_summary 是宿主自算摘要, 不是原始入参; error 是消息原文, 不是分类。
+    assert mapping.candidates("tool.arguments") == ("gen_ai.tool.call.arguments",)
+    assert mapping.candidates("error.type") == ("error.type",)
 
 
 # ─── Judge LLM 装配 (change ③ 任务 6.1) ───────────────────────────────────────
