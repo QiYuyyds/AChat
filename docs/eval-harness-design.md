@@ -123,7 +123,8 @@
 > LLM 具有非确定性，单次运行不能代表 Agent 能力。
 
 - 每个 task 默认运行 3 次 trial
-- 同时报告 `pass@k` (至少成功一次) 和 `pass^k` (每次都成功)
+- 同时报告 `pass@k` (能力: k 次里至少一次成功的概率, `pass@1` 即有效 trial 的成功比例 `c/n`) 与 `pass^k` (可靠性: k 次全部成功), 两者只在 **valid** trial 上算并各附 95% 区间 (§4.3)
+- 每条结论披露它依据的**最弱证据级别** (`harness` > `runner` > `subject`): 全靠被评方自报的 1.0 与评测侧独立取证的 1.0 不是同一个分量 (§2.2 / §5)
 - 支持自定义 trial 数
 
 ### 2.5 渐进式采用
@@ -180,10 +181,10 @@ Level 4: 贡献代码 → 新的 TraceProvider / Grader
 │  │ AgentRunner │ │ Environment │ │ Grader   │ │  Storage    │    │
 │  │ (项目注入)   │ │ Manager     │ │ Pipeline │ │  (结果持久化)│    │
 │  │             │ │ (可选)       │ │          │ │             │    │
-│  │ .run(task)  │ │ .setup()    │ │ 6 内置   │ │ SQLite      │    │
-│  │ → trace_id  │ │ .teardown() │ │ + 自定义 │ │ PostgreSQL  │    │
-│  │  + transcript│ │             │ │          │ │ Memory      │    │
-│  │  + outcome  │ │             │ │          │ │             │    │
+│  │ .run(view,  │ │ .setup()    │ │ 9 内置   │ │ SQLite      │    │
+│  │  session)   │ │ .probe()    │ │ + 自定义 │ │ PostgreSQL  │    │
+│  │ → 带来源的   │ │ .teardown() │ │          │ │ Memory      │    │
+│  │  证据对象    │ │ (取证探针)   │ │          │ │             │    │
 │  └─────────────┘ └─────────────┘ └──────────┘ └─────────────┘    │
 │          │              │              │              │            │
 │          ▼              │              ▼              ▼            │
@@ -438,56 +439,28 @@ class RunResult(BaseModel):
 ```python
 # packages/core/metrics.py
 
-def pass_at_k(trials: list[TrialResult], k: int) -> float:
+def pass_at_k(trials: list[TrialResult], k: int) -> PassKEstimate:
     """
-    pass@k: k 次尝试中至少成功一次的任务比例
-    
-    用于能力评估 — "Agent 有没有机会完成这个任务?"
-    
-    计算逻辑:
-    - 当 k <= n (trial 数): 如果至少一次成功则返回 1.0
-    - 当 k > n: 用二项分布估计 P(至少一次成功) = 1 - (1-p)^k
-      其中 p = successes / n (单次成功概率的极大似然估计)
-    """
-    n = len(trials)
-    if n == 0:
-        return 0.0
-    successes = sum(1 for t in trials if t.success)
-    
-    if k <= n:
-        # k 次尝试中有 n 次实际数据, 至少一次成功即通过
-        return 1.0 if successes > 0 else 0.0
-    else:
-        # k > n, 用二项分布外推估计
-        p = successes / n  # 单次成功概率估计
-        if p == 0:
-            return 0.0
-        if p == 1:
-            return 1.0
-        return 1.0 - (1.0 - p) ** k
+    pass@k: 能力估计 —— 「随机取 k 次里至少一次成功」的概率 (有限样本无偏估计)
 
-def pass_power_k(trials: list[TrialResult], k: int) -> float:
+    口径 (change ① 修正)。旧草图写的是「k<=n 时至少一次成功即返回 1.0」, 那会把
+    3 次里蒙对 1 次读成 100% —— 现实现:
+    - 只在 **valid** trial 上算 (n = 有效 trial 数; invalid / pending 不占分母)
+    - k <= n: `1 - C(n-c, k) / C(n, k)`  → 因此 `pass@1 == c / n`
+    - k >  n: `1 - (1-p)^k`, p = c/n, 并标 `method="extrapolated"` + `extrapolated`
+      (外推值不得冒充实测值, 报告里带 `*`)
+    - 算不出 (n=0 等): `value = None` = insufficient_data, **不是 0.0**
+    - 附单次成功概率 p 的 Wilson 95% 区间 (`p_lower_bound` / `p_upper_bound`)
     """
-    pass^k: k 次尝试全部成功的任务比例
-    
-    用于回归评估 — "Agent 每次都能可靠完成吗?"
-    
-    计算逻辑:
-    - 当 k <= n: 检查前 k 次是否全部成功
-    - 当 k > n: 用二项分布估计 P(全部成功) = p^k
+
+def pass_power_k(trials: list[TrialResult], k: int) -> PassKEstimate:
     """
-    n = len(trials)
-    if n == 0:
-        return 0.0
-    successes = sum(1 for t in trials if t.success)
-    
-    if k <= n:
-        # 检查前 k 次是否全部成功
-        return 1.0 if all(t.success for t in trials[:k]) else 0.0
-    else:
-        # k > n, 用二项分布外推估计
-        p = successes / n
-        return p ** k
+    pass^k: 可靠性估计 —— 「k 次全部成功」的概率
+
+    - k <= n: `C(c, k) / C(n, k)` (组合数, **与 trial 完成顺序无关**)。旧草图按
+      「前 k 次是否全部成功」判定, 换个 trial 顺序结论就变, 不成立。
+    - k >  n: `p^k`, 同样标注为外推。
+    """
 
 def aggregate_metrics(trials: list[TrialResult]) -> dict[str, float]:
     """聚合多个 trial 的过程指标"""
@@ -519,31 +492,38 @@ def aggregate_metrics(trials: list[TrialResult]) -> dict[str, float]:
 ```python
 class AgentRunner(Protocol):
     """
-    项目必须实现: 运行 Agent 并返回 trace。
-    
-    这是唯一的必选接入点。
+    项目必须实现: 运行被评系统并交付**带来源的证据**。
+
+    这是唯一的必选接入点。交付的不再是三元组裸数据, 而是每条观测都标了
+    「谁、在什么时候、通过哪条通道观测到的」的证据对象。
     """
-    
+
     async def run(
         self,
-        task: EvalTask,
-    ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        view: TaskView,          # 只有 id/description/prompt/env: 判据与答案键不在类型里
+        session: TrialSession,   # emit / harness_probe / deadline / cancelled 都可不用
+    ) -> TrialEvidence:
         """
-        执行一个评测任务。
-        
-        Args:
-            task: 评测任务定义
-            
+        执行一个评测任务并交付证据。
+
         Returns:
-            trace_id: str           # OTel trace ID
-            transcript: list[dict]  # 完整对话记录
-            outcome: dict           # 环境最终状态
-            
+            TrialEvidence: transcript / steps / subject_state / harness_state
+                           (带时刻的取证序列) / artifacts / budget / gaps
+            最简写法 = 跑完一次返回:
+                TrialEvidence.runner_reported(
+                    trace_id=..., transcript=..., state=...,
+                )
+
         Raises:
-            AgentRunError: Agent 执行失败 (超时/崩溃/被拦截)
+            TransientError: 瞬态故障 (框架指数退避重试)
+            AgentDefect / ExternalDependencyError: 已声明归类的失败
         """
         ...
 ```
+
+> **不留三元组兼容路径**：可被绕过的来源分级等于没有分级。`session` 是递进能力
+> —— 不碰它的接入方与只用返回值的接入方拿到同等质量的结束态证据；只有需要中途
+> 状态时才用 `await session.harness_probe(channel)` 请框架**当场**独立取证。
 
 **为什么只需要这一个接口？**
 
@@ -804,37 +784,42 @@ async def _run_trial(self, task: EvalTask, index: int, run_id: str = "") -> Tria
     start_time = now_ms()
     
     try:
-        # 3. 运行 Agent (带超时)
-        trace_id, transcript, outcome = await asyncio.wait_for(
-            self.agent_runner.run(task),
+        # 3. 运行被评系统 (带超时): 递任务视图 + 会话句柄
+        #    view 里没有判据与答案键; session 的 emit / harness_probe 都可以不用
+        evidence = await asyncio.wait_for(
+            self.agent_runner.run(TaskView.of(task), session),
             timeout=self.per_trial_timeout,
         )
         
-        # 4. 获取 trace spans
-        spans = await self.trace_provider.get_spans(trace_id)
+        # 4. 获取 trace spans (按采集声明裁剪后才归档)
+        spans = await self.trace_provider.get_spans(evidence.trace_id)
         
         # 5. 提取过程指标
         metrics = extract_metrics(spans, task.tracked_metrics)
         metrics["latency_ms"] = now_ms() - start_time
         
-        # 6. 构建 trial result
+        # 6. 构建 trial result (证据随 trial 一起承载, 呈现视图由证据推出)
         trial = TrialResult(
             trial_index=index,
-            trace_id=trace_id,
+            trace_id=evidence.trace_id,
             success=True,  # 临时, 评分后更新
             grader_results=[],
             metrics=metrics,
-            transcript=transcript,
-            outcome=outcome,
+            transcript=evidence.messages(),      # 全部来源级别的呈现视图
+            outcome=evidence.state_payload(),    # 被评侧通道
+            evidence=evidence,
             duration_ms=now_ms() - start_time,
         )
         
-        # 7. 运行评分器
+        # 7. 评分在「结束前取证 + teardown」之后进行 (见下方 finally 与③的三相):
+        #    证据先按 trial 落盘, 判分是它的可重放派生; 每个评分器只读它声明过的
+        #    来源级别的证据视图 (context.evidence), 越级的结论按 invalid 处理。
         context = EvalContext(
             run_id=run_id,
             task=task,
             trial=trial,
             spans=spans,
+            evidence=evidence,
         )
         trial = await self._grade_trial(trial, spans, task, context)
         
@@ -3542,8 +3527,10 @@ Mock: MockAgentRunner (返回预设 trace)
 
 | 风险 / 原则缺口 | 防御机制 | 落点 |
 |---|---|---|
-| pass@k 统计逻辑错误 | 修正版二项外推 (k≤n 直接判定 / k>n 外推) | §4.3 |
-| Trial 间环境泄漏 | 基线快照 + verify_clean 比对 + restore | §5.3 / §6.2 |
+| pass@k 统计逻辑错误 | 有限样本无偏组合估计 (k≤n 用 `1-C(n-c,k)/C(n,k)`, 只在 valid trial 上算) + k>n 外推显式标注 + Wilson 区间 | §4.3 |
+| 结论建立在被评方自报之上 | 证据来源三级 (`harness`/`runner`/`subject`) + 评分器按声明取信 + 自报不得单独定案 (`allow_subject` 显式放行且标注弱证据) | §2.2 / §5 / §8 |
+| 环境状态判定时机含糊 (建完又删仍判通过) | 取证读数成为带时刻的序列 + 判据必须声明 `judgment_moment` (默认「结束时」) | §5 / §6.2 |
+| Trial 间环境泄漏 | 基线快照 + verify_clean 改读评测侧取证读数 + restore | §5.3 / §6.2 |
 | 评分无置信度 | confidence / uncertainty 字段 + LLM Judge 多次采样 | §4.2 / §6.2 |
 | LLM Judge 重复付费 | prompt hash 结果缓存 | §6.1 |
 | 评测饱和不可感知 | 饱和度检测 + 加难建议 | §6.3 |
@@ -6181,4 +6168,5 @@ for task_id, trials in result.trials.items():
 | v0.13 | 2026-08-30 | change extract-aeval-repo 阶段一执行完毕: §15.3 结构图改单包+extras 形态并标注阶段一现状; §15.4 标注已执行 (含两处执行差异: eval_integration 留守 / 测试 20+6 拆分); 新能力 — CLI `eval-suite` (run/validate/list/show/compare/serve) + 独立 API `create_standalone_app` (`/v1` + `X-Aeval-Version` + `/v1/meta`); rename `eval_harness → agent_eval` 全量落地, 框架迁至 `aeval/packages/agent-eval/src/agent_eval/` (PyPI 包 agent-eval v0.1.0, MIT, editable 安装), sys.path hack 清零; dashboard 迁 `aeval/apps/dashboard`; docs 六篇 + examples×2 + dormant CI; §16 快照更新 (框架测试 349 + AChat 绑定留守 6 文件) |
 | v0.14 | 2026-08-30 | change add-aeval-task-conversation-config: task 级会话配置 — `create_conversation` 参数化 (mode/agent_ids/dispatch_mode), runner 解析 `env.agent_id` / `env.conversation` (优先级 conversation > agent_id > 全局; single⇔1 / group⇔≥2 + 枚举/类型校验, 建会话前失败不静默回退); §17.5 补 env 键约定与校验语义表, §16 现状表同步; examples/achat 补 dispatch 任务示例 |
 | v0.15 | 2026-08-30 | change publish-aeval-repo 阶段二执行完毕: 独立 repo 上线 github.com/QiYuyyds/Aeval (fresh init, 不携带 AChat 历史; CI 首跑修复 ruff 欠账 + publish.yml secrets 上下文 bug 后全绿); v0.1.0 双渠道发布 — GitHub Release (双语) + PyPI **`aeval-framework`** (原拟 `agent-eval` 名被 UK AISI agenteval 占用, 品牌名 `aeval` 亦被占用, 维护者改选; 模块 `agent_eval`/CLI `eval-suite` 不变); 发布物打磨 (README 双语 Known Limitations + 命名说明, CONTRIBUTING, pyproject URLs, staging 脚本 publish_stage.sh); 全新 venv 安装验证全链路通过; AChat 切 PyPI 依赖 (95 eval 测试全绿, 真实链路冒烟 run 落库可查); §15.3/§15.4/§16 标注阶段二完成; requirements.txt 去 editable 改可选按需安装 |
+| v0.16 | 2026-09-05 | Aeval change ③ `separate-collection-from-grading` 落地并同步本文: **接入契约破坏性变更** — `AgentRunner.run(view: TaskView, session: TrialSession) -> TrialEvidence` (§5.1 重写, 三元组路径不留兼容层), 每条读数带 `observed_by ∈ {harness, runner, subject}` + 采集时刻; `EnvironmentManager.probe(channel)` 由框架在 teardown 之前调用 (读数钉 harness 级, 不支持时报缺失而非空读数); `verify_clean` 改读取证读数 (§6 草图三相化); 评分器按声明级别取信 + 两条默认规则 (自报不得单独定案 / 越级即 invalid) + 环境状态判据必须声明 `judgment_moment`; 证据按 trial 归档 (`trial_evidence`) 且判定只追加 (`grade_attempts` + current 指针), 重评分不回查被评系统 (本期仅库层入口); `capture` 统一为「工具入参 + 模型正文」一套声明。本文顺带纠正 ① 遗漏的旧口径: §4.3 `pass_at_k`/`pass_power_k` 草图 (有限样本无偏组合估计, pass@1 = c/n; pass^k 与顺序无关)、§2.4 「至少成功一次」措辞、风险映射表同名条目。`first-suite.yaml` 升 1.2.0 — `file-creation` 判定基础由 outcome 字符串匹配改为 `state_check` + `evidence: [harness]` |
 
