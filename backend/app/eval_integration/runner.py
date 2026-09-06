@@ -490,7 +490,7 @@ class AChatAgentRunner:
                     event = await asyncio.wait_for(
                         queue.get(), timeout=min(timeout, self.poll_interval)
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
                 if not isinstance(event, RunEndEvent):
                     continue

@@ -19,13 +19,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
-
 from agent_eval.core.contract import TransientError
 
 from app.eval_integration.errors import AChatApiError
