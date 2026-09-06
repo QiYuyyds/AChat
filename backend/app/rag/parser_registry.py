@@ -115,16 +115,6 @@ def _get_engine_kwargs(proc_type: str) -> dict[str, Any]:
     return {}
 
 
-def get_available_ocr_engines() -> list[str]:
-    """Return the list of OCR engine types that are available (health check passes)."""
-    available: list[str] = []
-    for proc_type in _OCR_ENGINE_PRIORITY:
-        proc = _load_processor(proc_type)
-        if proc is not None:
-            available.append(proc_type)
-    return available
-
-
 def get_ocr_engine_status() -> list[dict[str, str]]:
     """Return detailed status for every registered OCR engine.
 
@@ -197,18 +187,6 @@ def select_ocr_engine(engine: str = "auto") -> BaseDocumentProcessor | None:
 
     logger.info("No OCR engine available in auto mode")
     return None
-
-
-def is_image_file(filename: str) -> bool:
-    """Check if the file is an image that needs OCR."""
-    ext = Path(filename or "").suffix.lower()
-    return ext in _IMAGE_EXTENSIONS
-
-
-def is_text_file(filename: str) -> bool:
-    """Check if the file is a text-based file that can be decoded directly."""
-    ext = Path(filename or "").suffix.lower()
-    return ext in _TEXT_EXTENSIONS
 
 
 def parse_document(

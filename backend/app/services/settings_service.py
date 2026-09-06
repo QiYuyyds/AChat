@@ -181,14 +181,6 @@ async def get_effective_api_key(provider: str, user_id: str | None = None) -> st
     return None
 
 
-async def get_effective_anthropic_base_url(user_id: str | None = None) -> str | None:
-    if user_id is not None:
-        settings = await get_user_settings(user_id)
-    else:
-        settings = await get_app_settings()
-    return settings.anthropic_base_url or os.environ.get("ANTHROPIC_BASE_URL")
-
-
 # ─── Legacy singleton bridge (backward compat) ───────────────────────────────
 
 

@@ -66,7 +66,3 @@ def format_size(num_bytes: int) -> str:
 
 def escape_xml(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def xml_attr(s: str) -> str:
-    return '"' + escape_xml(s).replace('"', "&quot;") + '"'

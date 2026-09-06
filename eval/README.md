@@ -13,22 +13,17 @@ eval/
 ├── metrics.py              # 7 项评测指标实现
 ├── test_metrics.py         # 指标单元测试（26 tests）
 ├── run_eval.py             # 评测主运行器
-├── inspect_data.py         # 数据结构检查工具
 ├── corpus.jsonl            # 3,050 篇去重新闻文档
 ├── golden.jsonl            # 2,394 条 QA 标注
-├── results_1/              # R1: 旧权重 (sem_w=0.7, kw_w=0.0, top_k=3, rerank=ON)
-│   ├── dense_results.json
-│   ├── bm25_results.json
-│   ├── hybrid_results.json
-│   └── comparison_report.md
-├── results_2/              # R2: 修复权重 (sem_w=0.5, kw_w=0.5, top_k=3, rerank=ON)
-│   ├── hybrid_results.json
-│   └── comparison_report.md
 └── results/               # R3-R5: 最终配置 (top_k=5, rerank=ON/OFF)
     ├── dense_results.json
     ├── hybrid_results.json
     └── comparison_report.md
 ```
+
+> 历史实验（已归档删除）：R1 旧权重 (sem_w=0.7, kw_w=0.0, top_k=3, rerank=ON)、
+> R2 修复权重 (sem_w=0.5, kw_w=0.5, top_k=3, rerank=ON)，结论已由 results/ 的
+> R3-R5 最终配置取代。
 
 ## 前置条件
 

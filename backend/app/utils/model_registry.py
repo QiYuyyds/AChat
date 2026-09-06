@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal, TypedDict
 
 # ModelProvider literals from src/shared/types.ts.
 ModelProvider = str
@@ -21,13 +20,6 @@ ModelProvider = str
 # (Lost in the Middle, Context Rot) at excessive context lengths.
 EFFECTIVE_CONTEXT_CAP = 200_000
 
-
-class ModelPricing(TypedDict):
-    """模型定价信息。所有单价均 per 1M tokens。与前端 ModelPricing 接口一致。"""
-    currency: Literal["CNY", "USD"]
-    inputCacheHit: float  # 缓存命中 input 单价
-    inputCacheMiss: float  # 缓存未命中 input 单价（=净新内容单价）
-    output: float  # output 单价
 
 # Per-provider total context window (tokens) used when a model id is unknown.
 PROVIDER_FALLBACK_CONTEXT: dict[ModelProvider, int] = {
@@ -132,18 +124,6 @@ def get_model_limits(
     )
 
 
-def get_model_pricing(
-    provider: ModelProvider | None,
-    model_id: str | None,
-) -> ModelPricing | None:
-    """查模型定价。缺失时返回 None。"""
-    if model_id and model_id in KNOWN_MODELS:
-        pricing = KNOWN_MODELS[model_id].get("pricing")
-        if isinstance(pricing, dict):
-            return pricing  # type: ignore[return-value]
-    return None
-
-
-def estimate_tokens(text: str) -> int:
+def estimate_tokens(text: str) -> str:
     """Coarse token estimate: 4 chars ≈ 1 token (10-20% error, fine for budgeting)."""
     return math.ceil(len(text) / 4)

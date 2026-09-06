@@ -208,20 +208,7 @@
   font-weight: 600;
 }
 
-/* 日夜切换图标的入场旋转 —— ThemeToggle 每次 swap 都换了图标元素，动画随之重放。
-   provider 开了 disableTransitionOnChange，切主题那帧会抹掉所有 transition，
-   所以 swap 用 keyframe（不受影响），hover / press 才用 transition。 */
-@keyframes theme-toggle-in {
-  from { opacity: 0; transform: rotate(-30deg) scale(0.7); }
-  to   { opacity: 1; transform: rotate(0) scale(1); }
-}
-
-.theme-toggle-icon {
-  animation: theme-toggle-in 260ms ease-out;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .theme-toggle-icon,
   .agent-ring-active {
     animation: none;
   }

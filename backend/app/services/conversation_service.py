@@ -180,11 +180,6 @@ class GitInitRequiredError(Exception):
         super().__init__(f"Git initialization required for: {source_path}")
 
 
-@dataclass
-class ForkConversationResult:
-    conversation: ConversationResponse
-
-
 async def fork_conversation(
     *,
     source_conv_id: str,

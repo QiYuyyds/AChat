@@ -37,10 +37,6 @@ logger = logging.getLogger(__name__)
 _TERMINAL_MESSAGE_STATUSES = {"complete", "error", "aborted", "interrupted"}
 
 
-def _is_transient(exc: BaseException) -> bool:
-    return isinstance(exc, httpx.TransportError)
-
-
 class AChatApiClient:
     """AChat HTTP API 薄封装。
 

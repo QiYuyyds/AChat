@@ -1,14 +1,5 @@
 import { API_BASE_URL } from '@/lib/config'
-import { authFetch } from '@/lib/api'
-
-async function json<T>(req: Promise<Response>): Promise<T> {
-  const res = await req
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`HTTP ${res.status}: ${body || res.statusText}`)
-  }
-  return res.json() as Promise<T>
-}
+import { authFetch, json } from '@/lib/api'
 
 // ─── Types: Memory Files (file-native) ─────────────────────────────────────
 

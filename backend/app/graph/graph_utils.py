@@ -114,15 +114,6 @@ def cypher_query_triple_ids_by_doc_hash(user_label: str) -> str:
     )
 
 
-def cypher_query_entity_by_name(user_label: str) -> str:
-    """按实体名查询 Entity 节点（用于 PPR 种子匹配）。"""
-    return (
-        f"MATCH (e:Entity:UserKG:`{user_label}`) "
-        "WHERE e.name IN $names "
-        "RETURN e.entity_id AS entity_id, e.name AS name, e.type AS type, e.label AS label"
-    )
-
-
 def cypher_search_direct(user_label: str) -> str:
     """直接匹配实体所在 chunk（APOC 不可用时的降级查询）。"""
     return (
@@ -208,19 +199,6 @@ def cypher_search_ppr_apoc(user_label: str) -> str:
         "toInteger(apoc.node.degree(neighbor)) AS degree "
         "RETURN neighbor.pg_id AS pgid, seeds, degree "
         "LIMIT $limit"
-    )
-
-
-def cypher_graph_stats(user_label: str) -> str:
-    """图谱统计：节点/边总数 + 实体类型分布（三条独立查询合并为一条 multi-statement）。"""
-    return (
-        f"MATCH (n:UserKG:`{user_label}`) "
-        "WITH count(n) AS total_nodes "
-        f"OPTIONAL MATCH (a:UserKG:`{user_label}`)-[r]->(b:UserKG:`{user_label}`) "
-        "WITH total_nodes, count(r) AS total_edges "
-        f"MATCH (e:Entity:UserKG:`{user_label}`) "
-        "RETURN total_nodes, total_edges, "
-        "collect(DISTINCT {type: coalesce(e.label, e.type, 'Unknown'), count: 0}) AS entity_types_raw"
     )
 
 

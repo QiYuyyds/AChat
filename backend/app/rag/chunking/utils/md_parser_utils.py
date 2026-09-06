@@ -1,18 +1,10 @@
 """Markdown structure parsing utilities for chunking.
 
-Provides heading tree extraction, fenced code block protection,
-and table protection — shared by multiple preset parsers.
+Provides heading tree extraction and table protection — shared by
+multiple preset parsers.
 """
 
 import re
-
-# Fenced code blocks: ``` or ~~~ or $$ math blocks
-_FENCE_RE = re.compile(
-    r"^\$\$.*?^\$\$\n?"
-    r"|"
-    r"^(```|~~~)[^\n]*\n.*?^\1[ \t]*$\n?",
-    re.MULTILINE | re.DOTALL,
-)
 
 # Markdown headings
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
@@ -22,26 +14,6 @@ _TABLE_RE = re.compile(
     r"^\|[^\n]*\n\|[\s\-:|]+\|[^\n]*\n(?:\|[^\n]*\n?)*",
     re.MULTILINE,
 )
-
-
-def protect_fences(text: str) -> list[tuple[bool, str]]:
-    """Split text into segments, marking fenced code/math blocks as atomic.
-
-    Returns list of (is_atom, segment) tuples.
-    is_atom=True segments must not be further split.
-    """
-    atoms: list[tuple[bool, str]] = []
-    cursor = 0
-    for m in _FENCE_RE.finditer(text):
-        if m.start() > cursor:
-            atoms.append((False, text[cursor:m.start()]))
-        atoms.append((True, m.group(0)))
-        cursor = m.end()
-    if cursor < len(text):
-        atoms.append((False, text[cursor:]))
-    if not atoms:
-        atoms = [(False, text)]
-    return atoms
 
 
 def protect_tables(text: str) -> list[tuple[bool, str]]:
@@ -80,21 +52,6 @@ def extract_headings(text: str) -> list[tuple[int, str, int, int]]:
         result.append((level, title, start, end))
 
     return result
-
-
-def get_heading_breadcrumb(text: str, pos: int) -> str:
-    """Get heading breadcrumb for a character position.
-
-    Returns e.g. "# Title > ## Subsection" or "" if no context.
-    """
-    tree = extract_headings(text)
-    breadcrumbs: list[str] = []
-
-    for level, title, start, end in tree:
-        if start <= pos < end:
-            breadcrumbs.append(f"{'#' * level} {title}")
-
-    return " > ".join(breadcrumbs)
 
 
 def split_by_headings(text: str) -> list[tuple[str, str]]:

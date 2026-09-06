@@ -4,7 +4,6 @@ Corresponds to src/db/schema.ts in the original TypeScript codebase.
 Extended with UserPreference, RagChunk, ChatHistory (file-native memory migration).
 """
 
-import json
 from typing import Any, Literal
 
 from sqlalchemy import (
@@ -48,18 +47,6 @@ WorkspaceMode = Literal["sandbox", "local"]
 AttachmentKind = Literal["image", "file"]
 FsWriteApprovalMode = Literal["auto", "review"]
 CompanionMode = Literal["off", "lan", "tailnet"]
-
-
-def _json_serializer(obj: Any) -> str:
-    """Serialize Python object to json string (kept for backward-compat helpers)."""
-    return json.dumps(obj, ensure_ascii=False)
-
-
-def _json_deserializer(s: str | None) -> Any:
-    """Deserialize JSON string to Python object (kept for backward-compat helpers)."""
-    if s is None:
-        return None
-    return json.loads(s)
 
 
 # ---------------------------------------------------------------------------

@@ -497,24 +497,12 @@ def _empty_run_execution_result() -> RunExecutionResult:
     )
 
 
-# ─── TurnResult (internal to the SDK ReAct loop) ───────────────────────────────
+# ─── SDK ReAct loop data types ───────────────────────────────────────────────
 @dataclass
 class ToolCallInfo:
     id: str
     name: str
     args: dict
-
-
-@dataclass
-class TurnResult:
-    """Extracted from call_once events after consumption."""
-
-    message_id: str
-    text_content: str
-    tool_calls: list[ToolCallInfo]
-    finish_reason: str | None
-    usage: MessageUsage | None
-    assistant_message: dict  # written back to messages list (includes reasoning_content)
 
 
 # ─── Adapter classification ─────────────────────────────────────────────────
@@ -567,11 +555,6 @@ _TASK_TOOL_NAMES: frozenset[str] = frozenset({
     "task_move",
     "task_comment",
 })
-
-# Deprecated product default removed: Custom loop ends on model-done / budget /
-# breakers. Absolute safety bound lives in react_loop_termination.SAFETY_MAX_MODEL_CALLS.
-# Kept as alias for any external imports; do not use as a product max-steps cap.
-REACT_LOOP_MAX_TURNS = None
 
 # O2 Step 5: only read-only tools are cached within a single _run_react_loop call.
 READONLY_CACHEABLE_TOOLS = frozenset({"fs_read", "read_artifact", "read_attachment"})
@@ -837,7 +820,7 @@ async def _execute_tool_call_to_result(
     )
 
 
-# ─── SDK ReAct loop (Phase 1: call_once + TurnResult) ─────────────────────────
+# ─── SDK ReAct loop (mid-run compaction) ─────────────────────────────────────
 def _mid_run_compact(messages: list[dict]) -> list[dict]:
     """Structurally compress messages list mid-run without calling an LLM.
 
@@ -871,7 +854,6 @@ def _mid_run_compact(messages: list[dict]) -> list[dict]:
     return messages
 
 
-# ─── SDK ReAct loop (Phase 1: call_once + TurnResult) ─────────────────────────
 async def _run_react_loop(  # noqa: C901
     adapter: Any,
     adapter_input: AdapterInput,
@@ -1678,11 +1660,6 @@ def cancel_queued_run(run_id: str) -> bool:
                 asyncio.ensure_future(_cancel())
                 return True
     return False
-
-
-def has_queued_runs(conversation_id: str) -> bool:
-    """Check if a conversation has any queued runs."""
-    return bool(_queued_runs.get(conversation_id))
 
 
 def _start_queued_run(spec: _QueuedRunSpec) -> None:
@@ -3818,29 +3795,6 @@ async def _resolve_model_profile(
         return result.scalar_one_or_none()
 
 
-def _pick_settings_key(settings: Any, agent: Agent) -> str | None:
-    """Pick the global settings key matching the CLI adapter (CLI agents only).
-
-    SDK agents resolve keys from ModelProfile; this function is retained for
-    CLI agents that may still need a settings-based key fallback.
-    """
-    import os
-
-    if agent.adapter_name == "claude-code":
-        return (
-            settings.anthropic_api_key
-            or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-            or os.environ.get("ANTHROPIC_API_KEY")
-        )
-    if agent.adapter_name == "codex":
-        return (
-            settings.openai_api_key
-            or os.environ.get("CODEX_API_KEY")
-            or os.environ.get("OPENAI_API_KEY")
-        )
-    return None
-
-
 def _build_workspace_context_block(workspace: Workspace, cwd_override: str | None = None) -> str:
     """Inject a `<workspace_info>` block so the LLM knows its real cwd / mode."""
     cwd = cwd_override or get_effective_cwd(workspace)
@@ -4178,10 +4132,6 @@ def _format_size(num_bytes: int) -> str:
     if num_bytes < 1024 * 1024:
         return f"{num_bytes / 1024:.1f}KB"
     return f"{num_bytes / 1024 / 1024:.1f}MB"
-
-
-def _ensure_includes(arr: list[str], v: str) -> list[str]:
-    return arr if v in arr else [*arr, v]
 
 
 # ─── Wire the real runner in (phase 5) ───────────────────────────────────────

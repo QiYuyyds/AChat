@@ -125,7 +125,7 @@ export async function authFetch(
   return res
 }
 
-async function json<T>(req: Promise<Response>): Promise<T> {
+export async function json<T>(req: Promise<Response>): Promise<T> {
   const res = await req
   if (!res.ok) {
     const body = await res.text()
@@ -1377,6 +1377,10 @@ export interface SkillSummary {
 export async function listSkills(): Promise<SkillSummary[]> {
   const { skills } = await json<{ skills: SkillSummary[] }>(authFetch(API_BASE_URL + '/api/skills'))
   return skills
+}
+
+export async function getSkillContent(slug: string): Promise<{ content?: string }> {
+  return json<{ content?: string }>(authFetch(`${API_BASE_URL}/api/skills/${slug}`))
 }
 
 /**

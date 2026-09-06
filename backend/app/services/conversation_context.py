@@ -94,32 +94,6 @@ def _extract_tool_result_text(part: dict) -> str:
         return str(result)
 
 
-def _build_tool_use_map(parts: list[dict]) -> dict[str, tuple[str, dict]]:
-    """Build a ``callId -> (toolName, args)`` map from tool_use parts."""
-    mapping: dict[str, tuple[str, dict]] = {}
-    for p in parts:
-        if p.get("type") != "tool_use":
-            continue
-        call_id = p.get("callId", "")
-        tool_name = p.get("toolName", "")
-        args = p.get("args") or {}
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except (TypeError, ValueError):
-                args = {}
-        mapping[call_id] = (tool_name, args)
-    return mapping
-
-
-def _should_preserve_tool_result(tool_name: str, args: dict) -> bool:
-    """Check if a tool_result should be preserved verbatim (not pruned)."""
-    return (
-        tool_name == "code_explore"
-        or (tool_name == "fs_read" and args.get("mode") in ("outline", "head"))
-    )
-
-
 def _extract_whitelist(note: SessionNote | None) -> set[str] | None:
     """Extract file paths from Session Note's files_touched.
 

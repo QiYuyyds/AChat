@@ -72,18 +72,6 @@ class VersionResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class LatestVersionMeta(BaseModel):
-    """Metadata of the latest version (joined into list responses)."""
-
-    filename: str | None = None
-    parser: str | None = None
-    pages: int | None = None
-    text_chars: int | None = Field(default=None, alias="textChars")
-    needs_ocr: bool | None = Field(default=None, alias="needsOcr")
-
-    model_config = {"populate_by_name": True}
-
-
 class DocumentListItem(DocumentResponse):
     """Document row in list responses, enriched with latest-version info."""
 

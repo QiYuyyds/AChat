@@ -26,11 +26,6 @@ def new_message_id() -> str:
     return _gen_id("msg_")
 
 
-def new_error_message_id() -> str:
-    """Generate error message ID: msg_err_<nanoid>"""
-    return _gen_id("msg_err_")
-
-
 def new_artifact_id() -> str:
     """Generate artifact ID: art_<nanoid>"""
     return _gen_id("art_")

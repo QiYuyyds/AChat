@@ -100,15 +100,6 @@ def install_trace_bridge() -> bool:
     return True
 
 
-def bridge_installed() -> bool:
-    return _installed
-
-
-def get_trace_id_for_run(run_id: str) -> str | None:
-    """立即查询映射 (无等待)。"""
-    return _bridge.get(run_id)
-
-
 async def wait_for_trace_id(
     run_id: str,
     timeout: float = 10.0,
