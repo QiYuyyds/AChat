@@ -1,9 +1,9 @@
-"""AChatAgentRunner — AgentRunner 契约的 AChat 实现 (任务 2.1)。
+"""AChatAgentRunner — AgentRunner 契约的 AChat 实现 (任务 2.1; ③ 迁到证据契约)。
 
 流程 (对照表 §14.1 已核对):
     1. POST /api/conversations         → 全新 sandbox 会话 (服务端默认)
     2. GET  fs/listdir                 → 种子前清单 (共享目录退化防御基线)
-    3. POST fs/write (task.env.files)  → 写入种子文件
+    3. POST fs/write (view.env.files)  → 写入种子文件
     4. GET  fs/listdir                 → 种子后基线清单 (verify_clean 基线)
     5. 订阅 event_bus → POST messages  → 先订阅再发送 (防丢快速失败的事件),
                                           取 runIds
@@ -12,11 +12,14 @@
     7. GET messages                    → transcript
     8. trace_id                        → 进程内 SpanProcessor 桥 (主) /
                                           Phoenix 属性过滤 (降级)
-    9. outcome                         → fs 递归读 (有界) + artifacts 清单
+    9. 交付证据 (change ③): workspace 文件走**评测侧取证通道**
+       (``await session.harness_probe(PROBE_WORKSPACE_FILES)`` → 由环境管理器
+       实现, 框架把读数钉成 harness 级), 适配层交付的会话/产物元数据记 runner
+       级, agent 最后一条回复里的自述记 subject 级 —— 三条通道互不替换
 
 WorkspaceCoordinator 是 runner 与 AChatWorkspaceEnvironment 之间的共享
-trial 状态单元: runner 发布会话与基线清单, 环境管理器据此做快照/校验/恢复。
-未装配环境管理器时 runner 自行清理会话 (cleanup_conversations)。
+trial 状态单元: runner 发布会话与基线清单, 环境管理器据此做快照/校验/恢复,
+并据此实现取证探针。未装配环境管理器时 runner 自行清理会话 (cleanup_conversations)。
 """
 
 from __future__ import annotations
@@ -27,16 +30,26 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from agent_eval.core.contract import TransientError
-from agent_eval.core.types import EvalTask
+from agent_eval.core.contract import TransientError, TrialSession
+from agent_eval.core.types import (
+    EvidenceKind,
+    Observation,
+    ObservedBy,
+    TaskView,
+    TrialEvidence,
+)
 
+from app.eval_integration import trace_bridge
 from app.eval_integration.client import AChatApiClient
 from app.eval_integration.errors import AgentRunError
-from app.eval_integration import trace_bridge
 
 logger = logging.getLogger(__name__)
 
 CompletionChannel = Literal["in_process", "http"]
+
+# 取证通道名 (与 environment.py 的 probe 实现一一对应)
+PROBE_WORKSPACE_FILES = "workspace_files"
+PROBE_DB_DUMP = "db_dump"
 
 # workspace 递归收集上限 (防失控)
 _MAX_OUTCOME_FILES = 50
@@ -115,7 +128,7 @@ async def collect_workspace_listing(
 ) -> dict[str, dict[str, Any]]:
     """有界递归目录清单 → {rel_path: {name, isDirectory, size}}。
 
-    runner (种子前后/末期基线) 与环境管理器 (teardown 兜底) 共用。
+    runner (种子前后/末期基线) 与环境管理器 (取证探针 / teardown 兜底) 共用。
     列目录失败仅告警 (返回尽力清单), 不判 trial 失败。
     """
     listing: dict[str, dict[str, Any]] = {}
@@ -148,7 +161,7 @@ async def collect_workspace_listing(
 
 
 class AChatAgentRunner:
-    """经 AChat HTTP API 执行评测任务, 返回 (trace_id, transcript, outcome)。"""
+    """经 AChat HTTP API 执行评测任务并**交付带来源的证据**。"""
 
     def __init__(
         self,
@@ -174,7 +187,7 @@ class AChatAgentRunner:
             trace_wait_timeout: 进程内等待 trace_id 映射的上限 (秒)
             trace_resolver: 自定义 ``(run_id) -> str | None`` 协程 (测试注入);
                 缺省 = 进程内桥 + Phoenix 降级
-            coordinator: 与环境管理器共享的 trial 状态单元
+            coordinator: 与 runner 共享的 trial 状态单元
             cleanup_conversations: 无 coordinator 时是否删除 trial 会话
         """
         if not agent_id:
@@ -192,15 +205,21 @@ class AChatAgentRunner:
 
     # ── AgentRunner 契约 ─────────────────────────────────────────────────
 
-    async def run(self, task: EvalTask) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    async def run(self, view: TaskView, session: TrialSession) -> TrialEvidence:
+        """执行一次 trial 并按通道交付证据。
+
+        ``view`` 是框架裁出来的任务视图 (只有 id/description/prompt/env), 判据与
+        答案键拿不到; 环境状态的读取全部走 ``session.harness_probe`` —— 由框架
+        调用的取证通道, 读数会被钉成 ``harness`` 级, 不由本适配层自报。
+        """
         started = time.monotonic()
 
-        spec = self._resolve_conversation(task)
+        spec = self._resolve_conversation(view)
         lead_agent = spec.agent_ids[0]
         # task 级覆盖了 agent 时把实际 agent 带进 title, 便于 AChat 侧区分 trial
         agent_tag = "" if lead_agent == self.agent_id else f"@{lead_agent}"
         conversation_id = await self.client.create_conversation(
-            title=f"{self.conversation_title_prefix} {task.id}{agent_tag}".strip(),
+            title=f"{self.conversation_title_prefix} {view.id}{agent_tag}".strip(),
             agent_id=lead_agent,
             mode=spec.mode,
             agent_ids=spec.agent_ids,
@@ -213,7 +232,7 @@ class AChatAgentRunner:
             if trial is not None:
                 trial.pre_seed_files = pre_seed
 
-            seeds = self._seed_files(task)
+            seeds = self._seed_files(view)
             for path in sorted(seeds):
                 await self.client.fs_write(conversation_id, path, seeds[path])
 
@@ -221,30 +240,30 @@ class AChatAgentRunner:
             if trial is not None:
                 trial.post_seed_listing = post_seed
 
-            run_ids = await self._send_and_wait(conversation_id, task.prompt, started)
+            run_ids = await self._send_and_wait(conversation_id, view.prompt, started)
 
-            transcript = self._normalize_transcript(
-                await self.client.list_messages(conversation_id)
-            )
+            messages = await self.client.list_messages(conversation_id)
+            transcript = self._normalize_transcript(messages)
             trace_id = await self._resolve_trace_id(run_ids)
-
-            outcome_files = await self._collect_outcome_files(conversation_id)
             artifacts = await self.client.list_artifacts(conversation_id)
-            outcome: dict[str, Any] = {
-                "conversation_id": conversation_id,
-                "run_ids": run_ids,
-                "files": outcome_files,
-                "artifacts": artifacts,
-                "seed_files": sorted(seeds),
-            }
-            if trace_id == "":
-                outcome["trace_id_unavailable"] = (
-                    "tracing disabled — trace channel explicitly off (§14.1.2)"
-                )
 
-            if trial is not None:
+            # 评测侧独立取证: 清单与内容由环境的探针读, 不进入自报通道。
+            # 读数一并放进返回的证据 —— 框架合并时按对象身份去重, 不会重复计数,
+            # 于是这份证据脱离编排层也自包含 (单测与审计都能直接读)。
+            probe_readings = await session.harness_probe(PROBE_WORKSPACE_FILES)
+
+            if trial is not None and trial.final_listing is None:
                 trial.final_listing = await self._collect_listing(conversation_id)
-            return trace_id, transcript, outcome
+
+            return self._build_evidence(
+                trace_id=trace_id,
+                conversation_id=conversation_id,
+                run_ids=run_ids,
+                transcript=transcript,
+                artifacts=artifacts,
+                seed_files=sorted(seeds),
+                probe_readings=probe_readings,
+            )
 
         except asyncio.CancelledError:
             raise
@@ -260,9 +279,76 @@ class AChatAgentRunner:
             if self.coordinator is None and self.cleanup_conversations:
                 await self._safe_delete(conversation_id)
 
+    @staticmethod
+    def _build_evidence(
+        *,
+        trace_id: str,
+        conversation_id: str,
+        run_ids: list[str],
+        transcript: list[dict[str, Any]],
+        artifacts: list[dict[str, Any]],
+        seed_files: list[str],
+        probe_readings: list[Observation],
+    ) -> TrialEvidence:
+        """按通道装配证据 —— 三条通道各自带来源, 互不替换。"""
+        evidence = TrialEvidence(trace_id=trace_id)
+        evidence.harness_state.extend(probe_readings)
+
+        # 适配层交付的执行记录: transcript 是**被评判的产出物**, 不是关于环境的
+        # 主张, 因此记 runner 级 (把它记成 subject 会让所有内容与质量类判据失效)。
+        for message in transcript:
+            evidence.transcript.append(
+                Observation(
+                    kind=EvidenceKind.TRANSCRIPT,
+                    observed_by=ObservedBy.RUNNER,
+                    value=message,
+                    channel="messages_api",
+                )
+            )
+
+        # 适配层交付的元数据 (会话/运行/产物清单来自 AChat 自己的记录, 不是 agent 散文)
+        reported: dict[str, Any] = {
+            "conversation_id": conversation_id,
+            "run_ids": run_ids,
+            "seed_files": seed_files,
+            "artifacts": artifacts,
+        }
+        if trace_id == "":
+            reported["trace_id_unavailable"] = (
+                "tracing disabled — trace channel explicitly off (§14.1.2)"
+            )
+        evidence.subject_state.append(
+            Observation(
+                kind=EvidenceKind.STATE,
+                observed_by=ObservedBy.RUNNER,
+                value=reported,
+                channel="adapter_metadata",
+            )
+        )
+
+        # agent 最后一条回复 = 它对「自己做了什么」的自述。默认不得单独支撑通过。
+        claim = next(
+            (
+                m.get("content", "")
+                for m in reversed(transcript)
+                if m.get("role") in ("agent", "assistant") and m.get("content")
+            ),
+            "",
+        )
+        if claim:
+            evidence.subject_state.append(
+                Observation(
+                    kind=EvidenceKind.STATE,
+                    observed_by=ObservedBy.SUBJECT,
+                    value={"assistant_claims": claim},
+                    channel="agent_self_report",
+                )
+            )
+        return evidence
+
     # ── task 级会话配置 (env["agent_id"] / env["conversation"]) ──────────
 
-    def _resolve_conversation(self, task: EvalTask) -> ConversationSpec:
+    def _resolve_conversation(self, view: TaskView) -> ConversationSpec:
         """解析 task 级会话配置 → ConversationSpec (纯解析, 无 I/O)。
 
         优先级: env["conversation"] (全量覆盖, 含 agent 选择 — env["agent_id"]
@@ -273,14 +359,14 @@ class AChatAgentRunner:
         配置错误必须显性暴露, 否则回归结果失真。在 trial 开始 (建会话前)
         校验, 错误即该 trial 失败。
         """
-        env = task.env or {}
+        env = view.env or {}
 
         env_agent_id = env.get("agent_id")
         if env_agent_id is not None and (
             not isinstance(env_agent_id, str) or not env_agent_id.strip()
         ):
             raise AgentRunError(
-                f"EvalTask.env['agent_id'] 必须是非空 string, got "
+                f"TaskView.env['agent_id'] 必须是非空 string, got "
                 f"{type(env_agent_id).__name__}: {env_agent_id!r}",
                 status="error",
             )
@@ -293,7 +379,7 @@ class AChatAgentRunner:
 
         if not isinstance(conversation, dict):
             raise AgentRunError(
-                f"EvalTask.env['conversation'] 必须是 dict (键: mode/agent_ids/"
+                f"TaskView.env['conversation'] 必须是 dict (键: mode/agent_ids/"
                 f"/dispatch_mode), got {type(conversation).__name__}: {conversation!r}",
                 status="error",
             )
@@ -301,7 +387,7 @@ class AChatAgentRunner:
         mode = conversation.get("mode", "single")
         if mode not in _CONVERSATION_MODES:
             raise AgentRunError(
-                f"EvalTask.env['conversation']['mode']={mode!r} 非法 — "
+                f"TaskView.env['conversation']['mode']={mode!r} 非法 — "
                 f"合法值: {list(_CONVERSATION_MODES)}",
                 status="error",
             )
@@ -314,7 +400,7 @@ class AChatAgentRunner:
             isinstance(a, str) and a.strip() for a in raw_agent_ids
         ):
             raise AgentRunError(
-                f"EvalTask.env['conversation']['agent_ids'] 必须是非空 string 列表, "
+                f"TaskView.env['conversation']['agent_ids'] 必须是非空 string 列表, "
                 f"got {raw_agent_ids!r}",
                 status="error",
             )
@@ -323,13 +409,13 @@ class AChatAgentRunner:
 
         if mode == "single" and len(agent_ids) != 1:
             raise AgentRunError(
-                f"EvalTask.env['conversation']: mode='single' 要求恰好 1 个 agent "
+                f"TaskView.env['conversation']: mode='single' 要求恰好 1 个 agent "
                 f"(got {len(agent_ids)}: {agent_ids!r})",
                 status="error",
             )
         if mode == "group" and len(agent_ids) < 2:
             raise AgentRunError(
-                f"EvalTask.env['conversation']: mode='group' 要求 agent_ids 至少需要 "
+                f"TaskView.env['conversation']: mode='group' 要求 agent_ids 至少需要 "
                 f"2 个 (got {len(agent_ids)}: {agent_ids!r})",
                 status="error",
             )
@@ -337,7 +423,7 @@ class AChatAgentRunner:
         dispatch_mode = conversation.get("dispatch_mode")
         if dispatch_mode is not None and dispatch_mode not in _DISPATCH_MODES:
             raise AgentRunError(
-                f"EvalTask.env['conversation']['dispatch_mode']={dispatch_mode!r} 非法 "
+                f"TaskView.env['conversation']['dispatch_mode']={dispatch_mode!r} 非法 "
                 f"— 合法值: {list(_DISPATCH_MODES)}",
                 status="error",
             )
@@ -466,7 +552,7 @@ class AChatAgentRunner:
         """进程内桥优先, Phoenix 属性过滤降级; 明确失败而非静默空值 (§14.1.2)。
 
         ``trace_enabled=False`` 时 trace 通道按配置显式关闭 — 返回空串并在
-        outcome 记录原因 (不判 trial 失败)。
+        自报状态里记录原因 (不判 trial 失败)。
         """
         if not self._trace_enabled():
             return ""
@@ -548,7 +634,7 @@ class AChatAgentRunner:
                 return str(value)
         return ""
 
-    # ── Transcript / outcome ─────────────────────────────────────────────
+    # ── Transcript / 种子文件 ────────────────────────────────────────────
 
     @staticmethod
     def _normalize_transcript(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -571,36 +657,19 @@ class AChatAgentRunner:
         return transcript
 
     @staticmethod
-    def _seed_files(task: EvalTask) -> dict[str, str]:
-        """EvalTask.env 声明的种子文件: ``env["files"] = {path: content}``。"""
-        env = task.env or {}
+    def _seed_files(view: TaskView) -> dict[str, str]:
+        """TaskView.env 声明的种子文件: ``env["files"] = {path: content}``。"""
+        env = view.env or {}
         files = env.get("files") or {}
         if not isinstance(files, dict):
             raise AgentRunError(
-                "EvalTask.env['files'] must be a {path: content} mapping",
+                "TaskView.env['files'] must be a {path: content} mapping",
                 status="error",
             )
         return {str(k): str(v) for k, v in files.items()}
 
     async def _collect_listing(self, conversation_id: str) -> dict[str, dict[str, Any]]:
         return await collect_workspace_listing(self.client, conversation_id)
-
-    async def _collect_outcome_files(self, conversation_id: str) -> dict[str, str]:
-        """读回 workspace 全部 (有界) 文件内容作为 outcome。"""
-        files: dict[str, str] = {}
-        listing = await self._collect_listing(conversation_id)
-        for rel, info in sorted(listing.items()):
-            if info.get("isDirectory") or len(files) >= _MAX_OUTCOME_FILES:
-                continue
-            if (info.get("size") or 0) > _MAX_OUTCOME_FILE_BYTES:
-                files[rel] = "(skipped: file too large)"
-                continue
-            try:
-                data = await self.client.fs_read(conversation_id, rel)
-                files[rel] = str(data.get("content", ""))
-            except Exception as e:  # noqa: BLE001 - 单文件读取失败不阻断
-                files[rel] = f"(read failed: {e})"
-        return files
 
     async def _safe_delete(self, conversation_id: str) -> None:
         try:

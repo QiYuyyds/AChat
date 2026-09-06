@@ -25,9 +25,6 @@ from app.eval_integration.runner import (
 )
 from app.observability.instrumentation import (
     AGENTHUB_CONVERSATION_ID,
-    AGENTHUB_INPUT_TOKENS,
-    AGENTHUB_MODEL,
-    AGENTHUB_OUTPUT_TOKENS,
     AGENTHUB_SUCCESS,
     AGENTHUB_TOOL_NAME,
 )
@@ -40,11 +37,14 @@ logger = logging.getLogger(__name__)
 # 字段都会被判为「证据缺失」→ trial 记 invalid → 通过率 insufficient_data,
 # 且门禁直接拒绝信任整场 run。
 #
-# candidates 按序取首个命中, 故首位放实测有数据的名字:
+# 本表只列**宿主专有**名字 (candidates 按序取首个命中):
 #   tool.name / tool.success ← 宿主 `agenthub.tool_name` 等点号键 (Phoenix 存成
 #     嵌套 dict, provider 侧已还原为点号键; 实测 tool_call_count 因此从 0 变 2)
-#   usage.* / model          ← OpenInference 名, 实测 199/199 条 LLM span 有值;
-#     `agenthub.input_tokens` 一类虽有常量与写入代码, 实测 0/1000, 仅作兜底
+#   session.id ← 宿主写的是 `agenthub.conversation_id`, 而 OpenInference 约定的
+#     `session.id` 实测没写; 预设那条留作将来埋点改名后自动生效
+# 公共约定 (token 四分解 / 模型名 / span 角色) 不再出现在这里 —— 由
+# `vocabulary="openinference"` 预设提供。实测 `agenthub.input_tokens` 一类虽有
+# 常量与写入代码, 落到 Phoenix 是 0/1000, 因此也不再留兜底。
 #
 # cache_read / reasoning 是 input / output 的**子集** (实测 total = prompt +
 # completion 在 199/199 条上恒成立, 且 cache_read ≤ prompt、reasoning ≤
@@ -59,29 +59,27 @@ logger = logging.getLogger(__name__)
 #   tool.arguments     ← agenthub.args_summary 是宿主自算的摘要, 不是原始入参;
 #     映过去会让参数正确性跑在未知口径上, 还与 Aeval 侧脱敏语义叠加两次。
 #   error.type         ← agenthub.error 是错误消息原文, 不是错误分类。
+# 公共约定部分交给框架内置预设 (vocabulary="openinference"): token 四分解、模型名、
+# span 角色等由预设提供, 且 OpenInference 名优先、gen_ai 名兜底。这里因此只保留
+# **宿主专有**名字 —— 表从 9 条收敛到 3 条, 少一处会随规范改名而腐烂的地方。
 TRACE_MAPPING_ENTRIES: dict[str, str | list[str]] = {
     "tool.name": AGENTHUB_TOOL_NAME,
     "tool.success": AGENTHUB_SUCCESS,
-    "usage.input_tokens": ["llm.token_count.prompt", AGENTHUB_INPUT_TOKENS],
-    "usage.output_tokens": ["llm.token_count.completion", AGENTHUB_OUTPUT_TOKENS],
-    "usage.cache_read_tokens": ["llm.token_count.prompt_details.cache_read"],
-    "usage.reasoning_tokens": ["llm.token_count.completion_details.reasoning"],
-    "model": ["llm.model_name", AGENTHUB_MODEL],
-    "session.id": AGENTHUB_CONVERSATION_ID,
-    "span.role": "openinference.span.kind",
+    "session.id": [AGENTHUB_CONVERSATION_ID],
 }
 
 # 写进每个 run 的 mapping_version; 增删条目时递增, 用于跨 run 口径复核。
-TRACE_MAPPING_VERSION = "agenthub-2"
+TRACE_MAPPING_VERSION = "agenthub-3"
 
 
 def build_trace_mapping():
-    """构造 AChat 的属性翻译表 (内置 OTel GenAI 条目 + 宿主条目)。"""
+    """构造 AChat 的属性翻译表 (OpenInference 预设 + 宿主专有条目)。"""
     from agent_eval.trace.mapping import default_mapping
 
     return default_mapping(
         extra_entries=TRACE_MAPPING_ENTRIES,
         version=TRACE_MAPPING_VERSION,
+        vocabulary="openinference",
     )
 
 

@@ -24,7 +24,13 @@ import logging
 from typing import Any
 
 from agent_eval.core.contract import EvalContext
-from agent_eval.core.types import EvalTask, GraderResult, GraderType, TrialResult
+from agent_eval.core.types import (
+    EvalTask,
+    GraderResult,
+    GraderType,
+    ObservedBy,
+    TrialResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +47,9 @@ class AChatDispatchGrader:
     """派发质量评分器 — 子任务数 / 最大派发深度 / 完成率。"""
 
     name = "achat_dispatch"
+    # 信号来自 trace span 与本地库的 run 状态: 都是平台侧观测, 不是 agent 自述
+    evidence_levels = (ObservedBy.HARNESS, ObservedBy.RUNNER)
+    implementation_version = "2"
 
     def __init__(self, *, db_lookup: Any = None):
         """
@@ -75,6 +84,7 @@ class AChatDispatchGrader:
                 passed=False,
                 explanation="No dispatch found",
                 details={"n_subtasks": 0, "max_depth": 0, "completion_rate": 0.0},
+                evidence_levels=[ObservedBy.RUNNER],
             )
 
         completion_rate, completion_source = await self._completion_rate(
@@ -97,6 +107,7 @@ class AChatDispatchGrader:
                 "completion_source": completion_source,
                 "threshold": threshold,
             },
+            evidence_levels=[ObservedBy.RUNNER],
         )
 
     async def _completion_rate(

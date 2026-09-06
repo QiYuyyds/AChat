@@ -11,16 +11,46 @@ import json
 
 import httpx
 import pytest
-
-from agent_eval.core.contract import TransientError
-from agent_eval.core.types import EvalTask, GraderConfig, GraderType
+from agent_eval.core.contract import TransientError, TrialSession
+from agent_eval.core.types import (
+    EvalTask,
+    EvidenceKind,
+    GraderConfig,
+    GraderType,
+    Observation,
+    ObservedBy,
+    TaskView,
+)
 
 from app.eval_integration.client import AChatApiClient
-from app.eval_integration.environment import AChatWorkspaceEnvironment
+from app.eval_integration.environment import (
+    PROBE_WORKSPACE_FILES,
+    AChatWorkspaceEnvironment,
+    collect_workspace_files,
+)
 from app.eval_integration.errors import AgentRunError
 from app.eval_integration.runner import AChatAgentRunner, WorkspaceCoordinator
 
 AGENT_ID = "ag_eval_target"
+
+
+class RunnerUnderTest(AChatAgentRunner):
+    """测试壳: 用例仍按 `run(task)` 的形状调用, 但真正走的是 ③ 的新契约。
+
+    框架递给被评方的永远是裁好的 ``TaskView`` + 一个 ``TrialSession``; 这里照此
+    构造, 只是把 session 的探针回调做成用例可注入的 —— 否则绝大多数用例都要重复
+    那两行样板, 而被测的东西一点没变。
+    """
+
+    def __init__(self, *args, probe=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._probe = probe
+
+    async def run(self, task: EvalTask, session: TrialSession | None = None):
+        return await super().run(
+            task if isinstance(task, TaskView) else TaskView.of(task),
+            session or TrialSession(probe=self._probe),
+        )
 
 
 def _task(env: dict | None = None) -> EvalTask:
@@ -40,15 +70,18 @@ def _make_runner(
     coordinator=None,
     run_timeout=5.0,
     poll_interval=0.01,
+    probe=...,
     **kwargs,
-) -> AChatAgentRunner:
+) -> RunnerUnderTest:
     client = AChatApiClient(
         base_url="http://mock",
         token_provider=lambda: asyncio.sleep(0, result="token"),
         client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     )
     resolver = (lambda run_id: asyncio.sleep(0, result=trace)) if trace else None
-    return AChatAgentRunner(
+    if probe is ...:
+        probe = _workspace_probe(client, handler, coordinator)
+    return RunnerUnderTest(
         client,
         AGENT_ID,
         completion_channel=completion_channel,
@@ -57,8 +90,41 @@ def _make_runner(
         coordinator=coordinator,
         run_timeout=run_timeout,
         poll_interval=poll_interval,
+        probe=probe,
         **kwargs,
     )
+
+
+def _workspace_probe(client: AChatApiClient, mock: MockAChat, coordinator=None):
+    """真实形状的取证探针: 经 fs API 读实际 workspace, 返回 harness 级读数。"""
+
+    async def probe(channel: str = ""):
+        conversation_id = (
+            coordinator.current.conversation_id
+            if coordinator is not None and coordinator.current
+            else mock.last_conversation_id
+        )
+        payload = await collect_workspace_files(client, conversation_id)
+        return [
+            Observation(
+                kind=EvidenceKind.STATE,
+                observed_by=ObservedBy.HARNESS,
+                channel=channel or PROBE_WORKSPACE_FILES,
+                value=payload,
+            )
+        ]
+
+    return probe
+
+
+def _harness_files(evidence) -> dict[str, str]:
+    """从取证通道里取最后一份 workspace 读数的文件内容。"""
+    for reading in reversed(evidence.harness_state):
+        if reading.is_absent or not isinstance(reading.value, dict):
+            continue
+        if "files" in reading.value:
+            return reading.value["files"]
+    return {}
 
 
 class MockAChat:
@@ -85,15 +151,22 @@ class MockAChat:
         self._status_cursor = 0
         self.artifacts = artifacts or []
         self.conversation_ids = conversation_ids  # None → 每次新 id
+        self.last_conversation_id: str | None = None
         self._conv_counter = 0
         self.fail_send = fail_send
         self.transport_error = transport_error
 
     def _conv_id(self) -> str:
         if self.conversation_ids is not None:
-            return self.conversation_ids[min(self._conv_counter, len(self.conversation_ids) - 1)]
-        self._conv_counter += 1
-        return f"conv_{self._conv_counter}"
+            conv_id = self.conversation_ids[
+                min(self._conv_counter, len(self.conversation_ids) - 1)
+            ]
+            self._conv_counter += 1
+        else:
+            self._conv_counter += 1
+            conv_id = f"conv_{self._conv_counter}"
+        self.last_conversation_id = conv_id
+        return conv_id
 
     def _messages_payload(self) -> list[dict]:
         if self.messages_status_sequence is not None:
@@ -204,17 +277,20 @@ async def test_run_success_returns_trace_transcript_outcome():
         artifacts=[{"id": "art_1", "type": "document", "title": "Doc"}],
     )
     runner = _make_runner(mock)
-    trace_id, transcript, outcome = await runner.run(_task())
+    evidence = await runner.run(_task())
 
-    assert trace_id == "trace_abc"
+    assert evidence.trace_id == "trace_abc"
+    transcript = evidence.messages()
     assert [m["role"] for m in transcript] == ["user", "agent"]
     assert transcript[1]["content"] == "done"
-    assert outcome["conversation_id"] == "conv_1"
-    assert outcome["run_ids"] == ["run_1"]
-    assert outcome["artifacts"] == [{"id": "art_1", "type": "document", "title": "Doc"}]
+
+    reported = evidence.state_payload()  # 被评侧通道 (适配层交付 + agent 自述)
+    assert reported["conversation_id"] == "conv_1"
+    assert reported["run_ids"] == ["run_1"]
+    assert reported["artifacts"] == [{"id": "art_1", "type": "document", "title": "Doc"}]
 
     # 请求序列: 创建会话 → listdir(种子前) → 写种子 → listdir(种子后) →
-    # messages → listdir/outcome → artifacts → 清理删除
+    # messages → 取证探针读 workspace → artifacts → 清理删除
     methods_paths = mock.requests
     assert methods_paths[0] == ("POST", "/api/conversations")
     assert ("POST", "/api/conversations/conv_1/messages") in methods_paths
@@ -222,17 +298,33 @@ async def test_run_success_returns_trace_transcript_outcome():
     assert mock.deleted == ["conv_1"]  # 无 coordinator → 自行清理
 
 
+async def test_run_delivers_three_channels_separately():
+    """三条通道各自带来源: 取证 ≠ 适配层交付 ≠ agent 自述。"""
+    runner = _make_runner(MockAChat())
+    evidence = await runner.run(_task())
+
+    assert [obs.observed_by.value for obs in evidence.harness_state] == ["harness"]
+    assert evidence.harness_state[0].channel == PROBE_WORKSPACE_FILES
+    levels = {obs.observed_by for obs in evidence.subject_state}
+    assert levels == {ObservedBy.RUNNER, ObservedBy.SUBJECT}
+    # agent 自述单独成一条读数, 不会与适配层交付的元数据混成一个东西
+    claims = [
+        obs.value for obs in evidence.subject_state if obs.observed_by is ObservedBy.SUBJECT
+    ]
+    assert claims == [{"assistant_claims": "done"}]
+
+
 async def test_run_writes_seed_files_before_prompt():
     mock = MockAChat()
     runner = _make_runner(mock)
-    _, _, outcome = await runner.run(
+    evidence = await runner.run(
         _task({"files": {"seed/notes.md": "# hello", "data.csv": "a,b"}})
     )
 
     assert mock.written_files == {"seed/notes.md": "# hello", "data.csv": "a,b"}
-    assert outcome["seed_files"] == ["data.csv", "seed/notes.md"]
-    # outcome 读回 workspace 文件内容
-    assert outcome["files"]["seed/notes.md"] == "# hello"
+    assert evidence.state_payload()["seed_files"] == ["data.csv", "seed/notes.md"]
+    # workspace 文件内容经取证通道交付 (不再是自报通道里那个 files 字典)
+    assert _harness_files(evidence)["seed/notes.md"] == "# hello"
 
 
 async def test_run_no_trace_when_tracing_disabled(monkeypatch):
@@ -241,10 +333,10 @@ async def test_run_no_trace_when_tracing_disabled(monkeypatch):
     monkeypatch.setattr(runner_mod.AChatAgentRunner, "_trace_enabled", staticmethod(lambda: False))
     mock = MockAChat()
     runner = _make_runner(mock, trace=None)
-    trace_id, _, outcome = await runner.run(_task())
+    evidence = await runner.run(_task())
 
-    assert trace_id == ""
-    assert "trace_id_unavailable" in outcome
+    assert evidence.trace_id == ""
+    assert "trace_id_unavailable" in evidence.state_payload()
 
 
 async def test_run_raises_when_trace_unavailable(monkeypatch):
@@ -433,10 +525,10 @@ async def test_in_process_completion_via_event_bus():
 
     task = asyncio.create_task(runner.run(_task()))
     publisher = asyncio.create_task(publish_run_end())
-    trace_id, _, outcome = await task
+    evidence = await task
     await publisher
-    assert trace_id == "trace_abc"
-    assert outcome["run_ids"] == ["run_1"]
+    assert evidence.trace_id == "trace_abc"
+    assert evidence.state_payload()["run_ids"] == ["run_1"]
 
 
 async def test_in_process_run_failed_event_raises():
@@ -479,48 +571,100 @@ async def test_coordinator_receives_trial_state_and_environment_cleans_up():
     client = _client_of(mock)
     coordinator = WorkspaceCoordinator()
     environment = AChatWorkspaceEnvironment(client, coordinator)
-    runner = AChatAgentRunner(
+    runner = RunnerUnderTest(
         client, AGENT_ID, completion_channel="http",
         trace_resolver=lambda run_id: asyncio.sleep(0, result="t"),
         coordinator=coordinator, cleanup_conversations=False,
+        probe=environment.probe,
     )
 
     task = _task({"files": {"a.txt": "x"}})
-    await runner.run(task)
+    evidence = await runner.run(task)
 
-    # 框架在 trial 收尾时依次调用 teardown → verify_clean (runner.core._run_trial)
+    # 框架在 trial 收尾时依次调用 取证探针 → teardown → verify_clean
     assert coordinator.current is not None
     assert coordinator.current.conversation_id == "conv_1"
+    assert [obs.channel for obs in evidence.harness_state] == [PROBE_WORKSPACE_FILES]
     await environment.teardown(task)
     assert coordinator.current is None
     assert coordinator.last is not None
     assert coordinator.last.conversation_id == "conv_1"
     assert mock.deleted == ["conv_1"]
 
-    verify = await environment.verify_clean({})
+    verify = await environment.verify_clean({}, evidence.harness_state)
     assert verify["clean"] is False  # 种子前清单非空 → 共享目录退化告警
     kinds = {d["kind"] for d in verify["differences"]}
     assert "foreign_files" in kinds
-    assert "trial_changes" in kinds  # a.txt 由种子后新增 → 记为变更 (参考信息)
+    changes = next(d for d in verify["differences"] if d["kind"] == "trial_changes")
+    assert changes["source"] == "harness_probe"  # 末期状态读的是独立取证
+    assert changes["files"] == []  # a.txt 在种子后基线里就有 → 相对基线无变更
+    # 取证读数本身确实看到了这个文件 (这才是要保住的能力)
+    assert "a.txt" in _harness_files(evidence)
+
+
+async def test_probe_without_trial_reports_missing_not_empty():
+    """没有进行中的 trial 会话时, 探针必须报「没取到」而不是交空读数。"""
+    environment = AChatWorkspaceEnvironment(_client_of(MockAChat()), WorkspaceCoordinator())
+    readings = await environment.probe("workspace_files")
+
+    assert len(readings) == 1
+    assert readings[0].is_absent is True
+    assert readings[0].absent_reason == "provider_unavailable"
+
+
+async def test_probe_follows_the_current_trial_not_the_caller():
+    """运行中取证与结束前取证共用 probe(): 它读 ``coordinator.current``。
+
+    两条 trial 交叠时后 begin 的会覆盖前一条 —— 这条约束写出来而不是假装没有:
+    宿主装配因此固定 ``concurrency=1`` (§17.5 隔离正确性优先)。
+    """
+    mock = MockAChat()
+    client = _client_of(mock)
+    coordinator = WorkspaceCoordinator()
+    environment = AChatWorkspaceEnvironment(client, coordinator)
+
+    coordinator.begin("conv_a")
+    client_and_files = await collect_workspace_files(client, "conv_a")
+    assert client_and_files["files"] == {}  # 还没写过任何文件
+
+    coordinator.begin("conv_b")  # 第二条 trial 交叠进来
+    await client.fs_write("conv_b", "only_in_b.txt", "b")
+    readings = await environment.probe(PROBE_WORKSPACE_FILES)
+
+    assert readings[0].observed_by is ObservedBy.HARNESS
+    assert "only_in_b.txt" in readings[0].value["files"]
+    # 探针没有「谁发起就读谁」的概念: 它只能读到当下那条 trial
+    assert coordinator.current.conversation_id == "conv_b"
+
+
+async def test_probe_unknown_channel_names_the_available_ones():
+    environment = AChatWorkspaceEnvironment(_client_of(MockAChat()), WorkspaceCoordinator())
+    coordinator = environment.coordinator
+    coordinator.begin("conv_1")
+    try:
+        readings = await environment.probe("registry_dump")
+    finally:
+        coordinator.clear()
+
+    assert readings[0].is_absent is True
+    assert readings[0].absent_reason == "provider_not_covered"
+    assert PROBE_WORKSPACE_FILES in readings[0].detail
 
 
 async def test_environment_fresh_workspace_is_clean():
     mock = MockAChat()
-    client = AChatApiClient(
-        base_url="http://mock",
-        token_provider=lambda: asyncio.sleep(0, result="token"),
-        client=httpx.AsyncClient(transport=httpx.MockTransport(mock)),
-    )
+    client = _client_of(mock)
     coordinator = WorkspaceCoordinator()
     environment = AChatWorkspaceEnvironment(client, coordinator)
-    runner = AChatAgentRunner(
+    runner = RunnerUnderTest(
         client, AGENT_ID, completion_channel="http",
         trace_resolver=lambda run_id: asyncio.sleep(0, result="t"),
         coordinator=coordinator, cleanup_conversations=False,
+        probe=environment.probe,
     )
     task = _task()
     await runner.run(task)
-    await environment.teardown(task)  # 框架收尾顺序: teardown → verify_clean
+    await environment.teardown(task)  # 框架收尾顺序: 取证 → teardown → verify_clean
     verify = await environment.verify_clean({})
     assert verify["clean"] is True
     assert mock.deleted == ["conv_1"]
@@ -528,17 +672,14 @@ async def test_environment_fresh_workspace_is_clean():
 
 async def test_environment_reused_conversation_flagged():
     mock = MockAChat(conversation_ids=["conv_fixed"])
-    client = AChatApiClient(
-        base_url="http://mock",
-        token_provider=lambda: asyncio.sleep(0, result="token"),
-        client=httpx.AsyncClient(transport=httpx.MockTransport(mock)),
-    )
+    client = _client_of(mock)
     coordinator = WorkspaceCoordinator()
     environment = AChatWorkspaceEnvironment(client, coordinator)
-    runner = AChatAgentRunner(
+    runner = RunnerUnderTest(
         client, AGENT_ID, completion_channel="http",
         trace_resolver=lambda run_id: asyncio.sleep(0, result="t"),
         coordinator=coordinator, cleanup_conversations=False,
+        probe=environment.probe,
     )
     task = _task()
     await runner.run(task)
