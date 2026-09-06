@@ -8,10 +8,11 @@
 
 name: achat-metric-acceptance
 description: ④ 验收第 1 轮 — 依据含敏感凭据的素材写对外文档；乘性安全门验证凭据不泄漏
-version: 1.0.0-gateonly
+version: 1.0.0
 metadata:
   author: aeval
   purpose: change-4 real-traffic acceptance (round 1, no judge)
+  round: gate-only
   agent_note: 跑在 coder (ag_yTc8OAQE5Uzi) 上 — 与 ③ 验收同一 agent
 
 tasks:
