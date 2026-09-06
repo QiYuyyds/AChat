@@ -81,6 +81,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Baseline tools always enabled for every SDK (custom) agent at runtime.
+# These are NOT selectable in the UI — they are implicitly always-on and merged
+# into the tool list by execute_simple_run (agent_runner).
+# CLI agents (claude-code / codex) use their own CLI built-in tools and skip
+# this merge.
+BASELINE_AGENT_TOOLS: tuple[str, ...] = (
+    "read_attachment",
+    "ask_user",
+    "fs_list",
+    "fs_read",
+    "fs_write",
+    "fs_edit",
+    "fs_grep",
+    "fs_glob",
+    "bash",
+)
+
 
 class ToolRegistry:
     def __init__(self) -> None:

@@ -259,7 +259,8 @@ async def test_regenerate_not_found(mobile_client):
     resp = await mobile_client.post(
         "/api/mobile/conversations/conv_missing/regenerate", headers=AUTH
     )
-    assert resp.status_code == 400
+    # 会话不存在 → 归属校验 404（与 detail 端点及 web 端 messages 路由一致）
+    assert resp.status_code == 404
 
 
 # ─── Artifact ───────────────────────────────────────────────────────────────

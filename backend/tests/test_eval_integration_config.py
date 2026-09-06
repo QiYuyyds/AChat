@@ -230,9 +230,10 @@ def test_make_judge_llm_fn_returns_async_callable():
 async def test_create_aeval_runner_injects_metrics_registry(eval_settings):
     runner = await create_aeval_runner(eval_settings)
 
-    # P0 四指标默认注入 (llm_fn 是否可用取决于环境凭证, 不在此断言)
+    # P0 四指标 + 宿主 process_quality 默认注入 (llm_fn 是否可用取决于环境凭证, 不在此断言)
     assert set(runner.metrics_registry) == {
         "answer_relevancy", "faithfulness", "context_recall", "context_precision",
+        "process_quality",
     }
     # metric 分发 grader 已拿到注册表引用
     metric_grader = runner._graders["metric"]

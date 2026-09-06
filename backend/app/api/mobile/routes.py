@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_conversation_ownership
 from app.db.engine import get_local_db, get_remote_db
 from app.db.models import Agent, AgentRun, Artifact, User
 from app.schemas.dispatch import AskUserAnswer, PendingQuestion, PendingWrite
@@ -528,6 +529,7 @@ async def mobile_edit_message(
         return _mobile_json(
             req, {"error": "Invalid body", "issues": _issues(err)}, status=400
         )
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
         result = await conversation_service.edit_and_resend_latest_user_message(
             conversation_id, message_id, body.content, user_id=user.id
@@ -552,6 +554,7 @@ async def mobile_withdraw_message(
     req: Request, conversation_id: str, message_id: str,
     user: User = Depends(mobile_auth),
 ) -> Response:
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
         result = await conversation_service.withdraw_latest_user_message(
             conversation_id, message_id, user_id=user.id
@@ -571,6 +574,7 @@ async def mobile_withdraw_message(
 # ─── POST /api/mobile/conversations/{id}/regenerate ─────────────────────────
 @router.post("/mobile/conversations/{conversation_id}/regenerate")
 async def mobile_regenerate(req: Request, conversation_id: str, user: User = Depends(mobile_auth)) -> Response:
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
         result = await conversation_service.regenerate_latest_response(
             conversation_id, user_id=user.id

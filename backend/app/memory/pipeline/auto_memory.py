@@ -25,7 +25,7 @@ from datetime import date
 
 from app.memory.file_store.file_catalog import FileCatalog
 from app.memory.file_store.frontmatter import MemoryFrontmatter
-from app.memory.file_store.markdown_io import read_markdown, write_markdown
+from app.memory.file_store.markdown_io import read_markdown, strip_code_fence, write_markdown
 from app.memory.file_store.wikilinks import extract_wikilinks_detailed, retarget_wikilinks
 from app.memory.file_store.workspace import MemoryWorkspace
 from app.memory.search.wikilink_expander import WikilinkExpander
@@ -123,14 +123,6 @@ Return JSON:
 ## Conversation
 {conversation}
 """
-
-
-def _strip_code_fence(raw: str) -> str:
-    raw = (raw or "").strip()
-    raw = re.sub(r"^```json", "", raw)
-    raw = re.sub(r"^```", "", raw)
-    raw = re.sub(r"```$", "", raw)
-    return raw.strip()
 
 
 def _is_trivial(user_msg: str, assistant_msg: str) -> bool:
@@ -384,7 +376,7 @@ class AutoMemory:
             logger.warning("auto_memory LLM call failed: %s", e)
             return 0
 
-        raw = _strip_code_fence(raw)
+        raw = strip_code_fence(raw)
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
@@ -470,7 +462,7 @@ class AutoMemory:
             logger.warning("auto_memory LLM call failed: %s", e)
             return 0
 
-        raw = _strip_code_fence(raw)
+        raw = strip_code_fence(raw)
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, ValueError):

@@ -39,7 +39,7 @@ from app.memory.buckets import (
 )
 from app.memory.file_store.file_catalog import FileCatalog
 from app.memory.file_store.frontmatter import MemoryFrontmatter
-from app.memory.file_store.markdown_io import read_markdown, write_markdown
+from app.memory.file_store.markdown_io import read_markdown, strip_code_fence, write_markdown
 from app.memory.file_store.wikilinks import add_wikilink
 from app.memory.file_store.workspace import MemoryWorkspace
 from app.memory.search.hybrid_search import HybridSearch
@@ -349,14 +349,6 @@ Match the language of the input.
 """
 
 
-def _strip_code_fence(raw: str) -> str:
-    raw = (raw or "").strip()
-    raw = re.sub(r"^```json", "", raw)
-    raw = re.sub(r"^```", "", raw)
-    raw = re.sub(r"```$", "", raw)
-    return raw.strip()
-
-
 def _dedupe_by_path(hits_1: list, hits_2: list) -> list:
     """Merge two search result lists and deduplicate by path, keeping higher score."""
     path_to_best = {}
@@ -529,7 +521,7 @@ class AutoDream:
             logger.warning("auto_dream extract LLM call failed: %s", e)
             return [], []
 
-        raw = _strip_code_fence(raw)
+        raw = strip_code_fence(raw)
         logger.debug("auto_dream extract raw output: %s", raw[:500])
         try:
             parsed = json.loads(raw)
@@ -855,7 +847,7 @@ class AutoDream:
             logger.warning("auto_dream merge LLM call failed: %s", e)
             return None
 
-        raw = _strip_code_fence(raw)
+        raw = strip_code_fence(raw)
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
@@ -962,7 +954,7 @@ class AutoDream:
             logger.warning("auto_dream integrate LLM call failed: %s", e)
             return "skipped"
 
-        raw = _strip_code_fence(raw)
+        raw = strip_code_fence(raw)
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
@@ -1191,7 +1183,7 @@ class AutoDream:
             logger.warning("auto_dream topics LLM call failed: %s", e)
             return None
 
-        raw = _strip_code_fence(raw)
+        raw = strip_code_fence(raw)
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, ValueError):

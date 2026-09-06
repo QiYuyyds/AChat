@@ -376,21 +376,6 @@ async def _delete_custom_agent(agent_id: str) -> None:
 # Ports src/server/agent-draft-service.ts + the heuristics in
 # src/shared/agent-builder-config.ts. Deterministic — no LLM call.
 
-# Baseline tools always enabled for every Custom adapter agent at runtime.
-# These are NOT shown as UI checkboxes — they are implicitly always-on.
-# SDK agents (Claude Code / Codex) use their own CLI built-in tools and are unaffected.
-_BASELINE_AGENT_TOOLS: tuple[str, ...] = (
-    "read_attachment",
-    "ask_user",
-    "fs_list",
-    "fs_read",
-    "fs_write",
-    "fs_edit",
-    "fs_grep",
-    "fs_glob",
-    "bash",
-)
-
 # UI-selectable tools for Custom adapter agents. Only these 6 appear as
 # checkboxes in the create/edit agent dialog. Baseline tools are merged at
 # runtime by agent_runner.py and are not selectable.

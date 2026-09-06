@@ -50,14 +50,18 @@ from app.schemas.events import (
     TurnMetricEvent,
     TurnTokenBreakdown,
 )
-from app.schemas.messages import DeployStatusRecord, MessageUsage
+from app.schemas.messages import DeployStatusRecord
 from app.services import runner_registry, ttft_tracker
 from app.services.attachment_service import get_attachment_absolute_path
 from app.services.conversation_context import BuildHistoryOptions, build_history_for
 from app.services.event_bus import event_bus
+from app.services.orchestrator_prompts import extract_text_from_parts
 from app.services.project_artifact import build_project_files
 from app.services.runner_registry import RunHandle
 from app.tools.base import ToolContext
+from app.tools.registry import (
+    BASELINE_AGENT_TOOLS as _BASELINE_AGENT_TOOLS,
+)
 from app.tools.registry import (
     tool_registry,  # noqa: F401 - parity import (tool resolution lives in adapters)
 )
@@ -511,24 +515,6 @@ CLI_ADAPTERS = frozenset({"claude-code", "codex"})
 # SDK agents call LLM APIs via SDKs; AChat manages tools, auth, and history.
 SDK_ADAPTERS = frozenset({"custom"})
 # mock is neither CLI nor SDK; it is test-only and ignored by tool injection.
-
-# Baseline tools always enabled for every SDK (custom) agent at runtime.
-# These are NOT selectable in the UI — they are implicitly always-on and merged
-# into the tool list by execute_simple_run. Must match _BASELINE_AGENT_TOOLS in
-# app/api/agents.py (both are internal mirrors of the same design contract).
-# CLI agents (claude-code / codex) use their own CLI built-in tools and skip
-# this merge.
-_BASELINE_AGENT_TOOLS: tuple[str, ...] = (
-    "read_attachment",
-    "ask_user",
-    "fs_list",
-    "fs_read",
-    "fs_write",
-    "fs_edit",
-    "fs_grep",
-    "fs_glob",
-    "bash",
-)
 
 # Management tools are only injected into guide agents (is_guide=True).
 # Non-guide agents are filtered even if tool_names mistakenly lists them.
@@ -1832,7 +1818,7 @@ async def execute_run(
         is_orchestrator = agent.is_orchestrator
         trigger_parts = trigger_message.parts_list
 
-    prompt = args.override_prompt or _extract_text_from_parts(trigger_parts)
+    prompt = args.override_prompt or extract_text_from_parts(trigger_parts)
 
     # parse trigger-message attachments (skip for sub-runs / overridePrompt to
     # avoid the sub-agent re-processing the same files)
@@ -4105,33 +4091,6 @@ def _build_agent_hub_tool_guidance(
 
 
 # ─── Misc helpers ────────────────────────────────────────────────────────────
-def _extract_text_from_parts(parts: list[dict]) -> str:
-    out: list[str] = []
-    for p in parts:
-        ptype = p.get("type")
-        if ptype in ("text", "thinking"):
-            out.append(p.get("content", ""))
-        elif ptype == "code":
-            out.append("```" + p.get("language", "") + "\n" + p.get("content", "") + "\n```")
-        elif ptype == "image_attachment":
-            out.append(
-                f"[图片附件: {p['fileName']} ({_format_size(p['size'])}, "
-                f"{p['mimeType']}) · id={p['attachmentId']}]"
-            )
-        elif ptype == "file_attachment":
-            out.append(
-                f"[文件附件: {p['fileName']} ({_format_size(p['size'])}, "
-                f"{p['mimeType']}) · id={p['attachmentId']}]"
-            )
-    return "\n\n".join(s for s in out if s)
-
-
-def _format_size(num_bytes: int) -> str:
-    if num_bytes < 1024:
-        return f"{num_bytes}B"
-    if num_bytes < 1024 * 1024:
-        return f"{num_bytes / 1024:.1f}KB"
-    return f"{num_bytes / 1024 / 1024:.1f}MB"
 
 
 # ─── Wire the real runner in (phase 5) ───────────────────────────────────────
