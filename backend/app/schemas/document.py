@@ -122,11 +122,18 @@ class VersionListResponse(BaseModel):
 
 
 class IngestResultResponse(BaseModel):
-    """Response for POST /api/documents/{id}/ingest."""
+    """Response for POST /api/documents/{id}/ingest.
+
+    Synchronous ingest fills chunk_count / doc_hash. When the RAG task worker
+    handles the ingest asynchronously, rag_task_id / status are set instead
+    and the RAG fields stay None.
+    """
 
     version_id: str = Field(alias="versionId")
-    chunk_count: int = Field(alias="chunkCount")
-    doc_hash: str = Field(alias="docHash")
+    chunk_count: int | None = Field(default=None, alias="chunkCount")
+    doc_hash: str | None = Field(default=None, alias="docHash")
+    rag_task_id: str | None = Field(default=None, alias="ragTaskId")
+    status: str | None = None
 
     model_config = {"populate_by_name": True}
 

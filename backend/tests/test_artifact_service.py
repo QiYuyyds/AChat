@@ -22,7 +22,6 @@ async def _make_conversation(title: str = "Conv") -> str:
         ts = now_ms()
         conv = Conversation(
             id=conv_id, title=title, mode="single", created_at=ts, updated_at=ts,
-            user_id="test_user_1",
         )
         conv.agent_ids_list = ["ag_alice"]
         conv.pinned_message_ids_list = []

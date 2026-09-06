@@ -87,17 +87,42 @@ def read_cloud_session() -> dict[str, Any] | None:
     return parsed
 
 
-def write_cloud_session(user: dict[str, Any]) -> None:
-    """登录成功后写入缓存标记（email / name / loggedInAt）。"""
-    payload = {
+def write_cloud_session(user: dict[str, Any], tokens: dict[str, Any] | None = None) -> None:
+    """登录成功后写入缓存标记（email / name / loggedInAt + 云端 JWT）。
+
+    云端 JWT 供后台统计 reporter 复用（usage-stats delta：认证代理响应时
+    缓存，上报直连云端时携带识别身份）；属用户自有数据，存本机 data dir。
+    """
+    payload: dict[str, Any] = {
         "email": user.get("email"),
         "name": user.get("name"),
         "loggedInAt": now_ms(),
     }
+    if tokens:
+        if tokens.get("access_token"):
+            payload["accessToken"] = tokens["access_token"]
+        if tokens.get("refresh_token"):
+            payload["refreshToken"] = tokens["refresh_token"]
     path = cloud_session_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("cloud session marker written (%s)", payload.get("email"))
+
+
+def update_cloud_session_tokens(tokens: dict[str, Any]) -> None:
+    """刷新响应到达后更新缓存中的云端 JWT；无缓存标记时静默跳过。"""
+    existing = read_cloud_session()
+    if existing is None:
+        return
+    if tokens.get("access_token"):
+        existing["accessToken"] = tokens["access_token"]
+    if tokens.get("refresh_token"):
+        existing["refreshToken"] = tokens["refresh_token"]
+    path = cloud_session_path()
+    try:
+        path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        logger.warning("cloud session token update failed", exc_info=True)
 
 
 def clear_cloud_session() -> None:

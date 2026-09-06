@@ -20,13 +20,15 @@ from app.services.pending_writes import pending_writes
 
 
 @pytest_asyncio.fixture
-async def api_client(db):
+async def api_client(db, test_user):
     """An httpx client over an app that mounts ONLY the pending router.
 
     The shared conftest ``api_client`` builds the app via ``create_app()``, but
     the pending router is wired by the Integrate stage (main.py), which this
     stage must not touch. Mounting the router directly here keeps verification
     self-contained while still sharing the isolated ``db`` fixture's DB.
+    The pending routes require JWT auth (added in 62407ef), so the client
+    authenticates as the shared test user.
     """
     from fastapi import FastAPI
 
@@ -36,7 +38,32 @@ async def api_client(db):
     app.include_router(pending_router)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.headers["Authorization"] = f"Bearer {test_user['token']}"
         yield client
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _seed_pending_conversations(db):
+    """Seed the conversation rows the pending routes' ownership check requires.
+
+    Every pending endpoint calls verify_conversation_ownership, which 404s on
+    unknown conversation ids — the in-memory store entries alone aren't enough.
+    """
+    from app.db.engine import get_local_db
+    from app.db.models import Conversation
+    from app.utils.clock import now_ms
+
+    now = now_ms()
+    async with get_local_db() as session:
+        for conv_id in ("conv_x", "conv_other"):
+            conv = Conversation(
+                id=conv_id, title="T", mode="single",
+                created_at=now, updated_at=now,
+            )
+            conv.agent_ids_list = []
+            conv.pinned_message_ids_list = []
+            conv.bookmarked_message_ids_list = []
+            session.add(conv)
 
 
 @pytest.fixture(autouse=True)

@@ -1,12 +1,10 @@
-"""Hybrid search — RRF fusion of BM25 + Vector, with wikilink post-processing expansion.
+"""Hybrid search — RRF fusion of BM25 + Vector.
 
 Combines SQLite FTS5 BM25 keyword matching with vector cosine similarity,
-fused via Reciprocal Rank Fusion (RRF). Wikilink graph relations are used
-only as post-processing expansion (neighbor metadata), not for ranking.
-
-Each SearchResult includes:
-  - scores: per-component breakdown (bm25, vector, rrf)
-  - expansion: outlinks + inlinks neighbor metadata (path, name, description)
+fused via Reciprocal Rank Fusion (RRF). Wikilink graph relations are NOT
+used for ranking; neighbor metadata is available on demand via
+:meth:`HybridSearch.build_expansion` for explicit consumers only (the
+memory_recall tool and the REST search endpoint).
 
 Result paths are workspace-relative so clients can open files via the files API.
 """
@@ -41,7 +39,6 @@ class SearchResult:
     source: str = "bm25"  # bm25 | vector | rrf
     frontmatter: dict = field(default_factory=dict)
     scores: dict = field(default_factory=dict)  # {"bm25": float, "vector": float, "rrf": float}
-    expansion: dict = field(default_factory=dict)  # {"outlinks": [...], "inlinks": [...]}
 
 
 class HybridSearch:
@@ -137,7 +134,11 @@ class HybridSearch:
         agent_id: str | None = None,
         bucket: str | None = None,
     ) -> list[SearchResult]:
-        """Search memory files using BM25 + Vector RRF fusion + wikilink post-processing."""
+        """Search memory files using BM25 + Vector RRF fusion.
+
+        Wikilink expansion metadata is NOT built here (lazy); explicit
+        consumers call :meth:`build_expansion` per result path.
+        """
         k = top_k or self.settings.memory_search_top_k
         bm25_weight = self.settings.memory_bm25_weight
         vector_weight = self.settings.memory_vector_weight
@@ -213,9 +214,6 @@ class HybridSearch:
                 )
                 score = score_breakdown["rrf"]
 
-            # Build wikilink expansion metadata (post-processing, not ranking)
-            expansion = self._build_expansion(path)
-
             results.append(SearchResult(
                 path=self._to_rel(path),
                 name=mem_file.frontmatter.name,
@@ -224,7 +222,6 @@ class HybridSearch:
                 source=source,
                 frontmatter=mem_file.frontmatter.to_dict(),
                 scores=score_breakdown,
-                expansion=expansion,
             ))
 
         return results
@@ -378,8 +375,13 @@ class HybridSearch:
 
         return filtered
 
-    def _build_expansion(self, path: str) -> dict:
-        """Build outlinks + inlinks expansion metadata for a search result."""
+    def build_expansion(self, path: str) -> dict:
+        """Build outlinks + inlinks expansion metadata for one result path.
+
+        Not part of ``search()`` — opt-in for explicit consumers (memory_recall
+        tool, REST search endpoint). Each neighbor is verified to exist on
+        disk via ``read_markdown``, so broken links never appear in the output.
+        """
         outlinks_meta: list[dict] = []
         inlinks_meta: list[dict] = []
 

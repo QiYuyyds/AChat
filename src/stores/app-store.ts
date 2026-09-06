@@ -1184,6 +1184,20 @@ export const useAppStore = create<AppState>()(
             return
           }
 
+          case 'agent.handoff': {
+            // 移交系统消息（已落库，role='system'）。与 message.added 同样按 id
+            // 幂等 upsert，复用既有系统消息样式渲染，不新做专用卡片。
+            s.messages[event.message.id] = {
+              ...event.message,
+              hidden: event.message.hidden ?? false,
+            }
+            s.messageIdsByConv[event.message.conversationId] ??= []
+            if (!s.messageIdsByConv[event.message.conversationId].includes(event.message.id)) {
+              s.messageIdsByConv[event.message.conversationId].push(event.message.id)
+            }
+            return
+          }
+
           case 'message.removed': {
             // 撤回 / 编辑 / 重新生成在别处删了消息（及其产物）。幂等移除：发起方已删过则无副作用。
             const toRemove = new Set(event.messageIds)

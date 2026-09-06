@@ -107,7 +107,7 @@ def test_blunt_metadata_no_exact_timestamp():
 async def custom_agent_setup(db, tmp_path):
     """Create a custom (SDK) agent, conversation, and workspace."""
     from app.db.engine import get_db
-    from app.db.models import Agent, Conversation, Workspace
+    from app.db.models import Agent, Conversation, ModelProfile, Workspace
     from app.utils.clock import now_ms
     from app.utils.ids import new_conversation_id, new_workspace_id
 
@@ -126,12 +126,26 @@ async def custom_agent_setup(db, tmp_path):
             adapter_name="custom",
             is_builtin=False,
             is_orchestrator=False,
-            model_provider="openai",
-            model_id="gpt-4",
             created_at=now,
         )
         agent.capabilities_list = []
         agent.tool_names_list = []
+
+        # SDK (Custom) agents require a model profile at run time.
+        session.add(ModelProfile(
+            id="mp_meta_test",
+            name="deepseek/deepseek-chat",
+            provider="deepseek",
+            model_id="deepseek-chat",
+            api_key="sk-test-key-1234",
+            api_base_url="https://api.deepseek.com/v1",
+            is_default=True,
+            supports_vision=False,
+            last_test_status="untested",
+            last_tested_at=None,
+            created_at=now,
+            updated_at=now,
+        ))
 
         conv = Conversation(
             id=conv_id,

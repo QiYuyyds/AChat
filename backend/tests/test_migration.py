@@ -1,10 +1,20 @@
 """Tests for the multi-user migration script (backend/scripts/migrate_to_multi_user.py).
 
 Verifies that the migration creates a default user and back-fills user_id on
-existing rows.
+remote ownership tables.
+
+C 类 integration：migrate() 会无条件对远端表（long_term_memory / memory_nodes 等，
+只存在于真实远程 PostgreSQL，app/db/models.py 未定义对应模型，单库 SQLite 测试环境
+按设计不建这些表，见 test_dual_db 对 remote tables 缺席的断言）执行回填 SQL，
+因此这两个用例需要真实双库基础设施，默认环境自动跳过（见 tests/conftest.py 的
+integration 自动跳过规则）。
 """
 
 from __future__ import annotations
+
+import pytest
+
+pytestmark = pytest.mark.integration
 
 
 async def test_migration_creates_default_user(db, monkeypatch):
@@ -15,50 +25,23 @@ async def test_migration_creates_default_user(db, monkeypatch):
     from app.config import get_settings
     get_settings.cache_clear()
 
-    from app.db.engine import get_db
-    from app.db.models import Agent, User
-    from app.utils.clock import now_ms
-
-    # Seed an agent without user_id (simulating pre-migration data)
-    now = now_ms()
-    async with get_db() as session:
-        agent = Agent(
-            id="ag_legacy",
-            name="Legacy Agent",
-            avatar="L",
-            description="pre-migration agent",
-            system_prompt="prompt",
-            adapter_name="mock",
-            is_builtin=False,
-            is_orchestrator=False,
-            created_at=now,
-            user_id=None,
-        )
-        agent.capabilities_list = []
-        agent.tool_names_list = []
-        session.add(agent)
-
     # Run the migration
     from scripts.migrate_to_multi_user import migrate
     await migrate()
 
     # Verify default user was created
-    async with get_db() as session:
-        from sqlalchemy import select
+    from sqlalchemy import select
 
+    from app.db.engine import get_db
+    from app.db.models import User
+
+    async with get_db() as session:
         result = await session.execute(
             select(User).where(User.email == "admin@migration.test")
         )
         user = result.scalar_one_or_none()
         assert user is not None
         assert user.email == "admin@migration.test"
-
-        # Verify the legacy agent was back-filled
-        result = await session.execute(
-            select(Agent).where(Agent.id == "ag_legacy")
-        )
-        agent = result.scalar_one()
-        assert agent.user_id == user.id
 
 
 async def test_migration_idempotent(db, monkeypatch):

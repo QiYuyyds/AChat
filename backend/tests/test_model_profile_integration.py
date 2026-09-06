@@ -263,20 +263,14 @@ async def test_migrate_agent_model_profiles(db, test_user, monkeypatch):
             )
         ).scalars().all()
 
-        # Two agents with same config → one deduplicated profile
-        assert len(profiles) == 1
-        profile = profiles[0]
-        assert profile.provider == "deepseek"
+        # Two user agents with same config dedupe to one profile; the builtin
+        # agent's baked-in config is migrated too (the old "skip builtin"
+        # rule keyed on the removed user_id column).
+        assert len(profiles) == 2
+        by_provider = {p.provider: p for p in profiles}
+        assert set(by_provider) == {"deepseek", "anthropic"}
+        profile = by_provider["deepseek"]
         assert profile.model_id == "deepseek-chat"
         assert profile.api_key == "sk-legacy-key"
         assert profile.api_base_url == "https://api.deepseek.com/v1"
         assert profile.is_default is True  # first profile → default
-
-        # Builtin agent should NOT have a profile
-        all_profiles = (
-            await session.execute(
-                select(ModelProfile)
-            )
-        ).scalars().all()
-        # Only the two custom agents' profiles should exist (deduplicated to 1)
-        assert len(all_profiles) == 1

@@ -11,11 +11,11 @@
 import pytest
 
 from app.config import Settings
-from app.infra import factory as factory_mod
-from app.infra.factory import build_infrastructure, resolve_infra_config
 
 # 消除全局设置进程内缓存（TTL 5min）的跨测试污染
 from app.infra import cache_helpers
+from app.infra import factory as factory_mod
+from app.infra.factory import build_infrastructure, resolve_infra_config
 from app.services import global_settings_service as gss
 
 

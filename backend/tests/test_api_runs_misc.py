@@ -21,8 +21,12 @@ from app.utils.ids import (
 
 
 @pytest_asyncio.fixture
-async def client(db):
-    """httpx client over a FastAPI app mounting only runs_misc.router at /api."""
+async def client(db, test_user):
+    """httpx client over a FastAPI app mounting only runs_misc.router at /api.
+
+    The runs_misc routes require JWT auth (added in 62407ef), so the client
+    authenticates as the shared test user.
+    """
     from fastapi import FastAPI
 
     from app.api import runs_misc
@@ -31,6 +35,7 @@ async def client(db):
     app.include_router(runs_misc.router, prefix="/api")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        c.headers["Authorization"] = f"Bearer {test_user['token']}"
         yield c
 
 

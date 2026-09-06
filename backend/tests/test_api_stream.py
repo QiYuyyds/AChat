@@ -72,15 +72,20 @@ async def test_unsubscribes_on_close():
     assert event_bus.subscriber_count == before
 
 
-async def test_user_isolation_filters_events():
-    """Events tagged with user_id=A must not reach subscriber user_id=B."""
+async def test_publish_target_ignored_all_subscribers_receive():
+    """user_id publish targets are retained for API compat but ignored.
+
+    The event bus broadcasts every event to every subscriber in single-user
+    mode (local user filtering removed with the dual-DB routing change), so
+    both subscribers receive the event regardless of the publish target.
+    """
     gen_a = _event_stream(user_id="user_a")
     gen_b = _event_stream(user_id="user_b")
     try:
         await gen_a.__anext__()  # connected
         await gen_b.__anext__()  # connected
 
-        # Publish an event for user_a only
+        # Publish an event targeted at user_a
         event_bus.publish(
             RunStartEvent(
                 conversation_id="conv_1",
@@ -97,14 +102,10 @@ async def test_user_isolation_filters_events():
         payload_a = json.loads(frame_a["data"])
         assert payload_a["type"] == "run.start"
 
-        # user_b does NOT receive it (should get heartbeat on timeout instead)
-        try:
-            frame_b = await asyncio.wait_for(gen_b.__anext__(), timeout=0.3)
-            payload_b = json.loads(frame_b["data"])
-            # If we get something, it must be a heartbeat, not the event
-            assert payload_b["type"] != "run.start"
-        except TimeoutError:
-            pass  # acceptable — no event and no heartbeat yet
+        # user_b receives it too — broadcast semantics
+        frame_b = await asyncio.wait_for(gen_b.__anext__(), timeout=2.0)
+        payload_b = json.loads(frame_b["data"])
+        assert payload_b["type"] == "run.start"
     finally:
         await gen_a.aclose()
         await gen_b.aclose()

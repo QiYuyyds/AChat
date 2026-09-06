@@ -80,8 +80,10 @@ async def test_remote_tables_on_remote_engine(dual_db):
 
     expected = {
         "users", "user_settings", "user_preferences", "global_settings",
-        "app_settings", "rag_chunks", "long_term_memory", "chat_history",
-        "memory_nodes", "memory_edges", "documents", "document_versions",
+        "app_settings", "rag_chunks", "chat_history",
+        "documents", "document_versions",
+        # long_term_memory / memory_nodes / memory_edges excluded: the
+        # file-native memory rewrite removed them from the app schema.
     }
     assert expected.issubset(remote_tables), (
         f"Missing remote tables: {expected - remote_tables}"
@@ -117,7 +119,7 @@ async def test_cross_db_read(dual_db):
             description="test", system_prompt="prompt",
             adapter_name="mock", is_builtin=False,
             is_orchestrator=False,
-            created_at=now, user_id="u1",
+            created_at=now,
         )
         agent.capabilities_list = []
         agent.tool_names_list = []
@@ -152,7 +154,7 @@ async def test_sqlite_internal_fk(dual_db):
     # Create conversation in local DB
     async with dual_db.get_local_db() as session:
         conv = Conversation(
-            id="conv1", user_id="u1", title="Test",
+            id="conv1", title="Test",
             mode="single", created_at=now, updated_at=now,
         )
         conv.agent_ids_list = []
@@ -220,10 +222,11 @@ async def test_get_db_alias_fallback(dual_db):
 
 @pytest.mark.asyncio
 async def test_get_local_db_fallback_single_mode(tmp_path, monkeypatch):
-    """In single-DB mode (no DATABASE_LOCAL_URL), get_local_db falls back to remote."""
+    """In single-DB mode (DATABASE_LOCAL_URL forced empty), get_local_db falls back to remote."""
     db_file = tmp_path / "single.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_file.as_posix()}")
-    monkeypatch.delenv("DATABASE_LOCAL_URL", raising=False)
+    # setenv "" not delenv — delenv falls back to .env.local's real value
+    monkeypatch.setenv("DATABASE_LOCAL_URL", "")
     monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path / "ws"))
     monkeypatch.setenv("JWT_SECRET", "test-secret-at-least-32-characters-long!!")
 

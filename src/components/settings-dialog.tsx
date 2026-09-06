@@ -15,6 +15,7 @@ import {
   Network,
   Power,
   RotateCw,
+  Server,
   Smartphone,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -31,6 +32,8 @@ import {
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { isDesktopShell } from '@/lib/electron-bridge'
+import { InfraAccessSettings } from '@/components/settings/infra-access-settings'
 import type { AppSettingsRow } from '@/db/schema'
 import {
   fetchAppSettings,
@@ -84,6 +87,8 @@ export function SettingsDialog({
   const [connectionHints, setConnectionHints] = useState<ConnectionHint[]>([])
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [tab, setTab] = useState('keys')
+  // 基础设施接入仅桌面壳内暴露（后端写端点同样桌面门控，双保险）
+  const [isDesktop] = useState(() => isDesktopShell())
   const [form, setForm] = useState<SettingsForm>({
     anthropicApiKey: '',
     anthropicBaseUrl: '',
@@ -302,6 +307,12 @@ export function SettingsDialog({
                   <FileText className="size-3.5" />
                   RAG
                 </TabsTrigger>
+                {isDesktop && (
+                  <TabsTrigger value="infra">
+                    <Server className="size-3.5" />
+                    基础设施
+                  </TabsTrigger>
+                )}
               </TabsList>
               {tab === 'keys' && (
                 <TooltipProvider>
@@ -414,6 +425,12 @@ export function SettingsDialog({
                   onOcrEngineChange={(ocrEngine) => setForm((f) => ({ ...f, ocrEngine }))}
                 />
               </TabsContent>
+
+              {isDesktop && (
+                <TabsContent value="infra" className="mt-0 py-1">
+                  <InfraAccessSettings open={open} />
+                </TabsContent>
+              )}
 
             </div>
           </Tabs>

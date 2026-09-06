@@ -7,6 +7,8 @@
 - 状态接口：per-service status + configSource 标注正确
 """
 
+import os
+
 import pytest
 
 from app.infra import cache_helpers
@@ -14,6 +16,19 @@ from app.infra import factory as factory_mod
 from app.services import global_settings_service as gss
 
 PASSWORD_MASK = "********"
+
+
+@pytest.fixture(autouse=True)
+def _restore_os_environ():
+    """pymilvus import 时无条件 load_dotenv()（site-packages/pymilvus/settings.py），
+    把 backend/.env 全量写入 os.environ —— 快照/恢复隔离该第三方副作用，
+    避免污染后续测试的 Settings 解析。"""
+    snapshot = dict(os.environ)
+    yield
+    for key in set(os.environ) - set(snapshot):
+        del os.environ[key]
+    os.environ.clear()
+    os.environ.update(snapshot)
 
 
 @pytest.fixture(autouse=True)
@@ -272,16 +287,9 @@ async def test_connection_test_skips_unprovided_services(desktop_client, fake_cl
 async def test_status_reflects_startup_snapshot_with_sources(desktop_client, fake_clients):
     """状态接口：落库 Milvus → connected/db；未配置 Neo4j → disabled/none。"""
     await gss.update_global_settings({"milvus_host": "db-host"})
-    from app.config import Settings as _S
-    dbg = _S(_env_file=None)
-    print("\nDBG settings.neo4j_uri:", repr(dbg.neo4j_uri), "enable_graph:", dbg.enable_graph, "fields:", sorted(dbg.model_fields_set))
-    dbg_gs = await gss.get_global_settings()
-    print("DBG gs:", repr(dbg_gs.neo4j_uri), repr(dbg_gs.enable_graph))
-    cfg = await factory_mod.resolve_infra_config(dbg)
-    print("DBG cfg:", cfg.neo4j_uri, cfg.enable_graph, cfg.neo4j_source, cfg.graph_source)
-    infra = await factory_mod.build_infrastructure(
-        __import__("app.config", fromlist=["Settings"]).Settings(_env_file=None)
-    )
+    from app.config import Settings
+
+    infra = await factory_mod.build_infrastructure(Settings(_env_file=None))
     assert infra is not None
 
     resp = await desktop_client.get("/api/infra/status")
@@ -325,9 +333,9 @@ async def test_status_when_infra_never_built(desktop_client):
 @pytest.mark.asyncio
 async def test_startup_dashboard_lines_format_preserved(desktop_client, fake_clients):
     """启动日志面板行为不变：dashboard_lines 输出格式与既有实现一致。"""
-    infra = await factory_mod.build_infrastructure(
-        __import__("app.config", fromlist=["Settings"]).Settings(_env_file=None)
-    )
+    from app.config import Settings
+
+    infra = await factory_mod.build_infrastructure(Settings(_env_file=None))
     lines = infra.status.dashboard_lines()
     assert lines[0] == "=== Infrastructure Dashboard ==="
     assert lines[-1] == "=============================="

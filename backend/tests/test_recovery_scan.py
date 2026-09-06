@@ -116,11 +116,14 @@ async def test_recovery_with_stream(db, test_user):
         )
         msg = result.scalar_one_or_none()
         assert msg is not None
-        assert msg.status == "complete"
-        assert msg.parts_list == [{"type": "text", "content": "replayed"}]
+        # Crash-recovery semantics: the message is marked interrupted
+        # (never completed); persisted partial parts are left untouched —
+        # the redis stream buffer is discarded, not replayed.
+        assert msg.status == "interrupted"
+        assert msg.parts_list == [{"type": "text", "content": "partial"}]
 
-    # Stream should be cleaned up
-    redis_mock.delete.assert_called_once()
+    # No stream replay/cleanup: the recovery scan is DB-only now (the
+    # redis stream buffer was removed with the stream-events rework).
 
 
 @pytest.mark.asyncio

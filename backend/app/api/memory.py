@@ -284,7 +284,10 @@ async def search_memory(
     bucket: str | None = None,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    """Search memory files using hybrid BM25 + wikilink search."""
+    """Search memory files using hybrid BM25 + vector recall (RRF fusion).
+
+    Wikilink expansion metadata is built lazily per hit before responding.
+    """
     svc = _get_memory_service()
     if svc is None:
         return JSONResponse(status_code=503, content={"error": "MemoryService not initialized"})
@@ -295,20 +298,21 @@ async def search_memory(
         agent_id=agent_id or "",
         bucket=bucket or None,
     )
+    items = []
+    for r in results:
+        rel = _rel_memory_path(svc, r.path)
+        items.append({
+            "path": rel,
+            "name": r.name,
+            "content": r.content[:500],
+            "score": r.score,
+            "source": r.source,
+            "frontmatter": r.frontmatter,
+            "scores": r.scores,
+            "expansion": svc.build_expansion(rel),
+        })
     return JSONResponse({
-        "items": [
-            {
-                "path": _rel_memory_path(svc, r.path),
-                "name": r.name,
-                "content": r.content[:500],
-                "score": r.score,
-                "source": r.source,
-                "frontmatter": r.frontmatter,
-                "scores": r.scores,
-                "expansion": r.expansion,
-            }
-            for r in results
-        ],
+        "items": items,
         "total": len(results),
     })
 

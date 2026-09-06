@@ -285,6 +285,13 @@ async def ingest_document(
     )
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=404)  # type: ignore
+    if "rag_task_id" in result:
+        # Async path: the RAG task worker owns the ingest from here.
+        return IngestResultResponse(
+            version_id=req.version_id,
+            rag_task_id=result["rag_task_id"],
+            status=result.get("status", "pending"),
+        )
     return IngestResultResponse(
         version_id=result.get("version_id", req.version_id),
         chunk_count=result["chunk_count"],

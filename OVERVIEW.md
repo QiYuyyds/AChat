@@ -122,7 +122,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **会话笔记（Session Note）** | ✅ | ★ 结构化 10 段 YAML 会话笔记 · 替代旧无结构文本摘要 · YAML 存储 / XML 注入 / 解析失败回退纯文本 · UI 会话笔记面板 |
 | **图谱可视化 API** | ✅ | ★ `api/graph.py` stats / subgraph / labels 端点 · 模块化抽取器框架（`graph/extractors/` ABC + Factory + LLM 实现）|
 | **Thinking/Tool 耗时 UI** | ✅ | 实时显示思考与工具调用耗时 |
-| 测试覆盖 | 🟡 | 后端 pytest（178 测试文件, ruff 全绿）；前端 Vitest 纯函数；E2E 待补 |
+| 测试覆盖 | ✅ | 后端 pytest（173 测试文件，全量绿基线，`integration`/`network` 标记隔离基础设施用例）；前端 Vitest 纯函数；E2E 待补 |
 
 ---
 
@@ -394,7 +394,7 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 - 移动：`apps/mobile/`（Capacitor 伴随客户端，monorepo workspace `@agenthub/mobile`）。`specs/14`。
 
 ### 测试
-- 后端：`backend/tests/`（pytest，178 测试文件，`asyncio_mode = "auto"`，ruff 全绿；含 auth/CSRF/SSE 认证/隔离/异步写入/恢复扫描/压缩管线/worktree/client_message_id/user_id 传递测试）。
+- 后端：`backend/tests/`（pytest，173 测试文件，`asyncio_mode = "auto"`；全量绿基线 0 failed / 0 error，提交前必须保持；需 Docker 基础设施/外网的用例打 `integration` / `network` 标记并在默认环境自动跳过；含 auth/CSRF/SSE 认证/隔离/异步写入/恢复扫描/压缩管线/worktree/client_message_id/user_id 传递测试）。
 - 前端单元：`src/**/*.test.ts` / `src/**/*.test.tsx`（Vitest 纯函数）。
 
 ---

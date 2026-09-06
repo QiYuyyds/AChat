@@ -4,8 +4,8 @@ This is an integration test for the eval data pipeline fix:
   collector.record() → collector.collect() → run_rule_evaluations() → meaningful scores
 """
 
-from app.observability.run_collector import run_span_collector
 from app.observability.eval_rules import run_rule_evaluations
+from app.observability.run_collector import run_span_collector
 
 
 def test_collector_feeds_eval_rules():

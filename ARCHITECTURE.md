@@ -343,14 +343,17 @@ backend/
 │   │
 │   ├── infra/ (6)          【基础设施工厂】
 │   │   ├── factory.py       build_infrastructure(): 配置驱动, 独立降级
+│   │   │                   连接参数两级解析: global_settings 落库覆盖 → env 默认 → 未配置
 │   │   │                   (Milvus/Neo4j/Kafka — Redis/ES 已移除)
 │   │   ├── hybrid.py        HybridStore 抽象 (向量 + 全文 + 图谱统一接口)
 │   │   ├── cache.py         ★ 进程内 dict TTL 缓存 (替代 Redis KV，已移除)
 │   │   ├── cache_helpers.py ★ 缓存实体查找 (Agent/Workspace 本地 SQLite 直读; UserSettings/GlobalSettings 远端 PG + dict TTL)
 │   │   ├── cache_metrics.py 嵌入缓存命中率指标
-│   │   └── status.py        基础设施连接状态面板 + 可观测性状态
+│   │   └── status.py        基础设施连接状态面板 + per-service 状态收集
+│   │                       (service_states(): connected/degraded/disabled + 配置来源 db/env/none + 失败原因,
+│   │                        启动面板用 dashboard_lines(), HTTP 出口 GET /api/infra/status)
 │   │
-│   ├── api/ (28)           【API 路由】
+│   ├── api/ (29)           【API 路由】
 │   │   ├── conversations / messages / agents / artifacts / attachments
 │   │   ├── fs / pending / settings / runs_misc / stream (SSE)
 │   │   ├── documents / skills / deployments / **auth** / **eval**
@@ -358,6 +361,7 @@ backend/
 │   │   ├── **plan_usage** / **profile** / **workspaces**
 │   │   ├── **model_profiles** / **tasks**
 │   │   ├── **rag_config** / **rag_eval** / **rag_tasks**  ★ RAG 配置/评测/任务队列
+│   │   ├── **infra**  ★ 基础设施运行期接入 (config 读写桌面门控 / test 临时建连 / status)
 │   │   └── mobile/routes
 │   │
 │   ├── observability/ (7)   【Agent 可观测性与评测】★ OTel + Phoenix
@@ -382,7 +386,7 @@ backend/
 │   │
 │   └── utils/ (14)         跨平台 · 安全黑名单 · ID · token 估算 · 审批 helper · mermaid 规范化 ...
 │
-└── tests/ (178)           pytest 测试; ruff 全绿
+└── tests/ (~180)          pytest 测试; 全量绿基线; ruff 全绿
 ```
 
 ### 关键技术映射（TS → Python）

@@ -55,15 +55,19 @@ async def test_overflow_drops_oldest():
         assert (first.timestamp, second.timestamp) == (2, 3)
 
 
-async def test_user_filtered_delivery():
+async def test_publish_target_is_ignored_all_subscribers_receive():
+    """user_id publish targets are retained for API compat but ignored.
+
+    Single-user mode: the bus broadcasts every event to every subscriber
+    (local user filtering removed with the dual-DB routing change).
+    """
     bus = EventBus()
     async with bus.subscribe(user_id="alice") as q_alice, bus.subscribe(user_id="bob") as q_bob:
         event = HeartbeatEvent(conversation_id="c1", timestamp=10)
         bus.publish(event, user_id="alice")
 
-        received = await asyncio.wait_for(q_alice.get(), timeout=1)
-        assert received is event
-        assert q_bob.empty()
+        assert (await asyncio.wait_for(q_alice.get(), timeout=1)) is event
+        assert (await asyncio.wait_for(q_bob.get(), timeout=1)) is event
 
 
 async def test_broadcast_reaches_all_users():

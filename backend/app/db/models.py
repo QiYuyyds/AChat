@@ -1309,3 +1309,26 @@ class EvalRunItem(Base):
     __table_args__ = (
         Index("idx_eval_run_items_run", "run_id"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Usage stats (usage-stats capability — counter-only, no content columns)
+# ---------------------------------------------------------------------------
+
+
+class StatsDailyCounter(Base):
+    """Daily aggregated usage counter (user × day × client × metric → value).
+
+    Composite-PK upsert-accumulate table; row count is bounded by
+    users × days × metrics. MUST NOT gain any free-text / content / token
+    columns (privacy boundary is schema-level, see usage-stats spec).
+    """
+
+    __tablename__ = "stats_daily_counters"
+
+    user_id: Mapped[str] = mapped_column(String, name="user_id", primary_key=True)
+    # UTC date (YYYY-MM-DD) — cross-timezone consistency (design D7)
+    day: Mapped[str] = mapped_column(String(10), name="day", primary_key=True)
+    client_type: Mapped[str] = mapped_column(String(16), name="client_type", primary_key=True)
+    metric: Mapped[str] = mapped_column(String(32), name="metric", primary_key=True)
+    value: Mapped[int] = mapped_column(BigInteger, name="value", nullable=False, default=0)

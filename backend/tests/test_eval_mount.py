@@ -7,7 +7,6 @@ file only asserts the host-side wiring.
 """
 
 import httpx
-import pytest
 
 
 class TestJudgeCoexistence:

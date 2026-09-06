@@ -33,6 +33,7 @@ from app.services.agent_runner import (
     execute_simple_run,
     run_with_args,
 )
+from app.tools.handoff import HandoffPayload
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,9 @@ class LoopRunResult:
     stop_reason_label: str | None = None
     workspace_changes: list[str] = field(default_factory=list)
     key_decisions: list[str] = field(default_factory=list)
+    # Set when the child run ended via the handoff terminal tool: the catch
+    # layer (task_dispatch) re-dispatches payload.agent_id on the same worktree.
+    handoff: HandoffPayload | None = None
 
 
 # ─── Coordinated mode system prompt ───────────────────────────────────────────
@@ -163,7 +167,10 @@ _COORDINATED_PLAN_SUFFIX = """
 
 
 def build_coordinated_system_prompt(
-    base_system_prompt: str, agent_roster: str = "", plan_enabled: bool = False
+    base_system_prompt: str,
+    agent_roster: str = "",
+    plan_enabled: bool = False,
+    handoff_enabled: bool = False,
 ) -> str:
     """Build the system prompt for coordinated (orchestrator) mode.
 
@@ -171,11 +178,15 @@ def build_coordinated_system_prompt(
         base_system_prompt: The orchestrator agent's own system prompt.
         agent_roster: Formatted list of available agents in the conversation.
         plan_enabled: Whether plan tools are available (appends plan guidance).
+        handoff_enabled: Whether the handoff tool is available (appends handoff
+            guidance).
     """
     suffix = _COORDINATED_PROMPT_SUFFIX.replace("{agent_roster}", agent_roster)
     prompt = base_system_prompt + suffix
     if plan_enabled:
         prompt += _COORDINATED_PLAN_SUFFIX
+    if handoff_enabled:
+        prompt += _HANDOFF_SUFFIX
     return prompt
 
 
@@ -229,6 +240,30 @@ _SOLO_DISPATCH_SUFFIX = """
 - 子 Agent 看不到当前对话上下文，任务描述必须自包含
 - 子 Agent 共享你的工作空间，注意文件写入冲突
 - 递归深度有限（最多 3 层），深层子 Agent 无法继续派发
+"""
+
+
+# ─── Handoff guidance (injected only when the handoff tool is available) ─────
+_HANDOFF_SUFFIX = """
+
+## 任务移交（handoff）
+
+你可以通过 handoff 工具把当前任务单向移交给会话内更合适的成员，由对方直接接手。
+
+### 何时使用
+- 接手后发现任务明确属于其他成员的能力域（自己不是对的执行者）
+- 主体工作已完成，剩余收尾明确属于另一类角色（如 build → review）
+
+### 何时不用
+- 任务在自己能力域内 → 直接做，不要接到任务就反射性甩锅
+- 需要"对方做完后拿回结果继续迭代"的回程循环 → 用 task_dispatch（控制权会回到你手里）
+- 目标正忙或在移交链中 → 工具会拒绝；改用 ask_peer 等待产出，或 report_result 交回派发方
+
+### 移交质量要求
+- 移交前先完成并保存手头工作（半成品写入文件，不要只停留在描述里）
+- summary 必须让接手者无需追问即可继续：**已完成的工作、剩余工作与未决问题缺一不可**
+- filesChanged / keyDecisions 如实填写，帮助接手者定位现状
+- 调用 handoff 后你的执行立即结束；同一轮不要再调用其他工具
 """
 
 
@@ -306,23 +341,49 @@ _SUBAGENT_SUFFIX = """
 """
 
 
-def build_solo_system_prompt(base_system_prompt: str, dispatch_enabled: bool = False, plan_enabled: bool = False) -> str:
+def build_solo_system_prompt(
+    base_system_prompt: str,
+    dispatch_enabled: bool = False,
+    plan_enabled: bool = False,
+    handoff_enabled: bool = False,
+) -> str:
     """Build the system prompt for solo mode with soft self-verify reminder.
 
     When dispatch_enabled, also appends dispatch guidance.
     When plan_enabled, also appends plan tool guidance.
+    When handoff_enabled, also appends handoff guidance.
     """
     prompt = base_system_prompt + _SOLO_VERIFY_SUFFIX
     if dispatch_enabled:
         prompt += _SOLO_DISPATCH_SUFFIX
     if plan_enabled:
         prompt += _PLAN_SUFFIX
+    if handoff_enabled:
+        prompt += _HANDOFF_SUFFIX
     return prompt
 
 
-def build_subagent_system_prompt(base_system_prompt: str) -> str:
+def build_subagent_system_prompt(
+    base_system_prompt: str, handoff_enabled: bool = False
+) -> str:
     """Build the system prompt for subagent mode."""
-    return base_system_prompt + _SUBAGENT_SUFFIX.replace("{max_depth}", str(MAX_DISPATCH_DEPTH))
+    prompt = base_system_prompt + _SUBAGENT_SUFFIX.replace(
+        "{max_depth}", str(MAX_DISPATCH_DEPTH)
+    )
+    if handoff_enabled:
+        prompt += _HANDOFF_SUFFIX
+    return prompt
+
+
+async def _conversation_member_count(conversation_id: str) -> int:
+    """Number of agent members in a conversation (0 if it doesn't exist)."""
+    async with get_local_db() as db:
+        conv = (
+            await db.execute(
+                select(Conversation).where(Conversation.id == conversation_id)
+            )
+        ).scalar_one_or_none()
+    return len(conv.agent_ids_list) if conv else 0
 
 
 # ─── Unified loop entry for solo / coordinated (called from execute_run) ──────
@@ -389,6 +450,14 @@ async def _run_solo_loop(
     if dispatch_enabled and "task_dispatch" not in tool_names:
         tool_names.append("task_dispatch")
 
+    # handoff: direct responder runs in group conversations (members >= 2) only.
+    handoff_enabled = (
+        args.dispatch_depth == 0
+        and await _conversation_member_count(args.conversation_id) >= 2
+    )
+    if handoff_enabled and "handoff" not in tool_names:
+        tool_names.append("handoff")
+
     # Inject plan tools for solo mode (Phase 1: solo only)
     plan_enabled = dispatch_enabled  # same condition: below max depth
     if plan_enabled:
@@ -396,7 +465,9 @@ async def _run_solo_loop(
             if plan_tool not in tool_names:
                 tool_names.append(plan_tool)
 
-    solo_prompt = build_solo_system_prompt(agent.system_prompt, dispatch_enabled, plan_enabled)
+    solo_prompt = build_solo_system_prompt(
+        agent.system_prompt, dispatch_enabled, plan_enabled, handoff_enabled
+    )
     solo_args = replace(
         args,
         override_tool_names=tool_names,
@@ -444,7 +515,19 @@ async def _run_subagent_loop(
     if dispatch_enabled and "ask_peer" not in tool_names:
         tool_names.append("ask_peer")
 
-    subagent_prompt = build_subagent_system_prompt(agent.system_prompt)
+    # handoff: only runs explicitly marked as dispatch runs (task_dispatch sets
+    # allow_handoff; DAG nodes and ask_peer mini-runs never do) in conversations
+    # with at least two members.
+    handoff_enabled = (
+        args.allow_handoff
+        and await _conversation_member_count(args.conversation_id) >= 2
+    )
+    if handoff_enabled and "handoff" not in tool_names:
+        tool_names.append("handoff")
+
+    subagent_prompt = build_subagent_system_prompt(
+        agent.system_prompt, handoff_enabled
+    )
     subagent_args = replace(
         args,
         override_tool_names=tool_names,
@@ -512,9 +595,14 @@ async def _run_coordinated_loop(
         if plan_tool not in tool_names:
             tool_names.append(plan_tool)
 
+    # handoff: coordinated responder run in a group conversation (members >= 2)
+    handoff_enabled = len(agent_ids) >= 2
+    if handoff_enabled and "handoff" not in tool_names:
+        tool_names.append("handoff")
+
     roster = _format_agent_roster(roster_agents, agent.id)
     coordinated_prompt = build_coordinated_system_prompt(
-        agent.system_prompt, roster, plan_enabled=True
+        agent.system_prompt, roster, plan_enabled=True, handoff_enabled=handoff_enabled
     )
 
     logger.info(
@@ -552,6 +640,8 @@ async def spawn_subagent_loop(
     dag_task_id: str | None = None,
     override_messages: list[dict] | None = None,
     override_system_prompt: str | None = None,
+    allow_handoff: bool = False,
+    handoff_chain: list[str] | None = None,
 ) -> LoopRunResult:
     """Spawn a subagent loop for a dispatched task.
 
@@ -569,8 +659,19 @@ async def spawn_subagent_loop(
             (used by retry mode to inject rebuilt history).
         override_system_prompt: When non-None, replaces adapter_input.system_prompt
             (used by retry mode to reuse the original system_prompt).
+        allow_handoff: Explicit injection flag (D6) — only task_dispatch passes
+            True; DAG node runs and ask_peer mini-runs never do.
+        handoff_chain: Executor chain including ``agent_id``; registered for the
+            child run so its handoff tool handler can enforce the chain cap and
+            cycle avoidance.
     """
     from app.observability import start_span
+    from app.tools.handoff import (
+        pop_handoff,
+        pop_handoff_chain,
+        register_handoff_chain,
+    )
+
     args = RunArgs(
         agent_id=agent_id,
         conversation_id=conversation_id,
@@ -584,11 +685,15 @@ async def spawn_subagent_loop(
         user_id=user_id,
         dag_id=dag_id,
         dag_task_id=dag_task_id,
+        allow_handoff=allow_handoff,
         override_messages=override_messages,
         override_system_prompt=override_system_prompt,
     )
 
     child_run_id, child_task, _child_cancel = run_with_args(args)
+
+    if handoff_chain:
+        register_handoff_chain(child_run_id, handoff_chain)
 
     if on_start is not None:
         on_start(child_run_id)
@@ -602,6 +707,8 @@ async def spawn_subagent_loop(
         try:
             run_result = await child_task
         except asyncio.CancelledError:
+            pop_handoff(child_run_id)
+            pop_handoff_chain(child_run_id)
             return LoopRunResult(
                 status="aborted",
                 text="Subagent run was cancelled",
@@ -609,22 +716,36 @@ async def spawn_subagent_loop(
             )
         except Exception as err:  # noqa: BLE001 - surface error to orchestrator
             logger.exception("[agent_loop] subagent run failed: %s", err)
+            pop_handoff(child_run_id)
+            pop_handoff_chain(child_run_id)
             return LoopRunResult(
                 status="failed",
                 text=f"Subagent run failed: {err}",
                 run_id=child_run_id,
             )
 
+        # The chain entry is only read by the child's own handoff tool handler;
+        # once the run has ended it is dead state — clean it up.
+        pop_handoff_chain(child_run_id)
+
         # Check for structured result from report_result terminal tool
         from app.tools.report_result import _report_result_cache
 
         payload = _report_result_cache.pop(child_run_id, None)
+
+        # Check for handoff terminal tool (payload captured by the catch layer)
+        handoff_payload = pop_handoff(child_run_id)
 
         if payload is not None:
             text = payload.summary
             artifact_ids = payload.artifacts
             workspace_changes = payload.files_changed
             key_decisions = payload.key_decisions
+        elif handoff_payload is not None:
+            text = handoff_payload.summary
+            artifact_ids = handoff_payload.artifacts
+            workspace_changes = handoff_payload.files_changed
+            key_decisions = handoff_payload.key_decisions
         else:
             # Fallback: extract final text from the run's output messages
             text = await _extract_run_final_text(
@@ -650,6 +771,7 @@ async def spawn_subagent_loop(
             stop_reason_label=getattr(run_result, "stop_reason_label", None),
             workspace_changes=workspace_changes,
             key_decisions=key_decisions,
+            handoff=handoff_payload,
         )
 
 

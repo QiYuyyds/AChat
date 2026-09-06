@@ -25,8 +25,12 @@ def test_cli_bridge_exposes_registered_code_explore_tool() -> None:
 
 
 def test_claude_and_codex_hints_use_exact_prefixed_name() -> None:
-    from app.adapters.claude_adapter import ACHAT_MCP_TOOL_HINT as claude_hint
+    # Claude's hint is generated dynamically from the actual tool list
+    # (_build_mcp_tool_hint); Codex keeps a static hint string.
+    from app.adapters.claude_adapter import _build_mcp_tool_hint as claude_hint_fn
     from app.adapters.codex_adapter import ACHAT_MCP_TOOL_HINT as codex_hint
+
+    claude_hint = claude_hint_fn(["code_explore", "fs_grep"])
 
     expected = "`code_explore` → `mcp__achat-tools__code_explore`"
     assert expected in claude_hint

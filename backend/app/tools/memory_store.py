@@ -143,9 +143,33 @@ memory_store_tool = ToolDef(
 
 # ─── memory_recall tool ────────────────────────────────────────────────────
 
+MAX_RELATED_PER_SIDE = 5
+
+
+def _slim_related(expansion: dict) -> dict:
+    """Slim expansion metadata into the `related` shape for tool output.
+
+    Keeps {path, name, predicate} only (no description — token economy),
+    capped at MAX_RELATED_PER_SIDE entries per side.
+    """
+    def slim(entries: list[dict]) -> list[dict]:
+        return [
+            {
+                "path": e.get("path", ""),
+                "name": e.get("name", ""),
+                "predicate": e.get("predicate"),
+            }
+            for e in entries[:MAX_RELATED_PER_SIDE]
+        ]
+
+    return {
+        "outlinks": slim(expansion.get("outlinks", [])),
+        "inlinks": slim(expansion.get("inlinks", [])),
+    }
+
 
 async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
-    """Recall relevant memories using hybrid BM25 + wikilink search."""
+    """Recall relevant memories using hybrid BM25 + vector search."""
     query = args.get("query", "").strip() if isinstance(args, dict) else str(args)
     if not query:
         return err("query is required for memory_recall")
@@ -166,6 +190,7 @@ async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
                 "score": r.score,
                 "source": r.source,
                 "path": r.path,
+                "related": _slim_related(_memory_service.build_expansion(r.path)),
             }
             for r in results
         ]
@@ -179,9 +204,15 @@ async def memory_recall_handler(args: Any, ctx: ToolContext) -> ToolResult:
 memory_recall_tool = ToolDef(
     name="memory_recall",
     description=(
-        "Recall relevant memories from the file-native memory system using "
-        "hybrid BM25 + wikilink search. Use this at the start of a task to "
-        "check for past context, or when the user references prior work."
+        "Search long-term memory with keyword (BM25) + vector semantic recall. "
+        "Use this at the start of a task to check for past context, or when "
+        "the user references prior work. Each returned memory includes a "
+        "`related` field: outlinks (cards it points to) and inlinks (cards "
+        "pointing to it), each entry with {path, name, predicate} and capped "
+        "at 5 per side. Follow provenance links with memory_read — e.g. a "
+        "digest card's derived_from outlink leads to the daily card with the "
+        "full history, and a daily card's inlinks reveal the digest card "
+        "holding the latest distilled conclusion."
     ),
     parameters={
         "type": "object",
@@ -198,6 +229,97 @@ memory_recall_tool = ToolDef(
         "required": ["query"],
     },
     handler=memory_recall_handler,
+)
+
+
+# ─── memory_read tool ──────────────────────────────────────────────────────
+
+MAX_READ_CONTENT_LENGTH = 2000
+
+
+async def memory_read_handler(args: Any, ctx: ToolContext) -> ToolResult:
+    """Read a single memory card by workspace-relative path."""
+    if not isinstance(args, dict):
+        return err("memory_read requires a dict of arguments")
+
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return err("path is required for memory_read")
+
+    normalized = path.replace("\\", "/").lstrip("/")
+    if not normalized.endswith(".md"):
+        return err(
+            "memory_read expects a workspace-relative Markdown path ending "
+            "with .md (e.g. digest/wiki/my-card.md or daily/2026-08-01/session-1.md)"
+        )
+
+    try:
+        from app.main import _memory_service  # type: ignore[attr-defined]
+    except ImportError:
+        return err("Memory service not available")
+    if _memory_service is None:
+        return err("Memory service not initialized")
+    svc = _memory_service
+
+    from app.memory.file_store.markdown_io import read_markdown
+
+    root = svc.workspace.root
+    candidate = (root / normalized).resolve()
+    try:
+        candidate.relative_to(root.resolve())
+    except (ValueError, OSError):
+        return err("path escapes the memory workspace")
+
+    mem = read_markdown(root / normalized)
+    if mem is None:
+        return err(f"Memory card not found: {normalized}")
+
+    fm = mem.frontmatter
+    content = mem.body
+    truncated = False
+    if len(content) > MAX_READ_CONTENT_LENGTH:
+        content = content[:MAX_READ_CONTENT_LENGTH]
+        truncated = True
+
+    return ok({
+        "path": normalized,
+        "name": fm.name,
+        "content": content,
+        "status": fm.status,
+        "agent_id": fm.agent_id,
+        "bucket": fm.bucket,
+        "importance": fm.importance,
+        "related": _slim_related(svc.build_expansion(normalized)),
+        "truncated": truncated,
+    })
+
+
+memory_read_tool = ToolDef(
+    name="memory_read",
+    description=(
+        "Read a single memory card by its workspace-relative path. Paths come "
+        "from memory_recall results' related field (outlinks/inlinks) or from "
+        "the [[wikilink]] targets inside card content — this is how you follow "
+        "provenance across cards (e.g. digest → derived_from → daily card with "
+        "the full history). Returns name, content, status "
+        "(active/archived/superseded), owning agent_id, and related "
+        "outlinks/inlinks for the next hop. Content is capped at 2000 "
+        "characters; the truncated flag is set when cut."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": (
+                    "Workspace-relative memory file path ending with .md, "
+                    "e.g. digest/wiki/my-card.md or daily/2026-08-01/session-1.md."
+                ),
+            },
+        },
+        "required": ["path"],
+    },
+    handler=memory_read_handler,
 )
 
 

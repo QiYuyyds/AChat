@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db.engine import get_remote_db
-from app.db.models import AppSettings, UserSettings
+from app.db.models import AppSettings, User, UserSettings
 from app.utils.clock import now_ms
 
 SINGLETON_ID = "singleton"
@@ -312,6 +312,18 @@ _STRING_FIELDS = (
 _BOOL_FIELDS = ("deployment_publish_enabled",)
 
 
+async def _legacy_user_id(db) -> str:
+    """Compat key for the legacy singleton bridge.
+
+    user_settings.user_id carries an FK to users.id, so the compat row must be
+    keyed to a real user when one exists — a hardcoded 'legacy' id would
+    violate the constraint (same first-user fallback as legacy mobile auth).
+    """
+    result = await db.execute(select(User).order_by(User.created_at.asc()).limit(1))
+    first = result.scalar_one_or_none()
+    return first.id if first else "legacy"
+
+
 async def update_app_settings(patch: AppSettingsPatch) -> AppSettings:
     """Legacy UPSERT: writes per-user fields to the first user_settings row,
     and global fields to global_settings. Kept for callers not yet updated.
@@ -322,7 +334,7 @@ async def update_app_settings(patch: AppSettingsPatch) -> AppSettings:
         result = await db.execute(select(UserSettings).limit(1))
         row = result.scalar_one_or_none()
         if row is None:
-            row = _empty_user_settings("legacy")
+            row = _empty_user_settings(await _legacy_user_id(db))
             db.add(row)
 
         # Per-user fields
@@ -361,7 +373,7 @@ async def regenerate_mobile_device_token() -> AppSettings:
     async with get_remote_db() as db:
         result = await db.execute(select(UserSettings).limit(1))
         row = result.scalar_one_or_none()
-    user_id = row.user_id if row is not None else "legacy"
+        user_id = row.user_id if row is not None else await _legacy_user_id(db)
     await regenerate_user_mobile_device_token(user_id)
     return await get_app_settings()
 

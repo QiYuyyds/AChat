@@ -982,6 +982,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
 
                     # Check conversation's fs_write_approval_mode
                     from sqlalchemy import select as sa_select
+
                     from app.db.engine import get_local_db
                     from app.db.models import Conversation
                     try:

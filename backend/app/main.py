@@ -395,9 +395,24 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning("Recovery scan failed: %s", e)
 
+    # ─── Desktop stats reporter (usage-stats, design D4) ───
+    # 桌面模式：本地计数队列的后台批量上报（web 模式计数在业务路径直写云端，
+    # 无需 reporter）。
+    if settings.agenthub_desktop:
+        try:
+            from app.services.stats_reporter import get_stats_reporter
+            get_stats_reporter().start()
+        except Exception as e:
+            logger.warning("Stats reporter start failed: %s", e)
+
     yield
 
     # Shutdown
+    try:
+        from app.services.stats_reporter import get_stats_reporter
+        await get_stats_reporter().stop()
+    except Exception:
+        pass
     if _rag_task_worker:
         try:
             await _rag_task_worker.stop()
@@ -1155,6 +1170,7 @@ def create_app() -> FastAPI:
         rag_tasks,
         runs_misc,
         skills,
+        stats,
         stream,
         tasks,
         workspaces,
@@ -1163,6 +1179,10 @@ def create_app() -> FastAPI:
         settings as settings_router,
     )
     from app.api.mobile import routes as mobile_routes
+
+    # Mobile auth 401s flow through MobileAuthRequired (a dependency cannot
+    # short-circuit with a JSONResponse), so the handler must be registered.
+    mobile_routes.add_mobile_exception_handlers(app)
 
     if settings.agenthub_desktop:
         # 桌面模式：/api/auth/* 走云端透明代理（真实 auth 路由不挂载，web 语义不变）
@@ -1201,6 +1221,7 @@ def create_app() -> FastAPI:
     app.include_router(rag_tasks.router, prefix="/api", tags=["rag-tasks"])
     app.include_router(rag_config.router, prefix="/api", tags=["rag-config"])
     app.include_router(infra.router, prefix="/api", tags=["infra"])
+    app.include_router(stats.router, prefix="/api", tags=["stats"])
     # deployment preview assets served at root /deployments/{id}/... (no /api prefix);
     # the previewPath the agent emits is /deployments/{id}. Frontend proxies via rewrite.
     app.include_router(deployments.router, tags=["deployments"])

@@ -56,7 +56,9 @@ def load_ignore_spec(vault_path: str | Path) -> pathspec.PathSpec:
         except Exception as e:
             logger.warning("Failed to read .obsidianignore: %s", e)
 
-    return pathspec.PathSpec.from_lines("gitwildmatch", patterns)
+    # 'gitignore' style: pathspec 1.x deprecated the 'gitwildmatch' alias
+    # (same semantics, renamed class).
+    return pathspec.PathSpec.from_lines("gitignore", patterns)
 
 
 def is_ignored(relative_path: str, spec: pathspec.PathSpec) -> bool:

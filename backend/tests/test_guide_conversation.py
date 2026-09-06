@@ -32,13 +32,10 @@ async def guide_agent(db):
             description="Guide agent",
             system_prompt="You are the guide agent 小A.",
             adapter_name="custom",
-            model_provider="deepseek",
-            model_id="deepseek-v4-flash",
             is_builtin=True,
             is_orchestrator=False,
             is_guide=True,
             created_at=now,
-            user_id=None,
         )
         guide.capabilities_list = []
         guide.tool_names_list = [
@@ -98,7 +95,7 @@ async def test_list_excludes_guide_conversations(db, agents, guide_agent):
         user_id="test_user_1",
     )
 
-    listed = await cs.list_conversations(user_id="test_user_1")
+    listed = await cs.list_conversations()
     listed_ids = {c.id for c in listed}
     assert normal.id in listed_ids
     assert guide.id not in listed_ids
@@ -207,8 +204,13 @@ async def test_guide_side_effect_event_bus_user_filtering():
         assert received.target == "agents"
 
 
-async def test_guide_side_effect_event_bus_filters_other_user():
-    """Events published for user_2 should not be delivered to user_1 subscriber."""
+async def test_guide_side_effect_event_bus_broadcasts_to_all():
+    """EventBus broadcasts to every subscriber; user_id routing is gone.
+
+    The bus deliberately ignores ``user_id`` in single-user mode (dual-DB
+    routing removed local user filtering) — publish targets no longer gate
+    delivery.
+    """
     import asyncio
 
     from app.services.event_bus import event_bus
@@ -224,4 +226,6 @@ async def test_guide_side_effect_event_bus_filters_other_user():
 
         await asyncio.sleep(0.05)
 
-        assert queue.empty()
+        assert not queue.empty()
+        received = queue.get_nowait()
+        assert received.target == "skills"

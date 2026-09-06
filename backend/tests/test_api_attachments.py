@@ -11,13 +11,15 @@ import pytest_asyncio
 
 
 @pytest_asyncio.fixture
-async def api_client(db):
+async def api_client(db, test_user):
     """An httpx AsyncClient over an app that includes the attachments router.
 
     The shared conftest `api_client` uses the integrated `create_app()`; until the
     Integrate stage wires `app.api.attachments`, this local fixture mounts just
     this router under `/api` against the same isolated `db` fixture so the routes
     are reachable in isolation.
+    The attachments routes require JWT auth (added in 62407ef), so the client
+    authenticates as the shared test user.
     """
     import httpx
     from fastapi import FastAPI
@@ -28,6 +30,7 @@ async def api_client(db):
     app.include_router(attachments.router, prefix="/api")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.headers["Authorization"] = f"Bearer {test_user['token']}"
         yield client
 
 
@@ -158,6 +161,11 @@ async def test_delete_returns_ok(api_client, conversation):
 
 
 async def test_delete_not_found_returns_404(api_client, conversation):
+    """Unknown attachment id → 404 via the shared ownership helper.
+
+    The helper raises HTTPException, so the body uses FastAPI's "detail" shape
+    (consistent across all ownership-verified routes).
+    """
     resp = await api_client.delete("/api/attachments/att_missing")
     assert resp.status_code == 404
-    assert "error" in resp.json()
+    assert "Attachment not found" in resp.json()["detail"]

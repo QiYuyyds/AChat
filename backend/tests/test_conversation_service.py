@@ -10,7 +10,7 @@ async def test_create_single_conversation(db, agents):
     conv = await cs.create_conversation(mode="single", agent_ids=[agents["alice"]])
     assert conv.mode == "single"
     assert conv.agent_ids == [agents["alice"]]
-    assert conv.title == "与 Alice 的对话"
+    assert conv.title == "Alice"  # default single-agent title is the agent name
     assert conv.workspace_mode == "sandbox"
     assert conv.workspace_bound_path is None
     assert conv.fs_write_approval_mode == "review"
@@ -22,7 +22,7 @@ async def test_create_group_conversation(db, agents):
     )
     assert conv.mode == "group"
     assert set(conv.agent_ids) == {agents["alice"], agents["orch"]}
-    assert " / " in conv.title
+    assert conv.title == "群聊（2）"  # group title: 群聊（N）
 
 
 async def test_create_single_rejects_multiple_agents(db, agents):
@@ -208,13 +208,52 @@ async def test_edit_and_resend_replaces_message(db, agents):
 
 
 # ─── Clear history / delete (cascade) ───────────────────────────────────────
+async def _wait_runs_settled(conv_id: str, timeout_s: float = 30.0) -> None:
+    """Wait until send_message's spawned runs are fully done.
+
+    send_message spawns real async runs; the clear-history guard rejects
+    while any run is active. Two race windows exist: the run task lives in
+    agent_runner._active_runs before its AgentRun row is inserted, and the
+    row stays queued/running until the loop finalizes — so both the
+    in-process registry and the DB must be quiet.
+    """
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.db.engine import get_db
+    from app.db.models import AgentRun
+    from app.services import agent_runner as ar
+
+    deadline = asyncio.get_event_loop().time() + timeout_s
+    while asyncio.get_event_loop().time() < deadline:
+        if not ar._active_runs:
+            async with get_db() as session:
+                active = await session.execute(
+                    select(AgentRun.id).where(
+                        AgentRun.conversation_id == conv_id,
+                        AgentRun.status.in_(["queued", "running"]),
+                    )
+                )
+                if active.first() is None:
+                    return
+        await asyncio.sleep(0.05)
+    raise TimeoutError(f"agent runs for {conv_id} still active after {timeout_s}s")
+
+
 async def test_clear_conversation_history(db, agents):
     conv = await cs.create_conversation(mode="single", agent_ids=[agents["alice"]])
     await cs.send_message(conversation_id=conv.id, content="a")
     await cs.send_message(conversation_id=conv.id, content="b")
+    await _wait_runs_settled(conv.id)
+
+    # The async runs may have posted agent replies before settling, so the
+    # exact deleted count is whatever exists at clear time — the contract is
+    # that EVERYTHING is wiped, not a specific number of user messages.
+    before = len(await cs.list_messages(conv.id))
 
     result = await cs.clear_conversation_history(conv.id)
-    assert result.deleted_message_count == 2
+    assert result.deleted_message_count == before
 
     msgs = await cs.list_messages(conv.id)
     assert msgs == []

@@ -191,10 +191,10 @@ async def create_aeval_runner(
 
     # Judge LLM + P0 指标注册表 (change ③): 注入 EvalRunner 供 metric
     # grader 分发; 无凭证时 llm_fn=None → metric grader 返回明确配置错误
-    from agent_eval.metrics import build_default_metrics_registry
+    from app.eval_integration.metrics import build_host_metrics_registry
 
     llm_fn = make_judge_llm_fn(settings)
-    metrics_registry = build_default_metrics_registry(llm_fn=llm_fn)
+    metrics_registry = build_host_metrics_registry(llm_fn=llm_fn)
 
     return EvalRunner(
         agent_runner=agent_runner,

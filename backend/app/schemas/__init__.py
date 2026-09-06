@@ -147,6 +147,11 @@ from app.schemas.requests import (
     VipLoginRequest,
     WorkspaceEnvStatusResponse,
 )
+from app.schemas.stats import (
+    StatsBatchEntry,
+    StatsBatchRequest,
+    StatsHeartbeatRequest,
+)
 from app.schemas.task import (
     AddTaskCommentRequest,
     AssignTaskRequest,
@@ -310,4 +315,8 @@ __all__ = [
     "CreateRagTaskRequest",
     "RagTaskType",
     "RagTaskStatus",
+    # Stats (usage-stats)
+    "StatsBatchEntry",
+    "StatsBatchRequest",
+    "StatsHeartbeatRequest",
 ]

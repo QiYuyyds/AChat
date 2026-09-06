@@ -37,6 +37,7 @@ from app.tools.fs_grep import fs_grep_tool
 from app.tools.fs_list import fs_list_tool
 from app.tools.fs_read import fs_read_tool
 from app.tools.fs_write import fs_write_tool
+from app.tools.handoff import handoff_tool
 from app.tools.manage_agents import manage_agents_tool
 from app.tools.manage_conversations import manage_conversations_tool
 from app.tools.manage_documents import manage_documents_tool
@@ -53,6 +54,7 @@ from app.tools.memory_rag import (
 )
 from app.tools.memory_store import (
     memory_proactive_tool,
+    memory_read_tool,
     memory_recall_tool,
     memory_store_tool,
 )
@@ -235,6 +237,7 @@ def _build_registry() -> ToolRegistry:
     reg.register(rag_list_documents_tool)
     reg.register(rag_delete_document_tool)
     reg.register(memory_recall_tool)
+    reg.register(memory_read_tool)
     reg.register(memory_store_tool)
     reg.register(memory_proactive_tool)
     reg.register(web_search_tool)
@@ -263,6 +266,9 @@ def _build_registry() -> ToolRegistry:
     reg.register(task_comment_tool)
     reg.register(report_result_tool)
     reg.register(ask_peer_tool)
+    # handoff is terminal-tool injected by run shape only (agent_loop), never
+    # part of baseline/optional tool sets.
+    reg.register(handoff_tool)
     return reg
 
 

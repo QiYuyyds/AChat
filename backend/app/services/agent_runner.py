@@ -73,7 +73,7 @@ from app.utils.workspace_utils import get_effective_cwd
 
 logger = logging.getLogger(__name__)
 
-TERMINAL_TOOLS: frozenset[str] = frozenset({"report_result"})
+TERMINAL_TOOLS: frozenset[str] = frozenset({"report_result", "handoff"})
 
 
 # ─── PromptAssembler integration (lazy, degrades gracefully) ─────────────────
@@ -457,6 +457,9 @@ class RunArgs:
     # DAG context: identifies the DAG and node this run belongs to
     dag_id: str | None = None
     dag_task_id: str | None = None
+    # explicit handoff injection flag: only task_dispatch-dispatched runs set it
+    # (DAG node runs and ask_peer mini-runs never do — D6 caller declares)
+    allow_handoff: bool = False
     # override injection: when non-None, overrides adapter_input after build
     override_messages: list[dict] | None = None
 
@@ -1922,8 +1925,10 @@ async def execute_run(
                         mode="solo",
                     )
             if cancel_event.is_set():
+                _discard_run_handoff(run_id, args)
                 return await finalize(run_id, args, "aborted", result)
             final_result = await finalize_ok(run_id, args, result)
+            _dispatch_responder_handoff(run_id, args, result)
             # ─── Post-run memory hook (Task 5.4) ───
             asyncio.create_task(
                 _post_run_memory_hook(prompt, result, args.conversation_id, args.agent_id, user_id=args.user_id)
@@ -1940,14 +1945,65 @@ async def execute_run(
             )
             return final_result
         except asyncio.CancelledError:
+            _discard_run_handoff(run_id, args)
             return await finalize(run_id, args, "aborted", _empty_run_execution_result())
         except Exception as err:  # noqa: BLE001 - faithful catch-all; surfaced via finalize
             logger.exception("[AgentRunner] run failed: %s", err)
+            _discard_run_handoff(run_id, args)
             if cancel_event.is_set():
                 return await finalize(run_id, args, "aborted", _empty_run_execution_result())
             return await finalize(
                 run_id, args, "failed", _empty_run_execution_result(), str(err)
             )
+
+
+def _discard_run_handoff(run_id: str, args: RunArgs) -> None:
+    """Drop a pending handoff payload on cancel/failure — no handoff may fire."""
+    if args.override_prompt:
+        return  # subagent run: spawn_subagent_loop owns the payload
+    from app.tools.handoff import pop_handoff
+
+    pop_handoff(run_id)
+
+
+def _dispatch_responder_handoff(run_id: str, args: RunArgs, result: RunExecutionResult) -> None:
+    """Catch point ①: a top-level responder run ended via handoff.
+
+    Translates the terminal handoff payload into a visible system message plus a
+    new responder run for the target (see conversation_service). Cancel/failure
+    paths never reach here, and subagent/dispatch runs are excluded — their
+    handoff is handled by the task_dispatch handler (catch point ②).
+    """
+    if args.override_prompt:
+        return
+    from app.tools.handoff import pop_handoff, pop_handoff_chain
+
+    payload = pop_handoff(run_id)
+    if payload is None:
+        pop_handoff_chain(run_id)  # no handoff: just clean up the chain entry
+        return
+
+    from app.services.conversation_service import handle_responder_handoff
+
+    chain = pop_handoff_chain(run_id) or [args.agent_id]
+    logger.info(
+        "[handoff] responder run=%s agent=%s handing off to %s (chain=%s)",
+        run_id,
+        args.agent_id,
+        payload.agent_id,
+        chain + [payload.agent_id],
+    )
+    asyncio.create_task(
+        handle_responder_handoff(
+            conversation_id=args.conversation_id,
+            from_agent_id=args.agent_id,
+            from_run_id=run_id,
+            trigger_message_id=args.trigger_message_id,
+            payload=payload,
+            chain=chain,
+            user_id=args.user_id,
+        )
+    )
 
 
 # ─── Simple agent ────────────────────────────────────────────────────────────
@@ -2044,12 +2100,17 @@ async def execute_simple_run(
     # Task 1.1: Implicitly inject memory_recall for SDK agents only.
     # CLI agents bring their own tools; memory/RAG/skill injection is skipped.
     # Guide agents also skip this (they only own management tools + ask_user).
+    # memory_read accompanies memory_recall so agents can follow related links.
     if agent.adapter_name in SDK_ADAPTERS and not is_guide:
-        if "memory_recall" not in base_tool_names:
-            base_tool_names = ["memory_recall"] + list(base_tool_names)
+        injected = [
+            name for name in ("memory_recall", "memory_read")
+            if name not in base_tool_names
+        ]
+        if injected:
+            base_tool_names = injected + list(base_tool_names)
             logger.info(
-                "[AgentRunner] Implicitly injected memory_recall tool for SDK agent %s",
-                args.agent_id,
+                "[AgentRunner] Implicitly injected %s tools for SDK agent %s",
+                injected, args.agent_id,
             )
 
     # memory_store: only for SDK agents with memory_enabled=true.
@@ -3096,6 +3157,36 @@ async def finalize(
         user_id=args.user_id,
     )
 
+    # Catch ① failure visibility: a responder run that was itself started by a
+    # handoff failed or was stopped. Surface it as a visible system message so
+    # users know the handoff chain ended without a result (must not rely on the
+    # agent reporting it). Subagent/dispatch runs are excluded — their failure
+    # is reported to the dispatcher through the tool result (catch point ②).
+    if status in ("failed", "aborted") and not args.override_prompt:
+        from app.tools.handoff import pop_handoff, pop_handoff_chain
+
+        pop_handoff(run_id)
+        chain = pop_handoff_chain(run_id)
+        if chain and len(chain) >= 2:
+            try:
+                from app.services.conversation_service import handle_handoff_failure
+
+                await handle_handoff_failure(
+                    conversation_id=args.conversation_id,
+                    from_agent_id=chain[-2],
+                    to_agent_id=args.agent_id,
+                    status=status,
+                    run_id=run_id,
+                    user_id=args.user_id,
+                    error=error,
+                )
+            except Exception as exc:  # noqa: BLE001 - visibility is best-effort
+                logger.warning(
+                    "[finalize] handoff failure visibility failed for run=%s: %s",
+                    run_id,
+                    exc,
+                )
+
     _drain_queued_runs(args.conversation_id)
 
     # Record finalize snapshot for online rule evaluation
@@ -4020,7 +4111,17 @@ def _build_agent_hub_tool_guidance(
                 '正确案例：用户说"上次那个项目"，调用 memory_recall({ query: "用户上次提到的项目" }) 确认具体指什么。',
                 "query 写法：用自然语言问题或具体关键词，不要只写分类标签如\"偏好\"。",
                 "注意：记忆存储是自动的（对话后系统自动提取），你只需负责召回；召回结果为空说明没有相关记忆，不要反复重试。",
-                "查询指引：当前状态/偏好 → 直接看 personal 卡（digest 层，表示\"现在为真\"）；以前/历史 → 关注卡片 derived_from 指向的 daily 卡（情节记忆，可通过 wikilink 回溯）。",
+                "查询指引：当前状态/偏好 → 直接看 personal 卡（digest 层，表示\"现在为真\"）；以前/历史 → 看结果的 related 字段：outlinks 里 derived_from 指向的 daily 卡是历史情节，用 memory_read 按其 path 读取。",
+            ]
+        )
+
+    if "memory_read" in tools:
+        add(
+            [
+                "### memory_read",
+                "用途：按 path 读取单张记忆卡全文（含 status 归属 agent_id 与 related 邻接卡），配合 memory_recall 的 related 字段做定向溯源。",
+                "daily 卡的 related.inlinks 里 derived_from 指向它的 digest 卡是蒸馏后的最新结论；digest 卡的 outlinks 里 derived_from 指向的 daily 卡是原始历史情节。",
+                "定向溯源，不要沿 related 全图漫游——每跳都消耗上下文。",
             ]
         )
 

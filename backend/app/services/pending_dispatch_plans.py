@@ -19,13 +19,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from app.schemas.dispatch import DispatchPlanItem, PendingDispatchPlan
 from app.schemas.events import DispatchPlanPendingEvent, DispatchPlanResolvedEvent
 from app.services.event_bus import event_bus
 from app.utils.clock import now_ms
 from app.utils.ids import new_pending_dispatch_plan_id
+
+if TYPE_CHECKING:
+    from app.services.prompt_assembler import PlannerSnapshot
 
 # A validator re-checks (and may recompile) the plan at approval time.
 PlanValidator = Callable[[list[DispatchPlanItem]], list[DispatchPlanItem]]

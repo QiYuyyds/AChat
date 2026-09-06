@@ -294,6 +294,8 @@ Agent 评测框架 **Aeval** 已抽取为独立 PyPI 包 `aeval-framework`（imp
 - ✅ 涉及文件系统的工具必须经过 Workspace 沙箱（见 5.3）
 - ✅ 后端 async 函数调用必须 `await`
 - ✅ 后端改完跑 `ruff check .` 和 `pytest`
+- ✅ 提交前测试门禁：`pytest` 全量 **0 failed / 0 error**（2070+ 用例，`cd backend && ./.venv/Scripts/python.exe -m pytest -q`）；`ruff check .` 零错误
+- ✅ 无 Docker 基础设施的机器可用快速子集：`pytest -m "not integration and not network"`（结果口径与全量一致——`integration` / `network` 标记的用例在默认环境自动跳过）；CI 门禁为后续独立评估项，暂以本约定承载
 
 ---
 
@@ -413,7 +415,7 @@ Key 来源按优先级（详见 `backend/app/services/agent_runner.py:build_adap
 - [ ] 前端改动用 `pnpm typecheck` 过
 - [ ] 前端改动用 `pnpm lint` 过
 - [ ] 后端改动用 `ruff check .` 过
-- [ ] 后端改动用 `pytest` 过
+- [ ] 后端改动用 `pytest` 过（全量 0 failed / 0 error；无 Docker 环境可用 `-m "not integration and not network"` 子集）
 - [ ] 涉及 spec 的修改，spec 文档已同步更新
 - [ ] 新增的工具 / 适配器 / 实体在 CLAUDE.md 中能找到对应章节
 - [ ] 没有遗留的 `console.log` / `print()` / `TODO` / 注释代码

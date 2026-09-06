@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from app.services.react_loop_termination import (
-    COMPACT_FOLD_RATIO,
-    COMPACT_MASK_RATIO,
     COMPACT_RATIO,
     HARD_RATIO,
     SOFT_RATIO,

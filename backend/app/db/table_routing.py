@@ -45,6 +45,7 @@ REMOTE_TABLES: frozenset[str] = frozenset({
     "eval_dataset_items",
     "eval_runs",
     "eval_run_items",
+    "stats_daily_counters",
 })
 
 # Tables that don't match either set are created on the local engine in

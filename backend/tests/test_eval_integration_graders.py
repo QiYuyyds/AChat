@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import pytest
-
 from agent_eval.core.types import EvalTask, GraderConfig, GraderType, TrialResult
 
 from app.eval_integration.graders import AChatArtifactGrader, AChatDispatchGrader

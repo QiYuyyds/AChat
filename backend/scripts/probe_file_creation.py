@@ -18,7 +18,7 @@ AGENT_ID = ""  # 空 → 读 EVAL_AGENT_ID 设置
 
 async def main() -> None:
     from app.config import get_settings
-    from app.db.engine import init_db, close_db
+    from app.db.engine import close_db, init_db
 
     await init_db()
     try:
@@ -30,6 +30,7 @@ async def main() -> None:
 
         # 1) token
         from sqlalchemy import select
+
         from app.auth.jwt_handler import create_access_token
         from app.db.engine import get_remote_db
         from app.db.models import User

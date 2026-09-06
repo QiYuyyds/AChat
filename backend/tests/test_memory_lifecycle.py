@@ -22,7 +22,6 @@ from app.memory.file_store.frontmatter import MemoryFrontmatter
 from app.memory.file_store.markdown_io import read_markdown, write_markdown
 from app.memory.file_store.workspace import MemoryWorkspace
 
-
 # ─── Fixtures ──────────────────────────────────────────────────────────────
 
 
@@ -192,7 +191,6 @@ class TestUserMsgFromPG:
     async def test_get_last_user_msg_from_pg(self):
         """_get_last_user_msg_from_pg should query PG for last user message."""
         from app.memory.memory_service import MemoryService
-        from app.db.models import ChatHistory
 
         service = MemoryService.__new__(MemoryService)
 
@@ -372,7 +370,7 @@ class TestRerank:
 class TestArchiveFiltering:
     def test_archived_excluded_from_recall_source(self):
         """Archived cards should be excluded from RecallSource results."""
-        from app.services.prompt_assembler import RecallSource, Query, Slot, SlotFilter
+        from app.services.prompt_assembler import Query, RecallSource, Slot, SlotFilter
 
         # Create mock memory service that returns archived + active results
         mock_memory = AsyncMock()
@@ -400,7 +398,7 @@ class TestArchiveFiltering:
 
     def test_superseded_excluded_from_recall_source(self):
         """Superseded cards should also be excluded from RecallSource."""
-        from app.services.prompt_assembler import RecallSource, Query, Slot, SlotFilter
+        from app.services.prompt_assembler import Query, RecallSource, Slot, SlotFilter
 
         mock_memory = AsyncMock()
         mock_item = MagicMock()
@@ -567,8 +565,8 @@ class TestCurator:
     @pytest.mark.asyncio
     async def test_curator_parse_cron(self):
         """CuratorJob should parse HH:MM cron correctly."""
-        from app.memory.curator import CuratorJob
         from app.config import Settings
+        from app.memory.curator import CuratorJob
 
         settings = Settings(memory_auto_dream_cron="23:00")
         mock_service = MagicMock()
@@ -581,8 +579,8 @@ class TestCurator:
     @pytest.mark.asyncio
     async def test_curator_step_independence(self):
         """One step failing should not block subsequent steps."""
-        from app.memory.curator import CuratorJob
         from app.config import Settings
+        from app.memory.curator import CuratorJob
 
         settings = Settings(
             memory_auto_dream_cron="23:00",
@@ -611,8 +609,8 @@ class TestCurator:
 
     def test_curator_watermark_archive(self):
         """Curator should archive cards with sustained low effective score."""
-        from app.memory.curator import CuratorJob
         from app.config import Settings
+        from app.memory.curator import CuratorJob
 
         settings = Settings(
             memory_auto_dream_cron="23:00",

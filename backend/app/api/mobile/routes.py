@@ -123,8 +123,45 @@ async def _try_legacy_mobile_auth(req: Request) -> User | None:
         return result.scalar_one_or_none()
 
 
+class MobileAuthRequired(Exception):
+    """Raised by the mobile_auth dependency when the request must be rejected.
+
+    A dependency cannot `return` a JSONResponse to short-circuit the request
+    (FastAPI passes it through as a value), so the handler registered by
+    ``add_mobile_exception_handlers`` converts this into the mobile client's
+    expected ``{"error": ...}`` JSON body with CORS headers.
+
+    status 503 + "not configured" body when no token is configured at all
+    (matches _require_mobile_auth); 401 + "Unauthorized" on auth mismatch.
+    """
+
+    def __init__(self, req: Request, status: int = 401, body: dict | None = None):
+        self.req = req
+        self.status = status
+        self.body = body or {"error": "Unauthorized"}
+
+
+def add_mobile_exception_handlers(app) -> None:
+    """Register the MobileAuthRequired handler (idempotent).
+
+    Must be called on every app that mounts the mobile router — including
+    test apps that mount the router without create_app().
+    """
+
+    @app.exception_handler(MobileAuthRequired)
+    async def _mobile_auth_required_handler(request: Request, exc: MobileAuthRequired):
+        return _mobile_json(request, exc.body, status=exc.status)
+
+
 async def mobile_auth(req: Request) -> User:
     """Primary JWT auth with legacy mobile token fallback."""
+    # No token configured on this host at all → companion is disabled (503).
+    if not _expected_token():
+        raise MobileAuthRequired(
+            req,
+            status=503,
+            body={"error": "Mobile companion is not configured on the desktop host"},
+        )
     # Try JWT auth first
     try:
         return await get_current_user(req)
@@ -134,7 +171,7 @@ async def mobile_auth(req: Request) -> User:
     user = await _try_legacy_mobile_auth(req)
     if user is not None:
         return user
-    raise _mobile_json(req, {"error": "Unauthorized"}, status=401)  # type: ignore
+    raise MobileAuthRequired(req)
 
 
 def _require_mobile_auth(req: Request) -> JSONResponse | None:

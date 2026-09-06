@@ -31,7 +31,7 @@ STOP = {
     "memory", "task", "file", "code", "true", "false", "name", "path",
     "list", "user", "default", "complete", "success", "shared", "digest",
     "procedure", "wiki", "personal", "the", "and", "for", "md", "conv",
-    "session_conv", "how", "what", "when", "where", "vs", "to", "of", "in",
+    "session_conv", "how", "what", "where", "vs", "to", "of", "in",
     "a", "an", "or", "on", "is", "as", "by", "at",
 }
 

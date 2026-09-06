@@ -510,9 +510,7 @@ class AutoMemory:
         safe_new_name = _sanitize_name(new_name) if new_name else existing_name
         if new_name:
             # Keep human-readable title in frontmatter even when file stem changes
-            if _is_machine_name(fm.name) or not fm.name:
-                fm.name = _display_name(new_name, body)
-            elif new_name != fm.name and not _is_machine_name(new_name):
+            if _is_machine_name(fm.name) or not fm.name or new_name != fm.name and not _is_machine_name(new_name):
                 fm.name = _display_name(new_name, body)
         if _is_placeholder_description(fm.description) or not fm.description:
             fm.description = _display_description(fm.description, body, conversation_id)

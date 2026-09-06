@@ -187,7 +187,8 @@ async def test_task_dispatch_clone_self_no_agentId(db, monkeypatch):
     async def mock_spawn(agent_id, task_description, conversation_id,
                          trigger_message_id, parent_run_id, parent_cancel_event,
                          workspace_path=None, on_start=None,
-                         dispatch_depth=0, dispatch_visibility="visible"):
+                         dispatch_depth=0, dispatch_visibility="visible",
+                         user_id=None, **_kwargs):
         captured["agent_id"] = agent_id
         captured["dispatch_depth"] = dispatch_depth
         captured["dispatch_visibility"] = dispatch_visibility
@@ -253,7 +254,8 @@ async def test_task_dispatch_clone_self_with_own_agentId(db, monkeypatch):
     async def mock_spawn(agent_id, task_description, conversation_id,
                          trigger_message_id, parent_run_id, parent_cancel_event,
                          workspace_path=None, on_start=None,
-                         dispatch_depth=0, dispatch_visibility="visible"):
+                         dispatch_depth=0, dispatch_visibility="visible",
+                         user_id=None, **_kwargs):
         captured["agent_id"] = agent_id
         captured["dispatch_visibility"] = dispatch_visibility
         from app.services.agent_loop import LoopRunResult
@@ -326,7 +328,8 @@ async def test_task_dispatch_group_member_visible(db, monkeypatch):
     async def mock_spawn(agent_id, task_description, conversation_id,
                          trigger_message_id, parent_run_id, parent_cancel_event,
                          workspace_path=None, on_start=None,
-                         dispatch_depth=0, dispatch_visibility="visible"):
+                         dispatch_depth=0, dispatch_visibility="visible",
+                         user_id=None, **_kwargs):
         captured["agent_id"] = agent_id
         captured["dispatch_visibility"] = dispatch_visibility
         captured["dispatch_depth"] = dispatch_depth

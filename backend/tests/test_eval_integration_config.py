@@ -23,7 +23,6 @@ from app.eval_integration.config import (
 )
 from app.eval_integration.environment import AChatWorkspaceEnvironment
 from app.eval_integration.errors import EvalConfigError
-from app.eval_integration.graders import AChatArtifactGrader, AChatDispatchGrader
 from app.eval_integration.runner import AChatAgentRunner
 
 

@@ -61,6 +61,17 @@ def _config_response() -> dict:
     }
 
 
+def _client_type(request: Request) -> str:
+    """桌面认证代理转发时携带 X-AgentHub-Client: desktop（usage-stats 归属）。
+
+    云端直连的 web 登录默认 web；桌面登录经代理转发时由云端在此分支计数，
+    本地端 MUST NOT 重复上报（desktop-backend-sidecar delta）。
+    """
+    if request.headers.get("x-agenthub-client") == "desktop":
+        return "desktop"
+    return "web"
+
+
 # ─── POST /api/auth/register ───────────────────────────
 @router.post("/auth/register")
 async def register(request: Request) -> JSONResponse:
@@ -105,7 +116,7 @@ async def login(request: Request) -> JSONResponse:
 
     async with get_remote_db() as db:
         try:
-            result = await authenticate_user(db, req.email, req.password)
+            result = await authenticate_user(db, req.email, req.password, client_type=_client_type(request))
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -134,7 +145,9 @@ async def vip_login(request: Request) -> JSONResponse:
 
     async with get_remote_db() as db:
         try:
-            result = await authenticate_default_user(db, req.password)
+            result = await authenticate_default_user(
+                db, req.password, client_type=_client_type(request)
+            )
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

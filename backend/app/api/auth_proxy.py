@@ -21,7 +21,7 @@ import httpx
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from app.auth.desktop import clear_cloud_session, write_cloud_session
+from app.auth.desktop import clear_cloud_session, update_cloud_session_tokens, write_cloud_session
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -69,12 +69,14 @@ async def proxy_auth(request: Request, path: str) -> Response:
         for k, v in request.headers.items()
         if k.lower() not in _DROP_REQUEST_HEADERS
     }
+    # usage-stats 归属标记：云端认证服务据此把桌面登录计入 client_type=desktop
+    headers["X-AgentHub-Client"] = "desktop"
 
     base = _cloud_base_url()
     if not base:
         if path == "logout":
             # 云端未配置也保证登出语义：本地状态必须清理成功
-            clear_cloud_session()
+            await _clear_local_logout_state()
             return _cleared_cookie_response()
         return _cloud_unreachable("云端服务未配置")
 
@@ -91,7 +93,7 @@ async def proxy_auth(request: Request, path: str) -> Response:
         logger.warning("cloud auth proxy request failed: %s %s (%s)", request.method, path, exc)
         if path == "logout":
             # 离线登出：本地状态必须清理成功
-            clear_cloud_session()
+            await _clear_local_logout_state()
             return _cleared_cookie_response()
         return _cloud_unreachable("云端不可达，请检查网络后重试")
 
@@ -102,14 +104,38 @@ async def proxy_auth(request: Request, path: str) -> Response:
             payload: Any = resp.json()
             user = payload.get("user")
             if isinstance(user, dict):
-                write_cloud_session(user)
+                # 缓存标记 + 云端 JWT（后台统计 reporter 复用，usage-stats delta）
+                tokens = payload.get("tokens")
+                write_cloud_session(user, tokens if isinstance(tokens, dict) else None)
         except ValueError:
             logger.warning("cloud auth response was not JSON; session marker skipped")
 
+    if path == "refresh" and resp.status_code < 500:
+        # 刷新响应也更新缓存的云端 JWT（spec delta：login / refresh 时缓存）
+        try:
+            payload = resp.json()
+            tokens = payload.get("tokens")
+            if isinstance(tokens, dict):
+                update_cloud_session_tokens(tokens)
+        except ValueError:
+            pass
+
     if path == "logout" and resp.status_code < 500:
-        clear_cloud_session()
+        await _clear_local_logout_state()
 
     return response
+
+
+async def _clear_local_logout_state() -> None:
+    """登出清理：会话缓存（含云端 JWT）+ 本地统计队列。
+
+    队列条目不带用户归属（上报时按缓存 JWT 归属），登出不清会跨账号误
+    归属——未上报计数随之丢弃（计数非计费，近似误差可接受）。
+    """
+    clear_cloud_session()
+    from app.services.stats_queue import clear_queue
+
+    await clear_queue()
 
 
 def _passthrough_response(resp: httpx.Response) -> Response:

@@ -164,6 +164,26 @@ class MessageRemovedEvent(BaseEvent):
     model_config = {"populate_by_name": True}
 
 
+class AgentHandoffEvent(BaseEvent):
+    """Event when an agent hands its task off to another member.
+
+    Carries the persisted system message plus structured handoff metadata so the
+    frontend can render it with the existing system-message style. Also used for
+    post-handoff failure visibility (status=failed/aborted).
+    """
+
+    type: Literal["agent.handoff"] = "agent.handoff"
+    message: MessageRecord
+    from_agent_id: str | None = Field(default=None, alias="fromAgentId")
+    to_agent_id: str | None = Field(default=None, alias="toAgentId")
+    reason: str | None = None
+    summary: str | None = None
+    status: Literal["transferred", "failed", "aborted"] = "transferred"
+    run_id: str | None = Field(default=None, alias="runId")
+
+    model_config = {"populate_by_name": True}
+
+
 # ─── Part Events ─────────────────────────────────────
 class PartStartEvent(BaseEvent):
     """Event when a message part starts."""
@@ -722,6 +742,8 @@ StreamEvent = Annotated[
         MessageUsageEventPayload,
         MessageAddedEvent,
         MessageRemovedEvent,
+        # Agent handoff events
+        AgentHandoffEvent,
         # Part events
         PartStartEvent,
         PartDeltaEvent,

@@ -273,12 +273,16 @@ class MemoryService:
 
             return results
 
-    async def graph_recall(self, seed_paths: list[str]) -> list[str]:
-        """Wikilink graph expansion from seed paths (1-hop BFS)."""
+    def build_expansion(self, path: str) -> dict:
+        """Build wikilink expansion metadata for one workspace-relative path.
+
+        Opt-in alternative to eager expansion in ``recall`` — used by the
+        memory_recall tool and the REST search endpoint. Expander keys are
+        posix-relative, so backslash paths (Windows) are normalized first.
+        """
         if self._search is None:
-            return []
-        # Keep provenance for explicit lineage walks; keyword search excludes it.
-        return self.wikilink_expander.expand(seed_paths, max_hops=1)
+            return {"outlinks": [], "inlinks": []}
+        return self._search.build_expansion(path.replace("\\", "/"))
 
     async def get_preference_context(self, *, user_id: str | None = None) -> str:
         """Return preference block for the given user (PG-backed)."""

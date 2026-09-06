@@ -1,7 +1,10 @@
-"""Tests for per-user data isolation.
+"""Tests for per-user data semantics across the dual-DB split.
 
-Creates two users, verifies that conversations, agents, documents, and
-settings are isolated between them.
+Local tables (conversations, agents) are device-scoped, NOT user-scoped:
+21387ea removed local SQLite user filtering in favor of dual-database
+routing, so every authenticated user of the same local DB sees the same
+conversations and agents. Remote tables (user_settings) remain isolated
+per user_id.
 """
 
 from __future__ import annotations
@@ -45,8 +48,12 @@ async def _authed_client(db, token: str):
     return client
 
 
-async def test_conversation_isolation(db):
-    """User A's conversations are not visible to user B."""
+async def test_conversations_shared_across_local_users(db):
+    """Conversations are device-local and visible to every authenticated user.
+
+    21387ea removed local SQLite user filtering — isolation for local tables
+    is intentionally gone; user-scoped isolation only exists on remote tables.
+    """
     token_a = await _create_user(db, "user_a", "a@test.com", "User A")
     token_b = await _create_user(db, "user_b", "b@test.com", "User B")
 
@@ -63,7 +70,6 @@ async def test_conversation_isolation(db):
             is_builtin=False,
             is_orchestrator=False,
             created_at=now,
-            user_id="user_a",
         )
         agent.capabilities_list = []
         agent.tool_names_list = []
@@ -87,18 +93,19 @@ async def test_conversation_isolation(db):
         assert len(convs) == 1
         assert convs[0]["title"] == "A's conversation"
 
-        # User B cannot see it
+        # User B (same local DB) sees it too — local tables are device-scoped
         resp = await client_b.get("/api/conversations")
         assert resp.status_code == 200
         convs = resp.json()["conversations"]
-        assert len(convs) == 0
+        assert len(convs) == 1
+        assert convs[0]["title"] == "A's conversation"
     finally:
         await client_a.aclose()
         await client_b.aclose()
 
 
-async def test_agent_isolation(db):
-    """Custom agents are only visible to their owner; builtin agents are shared."""
+async def test_agents_shared_across_local_users(db):
+    """All agents (custom + builtin) are visible to every authenticated user."""
     token_a = await _create_user(db, "user_a2", "a2@test.com", "User A2")
     token_b = await _create_user(db, "user_b2", "b2@test.com", "User B2")
 
@@ -115,7 +122,6 @@ async def test_agent_isolation(db):
             is_builtin=False,
             is_orchestrator=False,
             created_at=now,
-            user_id="user_a2",
         )
         custom_a.capabilities_list = []
         custom_a.tool_names_list = []
@@ -131,7 +137,6 @@ async def test_agent_isolation(db):
             is_builtin=True,
             is_orchestrator=False,
             created_at=now,
-            user_id=None,
         )
         builtin.capabilities_list = []
         builtin.tool_names_list = []
@@ -149,12 +154,12 @@ async def test_agent_isolation(db):
         assert "ag_custom_a" in agent_ids
         assert "ag_builtin" in agent_ids
 
-        # User B sees only builtin, not user A's custom agent
+        # User B (same local DB) also sees the custom agent — device-scoped
         resp = await client_b.get("/api/agents")
         assert resp.status_code == 200
         agent_ids = {a["id"] for a in resp.json()["agents"]}
         assert "ag_builtin" in agent_ids
-        assert "ag_custom_a" not in agent_ids
+        assert "ag_custom_a" in agent_ids
     finally:
         await client_a.aclose()
         await client_b.aclose()

@@ -1,7 +1,10 @@
 import asyncio
+
+from sqlalchemy import select
+
 from app.db.engine import get_local_db
 from app.db.models import AppSettings, ModelProfile
-from sqlalchemy import select
+
 
 async def check():
     async with get_local_db() as db:

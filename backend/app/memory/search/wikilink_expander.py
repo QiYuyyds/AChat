@@ -225,6 +225,26 @@ class WikilinkExpander:
             for row in cursor.fetchall()
         ]
 
+    def canonicalize_targets(self, mapping: dict[str, str]) -> int:
+        """Rewrite bare link targets to their canonical file rel paths.
+
+        Bare wikilinks (``[[asyncio]]``) are stored as the bare stem name, but
+        the graph node namespace is file rel paths — without this rewrite the
+        same memory would appear as two nodes ('asyncio' and
+        'digest/wiki/asyncio.md'). Returns the number of rewritten rows.
+        """
+        if not self._conn or not mapping:
+            return 0
+        rewritten = 0
+        for bare, rel in mapping.items():
+            cursor = self._conn.execute(
+                "UPDATE wikilinks SET target_path = ? WHERE target_path = ?",
+                (rel, bare),
+            )
+            rewritten += cursor.rowcount
+        self._conn.commit()
+        return rewritten
+
     def remove_broken_links(self, existing_paths: set[str]) -> int:
         """Remove adjacency entries where target_path doesn't exist on disk.
 

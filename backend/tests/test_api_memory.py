@@ -171,6 +171,72 @@ async def test_search_returns_relative_path_openable(memory_svc, api_client):
     assert "Wiki body" in detail.json()["body"]
 
 
+# ─── memory_recall tool: related link metadata ─────────────────────────────
+
+
+def _recall_ctx(agent_id: str = "agent_test"):
+    import asyncio
+
+    from app.tools.base import ToolContext
+
+    return ToolContext(
+        conversation_id="conv_tool",
+        workspace_path="",
+        agent_id=agent_id,
+        run_id="run_tool",
+        cancel_event=asyncio.Event(),
+    )
+
+
+async def test_recall_related_outlinks_with_predicate(memory_svc):
+    """A derived_from link surfaces in related.outlinks with its predicate;
+    deleting the target card removes it from related (no broken links)."""
+    from app.memory.file_store.frontmatter import MemoryFrontmatter
+    from app.memory.file_store.markdown_io import delete_markdown, write_markdown
+    from app.tools.memory_store import memory_recall_handler
+
+    ws = memory_svc.workspace
+    daily_path = ws.daily_file_path("session_deploy", "2026-08-04")
+    write_markdown(
+        daily_path,
+        MemoryFrontmatter(name="session_deploy", description="Deploy incident"),
+        "Deploy failed because the API key expired.",
+    )
+    write_markdown(
+        ws.digest_path("wiki", "deploy-lesson"),
+        MemoryFrontmatter(name="deploy-lesson", description="Deploy lesson"),
+        "Check API key expiry before deploy.\nderived_from:: [[daily/2026-08-04/session_deploy.md]]",
+    )
+    memory_svc.auto_index.full_reindex()
+
+    result = await memory_recall_handler({"query": "deploy"}, _recall_ctx())
+
+    assert result.ok, result.error
+    memories = result.value["memories"]
+    assert memories, "expected at least one hit"
+    lesson = next(
+        m for m in memories if "deploy-lesson" in m["path"].replace("\\", "/")
+    )
+    assert lesson["related"]["outlinks"], "expected outlinks from derived_from"
+    targets = [
+        o for o in lesson["related"]["outlinks"]
+        if "session_deploy" in o["path"].replace("\\", "/")
+    ]
+    assert targets, "related.outlinks should contain the derived_from daily card"
+    assert targets[0]["predicate"] == "derived_from"
+
+    # Target deleted → broken link must disappear from related
+    delete_markdown(daily_path)
+    result2 = await memory_recall_handler({"query": "deploy"}, _recall_ctx())
+    assert result2.ok
+    lesson2 = next(
+        m for m in result2.value["memories"] if "deploy-lesson" in m["path"].replace("\\", "/")
+    )
+    assert not any(
+        "session_deploy" in o["path"] for o in lesson2["related"]["outlinks"]
+    )
+
+
 # ─── Preferences: GET /api/memory/preferences ─────────────────────────────
 
 

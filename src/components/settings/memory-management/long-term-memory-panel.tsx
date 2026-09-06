@@ -28,6 +28,8 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import {
+  type MemoryExpansion,
+  type MemoryExpansionEntry,
   type MemoryFileItem,
   type ProactiveTopic,
   deleteMemoryFile,
@@ -203,6 +205,7 @@ function dedupeMemoryItems(items: MemoryFileItem[]): MemoryFileItem[] {
 
 export function LongTermMemoryPanel() {
   const [items, setItems] = useState<MemoryFileItem[]>([])
+  const [expansions, setExpansions] = useState<Record<string, MemoryExpansion>>({})
   const [loading, setLoading] = useState(false)
   const [filterBucket, setFilterBucket] = useState<BucketFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
@@ -265,11 +268,20 @@ export function LongTermMemoryPanel() {
           bodyPreview: r.content.slice(0, 200),
         }))
         setItems(dedupeMemoryItems(searchItems))
+        // Wikilink adjacency (outlinks/inlinks) per hit path, for related links
+        const nextExpansions: Record<string, MemoryExpansion> = {}
+        for (const r of resp.items) {
+          if (r.expansion && (r.expansion.outlinks?.length || r.expansion.inlinks?.length)) {
+            nextExpansions[normalizeMemoryPath(r.path)] = r.expansion
+          }
+        }
+        setExpansions(nextExpansions)
       } else {
         const resp = await fetchMemoryFiles({
           bucket: filterBucket === 'all' ? undefined : filterBucket,
         })
         setItems(dedupeMemoryItems(resp.items))
+        setExpansions({})
       }
     } catch (err) {
       console.error('[MemoryPanel] load failed', err)
@@ -508,7 +520,12 @@ export function LongTermMemoryPanel() {
       </div>
 
       {/* File list - Hybrid layout */}
-      <MemoryHybridGrid items={items} openFile={openFile} getBucketConfig={getBucketConfig} />
+      <MemoryHybridGrid
+        items={items}
+        expansions={expansions}
+        openFile={openFile}
+        getBucketConfig={getBucketConfig}
+      />
 
       {/* Empty state */}
       {items.length === 0 && !loading && (
@@ -579,14 +596,16 @@ const FEATURED_THRESHOLD = 0.9
 
 interface MemoryHybridGridProps {
   items: MemoryFileItem[]
+  expansions: Record<string, MemoryExpansion>
   openFile: (path: string) => Promise<void>
   getBucketConfig: (bucket: string) => BucketCfg
 }
 
-function MemoryHybridGrid({ items, openFile, getBucketConfig }: MemoryHybridGridProps) {
+function MemoryHybridGrid({ items, expansions, openFile, getBucketConfig }: MemoryHybridGridProps) {
   const unique = dedupeMemoryItems(items)
   const featured = unique.filter((item) => item.importance >= FEATURED_THRESHOLD)
   const regular = unique.filter((item) => item.importance < FEATURED_THRESHOLD)
+  const openLinkedFile = (path: string) => void openFile(normalizeMemoryPath(path))
 
   return (
     <div className="flex flex-col gap-5">
@@ -602,13 +621,15 @@ function MemoryHybridGrid({ items, openFile, getBucketConfig }: MemoryHybridGrid
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 [grid-auto-rows:minmax(140px,auto)]">
             {featured.map((item, index) => (
-              <FeaturedCard
-                key={item.path}
-                item={item}
-                bucketCfg={getBucketConfig(item.bucket)}
-                onClick={() => void openFile(item.path)}
-                index={index}
-              />
+              <div key={item.path} className="flex flex-col gap-1">
+                <FeaturedCard
+                  item={item}
+                  bucketCfg={getBucketConfig(item.bucket)}
+                  onClick={() => void openFile(item.path)}
+                  index={index}
+                />
+                <RelatedLinks expansion={expansions[item.path]} onOpen={openLinkedFile} />
+              </div>
             ))}
           </div>
         </div>
@@ -628,17 +649,65 @@ function MemoryHybridGrid({ items, openFile, getBucketConfig }: MemoryHybridGrid
           )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 [grid-auto-rows:minmax(140px,auto)]">
             {regular.map((item, index) => (
-              <CompactCard
-                key={item.path}
-                item={item}
-                bucketCfg={getBucketConfig(item.bucket)}
-                onClick={() => void openFile(item.path)}
-                index={index + featured.length}
-              />
+              <div key={item.path} className="flex flex-col gap-1">
+                <CompactCard
+                  item={item}
+                  bucketCfg={getBucketConfig(item.bucket)}
+                  onClick={() => void openFile(item.path)}
+                  index={index + featured.length}
+                />
+                <RelatedLinks expansion={expansions[item.path]} onOpen={openLinkedFile} />
+              </div>
             ))}
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/** Wikilink adjacency under a search hit: clickable outlinks/inlinks chips. */
+function RelatedLinks({
+  expansion,
+  onOpen,
+}: {
+  expansion?: MemoryExpansion
+  onOpen: (path: string) => void
+}) {
+  if (!expansion) return null
+  const outlinks = (expansion.outlinks ?? []).slice(0, 5)
+  const inlinks = (expansion.inlinks ?? []).slice(0, 5)
+  if (outlinks.length === 0 && inlinks.length === 0) return null
+
+  const renderGroup = (label: string, entries: MemoryExpansionEntry[]) => {
+    if (entries.length === 0) return null
+    return (
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="shrink-0 text-[10px] leading-tight text-muted-foreground/50">{label}</span>
+        {entries.map((e) => (
+          <button
+            key={e.path}
+            type="button"
+            onClick={() => onOpen(e.path)}
+            title={e.description ? `${e.name || e.path} · ${e.description}` : e.path}
+            className="inline-flex max-w-full items-center gap-1 truncate rounded-md border border-border/60 bg-muted/40 px-1.5 py-px text-[10px] leading-tight text-foreground/75 transition-colors hover:border-primary/40 hover:bg-primary/8 hover:text-foreground"
+          >
+            {e.predicate && (
+              <span className="shrink-0 rounded bg-primary/10 px-1 font-mono text-[9px] text-primary/80">
+                {e.predicate}
+              </span>
+            )}
+            <span className="truncate">{e.name?.trim() || e.path}</span>
+          </button>
+        ))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-1 px-1">
+      {renderGroup('关联 →', outlinks)}
+      {renderGroup('← 被引用', inlinks)}
     </div>
   )
 }

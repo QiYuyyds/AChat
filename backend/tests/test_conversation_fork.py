@@ -10,7 +10,6 @@ import os
 import shutil
 
 import pytest
-import pytest_asyncio
 
 from app.services import conversation_service as cs
 from app.services import worktree_service as wt
@@ -94,10 +93,8 @@ class TestEnsureGitInitGitignore:
 
         repo = str(tmp_path / "repo")
         os.makedirs(repo, exist_ok=True)
-        await wt._run_git(repo, "init")
-        await wt._run_git(repo, "config", "user.email", "t@l")
-        await wt._run_git(repo, "config", "user.name", "T")
-
+        # Let ensure_git_init do the init itself: on an already-initialized repo
+        # it short-circuits (documented contract) and would skip .gitignore.
         await wt.ensure_git_init(repo)
         gi = os.path.join(repo, ".gitignore")
         assert os.path.exists(gi)
@@ -115,9 +112,6 @@ class TestEnsureGitInitGitignore:
 
         repo = str(tmp_path / "repo")
         os.makedirs(repo, exist_ok=True)
-        await wt._run_git(repo, "init")
-        await wt._run_git(repo, "config", "user.email", "t@l")
-        await wt._run_git(repo, "config", "user.name", "T")
         with open(os.path.join(repo, ".gitignore"), "w", encoding="utf-8") as f:
             f.write("*.tmp\n")
 
@@ -182,16 +176,16 @@ class TestForkConversation:
             agent_ids=[agents["alice"]],
             user_id=test_user["id"],
         )
+        # Add an artifact BEFORE the message so its created_at falls inside the
+        # fork's deep-copy window (artifacts with created_at <= fork point).
+        await _add_artifact(conv.id, agents["alice"])
         # Send a user message
         msg_id = await _add_message(conv.id, "user", "hello")
-        # Add an artifact
-        await _add_artifact(conv.id, agents["alice"])
 
         # Fork from the user message
         new_conv = await cs.fork_conversation(
             source_conv_id=conv.id,
             fork_point_message_id=msg_id,
-            user_id=test_user["id"],
         )
         assert new_conv.parent_conversation_id == conv.id
         assert new_conv.fork_point_message_id == msg_id
@@ -233,7 +227,6 @@ class TestForkConversation:
         new_conv = await cs.fork_conversation(
             source_conv_id=conv.id,
             fork_point_message_id=fork_point,
-            user_id=test_user["id"],
         )
         new_msgs = await cs.list_messages(new_conv.id)
         # Should have: visible user msg + visible agent reply (NOT the hidden one)
@@ -259,7 +252,6 @@ class TestForkConversation:
             await cs.fork_conversation(
                 source_conv_id=conv.id,
                 fork_point_message_id=streaming_msg,
-                user_id=test_user["id"],
             )
         get_settings.cache_clear()
 
@@ -280,7 +272,6 @@ class TestForkConversation:
         new_conv = await cs.fork_conversation(
             source_conv_id=conv.id,
             fork_point_message_id=msg_id,
-            user_id=test_user["id"],
         )
         assert set(new_conv.agent_ids) == {agents["alice"], agents["orch"]}
         assert new_conv.mode == "group"
@@ -309,7 +300,6 @@ class TestForkConversation:
             await cs.fork_conversation(
                 source_conv_id=conv.id,
                 fork_point_message_id=msg_id,
-                user_id=test_user["id"],
                 confirm_git_init=False,
             )
         assert exc_info.value.source_path == non_git
@@ -336,14 +326,14 @@ class TestDeleteForkCleanup:
         new_conv = await cs.fork_conversation(
             source_conv_id=conv.id,
             fork_point_message_id=msg_id,
-            user_id=test_user["id"],
         )
         assert new_conv.parent_conversation_id is not None
 
         # Get the workspace path before deleting
+        from sqlalchemy import select
+
         from app.db.engine import get_local_db
         from app.db.models import Workspace
-        from sqlalchemy import select
         async with get_local_db() as session:
             ws_result = await session.execute(
                 select(Workspace.root_path).where(Workspace.conversation_id == new_conv.id)

@@ -1115,6 +1115,98 @@ export async function regenerateMobileDeviceToken(): Promise<AppSettingsRow> {
   return settings
 }
 
+// ─── Infra config (rag-infra-config 基础设施接入) ───────────────
+
+/** GET /api/infra/config 返回的落库覆盖值（密码已掩码；null = 跟随 env）。 */
+export interface InfraConfig {
+  milvusHost: string | null
+  milvusPort: number | null
+  neo4jUri: string | null
+  neo4jUser: string | null
+  /** "********" = 已存储（回写视为未修改）；"" = 未存储 */
+  neo4jPassword: string
+  enableGraph: boolean | null
+}
+
+export interface InfraConfigResponse {
+  config: InfraConfig
+  sources: { milvus: string; neo4j: string; graph: string }
+  desktopMode: boolean
+}
+
+/** PUT /api/infra/config：缺省字段 = 不变；neo4jPassword 空串/掩码回显 = 未修改。 */
+export interface InfraConfigPatch {
+  milvusHost?: string | null
+  milvusPort?: number | null
+  neo4jUri?: string | null
+  neo4jUser?: string | null
+  neo4jPassword?: string
+  enableGraph?: boolean | null
+}
+
+export const INFRA_PASSWORD_MASK = '********'
+
+export async function fetchInfraConfig(): Promise<InfraConfigResponse> {
+  return json<InfraConfigResponse>(authFetch(API_BASE_URL + '/api/infra/config'))
+}
+
+export async function updateInfraConfig(
+  patch: InfraConfigPatch,
+): Promise<InfraConfigResponse & { restartRequired: boolean; message: string }> {
+  return json<InfraConfigResponse & { restartRequired: boolean; message: string }>(
+    authFetch(API_BASE_URL + '/api/infra/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  )
+}
+
+export interface InfraTestResult {
+  tested: boolean
+  ok?: boolean
+  latencyMs?: number
+  errorKind?: 'network' | 'auth' | 'protocol'
+  error?: string
+}
+
+export interface InfraTestBody {
+  milvusHost?: string
+  milvusPort?: number | null
+  neo4jUri?: string
+  neo4jUser?: string
+  /** 掩码回显 = 用存储密码测试 */
+  neo4jPassword?: string
+}
+
+export async function testInfraConnection(body: InfraTestBody): Promise<{
+  milvus: InfraTestResult
+  neo4j: InfraTestResult
+}> {
+  return json<{ milvus: InfraTestResult; neo4j: InfraTestResult }>(
+    authFetch(API_BASE_URL + '/api/infra/config/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
+}
+
+export interface InfraServiceState {
+  status: 'connected' | 'degraded' | 'disabled'
+  configSource: 'db' | 'env' | 'none'
+  detail: string | null
+}
+
+export interface InfraStatusResponse {
+  services: Record<string, InfraServiceState>
+  infraAvailable: boolean
+}
+
+export async function fetchInfraStatus(): Promise<InfraStatusResponse> {
+  return json<InfraStatusResponse>(authFetch(API_BASE_URL + '/api/infra/status'))
+}
+
 // ─── Documents (知识库) ──────────────────────────
 export async function fetchDocuments(): Promise<DocumentRow[]> {
   const { documents } = await json<{ documents: DocumentRow[] }>(

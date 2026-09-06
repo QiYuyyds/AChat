@@ -10,6 +10,7 @@ existing tests authenticate transparently. Tests that need an unauthenticated
 client can use `raw_client`.
 """
 
+import pytest
 import pytest_asyncio
 
 # agent_eval (formerly eval_harness) is consumed as an installed (editable)
@@ -17,6 +18,26 @@ import pytest_asyncio
 # sys.path routing is needed here anymore.
 
 _TEST_JWT_SECRET = "test-secret-at-least-32-characters-long!!"
+
+
+def pytest_runtest_setup(item):
+    """Auto-skip infrastructure-dependent tests unless explicitly enabled.
+
+    C 类用例（integration / network marker）需要 Docker 基础设施（真实
+    PostgreSQL / Milvus / Neo4j）或外网，在默认环境下无法运行。运行时跳过
+    （而非失败）保证两个口径同时成立：无基础设施的全量跑全绿（跳过不算
+    失败），且 `-m "not integration and not network"` 子集与全量的结果一致。
+    在有基础设施的机器上设 AGENTHUB_TEST_INFRA=1 显式执行这些用例。
+    """
+    import os
+
+    if os.environ.get("AGENTHUB_TEST_INFRA") == "1":
+        return
+    if item.get_closest_marker("integration") is not None:
+        pytest.skip("requires Docker infrastructure (PostgreSQL / Milvus / Neo4j); "
+                    "set AGENTHUB_TEST_INFRA=1 to run")
+    if item.get_closest_marker("network") is not None:
+        pytest.skip("requires external network access; set AGENTHUB_TEST_INFRA=1 to run")
 
 
 @pytest_asyncio.fixture
@@ -35,6 +56,7 @@ async def db(tmp_path, monkeypatch):
     from app.config import get_settings
 
     get_settings.cache_clear()
+    _reset_process_caches()
 
     from app.db import engine as engine_mod
 
@@ -47,6 +69,30 @@ async def db(tmp_path, monkeypatch):
         await _drain_active_runs()
         await engine_mod.close_db()
         get_settings.cache_clear()
+        # Drop cached agents/user-settings/global-settings from the previous
+        # test's DB, otherwise a stale entry (e.g. deployment_publish_enabled)
+        # leaks into the next test through the process-level TTL cache.
+        _reset_process_caches()
+
+
+def _reset_process_caches() -> None:
+    """Clear process-level caches that would otherwise leak across tests.
+
+    Covers app.infra.cache_helpers (agents / user_settings / global_settings
+    TTL cache) and global_settings_service._global_cache — a stale
+    deployment_publish_enabled=True from one test otherwise flips another
+    test's deploy path into external-publishing mode.
+    """
+    try:
+        from app.infra import cache_helpers
+    except ImportError:
+        return
+    cache_helpers._process_cache.clear()
+    try:
+        from app.services import global_settings_service
+    except ImportError:
+        return
+    global_settings_service._global_cache = None
 
 
 @pytest_asyncio.fixture
@@ -196,6 +242,7 @@ async def desktop_env(tmp_path, monkeypatch):
     from app.config import get_settings
 
     get_settings.cache_clear()
+    _reset_process_caches()
 
     from app.db import engine as engine_mod
 
@@ -205,6 +252,7 @@ async def desktop_env(tmp_path, monkeypatch):
     finally:
         await engine_mod.close_db()
         get_settings.cache_clear()
+        _reset_process_caches()
         auth_proxy.set_test_transport(None)
 
 

@@ -31,7 +31,6 @@ from app.config import Settings  # noqa: E402
 from app.memory.memory_service import MemoryService  # noqa: E402
 from app.memory.search.bm25_index import _tokenize  # noqa: E402
 
-
 DEFAULT_QUERIES = [
     "python",
     "typescript",

@@ -471,6 +471,28 @@ docker compose -f docker-compose.infra.yml down
 | ~~Redis~~ | ~~6379~~ | ~~**已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代~~ |
 | Phoenix | 6006 / 4317 | 可观测性关闭（`trace_enabled=false`）；OTel 埋点 no-op，无 Trace/Eval 数据 |
 
+### 运行期接入（桌面端）
+
+除了部署期的 env / docker-compose 配置，桌面端（`AGENTHUB_DESKTOP=1`）可以在运行期接入自部署的基础设施：**设置 → 基础设施** 提供端点与凭证表单、连接测试和接入状态展示。连接配置解析优先级为：
+
+```
+global_settings 落库值（桌面端表单保存）→ env 默认（MILVUS_HOST / NEO4J_URI 等）→ 视为未配置
+```
+
+- **保存后重启生效**：基础设施在应用启动期一次性装配，无热重连；保存响应会提示重启。
+- **连接测试**：以表单当前值（未持久化）实测建连，返回时延或分类原因（网络不可达 / 认证失败 / 协议错误），测试不落库。
+- **状态可观测**：`GET /api/infra/status` 返回各服务 `connected / degraded / disabled`、配置来源（db / env / none）与失败原因，设置界面轮询展示。
+- **写入口仅桌面模式**：web 多用户部署不向终端用户暴露部署级连接配置（写请求 403），运维仍走 env / docker-compose。
+- **错误配置不炸后端**：指向不可达端点时该服务独立降级（见上表），状态接口可见原因，其余服务与核心对话不受影响。
+
+对应 API：`GET/PUT /api/infra/config`（读返回脱敏凭证）、`POST /api/infra/config/test`、`GET /api/infra/status`。
+
+| 配置来源 | 谁在用 | 修改方式 | 生效时机 |
+|---|---|---|---|
+| `global_settings` 落库 | 桌面端用户 | 设置 → 基础设施（仅桌面模式可写） | 重启后 |
+| env（`.env` / docker-compose） | web 自托管运维 | env 文件 / compose 编排 | 重启后 |
+| 均未配置 | — | — | 服务走降级路径 |
+
 ---
 
 ## 桌面应用

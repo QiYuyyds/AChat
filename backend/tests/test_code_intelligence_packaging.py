@@ -10,27 +10,33 @@ def test_desktop_build_prepares_and_bundles_platform_runtime() -> None:
     assert package["scripts"]["codegraph:prepare"] == (
         "node scripts/prepare-codegraph-runtime.mjs"
     )
-    assert package["scripts"]["electron:build"].endswith(
-        "pnpm codegraph:prepare && electron-builder"
-    )
-    assert package["build"]["win"]["extraResources"] == [
-        {
-            "from": "resources/codegraph/codegraph-win32-${arch}.zip",
-            "to": "codegraph/runtime.zip",
-        },
-        {
-            "from": "backend/app/code_intelligence/runtime-manifest.json",
-            "to": "codegraph/runtime-manifest.json",
-        },
-        {
-            "from": "backend/app/code_intelligence/CODEGRAPH-NOTICE.txt",
-            "to": "codegraph/CODEGRAPH-NOTICE.txt",
-        },
-    ]
-    assert package["build"]["mac"]["extraResources"][0] == {
-        "from": "resources/codegraph/codegraph-darwin-${arch}.tar.gz",
-        "to": "codegraph/runtime.tar.gz",
-    }
+    build_chain = package["scripts"]["electron:build"]
+    # Runtimes must be prepared before electron-builder bundles the app.
+    # (python-runtime:prepare was added for the packaged Python runtime.)
+    assert "pnpm codegraph:prepare && pnpm python-runtime:prepare && electron-builder" in build_chain
+    # Windows resources must bundle the codegraph runtime + manifest + notice;
+    # python-runtime and backend/app entries were added alongside.
+    win_resources = package["build"]["win"]["extraResources"]
+    assert {
+        "from": "resources/codegraph/codegraph-win32-${arch}.zip",
+        "to": "codegraph/runtime.zip",
+    } in win_resources
+    assert {
+        "from": "backend/app/code_intelligence/runtime-manifest.json",
+        "to": "codegraph/runtime-manifest.json",
+    } in win_resources
+    assert {
+        "from": "backend/app/code_intelligence/CODEGRAPH-NOTICE.txt",
+        "to": "codegraph/CODEGRAPH-NOTICE.txt",
+    } in win_resources
+    assert {
+        "from": "resources/python-runtime/python-runtime-win32-${arch}.zip",
+        "to": "python-runtime/python-runtime.zip",
+    } in win_resources
+    assert {
+        "from": "resources/python-runtime/python-runtime-darwin-${arch}.tar.gz",
+        "to": "python-runtime/python-runtime.tar.gz",
+    } in package["build"]["mac"]["extraResources"]
 
 
 def test_codegraph_notice_preserves_mit_license() -> None:

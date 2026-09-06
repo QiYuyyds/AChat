@@ -111,7 +111,8 @@ async def test_delete_conversation(api_client, agents):
 async def test_delete_missing_conversation(api_client, agents):
     resp = await api_client.delete("/api/conversations/conv_missing")
     assert resp.status_code == 404
-    assert "error" in resp.json()
+    # Ownership helper raises HTTPException → FastAPI "detail" body
+    assert "Conversation not found" in resp.json()["detail"]
 
 
 # ─── messages ────────────────────────────────────────────────────────────────
@@ -151,8 +152,9 @@ async def test_send_message_missing_conversation(api_client, agents):
     resp = await api_client.post(
         "/api/conversations/conv_missing/messages", json={"content": "hi"}
     )
-    assert resp.status_code == 400
-    assert "error" in resp.json()
+    # Ownership check (404) runs before body validation
+    assert resp.status_code == 404
+    assert "Conversation not found" in resp.json()["detail"]
 
 
 async def test_clear_history(api_client, agents):
@@ -169,7 +171,7 @@ async def test_clear_history(api_client, agents):
 async def test_clear_history_missing_conversation(api_client, agents):
     resp = await api_client.delete("/api/conversations/conv_missing/messages")
     assert resp.status_code == 404
-    assert "error" in resp.json()
+    assert "Conversation not found" in resp.json()["detail"]
 
 
 # ─── regenerate ──────────────────────────────────────────────────────────────
@@ -181,18 +183,10 @@ async def test_regenerate_no_user_message(api_client, agents):
     assert "error" in resp.json()
 
 
-# ─── compact (deferred) ──────────────────────────────────────────────────────
-async def test_compact_deferred(api_client, agents):
-    # Nothing to compact is a benign skip, not an error: 200 + a friendly
-    # ephemeral system message, no 400.
-    conv = await _create_single(api_client, agents["alice"])
-    resp = await api_client.post(f"/api/conversations/{conv['id']}/compact")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["skipped"] is True
-    assert body.get("reason")
-    assert body["message"]["role"] == "system"
-    assert "error" not in body
+# ─── compact ─────────────────────────────────────────────────────────────────
+# The /compact API route was removed with the run-internal compaction rewrite
+# (a5e3660); context compaction now happens inside agent runs and is covered by
+# test_conversation_context_compaction.py / test_ratio_aware_pruning.py.
 
 
 # ─── deploy ──────────────────────────────────────────────────────────────────

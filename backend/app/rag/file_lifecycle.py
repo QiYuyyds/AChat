@@ -148,7 +148,7 @@ class DocumentLifecycleManager:
 
             # 乐观并发更新
             field = "graph_status" if is_graph else "status"
-            now = datetime.utcnow().timestamp()
+            now = datetime.now(datetime.UTC).timestamp()
 
             update_stmt = (
                 update(Document)

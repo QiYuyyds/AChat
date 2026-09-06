@@ -19,9 +19,9 @@ from app.auth.dependencies import get_current_user
 from app.db.engine import get_local_db
 from app.db.models import ModelProfile, User
 from app.schemas.model_profile import (
+    _KNOWN_PROVIDERS,
     CreateModelProfileRequest,
     UpdateModelProfileRequest,
-    _KNOWN_PROVIDERS,
     _mask_key,
 )
 from app.utils.clock import now_ms
@@ -130,6 +130,10 @@ async def create_model_profile(
                 if existing.is_default:
                     existing.is_default = False
                     db.add(existing)
+            # Flush the unset before marking the new default: the partial
+            # unique index on (is_default) would reject a window where two
+            # rows are default at once.
+            await db.flush()
             profile.is_default = True
 
         db.add(profile)
@@ -214,6 +218,10 @@ async def update_model_profile(
                 for other in existing:
                     other.is_default = False
                     db.add(other)
+                # Flush the unset before marking the new default: the partial
+                # unique index on (is_default) would reject a window where two
+                # rows are default at once.
+                await db.flush()
                 profile.is_default = True
             elif not body.is_default and profile.is_default:
                 # Don't allow unsetting default directly — will be handled

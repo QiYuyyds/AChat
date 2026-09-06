@@ -55,6 +55,18 @@ export interface MemoryFileWriteBody {
   bucket?: string
 }
 
+export interface MemoryExpansionEntry {
+  path: string
+  name: string
+  description: string
+  predicate: string | null
+}
+
+export interface MemoryExpansion {
+  outlinks: MemoryExpansionEntry[]
+  inlinks: MemoryExpansionEntry[]
+}
+
 export interface MemorySearchResult {
   path: string
   name: string
@@ -62,6 +74,7 @@ export interface MemorySearchResult {
   score: number
   source: string
   frontmatter: Record<string, unknown>
+  expansion: MemoryExpansion
 }
 
 export interface MemorySearchResponse {

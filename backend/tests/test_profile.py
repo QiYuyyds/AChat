@@ -114,7 +114,7 @@ async def test_extracted_value_truncated():
 
 def test_hometown_extraction_laojia():
     """Rule-based extraction produces {'家乡': '成都'} from '我老家在成都'."""
-    from app.memory.memory_writer import _extract_rule_based
+    from app.memory.memory_writer_compat import _extract_rule_based
 
     result = _extract_rule_based("我老家在成都")
     assert result == {"家乡": "成都"}
@@ -122,7 +122,7 @@ def test_hometown_extraction_laojia():
 
 def test_hometown_extraction_jiaxiang():
     """Rule-based extraction produces {'家乡': '重庆'} from '我家乡在重庆'."""
-    from app.memory.memory_writer import _extract_rule_based
+    from app.memory.memory_writer_compat import _extract_rule_based
 
     result = _extract_rule_based("我家乡在重庆")
     assert result == {"家乡": "重庆"}
@@ -130,7 +130,7 @@ def test_hometown_extraction_jiaxiang():
 
 def test_hometown_extraction_laojia_shi():
     """Rule-based extraction from '老家是杭州'."""
-    from app.memory.memory_writer import _extract_rule_based
+    from app.memory.memory_writer_compat import _extract_rule_based
 
     result = _extract_rule_based("老家是杭州")
     assert result == {"家乡": "杭州"}
@@ -138,7 +138,7 @@ def test_hometown_extraction_laojia_shi():
 
 def test_hometown_classification():
     """classify_memory_content classifies '家乡'/'老家' as identity/hometown."""
-    from app.memory.memory_writer import classify_memory_content
+    from app.memory.memory_writer_compat import classify_memory_content
 
     category, tags, slot_hint = classify_memory_content("家乡", "成都")
     assert category == "identity"

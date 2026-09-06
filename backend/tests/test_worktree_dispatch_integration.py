@@ -103,7 +103,7 @@ async def test_dag_execute_node_worktree_full_flow(monkeypatch):
         assert kwargs.get("workspace_path") == "/fake/wt"
         return LoopRunResult(status="complete", text="done", run_id="run_t1")
 
-    result = await _execute_node(task, ctx, _mock_spawn)
+    result = await _execute_node(task, ctx, {}, _mock_spawn)
 
     assert result.status == "complete"
     assert len(created_wt) == 1
@@ -152,7 +152,7 @@ async def test_dag_execute_node_worktree_none_degrades(monkeypatch):
         assert kwargs.get("workspace_path") is None
         return LoopRunResult(status="complete", text="done", run_id="run_t1")
 
-    result = await _execute_node(task, ctx, _mock_spawn)
+    result = await _execute_node(task, ctx, {}, _mock_spawn)
 
     assert result.status == "complete"
     assert len(merge_called) == 0
@@ -185,7 +185,7 @@ async def test_dag_execute_node_no_workspace_path_skips_worktree(monkeypatch):
         assert kwargs.get("workspace_path") is None
         return LoopRunResult(status="complete", text="done", run_id="run_t1")
 
-    result = await _execute_node(task, ctx, _mock_spawn)
+    result = await _execute_node(task, ctx, {}, _mock_spawn)
 
     assert result.status == "complete"
     assert len(create_called) == 0
