@@ -130,7 +130,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const onAuthExpired = () => {
       set({ isAuthenticated: false, showLoginDialog: true })
     }
-    window.addEventListener('auth-expired', onAuthExpired as EventListener)
+    if (typeof window !== 'undefined') {
+      window.addEventListener('auth-expired', onAuthExpired as EventListener)
+    }
 
     // 桌面模式分支：/api/desktop/session 存在即桌面形态。有 cloud_session 标记
     // 直接进入（离线容忍）；无标记进登录页（云端强制登录，经本地 /api/auth/* 代理）。
