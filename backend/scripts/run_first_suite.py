@@ -21,11 +21,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent_eval.core.suite import load_suite  # noqa: E402
 
-SUITE_PATH = Path(__file__).resolve().parent.parent / "eval_suites" / "first-suite.yaml"
+DEFAULT_SUITE = Path(__file__).resolve().parent.parent / "eval_suites" / "first-suite.yaml"
 
 
-async def main(import_only: bool) -> int:
-    suite = load_suite(SUITE_PATH)
+async def main(import_only: bool, suite_path: Path | None = None) -> int:
+    suite = load_suite(suite_path or DEFAULT_SUITE)
     print(f"[aeval] suite loaded: {suite.name} v{suite.version} "
           f"({len(suite.tasks)} tasks)")
     if import_only:
@@ -81,7 +81,9 @@ async def main(import_only: bool) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("suite", nargs="?", type=Path, default=None,
+                        help="套件 YAML 路径 (缺省 first-suite.yaml)")
     parser.add_argument("--import-only", action="store_true",
                         help="仅校验/导入 YAML, 不真实运行")
     args = parser.parse_args()
-    raise SystemExit(asyncio.run(main(args.import_only)))
+    raise SystemExit(asyncio.run(main(args.import_only, args.suite)))

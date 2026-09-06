@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_eval.metrics.base import BaseLLMMetric, MetricResult
-from agent_eval.metrics.llm_judge import MetricError
+from agent_eval.metrics.base import BaseLLMMetric, MetricError, MetricResult
 from agent_eval.core.types import MeasurementContext
 
 _MAX_OBSERVATIONS = 40
