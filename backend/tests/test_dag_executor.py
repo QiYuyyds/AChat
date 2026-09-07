@@ -334,6 +334,112 @@ def trace_enabled(monkeypatch):
     run_span_collector.clear("run_test")
 
 
+# ─── Advisory wave write-conflict detection (specs/06 降级路径) ─────────────
+
+
+def _recording_spawn(content_by_task: dict[str, str]):
+    """Spawn mock that records one fs_write per task (keyed by task description)."""
+
+    async def _spawn(
+        agent_id: str,
+        task_description: str,
+        conversation_id: str,
+        trigger_message_id: str,
+        parent_run_id: str,
+        parent_cancel_event: asyncio.Event,
+        on_start=None,
+        workspace_path: str | None = None,
+        dispatch_depth: int = 0,
+        dispatch_visibility: str = "visible",
+        user_id: str | None = None,
+        dag_id: str | None = None,
+        dag_task_id: str | None = None,
+        override_messages: list[dict] | None = None,
+        override_system_prompt: str | None = None,
+    ):
+        from app.services.agent_loop import LoopRunResult
+        from app.utils.dispatch_file_writes import record_file_write
+
+        run_id = f"run_{task_description}"
+        if on_start is not None:
+            on_start(run_id)
+        if task_description in content_by_task:
+            record_file_write(run_id, "/ws/shared.py", content_by_task[task_description])
+        return LoopRunResult(
+            status="complete", text=f"done {task_description}", run_id=run_id
+        )
+
+    return _spawn
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_detects_degraded_wave_conflicts(monkeypatch):
+    from app.utils.dispatch_file_writes import get_file_writes
+
+    # No workspace configured → both tasks run without worktrees (degraded).
+    tasks = [_item("t1", task="t1"), _item("t2", task="t2")]
+    monkeypatch.setattr(
+        "app.services.agent_loop.spawn_subagent_loop",
+        _recording_spawn({"t1": "content-A", "t2": "content-B"}),
+    )
+
+    conflicts: list = []
+    results = await execute_dag(tasks, _ctx(), conflicts_out=conflicts)
+
+    assert all(r.status == "complete" for r in results.values())
+    assert len(conflicts) == 1
+    assert conflicts[0].path == "/ws/shared.py"
+    assert {c["taskId"] for c in conflicts[0].contributors} == {"t1", "t2"}
+    # Records are wave-scoped and cleared right after the check.
+    assert get_file_writes("run_t1") == {}
+    assert get_file_writes("run_t2") == {}
+
+
+@pytest.mark.asyncio
+async def test_execute_dag_identical_writes_are_not_a_conflict(monkeypatch):
+    tasks = [_item("t1", task="t1"), _item("t2", task="t2")]
+    monkeypatch.setattr(
+        "app.services.agent_loop.spawn_subagent_loop",
+        _recording_spawn({"t1": "same", "t2": "same"}),
+    )
+
+    conflicts: list = []
+    await execute_dag(tasks, _ctx(), conflicts_out=conflicts)
+
+    assert conflicts == []
+
+
+def test_check_wave_file_conflicts_skips_detection_without_degradation():
+    """Worktree-isolated waves never trigger advisory detection, but records
+    are still cleared."""
+    from app.services.dag_executor import NodeResult, _check_wave_file_conflicts
+    from app.utils.dispatch_file_writes import (
+        clear_file_writes,
+        record_file_write,
+    )
+
+    record_file_write("run_t1", "/ws/shared.py", "A")
+    record_file_write("run_t2", "/ws/shared.py", "B")
+    try:
+        ready = [_item("t1", task="t1"), _item("t2", task="t2")]
+        nrs = [
+            NodeResult(
+                task_id="t1", status="complete", summary="s",
+                child_run_id="run_t1", degraded_workspace=False,
+            ),
+            NodeResult(
+                task_id="t2", status="complete", summary="s",
+                child_run_id="run_t2", degraded_workspace=False,
+            ),
+        ]
+        conflicts: list = []
+        _check_wave_file_conflicts(ready, nrs, conflicts)
+        assert conflicts == []
+    finally:
+        clear_file_writes("run_t1")
+        clear_file_writes("run_t2")
+
+
 @pytest.mark.asyncio
 async def test_dag_spans_created_with_hierarchy(trace_enabled, monkeypatch):
     """3.1: dag.execute / dag.wave / dag.node spans created with correct hierarchy."""
@@ -1473,7 +1579,7 @@ async def test_dispatch_plan_return_includes_dagId_and_structured_fields(monkeyp
     from app.tools.base import ToolContext
     from app.tools.dispatch_plan import _handler
 
-    async def mock_execute_dag(tasks, ctx):
+    async def mock_execute_dag(tasks, ctx, conflicts_out=None):
         return {
             "t1": NodeResult(
                 task_id="t1",

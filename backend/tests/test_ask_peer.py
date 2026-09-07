@@ -389,7 +389,7 @@ async def test_dispatch_plan_drains_mailbox():
     reg = AgentSessionRegistry()
     reg.add_to_mailbox("run_test", "Need more context on task A")
 
-    async def mock_execute_dag(tasks, ctx):
+    async def mock_execute_dag(tasks, ctx, conflicts_out=None):
         return {"t1": NodeResult(task_id="t1", status="complete", summary="done")}
 
     ctx = ToolContext(
@@ -427,6 +427,68 @@ async def test_dispatch_plan_drains_mailbox():
     assert result.ok is True
     assert "mailbox" in result.value
     assert "Need more context on task A" in result.value["mailbox"]
+
+
+# ─── 7.11: advisory file conflicts in dispatch_plan tool_result ─────────────
+
+
+@pytest.mark.asyncio
+async def test_dispatch_plan_includes_file_conflicts():
+    """Verify dispatch_plan surfaces advisory write conflicts (specs/06)."""
+    from app.services.dag_executor import NodeResult
+    from app.tools.dispatch_plan import _handler
+    from app.utils.dispatch_file_writes import FileWriteConflict
+
+    conflict = FileWriteConflict(
+        path="/tmp/shared.py",
+        contributors=[
+            {"taskId": "t1", "agentId": "ag_1", "runId": "run_1"},
+            {"taskId": "t2", "agentId": "ag_2", "runId": "run_2"},
+        ],
+    )
+
+    async def mock_execute_dag(tasks, ctx, conflicts_out=None):
+        if conflicts_out is not None:
+            conflicts_out.append(conflict)
+        return {"t1": NodeResult(task_id="t1", status="complete", summary="done")}
+
+    ctx = ToolContext(
+        conversation_id="conv_1",
+        workspace_path="/tmp",
+        agent_id="ag_1",
+        run_id="run_test",
+        cancel_event=asyncio.Event(),
+        dispatch_mode="coordinated",
+        dispatch_depth=0,
+        user_id="user_1",
+    )
+
+    with (
+        patch("app.tools.dispatch_plan.execute_dag", new=mock_execute_dag),
+        patch("app.tools.dispatch_plan.validate_dag", return_value=[]),
+        patch(
+            "app.tools.dispatch_plan._verify_agents_in_conversation",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "app.tools.dispatch_plan._is_plan_approval_enabled",
+            new=AsyncMock(return_value=False),
+        ),
+        patch("app.services.agent_session_registry.agent_session_registry", AgentSessionRegistry()),
+        patch("app.tools.dispatch_plan.event_bus"),
+        patch("app.tools.dispatch_plan.get_local_db", _fake_db_cm),
+    ):
+        result = await _handler(
+            {"tasks": [{"id": "t1", "task": "do work"}]}, ctx
+        )
+
+    assert result.ok is True
+    assert "fileConflicts" in result.value
+    fc = result.value["fileConflicts"]
+    assert len(fc) == 1
+    assert fc[0]["path"] == "/tmp/shared.py"
+    assert {c["taskId"] for c in fc[0]["contributors"]} == {"t1", "t2"}
+    assert "最后写入" in fc[0]["note"]
 
 
 # ─── Tool registration ──────────────────────────────────────────────────────

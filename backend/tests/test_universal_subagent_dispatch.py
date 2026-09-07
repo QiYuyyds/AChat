@@ -439,7 +439,7 @@ async def test_dispatch_plan_clone_self_no_agentId(db, monkeypatch):
 
     captured = {}
 
-    async def mock_execute_dag(tasks, ctx):
+    async def mock_execute_dag(tasks, ctx, conflicts_out=None):
         captured["dispatch_depth"] = ctx.dispatch_depth
         captured["dispatch_visibility"] = ctx.dispatch_visibility
         from app.services.dag_executor import NodeResult

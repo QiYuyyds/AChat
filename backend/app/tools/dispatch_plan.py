@@ -403,12 +403,14 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         visibility,
     )
 
-    results = await execute_dag(items, dag_ctx)
+    file_conflicts: list[Any] = []
+    results = await execute_dag(items, dag_ctx, conflicts_out=file_conflicts)
 
     logger.info(
-        "[dispatch_plan] DAG execution complete run=%s results=%d",
+        "[dispatch_plan] DAG execution complete run=%s results=%d conflicts=%d",
         ctx.run_id,
         len(results),
+        len(file_conflicts),
     )
 
     # Drain mailbox: collect async messages left by sub-agents via ask_peer
@@ -436,6 +438,21 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     }
     if mailbox_msgs:
         result_data["mailbox"] = mailbox_msgs
+    if file_conflicts:
+        # Advisory same-wave write conflicts (specs/06 降级路径): injected
+        # into the aggregation feed so the Orchestrator can explain them in
+        # its summary message. Detection never blocks the flow.
+        result_data["fileConflicts"] = [
+            {
+                "path": c.path,
+                "contributors": c.contributors,
+                "note": (
+                    "同一 wave 内多个子任务写了同一文件且内容不同；"
+                    "当前保留最后写入的版本，建议串行重做或人工合并。"
+                ),
+            }
+            for c in file_conflicts
+        ]
 
     return ok(result_data)
 

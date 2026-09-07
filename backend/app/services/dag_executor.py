@@ -41,6 +41,13 @@ from app.schemas.events import DispatchEndEvent, DispatchStartEvent, PlanStepUpd
 from app.services.agent_session_registry import AgentSession, agent_session_registry
 from app.services.event_bus import event_bus
 from app.utils.clock import now_ms
+from app.utils.dispatch_file_writes import (
+    FileWriteConflict,
+    RunFileWrites,
+    clear_file_writes,
+    detect_wave_conflicts,
+    get_file_writes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +66,9 @@ class NodeResult:
     artifact_ids: list[str] = field(default_factory=list)
     key_decisions: list[str] = field(default_factory=list)
     error_detail: str | None = None
+    # True when the task ran without a worktree (creation failed / no
+    # workspace configured) and therefore shared the main workspace.
+    degraded_workspace: bool = False
 
 
 @dataclass
@@ -157,12 +167,17 @@ def topological_waves(
 async def execute_dag(
     tasks: list[DispatchPlanItem],
     ctx: DagExecContext,
+    conflicts_out: list[FileWriteConflict] | None = None,
 ) -> dict[str, NodeResult]:
     """Execute a DAG of tasks via wave-based topological scheduling.
 
     Each wave runs independent tasks in parallel via ``spawn_subagent_loop``.
     Tasks whose any upstream dependency did not complete successfully are
     marked ``skipped`` and not executed.
+
+    ``conflicts_out`` (optional) collects advisory same-wave write conflicts
+    detected on degraded waves (specs/06 降级路径) — appended in wave order,
+    never raising. The flow is not blocked by conflicts.
 
     Returns a flat ``dict[task_id, NodeResult]``.
     """
@@ -273,6 +288,7 @@ async def execute_dag(
                         results[t.id] = nr
                         if nr.status in ("failed", "aborted", "skipped"):
                             failed_ids.add(t.id)
+                    _check_wave_file_conflicts(ready, node_results, conflicts_out)
 
         if is_trace_enabled():
             run_span_collector.record(
@@ -289,6 +305,39 @@ async def execute_dag(
         agent_session_registry.mark_dag_completed(ctx.dag_id)
 
     return results
+
+
+def _check_wave_file_conflicts(
+    ready: list[DispatchPlanItem],
+    node_results: list[NodeResult],
+    conflicts_out: list[FileWriteConflict] | None,
+) -> None:
+    """Advisory same-wave write-conflict detection (specs/06 降级路径).
+
+    Runs only when at least one task in the wave ran without a worktree and
+    therefore shared the main workspace — physically isolated worktree tasks
+    write to their own paths and cannot collide. Conflicts are appended to
+    ``conflicts_out`` without blocking the flow. Write records are wave-scoped,
+    so each executed child run's records are cleared here regardless.
+    """
+    try:
+        degraded = any(nr.degraded_workspace for nr in node_results)
+        if degraded and conflicts_out is not None:
+            runs = [
+                RunFileWrites(
+                    task_id=t.id,
+                    agent_id=t.agent_id,
+                    run_id=nr.child_run_id or "",
+                    writes=get_file_writes(nr.child_run_id or ""),
+                )
+                for t, nr in zip(ready, node_results, strict=True)
+                if nr.child_run_id
+            ]
+            conflicts_out.extend(detect_wave_conflicts(runs))
+    finally:
+        for nr in node_results:
+            if nr.child_run_id:
+                clear_file_writes(nr.child_run_id)
 
 
 _UPSTREAM_TOKEN_BUDGET = 2000
@@ -761,4 +810,5 @@ async def _execute_node(
             artifact_ids=getattr(result, "artifact_ids", []),
             key_decisions=getattr(result, "key_decisions", []),
             error_detail=result.text if result.status == "failed" else None,
+            degraded_workspace=wt is None,
         )
