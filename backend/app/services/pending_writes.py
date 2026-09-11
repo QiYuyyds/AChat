@@ -5,20 +5,21 @@ waiting tool call attaches; approve / reject / run-abort resolve it. Approving
 (unless ``skip_write``) writes the file, then emits ``fs_write.resolved``.
 
 Module-level singleton (mirrors the TS globalThis singleton). In-memory: a
-restart drops all pending writes.
+restart drops all pending writes. The shared entry-map / resolver skeleton
+lives in :mod:`app.services.pending_store_base`.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.db.models import Workspace
 from app.schemas.dispatch import PendingWrite
 from app.schemas.events import FsWritePendingEvent, FsWriteResolvedEvent
-from app.services.event_bus import event_bus
 from app.services.fs_service import write_file_in_workspace
+from app.services.pending_store_base import BasePendingEntry, PendingStoreBase
 from app.utils.clock import now_ms
 from app.utils.ids import new_pending_write_id
 
@@ -29,18 +30,12 @@ WriteResolver = Callable[[dict], None]
 
 
 @dataclass
-class _PendingEntry:
-    write: PendingWrite
+class _PendingEntry(BasePendingEntry):
     workspace: Workspace
     skip_write: bool
-    user_id: str | None = None
-    resolver: WriteResolver | None = field(default=None)
 
 
-class PendingWritesStore:
-    def __init__(self) -> None:
-        self._map: dict[str, _PendingEntry] = {}
-
+class PendingWritesStore(PendingStoreBase):
     def register(
         self,
         *,
@@ -67,35 +62,17 @@ class PendingWritesStore:
             new_content=new_content,
             created_at=created_at,
         )
-        self._map[write.id] = _PendingEntry(
-            write=write, workspace=workspace, skip_write=skip_write, user_id=user_id
-        )
-
-        event_bus.publish(
+        self.register_entry(
+            _PendingEntry(
+                payload=write, workspace=workspace, skip_write=skip_write, user_id=user_id
+            ),
             FsWritePendingEvent(
                 conversation_id=conversation_id,
                 timestamp=created_at,
                 pending_write=write,
             ),
-            user_id=user_id,
         )
         return write
-
-    def attach_resolver(self, pending_id: str, resolver: WriteResolver) -> None:
-        entry = self._map.get(pending_id)
-        if entry is not None:
-            entry.resolver = resolver
-
-    def get(self, pending_id: str) -> PendingWrite | None:
-        entry = self._map.get(pending_id)
-        return entry.write if entry else None
-
-    def list_by_conversation(self, conversation_id: str) -> list[PendingWrite]:
-        writes = [
-            e.write for e in self._map.values() if e.write.conversation_id == conversation_id
-        ]
-        writes.sort(key=lambda w: w.created_at)
-        return writes
 
     def approve(self, pending_id: str) -> bool:
         entry = self._map.get(pending_id)
@@ -104,45 +81,45 @@ class PendingWritesStore:
         if not entry.skip_write:
             try:
                 write_file_in_workspace(
-                    entry.workspace, entry.write.path, entry.write.new_content
+                    entry.workspace, entry.payload.path, entry.payload.new_content
                 )
             except Exception:  # noqa: BLE001 - surface failure to the LLM, still close
                 logger.exception("[pending_writes] approve write failed")
-                self._finalize(pending_id, applied=False)
+                self._finalize(
+                    pending_id,
+                    resolver_payload={"applied": False},
+                    resolved_event=self._resolved_event(pending_id, applied=False),
+                )
                 return False
-        self._finalize(pending_id, applied=True)
+        self._finalize(
+            pending_id,
+            resolver_payload={"applied": True},
+            resolved_event=self._resolved_event(pending_id, applied=True),
+        )
         return True
 
     def reject(self, pending_id: str) -> bool:
-        if pending_id not in self._map:
+        entry = self._map.get(pending_id)
+        if entry is None:
             return False
-        self._finalize(pending_id, applied=False)
+        self._finalize(
+            pending_id,
+            resolver_payload={"applied": False},
+            resolved_event=self._resolved_event(pending_id, applied=False),
+        )
         return True
 
     def cancel(self, pending_id: str) -> None:
         """Run-abort path: resolve as not-applied without emitting an SSE event."""
-        entry = self._map.get(pending_id)
-        if entry is None:
-            return
-        if entry.resolver is not None:
-            entry.resolver({"applied": False})
-        del self._map[pending_id]
+        super().cancel(pending_id, resolver_payload={"applied": False})
 
-    def _finalize(self, pending_id: str, *, applied: bool) -> None:
-        entry = self._map.get(pending_id)
-        if entry is None:
-            return
-        if entry.resolver is not None:
-            entry.resolver({"applied": applied})
-        del self._map[pending_id]
-        event_bus.publish(
-            FsWriteResolvedEvent(
-                conversation_id=entry.write.conversation_id,
-                timestamp=now_ms(),
-                pending_id=pending_id,
-                applied=applied,
-            ),
-            user_id=entry.user_id,
+    def _resolved_event(self, pending_id: str, *, applied: bool) -> FsWriteResolvedEvent:
+        entry = self._map[pending_id]
+        return FsWriteResolvedEvent(
+            conversation_id=entry.payload.conversation_id,
+            timestamp=now_ms(),
+            pending_id=pending_id,
+            applied=applied,
         )
 
 
