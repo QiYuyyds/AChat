@@ -142,7 +142,6 @@ bitdance-agenthub-main/
 │   └── db/schema.ts      仅保留前端 import 行类型 (DB 实体由后端 SQLAlchemy 拥有)
 ├── electron/             桌面版外壳 (main.ts / preload.ts / paths.ts / server-bootstrap.ts)
 ├── apps/mobile/          移动伴随 App (Capacitor)
-├── packages/shared/      共享包 (workspace)
 ├── specs/                ★ 20 份编号详细规格 (语言无关契约)
 ├── openspec/             OpenSpec 能力契约 (19 个 capability spec) + 变更提案
 ├── skills/               可复用开发任务模板
@@ -157,6 +156,8 @@ bitdance-agenthub-main/
 ```
 
 `★` = 理解项目最关键的入口。
+
+注：`apps/mobile` 的 `Mobile*` 类型是 mobile API 的独立 wire contract（刻意裁剪的投影，非 web 类型镜像）；跨端契约同步的解法见中期清单第 7 项（后端 schema → TS 生成）。
 
 ---
 

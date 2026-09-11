@@ -1,1 +1,0 @@
-export const SHARED_PACKAGE_PLACEHOLDER = true
