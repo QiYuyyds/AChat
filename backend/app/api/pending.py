@@ -12,7 +12,7 @@ merge-conflicts resolve URL keeps its legacy ``/resolve`` suffix and each
 store's response key is unchanged.
 """
 
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -31,6 +31,16 @@ from app.services.pending_store_base import PendingStoreBase
 from app.services.pending_writes import pending_writes
 
 router = APIRouter()
+
+
+class _SimpleResolveStore(Protocol):
+    """Surface the approve/reject stores expose to :func:`_resolve_simple`."""
+
+    def get(self, pending_id: str) -> Any: ...
+
+    def approve(self, pending_id: str) -> bool: ...
+
+    def reject(self, pending_id: str) -> bool: ...
 
 
 async def _read_json(req: Request) -> Any:
@@ -61,7 +71,7 @@ async def _list_pending(
 
 
 async def _resolve_simple(
-    store: PendingStoreBase,
+    store: _SimpleResolveStore,
     pending_id: str,
     conversation_id: str,
     raw: Any,

@@ -84,7 +84,7 @@ class PendingMergeConflictsStore(PendingStoreBase):
 
     def cancel(self, pending_id: str) -> None:
         """Run-abort path: resolve as abandoned without emitting an SSE event."""
-        super().cancel(
+        self._cancel(
             pending_id,
             resolver_payload={"action": "abandon", "resolution_strategy": "abandoned"},
         )

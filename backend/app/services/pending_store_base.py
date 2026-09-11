@@ -28,7 +28,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.schemas.events import BaseEvent
 from app.services.event_bus import event_bus
 
 # Sentinel: "no resolver payload supplied" — distinct from an explicit ``None``
@@ -50,10 +49,13 @@ class PendingStoreBase:
     """In-memory registry of pending items awaiting a user decision."""
 
     def __init__(self) -> None:
-        self._map: dict[str, BasePendingEntry] = {}
+        # Values are the stores' own entry types (all BasePendingEntry
+        # subclasses); kept as Any per design D1's accepted payload: Any
+        # trade-off — subclasses annotate their public methods concretely.
+        self._map: dict[str, Any] = {}
 
     # ── registration ─────────────────────────────────────────────────────────
-    def register_entry(self, entry: BasePendingEntry, pending_event: BaseEvent) -> Any:
+    def register_entry(self, entry: BasePendingEntry, pending_event: Any) -> Any:
         """Park the entry, publish its pending event, return the payload."""
         self._map[entry.payload.id] = entry
         event_bus.publish(pending_event, user_id=entry.user_id)
@@ -84,7 +86,7 @@ class PendingStoreBase:
         self,
         pending_id: str,
         *,
-        resolved_event: BaseEvent,
+        resolved_event: Any,
         resolver_payload: Any = _UNSET,
     ) -> None:
         """Drop the entry and publish its resolved event.
@@ -102,13 +104,13 @@ class PendingStoreBase:
         del self._map[pending_id]
         event_bus.publish(resolved_event, user_id=entry.user_id)
 
-    def cancel(
+    def _cancel(
         self,
         pending_id: str,
         *,
         resolver_payload: Any,
         emit_event: bool = False,
-        resolved_event: BaseEvent | None = None,
+        resolved_event: Any = None,
     ) -> None:
         """Run-abort path: fire the resolver, drop the entry — no user decision.
 

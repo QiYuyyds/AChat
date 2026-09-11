@@ -68,7 +68,7 @@ class PendingQuestionsStore(PendingStoreBase):
 
     def cancel(self, pending_id: str) -> None:
         """Run-abort path: resolve as None without emitting an SSE event."""
-        super().cancel(pending_id, resolver_payload=None)
+        self._cancel(pending_id, resolver_payload=None)
 
 
 pending_questions = PendingQuestionsStore()

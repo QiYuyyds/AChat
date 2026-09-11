@@ -90,7 +90,7 @@ async def test_cancel_silent_by_default():
     seen: list = []
     store.register_entry(_entry("p1", resolver=seen.append), object())
     async with event_bus.subscribe() as queue:
-        store.cancel("p1", resolver_payload={"applied": False})
+        store._cancel("p1", resolver_payload={"applied": False})
     assert seen == [{"applied": False}]
     assert store.get("p1") is None
     assert queue.empty()
@@ -103,7 +103,7 @@ async def test_cancel_emit_event_publishes_resolved_event():
     store.register_entry(_entry("p1", resolver=seen.append), object())
     resolved_event = object()
     async with event_bus.subscribe() as queue:
-        store.cancel(
+        store._cancel(
             "p1",
             resolver_payload={"approved": False},
             emit_event=True,
@@ -117,7 +117,7 @@ async def test_cancel_emit_event_publishes_resolved_event():
 
 async def test_cancel_missing_id_is_noop():
     store = PendingStoreBase()
-    store.cancel("missing", resolver_payload=None)
+    store._cancel("missing", resolver_payload=None)
     assert store.get("missing") is None
 
 

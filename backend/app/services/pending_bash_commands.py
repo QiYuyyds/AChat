@@ -80,7 +80,7 @@ class PendingBashCommandsStore(PendingStoreBase):
         # 此处用 emit_event=True 保留现状，不在此顺手统一。
         if pending_id not in self._map:
             return
-        super().cancel(
+        self._cancel(
             pending_id,
             resolver_payload={"approved": False},
             emit_event=True,

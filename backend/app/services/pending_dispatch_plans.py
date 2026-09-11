@@ -157,7 +157,7 @@ class PendingDispatchPlansStore(PendingStoreBase):
         entry = self._map.get(pending_id)
         if entry is None:
             return
-        super().cancel(
+        self._cancel(
             pending_id,
             resolver_payload=PlanReviewOutcome(kind="reject"),
             emit_event=True,

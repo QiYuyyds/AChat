@@ -96,7 +96,7 @@ class PendingMcpCallsStore(PendingStoreBase):
 
     def cancel(self, pending_id: str) -> None:
         """Run-abort path: resolve as not-approved without emitting an SSE event."""
-        super().cancel(pending_id, resolver_payload={"approved": False})
+        self._cancel(pending_id, resolver_payload={"approved": False})
 
     def _resolved_event(self, pending_id: str, *, approved: bool) -> McpCallResolvedEvent:
         entry = self._map[pending_id]
