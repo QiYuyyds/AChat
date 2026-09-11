@@ -181,6 +181,39 @@ async def get_effective_api_key(provider: str, user_id: str | None = None) -> st
     return None
 
 
+# ─── Default LLM config resolution ──────────────────────────────────────────
+
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+DEFAULT_FALLBACK_MODEL = "gpt-4o-mini"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
+
+
+def resolve_default_llm_config(settings) -> tuple[str, str, str] | None:
+    """Resolve the default OpenAI-compatible LLM config from settings.
+
+    Single source for the fallback chain previously duplicated in
+    ``main._make_generate_fn``, ``eval_judge._call_llm_judge`` and
+    ``worktree_service._call_llm_merge``.
+
+    Priority: ``llm_api_key`` (with configurable url/model) →
+    ``openai_api_key`` → ``deepseek_api_key`` → ``None``.
+
+    Returns ``(api_key, api_url, model)`` or ``None`` when no key is set.
+    """
+    if settings.llm_api_key:
+        return (
+            settings.llm_api_key,
+            settings.llm_api_url or DEFAULT_OPENAI_BASE_URL,
+            settings.llm_model or DEFAULT_FALLBACK_MODEL,
+        )
+    if settings.openai_api_key:
+        return (settings.openai_api_key, DEFAULT_OPENAI_BASE_URL, DEFAULT_FALLBACK_MODEL)
+    if settings.deepseek_api_key:
+        return (settings.deepseek_api_key, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_MODEL)
+    return None
+
+
 # ─── Legacy singleton bridge (backward compat) ───────────────────────────────
 
 

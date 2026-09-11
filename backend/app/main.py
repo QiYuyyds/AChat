@@ -746,27 +746,15 @@ def _make_embed_fn(settings):
 def _make_generate_fn(settings):
     """Create LLM generate function using OpenAI-compatible API.
 
-    Priority: llm_api_key > openai_api_key > deepseek_api_key.
-    When llm_api_key is set, uses llm_api_url and llm_model for full configurability
-    (e.g. DashScope, Ollama, or any OpenAI-compatible endpoint).
+    Key/url/model resolution (priority: llm_api_key > openai_api_key >
+    deepseek_api_key) is shared via settings_service.resolve_default_llm_config.
     """
-    # Priority 1: dedicated LLM config (supports DashScope and other OpenAI-compatible APIs)
-    if settings.llm_api_key:
-        api_key = settings.llm_api_key
-        api_url = settings.llm_api_url or "https://api.openai.com/v1"
-        model = settings.llm_model or "gpt-4o-mini"
-    # Priority 2: OpenAI key
-    elif settings.openai_api_key:
-        api_key = settings.openai_api_key
-        api_url = "https://api.openai.com/v1"
-        model = "gpt-4o-mini"
-    # Priority 3: DeepSeek key
-    elif settings.deepseek_api_key:
-        api_key = settings.deepseek_api_key
-        api_url = "https://api.deepseek.com/v1"
-        model = "deepseek-chat"
-    else:
+    from app.services.settings_service import resolve_default_llm_config
+
+    resolved = resolve_default_llm_config(settings)
+    if resolved is None:
         return None
+    api_key, api_url, model = resolved
     import httpx
     client = httpx.Client(timeout=60.0)
     def generate(system_prompt: str, user_msg: str) -> str:

@@ -15,6 +15,7 @@ from typing import Any
 
 from app.config import get_settings
 from app.observability.eval_rules import EvalScore
+from app.services.settings_service import resolve_default_llm_config
 
 logger = logging.getLogger(__name__)
 
@@ -126,23 +127,13 @@ def _extract_trace_summary(spans: list[Any], trace_data: dict | None = None) -> 
 def _call_llm_judge(prompt: str) -> list[EvalScore]:
     """Call the LLM judge and parse the 9 scores."""
     settings = get_settings()
-    if not settings.llm_api_key and not settings.openai_api_key and not settings.deepseek_api_key:
+    resolved = resolve_default_llm_config(settings)
+    if resolved is None:
         raise RuntimeError("No LLM API key configured for judge evaluation")
 
     import httpx
 
-    if settings.llm_api_key:
-        api_key = settings.llm_api_key
-        api_url = settings.llm_api_url or "https://api.openai.com/v1"
-        model = settings.llm_model or "gpt-4o-mini"
-    elif settings.openai_api_key:
-        api_key = settings.openai_api_key
-        api_url = "https://api.openai.com/v1"
-        model = "gpt-4o-mini"
-    else:
-        api_key = settings.deepseek_api_key
-        api_url = "https://api.deepseek.com/v1"
-        model = "deepseek-chat"
+    api_key, api_url, model = resolved
 
     client = httpx.Client(timeout=60.0)
     resp = client.post(
