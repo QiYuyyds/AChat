@@ -32,6 +32,7 @@ import type {
 import type { AgentConfigDraft, AgentDraftRequest } from '@/shared/agent-builder-config'
 
 import { API_BASE_URL } from '@/lib/config'
+import { refreshAccessToken } from '@/lib/auth-refresh'
 
 export interface ArtifactListItem {
   id: string
@@ -47,44 +48,12 @@ export interface ArtifactListItem {
 
 // ─── authFetch: credentials + auto-refresh on 401 ───────────────────────────
 
-let _refreshInProgress: Promise<boolean> | null = null
-
 function _getStoredToken(): string | null {
   try {
     return localStorage.getItem('agenthub_access_token')
   } catch {
     return null
   }
-}
-
-async function _doRefresh(): Promise<boolean> {
-  if (_refreshInProgress) return _refreshInProgress
-  _refreshInProgress = (async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
-        method: 'POST',
-        credentials: 'include',
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const token = data.tokens?.access_token
-        if (token) {
-          try {
-            localStorage.setItem('agenthub_access_token', token)
-          } catch {
-            // best-effort
-          }
-        }
-        return true
-      }
-      return false
-    } catch {
-      return false
-    } finally {
-      _refreshInProgress = null
-    }
-  })()
-  return _refreshInProgress
 }
 
 export async function authFetch(
@@ -104,7 +73,7 @@ export async function authFetch(
   let res = await fetch(input, merged)
 
   if (res.status === 401) {
-    const refreshed = await _doRefresh()
+    const refreshed = await refreshAccessToken()
     if (refreshed) {
       const newToken = _getStoredToken()
       const retryInit: RequestInit = {
