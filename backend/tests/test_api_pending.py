@@ -164,6 +164,30 @@ async def test_pending_write_not_found(api_client):
     assert resp.json() == {"error": "Pending write not found"}
 
 
+async def test_pending_write_wrong_conversation_404(api_client):
+    # Behavior alignment (generalize-pending-store): the writes route used to be
+    # the only resolve route that skipped the conversation-ownership check.
+    write = pending_writes.register(
+        conversation_id="conv_x",
+        agent_id="ag_alice",
+        run_id="run_1",
+        path="a.txt",
+        absolute_path="/tmp/ws/a.txt",
+        old_content=None,
+        new_content="hello",
+        workspace=_make_workspace(),
+        skip_write=True,
+    )
+    resp = await api_client.post(
+        f"/api/conversations/conv_other/pending-writes/{write.id}",
+        json={"action": "approve"},
+    )
+    assert resp.status_code == 404
+    assert resp.json() == {"error": "Pending write not found"}
+    # The misdirected decision must not have resolved the entry.
+    assert pending_writes.get(write.id) is not None
+
+
 # ─── pending-questions ───────────────────────────────────────────────────────
 def _register_question(conversation_id: str = "conv_x"):
     return pending_questions.register(
