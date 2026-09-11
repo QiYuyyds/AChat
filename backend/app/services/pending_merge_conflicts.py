@@ -2,52 +2,26 @@
 
 Mirrors the pending_writes pattern: register a conflict, attach a resolver,
 wait for the user's decision via the API. In-memory: a restart drops all
-pending conflicts.
+pending conflicts. The shared entry-map / resolver skeleton lives in
+:mod:`app.services.pending_store_base`.
 """
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, Field
-
+from app.schemas.dispatch import PendingMergeConflict  # noqa: F401  re-export
 from app.schemas.events import MergeConflictPendingEvent, MergeConflictResolvedEvent
-from app.services.event_bus import event_bus
+from app.services.pending_store_base import BasePendingEntry, PendingStoreBase
 from app.utils.clock import now_ms
 from app.utils.ids import new_pending_merge_conflict_id
 
-logger = logging.getLogger(__name__)
-
+# decision -> {"action": ..., "file_contents": ...}
 MergeConflictResolver = Callable[[dict[str, Any]], None]
 
 
-class PendingMergeConflict(BaseModel):
-    """A pending merge conflict awaiting user decision."""
-
-    id: str
-    conversation_id: str = Field(alias="conversationId")
-    task_id: str = Field(alias="taskId")
-    conflict_files: list[str] = Field(alias="conflictFiles")
-    workspace_path: str = Field(alias="workspacePath")
-    created_at: int = Field(alias="createdAt")
-
-    model_config = {"populate_by_name": True}
-
-
-@dataclass
-class _PendingEntry:
-    conflict: PendingMergeConflict
-    resolver: MergeConflictResolver | None = field(default=None)
-    user_id: str | None = None
-
-
-class PendingMergeConflictsStore:
-    def __init__(self) -> None:
-        self._map: dict[str, _PendingEntry] = {}
-
+class PendingMergeConflictsStore(PendingStoreBase):
     def register(
         self,
         *,
@@ -66,11 +40,8 @@ class PendingMergeConflictsStore:
             workspace_path=workspace_path,
             created_at=created_at,
         )
-        self._map[conflict.id] = _PendingEntry(
-            conflict=conflict, user_id=user_id
-        )
-
-        event_bus.publish(
+        self.register_entry(
+            BasePendingEntry(payload=conflict, user_id=user_id),
             MergeConflictPendingEvent(
                 conversation_id=conversation_id,
                 timestamp=created_at,
@@ -79,29 +50,8 @@ class PendingMergeConflictsStore:
                 conflict_files=conflict_files,
                 workspace_path=workspace_path,
             ),
-            user_id=user_id,
         )
         return conflict
-
-    def attach_resolver(
-        self, pending_id: str, resolver: MergeConflictResolver
-    ) -> None:
-        entry = self._map.get(pending_id)
-        if entry is not None:
-            entry.resolver = resolver
-
-    def get(self, pending_id: str) -> PendingMergeConflict | None:
-        entry = self._map.get(pending_id)
-        return entry.conflict if entry else None
-
-    def list_by_conversation(self, conversation_id: str) -> list[PendingMergeConflict]:
-        conflicts = [
-            e.conflict
-            for e in self._map.values()
-            if e.conflict.conversation_id == conversation_id
-        ]
-        conflicts.sort(key=lambda c: c.created_at)
-        return conflicts
 
     def resolve(
         self,
@@ -116,29 +66,28 @@ class PendingMergeConflictsStore:
         entry = self._map.get(pending_id)
         if entry is None:
             return False
-        if entry.resolver is not None:
-            entry.resolver(decision)
-        del self._map[pending_id]
-        event_bus.publish(
-            MergeConflictResolvedEvent(
-                conversation_id=entry.conflict.conversation_id,
+        # The resolved event's fields are extracted from the decision dict —
+        # this extraction stays here (subclass event construction), not in the
+        # base finalize.
+        self._finalize(
+            pending_id,
+            resolver_payload=decision,
+            resolved_event=MergeConflictResolvedEvent(
+                conversation_id=entry.payload.conversation_id,
                 timestamp=now_ms(),
                 pending_id=pending_id,
                 resolution_strategy=decision.get("resolution_strategy", "manual"),
                 resolved_files=decision.get("resolved_files", []),
             ),
-            user_id=entry.user_id,
         )
         return True
 
     def cancel(self, pending_id: str) -> None:
         """Run-abort path: resolve as abandoned without emitting an SSE event."""
-        entry = self._map.get(pending_id)
-        if entry is None:
-            return
-        if entry.resolver is not None:
-            entry.resolver({"action": "abandon", "resolution_strategy": "abandoned"})
-        del self._map[pending_id]
+        super().cancel(
+            pending_id,
+            resolver_payload={"action": "abandon", "resolution_strategy": "abandoned"},
+        )
 
 
 pending_merge_conflicts = PendingMergeConflictsStore()

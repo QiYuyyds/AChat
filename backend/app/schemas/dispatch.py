@@ -140,3 +140,16 @@ class PendingBashCommand(BaseModel):
     created_at: int = Field(alias="createdAt")
 
     model_config = {"populate_by_name": True}
+
+
+class PendingMergeConflict(BaseModel):
+    """A pending merge conflict awaiting user decision."""
+
+    id: str
+    conversation_id: str = Field(alias="conversationId")
+    task_id: str = Field(alias="taskId")
+    conflict_files: list[str] = Field(alias="conflictFiles")
+    workspace_path: str = Field(alias="workspacePath")
+    created_at: int = Field(alias="createdAt")
+
+    model_config = {"populate_by_name": True}
