@@ -148,102 +148,75 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         visibility,
     )
 
-    # Create worktree for isolation (degrades to shared workspace if None)
-    from app.services.worktree_service import (
-        cleanup_worktree,
-        create_worktree,
-        merge_worktree_back,
-    )
+    # Isolated worktree (degrades to shared workspace if None). Merge-back /
+    # cleanup run once after the final executor (or after the chain ended),
+    # regardless of how the loop below exits.
+    from app.services.worktree_service import isolated_workspace
     from app.utils.ids import new_tool_call_id
 
-    wt = None
-    if ctx.workspace_path:
-        agent_name = "agent"
-        async with get_local_db() as db:
-            agent_row = (
-                await db.execute(
-                    select(Agent).where(Agent.id == target_agent_id)
-                )
-            ).scalar_one_or_none()
-            if agent_row is not None:
-                agent_name = agent_row.name
-        wt_task_id = new_tool_call_id()
-        wt = await create_worktree(
-            main_workspace=ctx.workspace_path,
-            task_id=wt_task_id,
-            agent_name=agent_name,
-            conversation_id=ctx.conversation_id,
-            user_id=ctx.user_id,
-            agent_id=target_agent_id,
-        )
-
-    workspace_path_arg = wt.path if wt else None
-
-    # ── Executor-swap loop (catch point ②) ────────────────────────────────
-    # Each iteration spawns one executor on the SAME worktree / visibility /
-    # dispatch depth; a run that ends via handoff is replaced in-place by its
-    # target. merge-back / cleanup below run once, after the final executor.
-    result = await spawn_subagent_loop(
+    async with isolated_workspace(
+        main_workspace=ctx.workspace_path,
+        task_id=new_tool_call_id(),
         agent_id=target_agent_id,
-        task_description=task_description,
         conversation_id=ctx.conversation_id,
-        trigger_message_id=trigger_message_id,
-        parent_run_id=ctx.run_id,
-        parent_cancel_event=ctx.cancel_event,
-        dispatch_depth=ctx.dispatch_depth + 1,
-        dispatch_visibility=visibility,
         user_id=ctx.user_id,
-        workspace_path=workspace_path_arg,
-        allow_handoff=True,
-        handoff_chain=[target_agent_id],
-    )
+    ) as wt:
+        workspace_path_arg = wt.path if wt else None
 
-    chain = [target_agent_id]
-    rejection: str | None = None
-    while (
-        result.handoff is not None
-        and len(chain) < MAX_HANDOFF_CHAIN
-        and not ctx.cancel_event.is_set()
-    ):
-        handoff = result.handoff
-        rejection = await _validate_redispatch_target(ctx, handoff.agent_id, chain)
-        if rejection is not None:
-            break
-        next_agent_id = handoff.agent_id
-        chain.append(next_agent_id)
-        logger.info(
-            "[task_dispatch] handoff re-dispatch run=%s %s -> %s (chain=%s)",
-            ctx.run_id,
-            chain[-2],
-            next_agent_id,
-            chain,
-        )
+        # ── Executor-swap loop (catch point ②) ────────────────────────────
+        # Each iteration spawns one executor on the SAME worktree / visibility /
+        # dispatch depth; a run that ends via handoff is replaced in-place by its
+        # target.
         result = await spawn_subagent_loop(
-            agent_id=next_agent_id,
-            task_description=task_description
-            + _format_handoff_note(chain[-2], handoff),
+            agent_id=target_agent_id,
+            task_description=task_description,
             conversation_id=ctx.conversation_id,
             trigger_message_id=trigger_message_id,
             parent_run_id=ctx.run_id,
             parent_cancel_event=ctx.cancel_event,
-            dispatch_depth=ctx.dispatch_depth + 1,  # unchanged: swap, not nest
+            dispatch_depth=ctx.dispatch_depth + 1,
             dispatch_visibility=visibility,
             user_id=ctx.user_id,
             workspace_path=workspace_path_arg,
             allow_handoff=True,
-            handoff_chain=chain,
+            handoff_chain=[target_agent_id],
         )
 
-    # Merge worktree back and cleanup (only if worktree was created) — once,
-    # after the final executor (or after the chain ended), regardless of how
-    # the loop above exited.
-    if wt is not None:
-        try:
-            await merge_worktree_back(wt)
-        except Exception as exc:  # noqa: BLE001 - log but don't block result
-            logger.warning("[task_dispatch] merge_worktree_back failed: %s", exc)
-        finally:
-            await cleanup_worktree(wt)
+        chain = [target_agent_id]
+        rejection: str | None = None
+        while (
+            result.handoff is not None
+            and len(chain) < MAX_HANDOFF_CHAIN
+            and not ctx.cancel_event.is_set()
+        ):
+            handoff = result.handoff
+            rejection = await _validate_redispatch_target(ctx, handoff.agent_id, chain)
+            if rejection is not None:
+                break
+            next_agent_id = handoff.agent_id
+            chain.append(next_agent_id)
+            logger.info(
+                "[task_dispatch] handoff re-dispatch run=%s %s -> %s (chain=%s)",
+                ctx.run_id,
+                chain[-2],
+                next_agent_id,
+                chain,
+            )
+            result = await spawn_subagent_loop(
+                agent_id=next_agent_id,
+                task_description=task_description
+                + _format_handoff_note(chain[-2], handoff),
+                conversation_id=ctx.conversation_id,
+                trigger_message_id=trigger_message_id,
+                parent_run_id=ctx.run_id,
+                parent_cancel_event=ctx.cancel_event,
+                dispatch_depth=ctx.dispatch_depth + 1,  # unchanged: swap, not nest
+                dispatch_visibility=visibility,
+                user_id=ctx.user_id,
+                workspace_path=workspace_path_arg,
+                allow_handoff=True,
+                handoff_chain=chain,
+            )
 
     if result.status == "aborted":
         return err(f"Sub-agent run was aborted: {result.text}")

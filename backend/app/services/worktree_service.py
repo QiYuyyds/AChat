@@ -24,9 +24,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 
+from sqlalchemy import select
+
 from app.config import get_settings
 from app.db.engine import get_local_db
-from app.db.models import Artifact
+from app.db.models import Agent, Artifact
 from app.schemas.events import WorktreeEvent
 from app.services.event_bus import event_bus
 from app.services.settings_service import resolve_default_llm_config
@@ -699,6 +701,69 @@ async def cleanup_worktree(wt: WorktreeRef) -> None:
         os.rmdir(conv_dir)
 
     _publish_worktree_event("worktree.cleaned", wt)
+
+
+# ─── Lifecycle context manager ──────────────────────────────────────────────
+
+@asynccontextmanager
+async def isolated_workspace(
+    *,
+    main_workspace: str | None,
+    task_id: str,
+    agent_id: str | None,
+    conversation_id: str,
+    user_id: str | None,
+) -> AsyncIterator[WorktreeRef | None]:
+    """Create a worktree, yield it (or ``None``), then merge back + cleanup.
+
+    Single implementation of the dispatch-side worktree lifecycle previously
+    duplicated in ``tools/task_dispatch.py`` and ``dag_executor._execute_node``.
+
+    Yields ``None`` (degrade to the shared workspace) when there is no main
+    workspace / agent, or when :func:`create_worktree` fails — matching the
+    callers' previous guard (``workspace and agent_id``) so ``degraded_workspace``
+    semantics are unchanged. Merge failures are logged, never raised; cleanup
+    always runs for a yielded worktree, even when the body raises.
+    """
+    wt: WorktreeRef | None = None
+    if main_workspace and agent_id:
+        # Lazy import: tests monkeypatch ``app.db.engine.get_local_db``; a
+        # module-level binding here would bypass the patch point.
+        from app.db.engine import get_local_db
+
+        agent_name = "agent"
+        async with get_local_db() as db:
+            agent_row = (
+                await db.execute(select(Agent).where(Agent.id == agent_id))
+            ).scalar_one_or_none()
+            if agent_row is not None:
+                agent_name = agent_row.name
+        try:
+            wt = await create_worktree(
+                main_workspace=main_workspace,
+                task_id=task_id,
+                agent_name=agent_name,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                agent_id=agent_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - degrade to shared workspace
+            logger.warning(
+                "[isolated_workspace] create_worktree failed, degrading to "
+                "shared workspace: %s",
+                exc,
+            )
+            wt = None
+    try:
+        yield wt
+    finally:
+        if wt is not None:
+            try:
+                await merge_worktree_back(wt)
+            except Exception as exc:  # noqa: BLE001 - log but don't block result
+                logger.warning("[isolated_workspace] merge_worktree_back failed: %s", exc)
+            finally:
+                await cleanup_worktree(wt)
 
 
 async def prune_orphan_worktrees(

@@ -583,17 +583,10 @@ async def _execute_node(
     description before spawning the subagent, so the downstream agent can
     see what upstream agents produced.
     """
-    from sqlalchemy import select
 
-    from app.db.engine import get_local_db
-    from app.db.models import Agent
     from app.services.plan_dispatch_mapping import plan_dispatch_mapping as _pdm
     from app.services.plan_registry import plan_registry as _preg
-    from app.services.worktree_service import (
-        cleanup_worktree,
-        create_worktree,
-        merge_worktree_back,
-    )
+    from app.services.worktree_service import isolated_workspace
 
     depends_on_str = ",".join(task.depends_on or [])
 
@@ -677,70 +670,47 @@ async def _execute_node(
             ctx.parent_run_id,
         )
 
-        # Create worktree for isolation (degrades to shared workspace if None)
-        wt = None
-        if ctx.workspace_path and task.agent_id:
-            agent_name = "agent"
-            async with get_local_db() as db:
-                agent = (
-                    await db.execute(
-                        select(Agent).where(Agent.id == task.agent_id)
-                    )
-                ).scalar_one_or_none()
-                if agent is not None:
-                    agent_name = agent.name
-            wt = await create_worktree(
-                main_workspace=ctx.workspace_path,
-                task_id=task.id,
-                agent_name=agent_name,
-                conversation_id=ctx.conversation_id,
-                user_id=ctx.user_id,
+        # Isolated worktree (degrades to shared workspace when wt is None;
+        # the degraded_workspace flag on NodeResult below depends on that).
+        async with isolated_workspace(
+            main_workspace=ctx.workspace_path,
+            task_id=task.id,
+            agent_id=task.agent_id,
+            conversation_id=ctx.conversation_id,
+            user_id=ctx.user_id,
+        ) as wt:
+            workspace_path_arg = wt.path if wt else None
+
+            # Build enriched task description with upstream outputs
+            upstream_block = _build_upstream_output_block(task, results)
+            enriched_description = task.task
+            if upstream_block:
+                enriched_description = task.task + upstream_block
+
+            result = await spawn_fn(
                 agent_id=task.agent_id,
+                task_description=enriched_description,
+                conversation_id=ctx.conversation_id,
+                trigger_message_id=ctx.trigger_message_id,
+                parent_run_id=ctx.parent_run_id,
+                parent_cancel_event=ctx.cancel_event,
+                on_start=on_start,
+                dispatch_depth=ctx.dispatch_depth,
+                dispatch_visibility=ctx.dispatch_visibility,
+                user_id=ctx.user_id,
+                workspace_path=workspace_path_arg,
+                dag_id=ctx.dag_id or None,
+                dag_task_id=task.id,
+                override_messages=retry_override_messages,
+                override_system_prompt=retry_override_system_prompt,
             )
 
-        workspace_path_arg = wt.path if wt else None
-
-        # Build enriched task description with upstream outputs
-        upstream_block = _build_upstream_output_block(task, results)
-        enriched_description = task.task
-        if upstream_block:
-            enriched_description = task.task + upstream_block
-
-        result = await spawn_fn(
-            agent_id=task.agent_id,
-            task_description=enriched_description,
-            conversation_id=ctx.conversation_id,
-            trigger_message_id=ctx.trigger_message_id,
-            parent_run_id=ctx.parent_run_id,
-            parent_cancel_event=ctx.cancel_event,
-            on_start=on_start,
-            dispatch_depth=ctx.dispatch_depth,
-            dispatch_visibility=ctx.dispatch_visibility,
-            user_id=ctx.user_id,
-            workspace_path=workspace_path_arg,
-            dag_id=ctx.dag_id or None,
-            dag_task_id=task.id,
-            override_messages=retry_override_messages,
-            override_system_prompt=retry_override_system_prompt,
-        )
-
-        logger.info(
-            "[dag_executor] node=%s completed status=%s run=%s",
-            task.id,
-            result.status,
-            child_run_id_holder[0] if child_run_id_holder else "none",
-        )
-
-        # Merge worktree back and cleanup (only if worktree was created)
-        if wt is not None:
-            try:
-                await merge_worktree_back(wt)
-            except Exception as exc:  # noqa: BLE001 - log but don't block dispatch.end
-                logger.warning(
-                    "[dag_executor] merge_worktree_back failed: %s", exc
-                )
-            finally:
-                await cleanup_worktree(wt)
+            logger.info(
+                "[dag_executor] node=%s completed status=%s run=%s",
+                task.id,
+                result.status,
+                child_run_id_holder[0] if child_run_id_holder else "none",
+            )
 
         child_run_id = child_run_id_holder[0] if child_run_id_holder else None
 
