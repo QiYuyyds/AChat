@@ -26,6 +26,23 @@ from app.eval_integration.errors import EvalConfigError
 from app.eval_integration.runner import AChatAgentRunner
 
 
+def _aeval_has_wide_signature() -> bool:
+    """0.3.0 的宽签名 API（MeasurementContext 等）尚未发布到 PyPI（PyPI 仍为
+    0.2.0），本地开发环境以 editable 安装（Aeval-publish）。缺失时跳过依赖
+    该 API 的用例，待 0.3.0 发布后移除守卫。"""
+    try:
+        from agent_eval.core.types import MeasurementContext  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+requires_aeval_030 = pytest.mark.skipif(
+    not _aeval_has_wide_signature(),
+    reason="requires aeval-framework 0.3.0 wide-signature API (editable install; not on PyPI yet)",
+)
+
+
 @pytest.fixture
 def eval_settings(monkeypatch, tmp_path):
     """隔离的评测装配 settings (临时 db 路径, 显式 agent/token)。"""
@@ -80,6 +97,7 @@ async def test_token_provider_explicit_token_no_db(eval_settings):
     assert await provider() == "token-xyz"
 
 
+@requires_aeval_030
 async def test_create_aeval_runner_assembles_full_stack(eval_settings):
     runner = await create_aeval_runner(eval_settings)
 
@@ -227,6 +245,7 @@ def test_make_judge_llm_fn_returns_async_callable():
     assert inspect.iscoroutinefunction(fn)
 
 
+@requires_aeval_030
 async def test_create_aeval_runner_injects_metrics_registry(eval_settings):
     runner = await create_aeval_runner(eval_settings)
 
