@@ -71,8 +71,14 @@ class NodeSearch:
             p = path.replace("\\", "/")
             if p.startswith("digest/"):
                 return True
-            abs_prefix = str(self.workspace.digest_dir.resolve()).replace("\\", "/")
-            return p.startswith(abs_prefix.rstrip("/") + "/") or p == abs_prefix
+            abs_prefix = str(self.workspace.digest_dir.resolve()).replace("\\", "/").rstrip("/")
+            # Windows 8.3 短路径：workspace 若以短名（如 RUNNER~1）初始化，索引里的
+            # path 也是短形式，而 resolve() 展开为长名 —— 前缀比对前必须同样 resolve。
+            try:
+                resolved = str(Path(path).resolve()).replace("\\", "/")
+            except OSError:
+                resolved = p
+            return resolved == abs_prefix or resolved.startswith(abs_prefix + "/")
 
         def _resolve_path(path: str) -> Path:
             p = Path(path)
