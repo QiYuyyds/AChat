@@ -4,6 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +17,26 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
+
+    # Desktop mode (AGENTHUB_DESKTOP=1，由 electron sidecar 注入)：单库 SQLite +
+    # 固定本地用户（get_current_user 不验 JWT）+ /api/auth/* 代理到云端部署
+    agenthub_desktop: bool = False
+
+    # 云端部署地址（桌面认证代理目标；构建期/启动环境注入，dev 可覆盖）
+    cloud_api_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CLOUD_API_URL", "AGENTHUB_CLOUD_API_URL"),
+    )
+
+    # ─── Usage stats (usage-stats capability) ───
+    # 同用户上报速率上限（次/分钟，进程内滑动窗口；超限 429 不落库）
+    stats_rate_limit_per_minute: int = 60
+    # 心跳折算 active_minutes 的单次间隔上限（分钟；防伪造超大值）
+    stats_heartbeat_max_minutes: int = 30
+    # 桌面本地队列键数上限（聚合计数；超限丢最旧 + 日志）
+    stats_queue_max_entries: int = 10000
+    # 桌面 reporter 基础上报周期（秒；实际发送时刻叠加随机 jitter）
+    stats_report_interval_seconds: float = 60.0
 
     # Database (remote PostgreSQL — always required)
     database_url: str = "postgresql+asyncpg://agenthub:agenthub@localhost:5432/agenthub"
@@ -41,9 +62,12 @@ class Settings(BaseSettings):
     # Workspace
     workspace_root: str = "../.agenthub-data/workspaces"
 
-    # AChat data dir (deployments live under <data_dir>/deployments). Mirrors
-    # the TS AGENTHUB_DATA_DIR; defaults to the same dir the SQLite DB sits in.
-    data_dir: str = "../.agenthub-data"
+    # AChat data dir (deployments live under <data_dir>/deployments). Electron
+    # 桌面壳注入 AGENTHUB_DATA_DIR（TS 时代沿用名），本地 dev 走 DATA_DIR。
+    data_dir: str = Field(
+        default="../.agenthub-data",
+        validation_alias=AliasChoices("DATA_DIR", "AGENTHUB_DATA_DIR"),
+    )
 
     # ─── Milvus ───
     milvus_host: str = ""
@@ -135,17 +159,23 @@ class Settings(BaseSettings):
     memory_workspace_dir: str = ""  # empty → defaults to <data_dir>/memory
     memory_auto_dream_threshold: int = 5
     memory_auto_dream_cron: str = "23:00"
+    memory_curator_enabled: bool = True
     memory_auto_dream_max_units: int = 5
     memory_dream_topic_count: int = 3
     memory_dream_topic_diversity_days: int = 7
+    memory_dream_cooldown_minutes: int = 360
     memory_search_top_k: int = 10
     memory_bm25_weight: float = 0.3
     memory_vector_weight: float = 0.7
-    # DEPRECATED: wikilink no longer participates in RRF ranking (post-processing only)
-    memory_wikilink_weight: float = 0.3
     memory_rrf_k: int = 60
     memory_chunk_size: int = 512
     memory_chunk_min_size: int = 100
+    # Memory lifecycle (decay / archive / rerank / TTL)
+    memory_decay_half_life_days: int = 30
+    memory_archive_score: float = 0.1
+    memory_archive_grace_days: int = 14
+    memory_daily_ttl_days: int = 30
+    memory_rerank_enabled: bool = True
 
     @property
     def memory_workspace_path(self) -> Path:
@@ -198,6 +228,32 @@ class Settings(BaseSettings):
     phoenix_ui_url: str = "http://localhost:6006"
     eval_rule_enabled: bool = True
     eval_judge_enabled: bool = False
+    # Hard timeout for Phoenix eval-score writes (prevents event-loop blockage)
+    eval_write_timeout_seconds: float = 30.0
+
+    # ─── Aeval evaluation harness (agent_eval sub-app at /api/eval) ───
+    # Disabled by default; when enabled without an injected runner, only the
+    # storage-backed endpoints work and POST /runs returns 503.
+    eval_harness_enabled: bool = False
+
+    # ─── Aeval AChat integration (eval_integration, change ②) ───
+    # Injected runner wiring: create_aeval_runner() reads these. Eval mode
+    # requires an explicit target agent — no default (装配缺凭证时报明确缺失项).
+    eval_agent_id: str = ""
+    # AChat API base the runner calls back into; empty → http://127.0.0.1:<port>.
+    eval_api_base: str = ""
+    # Bearer JWT for the runner's HTTP calls. Empty → mint an in-process token
+    # for the default user (default_user_email).
+    eval_user_token: str = ""
+    # Per-trial completion wait timeout (seconds).
+    eval_run_timeout: float = 300.0
+    # Aeval result storage path; empty → <data_dir>/aeval.db.
+    eval_aeval_db_path: str = ""
+    # Aeval judge LLM (LLM output-quality metrics; AEVAL_JUDGE_* takes
+    # priority, eval_llm_* then the OpenAI key are fallbacks).
+    aeval_judge_api_key: str | None = None
+    aeval_judge_api_url: str | None = None
+    aeval_judge_model: str | None = None
 
     # ─── Obsidian Sync ───
     obsidian_max_embed_depth: int = 2

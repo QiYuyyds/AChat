@@ -16,7 +16,6 @@ import contextlib
 import json
 import logging
 import os
-import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator
@@ -25,6 +24,7 @@ from typing import Any
 
 from app.adapters.base import AdapterInput, AdapterName
 from app.adapters.cli_base import BlockedArgMode, CLIAdapterBase, filter_custom_args
+from app.adapters.mcp_bridge_config import BridgeInvocation, build_bridge_invocation
 from app.adapters.session_store import clear_claude_code_session
 from app.schemas.events import (
     BashCommandResolvedEvent,
@@ -222,12 +222,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
         # via an MCP server. The CLI spawns the server as a subprocess;
         # the server translates MCP tool calls to AChat ToolRegistry calls.
         self._mcp_config_file = _write_mcp_config(
-            input.conversation_id,
-            input.run_id,
-            input.workspace_path or "",
-            input.agent_id,
-            input.user_id,
-            tool_names=input.tool_names,
+            build_bridge_invocation(input, tool_names=input.tool_names)
         )
         if self._mcp_config_file:
             # Use = format to avoid any argument parsing ambiguity on Windows.
@@ -982,6 +977,7 @@ class ClaudeCLIAdapter(CLIAdapterBase):
 
                     # Check conversation's fs_write_approval_mode
                     from sqlalchemy import select as sa_select
+
                     from app.db.engine import get_local_db
                     from app.db.models import Conversation
                     try:
@@ -1175,14 +1171,7 @@ def _remove_temp_file(path: str) -> None:
 
 # ─── MCP config builder ───────────────────────────────────────────
 
-def _write_mcp_config(
-    conversation_id: str,
-    run_id: str,
-    workspace_path: str,
-    agent_id: str,
-    user_id: str | None = None,
-    tool_names: list[str] | None = None,
-) -> str | None:
+def _write_mcp_config(invocation: BridgeInvocation) -> str | None:
     """Write the Claude CLI MCP config JSON file.
 
     Tells Claude CLI how to spawn the AChat MCP Bridge (a stdio-based MCP
@@ -1192,41 +1181,15 @@ def _write_mcp_config(
     Returns the path to the temp config file, or ``None`` if the bridge
     module cannot be located.
     """
-    # Find the backend directory so the MCP server can import app.mcp_bridge.
-    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # backend_dir is .../backend/app/adapters → we need .../backend
-    backend_root = os.path.dirname(backend_dir)  # .../backend
-
-    # The MCP server script is at backend/app/mcp_bridge.py.
-    # We launch it as: python -m app.mcp_bridge ...
-    # For that to work, backend_root must be on PYTHONPATH.
-    python_exe = sys.executable
-
-    bridge_args = [
-        "-m", "app.mcp_bridge",
-        "--conversation-id", conversation_id,
-        "--run-id", run_id,
-        "--workspace-path", workspace_path,
-        "--agent-id", agent_id,
-    ]
-    if user_id:
-        bridge_args.extend(["--user-id", user_id])
-    if tool_names:
-        bridge_args.extend(["--tool-names", ",".join(tool_names)])
-
+    # Invocation content (command/args/env/server name) is shared with the
+    # codex adapter; this function only formats it as Claude mcpServers JSON.
     mcp_config = {
         "mcpServers": {
-            "achat-tools": {
+            invocation.server_name: {
                 "type": "stdio",
-                "command": python_exe,
-                "args": bridge_args,
-                "env": {
-                    "PYTHONPATH": backend_root,
-                    "PYTHONUNBUFFERED": "1",
-                    "DATABASE_URL": os.environ.get("DATABASE_URL", ""),
-                    **({"DATABASE_LOCAL_URL": os.environ["DATABASE_LOCAL_URL"]}
-                       if os.environ.get("DATABASE_LOCAL_URL") else {}),
-                },
+                "command": invocation.command,
+                "args": invocation.args,
+                "env": invocation.env,
             }
         }
     }

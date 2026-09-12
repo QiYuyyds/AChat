@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (ruff + pytest)
+    # Windows 与开发环境一致（测试套件在该平台验证通过）；套件自包含，
+    # tests/conftest.py 注入 sqlite，不需要 Docker / Postgres / .env。
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: backend
+        # bash 而非默认 pwsh：pwsh 中原生命令失败不会中止多行步骤，
+        # 会导致 install 失败被吞、错误推迟到 pytest 才暴露。
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]" "aeval-framework[api,cli]"
+
+      - name: Ruff (non-blocking ratchet)
+        run: python -m ruff check app
+        continue-on-error: true
+
+      - name: Pytest
+        run: python -m pytest tests -q
+
+  frontend:
+    name: Frontend (tsc + vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test

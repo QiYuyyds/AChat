@@ -205,11 +205,19 @@ class AutoIndex:
                 all_files.append(f)
                 count += 1
 
-        # Clean broken wikilinks: targets that don't exist on disk
+        # Clean broken wikilinks: targets that don't exist on disk.
+        # Bare wikilink targets ([[asyncio]] → 'asyncio') are first rewritten
+        # to the canonical file rel path so the graph keeps one node per
+        # memory — without this the cleanup would also wipe bare-link edges.
+        stem_to_rel = {}
         existing_paths = {self._rel_path(f) for f in all_files}
-        # Also keep absolute forms for legacy edges that may still use them
         for f in all_files:
+            rel = self._rel_path(f)
             existing_paths.add(str(f))
+            stem_form = self._normalize_link_target(f.stem)
+            if stem_form != rel:
+                stem_to_rel[stem_form] = rel
+        self.expander.canonicalize_targets(stem_to_rel)
         broken_count = self.expander.remove_broken_links(existing_paths)
         if broken_count:
             logger.info("Full reindex: removed %d broken wikilink entries", broken_count)

@@ -635,14 +635,20 @@ def artifact_to_dict(row: Artifact) -> dict[str, Any]:
     }
 
 
-async def list_artifacts() -> list[ArtifactWithMeta]:
-    """All artifacts, newest first, each joined with its conversation title."""
+async def list_artifacts(
+    conversation_id: str | None = None,
+) -> list[ArtifactWithMeta]:
+    """All artifacts, newest first, each joined with its conversation title.
+
+    ``conversation_id`` filters to one conversation (added for the Aeval
+    integration — outcome collection —; optional so existing callers and the
+    wire contract stay unchanged).
+    """
     async with get_local_db() as db:
-        rows = (
-            (await db.execute(select(Artifact).order_by(Artifact.created_at.desc())))
-            .scalars()
-            .all()
-        )
+        stmt = select(Artifact).order_by(Artifact.created_at.desc())
+        if conversation_id is not None:
+            stmt = stmt.where(Artifact.conversation_id == conversation_id)
+        rows = (await db.execute(stmt)).scalars().all()
         if not rows:
             return []
 

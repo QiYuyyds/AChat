@@ -3,6 +3,7 @@ import localFont from 'next/font/local'
 
 import { AuthGate } from '@/components/auth-gate'
 import { GlobalSearch } from '@/components/global-search'
+import { StatsHeartbeat } from '@/components/stats-heartbeat'
 import { StreamProvider } from '@/components/stream-provider'
 import { ThemeProvider } from '@/components/theme-provider'
 
@@ -53,6 +54,7 @@ export default function RootLayout({
       <body className="h-dvh overflow-hidden">
         <ThemeProvider>
           <AuthGate>
+            <StatsHeartbeat />
             <StreamProvider>{children}</StreamProvider>
           </AuthGate>
         </ThemeProvider>

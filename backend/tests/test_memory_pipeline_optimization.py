@@ -374,7 +374,6 @@ class TestAutoDreamExtract:
             settings.memory_workspace_path = Path(tmpdir)
             settings.memory_search_top_k = 10
             settings.memory_bm25_weight = 0.7
-            settings.memory_wikilink_weight = 0.3
             settings.memory_rrf_k = 60
 
             workspace = MemoryWorkspace(settings)
@@ -766,20 +765,52 @@ class TestHybridSearchEnhancement:
         assert r.scores["bm25"] == 0.3
         assert "rrf" in r.scores
 
-    def test_search_result_has_expansion(self):
-        """SearchResult should include expansion dict."""
-        from app.memory.search.hybrid_search import SearchResult
+    def test_build_expansion_public_method(self):
+        """HybridSearch.build_expansion returns neighbor metadata for one path."""
+        from app.memory.file_store.frontmatter import MemoryFrontmatter
+        from app.memory.file_store.markdown_io import write_markdown
+        from app.memory.file_store.workspace import MemoryWorkspace
+        from app.memory.search.bm25_index import BM25Index
+        from app.memory.search.hybrid_search import HybridSearch
+        from app.memory.search.wikilink_expander import WikilinkExpander
 
-        r = SearchResult(
-            path="/test.md",
-            name="test",
-            content="content",
-            score=0.5,
-            source="bm25",
-            expansion={"outlinks": [], "inlinks": []},
-        )
-        assert "outlinks" in r.expansion
-        assert "inlinks" in r.expansion
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = MagicMock()
+            settings.memory_workspace_path = Path(tmpdir)
+
+            workspace = MemoryWorkspace(settings)
+            workspace.initialize()
+            bm25 = BM25Index(workspace.metadata_dir / "bm25.db")
+            expander = WikilinkExpander(workspace.metadata_dir / "wikilinks.db")
+            bm25.initialize()
+            expander.initialize()
+
+            today = date.today().isoformat()
+            f_a = workspace.digest_path("wiki", "topic-a")
+            f_b = workspace.digest_path("wiki", "topic-b")
+            write_markdown(
+                f_a,
+                MemoryFrontmatter(name="Topic A", description="About A", created_at=today, updated_at=today, source=""),
+                "relates_to:: [[digest/wiki/topic-b.md]]",
+            )
+            write_markdown(
+                f_b,
+                MemoryFrontmatter(name="Topic B", description="About B", created_at=today, updated_at=today, source=""),
+                "Content about topic B",
+            )
+            expander.add_edges_detailed("digest/wiki/topic-a.md", [("digest/wiki/topic-b.md", "relates_to")])
+
+            search = HybridSearch(settings, bm25, expander, workspace_root=workspace.root)
+            expansion = search.build_expansion("digest/wiki/topic-a.md")
+
+            assert "outlinks" in expansion
+            assert "inlinks" in expansion
+            outlink_paths = [o["path"] for o in expansion["outlinks"]]
+            assert any("topic-b" in p for p in outlink_paths)
+            assert expansion["outlinks"][0]["predicate"] == "relates_to"
+
+            bm25.close()
+            expander.close()
 
 
 # ─── 11. Digest status Field ────────────────────────────────────────────
@@ -871,7 +902,6 @@ class TestDreamIntegrate:
         settings.memory_workspace_path = Path(tmpdir)
         settings.memory_search_top_k = 10
         settings.memory_bm25_weight = 0.7
-        settings.memory_wikilink_weight = 0.3
         settings.memory_rrf_k = 60
         workspace = MemoryWorkspace(settings)
         workspace.initialize()
@@ -1022,8 +1052,11 @@ class TestDreamTopics:
             settings.memory_workspace_path = Path(tmpdir)
             settings.memory_search_top_k = 10
             settings.memory_bm25_weight = 0.7
-            settings.memory_wikilink_weight = 0.3
             settings.memory_rrf_k = 60
+            # 本测试覆盖 RRF + 归档降权的既有行为；rerank（importance×decay×recency）
+            # 属 add-memory-lifecycle 的行为，由 test_memory_lifecycle 覆盖。
+            settings.memory_rerank_enabled = False
+            settings.memory_daily_ttl_days = 0
 
             workspace = MemoryWorkspace(settings)
             workspace.initialize()
@@ -1075,8 +1108,11 @@ class TestDreamTopics:
             settings.memory_workspace_path = Path(tmpdir)
             settings.memory_search_top_k = 10
             settings.memory_bm25_weight = 0.7
-            settings.memory_wikilink_weight = 0.3
             settings.memory_rrf_k = 60
+            # 本测试覆盖 RRF + 归档降权的既有行为；rerank（importance×decay×recency）
+            # 属 add-memory-lifecycle 的行为，由 test_memory_lifecycle 覆盖。
+            settings.memory_rerank_enabled = False
+            settings.memory_daily_ttl_days = 0
 
             workspace = MemoryWorkspace(settings)
             workspace.initialize()
@@ -1126,8 +1162,9 @@ class TestHybridSearchIntegration:
             settings.memory_workspace_path = Path(tmpdir)
             settings.memory_search_top_k = 5
             settings.memory_bm25_weight = 0.7
-            settings.memory_wikilink_weight = 0.3
             settings.memory_rrf_k = 60
+            settings.memory_rerank_enabled = False
+            settings.memory_daily_ttl_days = 0
 
             workspace = MemoryWorkspace(settings)
             workspace.initialize()
@@ -1152,15 +1189,16 @@ class TestHybridSearchIntegration:
             assert len(results) >= 1
             r = results[0]
             assert "bm25" in r.scores
-            assert "wikilink" in r.scores
             assert "rrf" in r.scores
+            # wikilink was removed from RRF ranking — must not reappear in scores
+            assert "wikilink" not in r.scores
             assert r.scores["rrf"] > 0
 
             bm25.close()
             expander.close()
 
     def test_search_returns_expansion_meta(self):
-        """HybridSearch.search should populate expansion dict with outlinks/inlinks."""
+        """HybridSearch.build_expansion should return outlinks/inlinks for a hit path."""
         from app.memory.file_store.frontmatter import MemoryFrontmatter
         from app.memory.file_store.markdown_io import write_markdown
         from app.memory.file_store.workspace import MemoryWorkspace
@@ -1174,8 +1212,9 @@ class TestHybridSearchIntegration:
             settings.memory_workspace_path = Path(tmpdir)
             settings.memory_search_top_k = 5
             settings.memory_bm25_weight = 0.7
-            settings.memory_wikilink_weight = 0.3
             settings.memory_rrf_k = 60
+            settings.memory_rerank_enabled = False
+            settings.memory_daily_ttl_days = 0
 
             workspace = MemoryWorkspace(settings)
             workspace.initialize()
@@ -1201,7 +1240,7 @@ class TestHybridSearchIntegration:
             auto_index.index_file(f_a)
             auto_index.index_file(f_b)
 
-            search = HybridSearch(settings, bm25, expander)
+            search = HybridSearch(settings, bm25, expander, workspace_root=workspace.root)
 
             import asyncio
             loop = asyncio.new_event_loop()
@@ -1212,9 +1251,11 @@ class TestHybridSearchIntegration:
             # Find result for file A
             result_a = next((r for r in results if "topic-a" in r.path), None)
             if result_a:
-                assert "outlinks" in result_a.expansion
+                # Expansion is lazy — build it explicitly for the hit path
+                expansion = search.build_expansion(result_a.path)
+                assert "outlinks" in expansion
                 # Should have topic-b as outlink
-                outlink_paths = [o["path"] for o in result_a.expansion["outlinks"]]
+                outlink_paths = [o["path"] for o in expansion["outlinks"]]
                 assert any("topic-b" in p for p in outlink_paths)
 
             bm25.close()
@@ -1244,8 +1285,11 @@ class TestArchivedDeprioritization:
             settings.memory_workspace_path = Path(tmpdir)
             settings.memory_search_top_k = 10
             settings.memory_bm25_weight = 0.7
-            settings.memory_wikilink_weight = 0.3
             settings.memory_rrf_k = 60
+            # 本测试覆盖 RRF + 归档降权的既有行为；rerank（importance×decay×recency）
+            # 属 add-memory-lifecycle 的行为，由 test_memory_lifecycle 覆盖。
+            settings.memory_rerank_enabled = False
+            settings.memory_daily_ttl_days = 0
 
             workspace = MemoryWorkspace(settings)
             workspace.initialize()

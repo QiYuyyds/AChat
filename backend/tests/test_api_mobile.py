@@ -3,6 +3,9 @@
 These tests mount ONLY the mobile router into a fresh FastAPI app (the Integrate
 stage wires it into app.main; until then we mount it directly), sharing the
 isolated `db` fixture's SQLite DB. A valid mobile bearer token is set per-test.
+
+The legacy mobile token maps to the first user row, so a user is seeded per
+test (mirrors the desktop's always-present local user).
 """
 
 import httpx
@@ -15,8 +18,12 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
 @pytest_asyncio.fixture
-async def mobile_client(db, monkeypatch):
-    """httpx client over an app mounting only the mobile router, token configured."""
+async def mobile_client(db, test_user, monkeypatch):
+    """httpx client over an app mounting only the mobile router, token configured.
+
+    Depends on the shared ``test_user``: the legacy mobile token resolves to
+    the first user row (mirrors the desktop's always-present local user).
+    """
     from fastapi import FastAPI
 
     from app.api.mobile.routes import router as mobile_router
@@ -26,6 +33,8 @@ async def mobile_client(db, monkeypatch):
 
     app = FastAPI()
     app.include_router(mobile_router, prefix="/api")
+    from app.api.mobile.routes import add_mobile_exception_handlers
+    add_mobile_exception_handlers(app)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
@@ -76,12 +85,14 @@ async def test_snapshot_unauthorized_without_token(mobile_client):
 async def test_snapshot_503_when_not_configured(db, monkeypatch):
     from fastapi import FastAPI
 
+    from app.api.mobile.routes import add_mobile_exception_handlers
     from app.api.mobile.routes import router as mobile_router
 
     monkeypatch.delenv("AGENTHUB_MOBILE_TOKEN", raising=False)
     monkeypatch.delenv("AGENTHUB_MOBILE_DEV_TOKEN", raising=False)
     app = FastAPI()
     app.include_router(mobile_router, prefix="/api")
+    add_mobile_exception_handlers(app)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/mobile/snapshot", headers=AUTH)
@@ -248,7 +259,8 @@ async def test_regenerate_not_found(mobile_client):
     resp = await mobile_client.post(
         "/api/mobile/conversations/conv_missing/regenerate", headers=AUTH
     )
-    assert resp.status_code == 400
+    # 会话不存在 → 归属校验 404（与 detail 端点及 web 端 messages 路由一致）
+    assert resp.status_code == 404
 
 
 # ─── Artifact ───────────────────────────────────────────────────────────────

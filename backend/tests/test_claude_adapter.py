@@ -194,7 +194,6 @@ def _make_input(tmp_path, **overrides) -> AdapterInput:
         api_base_url=None,
         model_id="claude-test",
         tool_names=[],
-        user_id="test_user_1",
     )
     defaults.update(overrides)
     return AdapterInput(**defaults)

@@ -14,6 +14,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/lib/utils'
+import { getSkillContent } from '@/lib/api'
 import type { SkillSummary } from '@/lib/api'
 
 interface SkillDetailDialogProps {
@@ -35,11 +36,7 @@ export function SkillDetailDialog({ skill, open, onOpenChange, onDelete }: Skill
     }
 
     setLoading(true)
-    fetch(`/api/skills/${skill.slug}`)
-      .then((res) => {
-        if (!res.ok) throw new Error('Failed to fetch skill')
-        return res.json()
-      })
+    getSkillContent(skill.slug)
       .then((data) => {
         setSkillContent(data.content || '暂无内容')
       })

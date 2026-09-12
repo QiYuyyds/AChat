@@ -3,7 +3,8 @@ packages:
   - packages/*
 
 allowBuilds:
-  better-sqlite3: true
+  # drizzle-orm 的 peer 解析会带入 better-sqlite3，但前端已零引用，禁止其构建脚本
+  better-sqlite3: false
   electron: true
   electron-winstaller: true
   esbuild: true

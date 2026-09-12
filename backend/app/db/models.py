@@ -4,7 +4,6 @@ Corresponds to src/db/schema.ts in the original TypeScript codebase.
 Extended with UserPreference, RagChunk, ChatHistory (file-native memory migration).
 """
 
-import json
 from typing import Any, Literal
 
 from sqlalchemy import (
@@ -48,18 +47,6 @@ WorkspaceMode = Literal["sandbox", "local"]
 AttachmentKind = Literal["image", "file"]
 FsWriteApprovalMode = Literal["auto", "review"]
 CompanionMode = Literal["off", "lan", "tailnet"]
-
-
-def _json_serializer(obj: Any) -> str:
-    """Serialize Python object to json string (kept for backward-compat helpers)."""
-    return json.dumps(obj, ensure_ascii=False)
-
-
-def _json_deserializer(s: str | None) -> Any:
-    """Deserialize JSON string to Python object (kept for backward-compat helpers)."""
-    if s is None:
-        return None
-    return json.loads(s)
 
 
 # ---------------------------------------------------------------------------
@@ -697,6 +684,16 @@ class GlobalSettings(Base):
     deployment_public_base_url: Mapped[str | None] = mapped_column(
         String, name="deployment_public_base_url", nullable=True
     )
+    # Infra connection overrides (rag-infra-config): NULL = 未配置，回落 env。
+    # 命名与 env 一一对应（MILVUS_HOST 等），解析优先级 global_settings → env。
+    milvus_host: Mapped[str | None] = mapped_column(String, name="milvus_host", nullable=True)
+    milvus_port: Mapped[int | None] = mapped_column(Integer, name="milvus_port", nullable=True)
+    neo4j_uri: Mapped[str | None] = mapped_column(String, name="neo4j_uri", nullable=True)
+    neo4j_user: Mapped[str | None] = mapped_column(String, name="neo4j_user", nullable=True)
+    neo4j_password: Mapped[str | None] = mapped_column(
+        String, name="neo4j_password", nullable=True
+    )
+    enable_graph: Mapped[bool | None] = mapped_column(Boolean, name="enable_graph", nullable=True)
     updated_at: Mapped[int] = mapped_column(BigInteger, name="updated_at", nullable=False)
 
 
@@ -900,6 +897,9 @@ class ChatHistory(Base):
     created_at: Mapped[float] = mapped_column(Float, nullable=False)
     user_id: Mapped[str | None] = mapped_column(
         String, ForeignKey("users.id"), name="user_id", nullable=True
+    )
+    conversation_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
     )
 
 
@@ -1296,3 +1296,26 @@ class EvalRunItem(Base):
     __table_args__ = (
         Index("idx_eval_run_items_run", "run_id"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Usage stats (usage-stats capability — counter-only, no content columns)
+# ---------------------------------------------------------------------------
+
+
+class StatsDailyCounter(Base):
+    """Daily aggregated usage counter (user × day × client × metric → value).
+
+    Composite-PK upsert-accumulate table; row count is bounded by
+    users × days × metrics. MUST NOT gain any free-text / content / token
+    columns (privacy boundary is schema-level, see usage-stats spec).
+    """
+
+    __tablename__ = "stats_daily_counters"
+
+    user_id: Mapped[str] = mapped_column(String, name="user_id", primary_key=True)
+    # UTC date (YYYY-MM-DD) — cross-timezone consistency (design D7)
+    day: Mapped[str] = mapped_column(String(10), name="day", primary_key=True)
+    client_type: Mapped[str] = mapped_column(String(16), name="client_type", primary_key=True)
+    metric: Mapped[str] = mapped_column(String(32), name="metric", primary_key=True)
+    value: Mapped[int] = mapped_column(BigInteger, name="value", nullable=False, default=0)

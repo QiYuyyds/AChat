@@ -33,13 +33,16 @@
 - **执行计划工具**（create_plan / plan_step / add_plan_steps 结构化计划卡片）
 - **全局任务看板**（Task Board · 持久化任务池 · Kanban UI · asyncio 后台调度器自动派发 todo 任务给 Agent）
 - **外部 MCP 接入**（MCP Server 配置管理 + client_manager + 调用审批）
-- **Run 内压缩**（五阶段递进压缩 pipeline，纯结构化裁剪无 LLM）
+- **Run 内压缩**（通用掩码压缩 pipeline：≥ 0.75 掩码旧工具结果 / ≥ 0.88 折叠旧轮次，纯结构化裁剪无 LLM）
 - ~~**Redis 元数据缓存 + 异步 DB 写入**~~（**已移除** — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代）
 - ~~**Elasticsearch 全文检索**~~（**已移除** — Milvus 原生 BM25 sparse vector 替代）
 - **Agent 可观测性与评测系统**（OpenTelemetry 全链路追踪 · Arize Phoenix :6006 · 在线规则评测 · 离线 LLM-as-Judge · 5+4 维评测指标体系）
+- **Aeval Agent 评测框架**（独立 PyPI 包 aeval-framework + eval_integration 接入层 + /api/eval 子应用 + 框架内置 Dashboard）
+- **DAG 内 Agent 通信**（ask_peer 兄弟会话提问 · report_result 结构化汇报 · AgentSessionRegistry 注册表）
+- **会话笔记**（结构化 10 段 YAML Session Note，替代旧无结构摘要）
 - 桌面打包（Electron）+ 移动伴随端（Capacitor）
 
-**运行形态**：前后端分离本地运行。前端 Next.js dev server（:3000），后端 FastAPI（:8000）；基础设施服务（PostgreSQL / Milvus / ES / Neo4j）通过 Docker Compose 启动，可全部容器化也可仅远端部署基础设施。
+**运行形态**：前后端分离本地运行。前端 Next.js dev server（:3000），后端 FastAPI（:8000）；基础设施服务（PostgreSQL / Milvus / Neo4j / Phoenix）通过 Docker Compose 启动，可全部容器化也可仅远端部署基础设施。
 
 ---
 
@@ -137,9 +140,8 @@ bitdance-agenthub-main/
 │   ├── stores/           Zustand store (app-store / search-store / auth-store)
 │   ├── shared/           ★ 共享类型 (StreamEvent / MessagePart ...) 前后端契约源
 │   └── db/schema.ts      仅保留前端 import 行类型 (DB 实体由后端 SQLAlchemy 拥有)
-├── electron/             桌面版外壳 (main.ts / paths.ts / server-bootstrap.ts)
+├── electron/             桌面版外壳 (main.ts / preload.ts / paths.ts / server-bootstrap.ts)
 ├── apps/mobile/          移动伴随 App (Capacitor)
-├── packages/shared/      共享包 (workspace)
 ├── specs/                ★ 20 份编号详细规格 (语言无关契约)
 ├── openspec/             OpenSpec 能力契约 (19 个 capability spec) + 变更提案
 ├── skills/               可复用开发任务模板
@@ -147,13 +149,15 @@ bitdance-agenthub-main/
 ├── docs/                 文档 + 图片
 ├── .agenthub-data/       运行时数据 (workspaces + deployments + skills + worktrees)
 ├── docker-compose.yml            全栈容器化 (前后端 + 基基础设施)
-├── docker-compose.infra.yml      仅基础设施 (本机跑前后端, 远端跑 PG/Milvus/ES/Neo4j)
+├── docker-compose.infra.yml      仅基础设施 (本机跑前后端, 远端跑 PG/Milvus/Neo4j/Phoenix)
 ├── CLAUDE.md             ★ AI 协作规则 (怎么做 / 不做什么)
 ├── OVERVIEW.md           代码地图 (做了什么 / 在哪)
 └── ARCHITECTURE.md       本文档
 ```
 
 `★` = 理解项目最关键的入口。
+
+注：`apps/mobile` 的 `Mobile*` 类型是 mobile API 的独立 wire contract（刻意裁剪的投影，非 web 类型镜像）；跨端契约同步的解法见中期清单第 7 项（后端 schema → TS 生成）。
 
 ---
 
@@ -164,7 +168,8 @@ backend/
 ├── app/
 │   ├── main.py              FastAPI 入口: 路由接线 + CORS + lifespan 启动全链路
 │   │                        (init_db → build_infrastructure → MemoryService → RAGService
-│   │                         → PromptAssembler → DocumentService → 状态面板)
+│   │                         → PromptAssembler → DocumentService → 状态面板
+│   │                         → EVAL_HARNESS_ENABLED 时 /api/eval 挂载 Aeval 子应用)
 │   ├── config.py           配置 (pydantic-settings) + .env key 桥接到 os.environ
 │   │
 │   ├── auth/ (5)            【认证模块】
@@ -199,10 +204,11 @@ backend/
 │   │   ├── agent_loop.py          ★ 统一 Agent Loop (run_agent_loop: solo/coordinated/subagent)
 │   │   │                          spawn_subagent_loop (递归子 Agent 派发) + prompt builders
 │   │   ├── dag_executor.py        ★ DAG 验证 / 波调度 / 并行执行 (validate_dag / topological_waves / execute_dag)
+│   │   ├── agent_session_registry.py ★ DAG 会话注册表 (task_id → AgentSession · ask_peer 查兄弟会话 · 父邮箱 · 300s TTL)
 │   │   ├── worktree_service.py    ★ git worktree 隔离 (DAG 波调度并行任务 · 创建→merge-back→清理 · 非 git 目录拷贝降级 · 三层冲突解决: Auto → LLM → Human)
 │   │   ├── pending_merge_conflicts.py ★ Worktree merge 冲突人工审批 store
 │   │   ├── workspace_env_service.py ★ workspace 环境变量隔离
-│   │   ├── compact_pipeline.py    ★ Run 内压缩五阶段 pipeline (ratio 阈值 0.70/0.80/0.88/0.93/0.95 · 纯结构化裁剪)
+│   │   ├── compact_pipeline.py    ★ Run 内压缩通用掩码 pipeline (stage 1 ratio ≥ 0.75 掩码旧工具结果 · stage 3 ≥ 0.88 折叠旧轮次 · 纯结构化裁剪)
 │   │   ├── compact_markers.py     压缩标记构建 (CompactMarkerBuilder / CompactSuccessJudge)
 │   │   ├── react_loop_termination.py ★ ReAct loop 终止逻辑 (stage 4 软收尾 + stage 5 强制终止)
 │   │   ├── transcript_renderer.py ★ 统一消息流渲染逻辑
@@ -220,7 +226,7 @@ backend/
 │   │   ├── recovery_scan.py       ★ 启动崩溃恢复 (SQLite WAL 自带崩溃恢复)
 │   │   ├── fs_service.py          workspace 文件读写 + 沙箱配额
 │   │   ├── search_service.py      消息全文搜索
-│   │   ├── rag_service.py         ★ RAG 混合检索 (Milvus + ES + KG + RRF)
+│   │   ├── rag_service.py         ★ RAG 混合检索 (Milvus dense+sparse + KG + RRF)
 │   │   ├── document_service.py    ★ Document + Version 知识库 CRUD
 │   │   ├── obsidian_sync_service.py ★ Obsidian vault 同步
 │   │   ├── prompt_assembler.py    ★ 上下文组装 (Profile + Recall + Constraints)
@@ -279,7 +285,7 @@ backend/
 │   │
 │   ├── mcp_bridge.py      ★ AChat MCP Bridge: stdio MCP Server, 把 write_artifact/ask_user/task_dispatch 等平台工具暴露给 CLI agent
 │   │
-│   ├── tools/ (35)         【工具系统】45 个内置工具
+│   ├── tools/ (37)         【工具系统】47 个注册工具
 │   │   ├── base.py / registry.py  ToolContext (asyncio.Event 取消) + 注册表
 │   │   ├── write_artifact / read_artifact / update_artifact (★ 增量更新)
 │   │   ├── deploy_artifact / deploy_workspace
@@ -289,6 +295,7 @@ backend/
 │   │   ├── task_dispatch (子 Agent 克隆派发) / dispatch_plan (DAG 派发)
 │   │   ├── execution_plan (★ create_plan / plan_step / add_plan_steps 执行计划)
 │   │   ├── ask_user
+│   │   ├── ask_peer (★ DAG 内兄弟会话提问) / report_result (★ 子 Agent 结构化汇报, terminal tool)
 │   │   ├── web_search (Tavily API)
 │   │   ├── memory_rag (memory_recall + rag_search/ingest/list/delete)
 │   │   ├── memory_store (★ 主动记忆存储，支持结构化字段 summary/keywords/content_scope)
@@ -298,7 +305,7 @@ backend/
 │   │   ├── ★ manage_agents / manage_skills / manage_mcp / manage_documents
 │   │   │  / manage_memory / manage_profile / manage_conversations / manage_tasks
 │   │   │  (8 个 guide agent 专用管理工具, 仅对 is_guide=True 的 Agent 注入)
-│   │   ├── ★ task_tools (7 个 opt-in task 工具: task_list/get/create/claim/complete/move/comment)
+│   │   ├── ★ task_tools (7 个 task 工具: task_list/get/create/claim/complete/move/comment — 仅 TaskScheduler 派发的运行注入)
 │   │   └── rate_limiter.py
 │   │
 │   ├── rag/                【RAG 引擎】★ 大重构
@@ -324,23 +331,30 @@ backend/
 │   │   ├── pipeline/          auto_memory + auto_index + auto_dream + proactive
 │   │   ├── preference.py      用户偏好 (user_preferences 表, KV) — 保留不动
 │   │   ├── session_memory.py  会话摘要 (跨 run 上下文压缩) — 保留不动
+│   │   ├── session_note.py    ★ 结构化 10 段 YAML 会话笔记 (YAML 存储 / XML 注入 / 解析失败回退纯文本)
 │   │   └── memory_writer_compat.py  Preference 提取工具 (从旧 memory_writer 保留)
 │   │
-│   ├── graph/ (4)          【知识图谱】
+│   ├── graph/ (5)          【知识图谱】
 │   │   ├── kgstore.py       KGStore: 文档 → 实体/关系抽取 → Neo4j 入图 → 子图检索
-│   │   ├── extractor.py     LLM 驱动的实体 / 关系抽取
+│   │   ├── extractors/      ★ 模块化抽取器 (base.py ABC + factory.py 注册工厂 + llm.py LLM 批量抽取)
+│   │   ├── graph_utils.py   ★ 图谱工具函数
+│   │   ├── extractor.py     LLM 驱动的实体 / 关系抽取 (旧入口, 保留兼容)
 │   │   └── types.py         图谱类型定义
+│   │                        可视化端点在 api/graph.py (stats / subgraph / labels)
 │   │
 │   ├── infra/ (6)          【基础设施工厂】
 │   │   ├── factory.py       build_infrastructure(): 配置驱动, 独立降级
+│   │   │                   连接参数两级解析: global_settings 落库覆盖 → env 默认 → 未配置
 │   │   │                   (Milvus/Neo4j/Kafka — Redis/ES 已移除)
 │   │   ├── hybrid.py        HybridStore 抽象 (向量 + 全文 + 图谱统一接口)
 │   │   ├── cache.py         ★ 进程内 dict TTL 缓存 (替代 Redis KV，已移除)
 │   │   ├── cache_helpers.py ★ 缓存实体查找 (Agent/Workspace 本地 SQLite 直读; UserSettings/GlobalSettings 远端 PG + dict TTL)
 │   │   ├── cache_metrics.py 嵌入缓存命中率指标
-│   │   └── status.py        基础设施连接状态面板 + 可观测性状态
+│   │   └── status.py        基础设施连接状态面板 + per-service 状态收集
+│   │                       (service_states(): connected/degraded/disabled + 配置来源 db/env/none + 失败原因,
+│   │                        启动面板用 dashboard_lines(), HTTP 出口 GET /api/infra/status)
 │   │
-│   ├── api/ (28)           【API 路由】
+│   ├── api/ (29)           【API 路由】
 │   │   ├── conversations / messages / agents / artifacts / attachments
 │   │   ├── fs / pending / settings / runs_misc / stream (SSE)
 │   │   ├── documents / skills / deployments / **auth** / **eval**
@@ -348,6 +362,7 @@ backend/
 │   │   ├── **plan_usage** / **profile** / **workspaces**
 │   │   ├── **model_profiles** / **tasks**
 │   │   ├── **rag_config** / **rag_eval** / **rag_tasks**  ★ RAG 配置/评测/任务队列
+│   │   ├── **infra**  ★ 基础设施运行期接入 (config 读写桌面门控 / test 临时建连 / status)
 │   │   └── mobile/routes
 │   │
 │   ├── observability/ (7)   【Agent 可观测性与评测】★ OTel + Phoenix
@@ -359,9 +374,20 @@ backend/
 │   │   ├── eval_judge.py      离线 LLM-as-Judge (9 维度：工具选择/子任务粒度/聚合忠实度/...)
 │   │   └── eval_metrics.py    评测指标体系 (Agent 全过程 5 维度 + 多 Agent 协作 4 维度)
 │   │
+│   ├── eval_integration/ (7) 【Aeval 评测接入层】★ 框架本体在 PyPI 包 aeval-framework
+│   │   ├── config.py          create_aeval_runner() 装配入口 (缺凭证报 EvalConfigError)
+│   │   ├── runner.py          AChatAgentRunner + WorkspaceCoordinator (评测任务 → agent 运行)
+│   │   ├── environment.py     AChatWorkspaceEnvironment (评测 workspace 隔离)
+│   │   ├── graders/           Artifact / Dispatch grader
+│   │   ├── client.py          AChatApiClient + Bearer token provider
+│   │   ├── trace_bridge.py    进程内 RunTraceBridge (AChat trace ↔ 评测 trial trace_id)
+│   │   └── errors.py          EvalConfigError 等异常
+│   │                          EVAL_HARNESS_ENABLED=true 时 main.py 在 /api/eval 挂载
+│   │                          agent_eval 子应用; 套件 YAML 在 backend/eval_suites/
+│   │
 │   └── utils/ (14)         跨平台 · 安全黑名单 · ID · token 估算 · 审批 helper · mermaid 规范化 ...
 │
-└── tests/ (141)           pytest 测试; ruff 全绿
+└── tests/ (~180)          pytest 测试; 全量绿基线; ruff 全绿
 ```
 
 ### 关键技术映射（TS → Python）
@@ -475,7 +501,7 @@ backend/
                       │       ├─ tool_registry.execute() (沙箱内)
                       │       └─ post_tool_use hook (记忆持久化/技能激活/审计)
                       │    子 Agent 派发 ← 〔OTel Span: tool.dispatch · 任务派发 → 嵌套 agent.run〕
-                      │    Run 内压缩 ← compact_pipeline (ratio ≥ 阈值时触发五阶段裁剪)
+                      │    Run 内压缩 ← compact_pipeline (ratio ≥ 阈值时触发掩码/折叠裁剪)
                       └─ consume_stream()  ← 〔OTel Span: agent.finalize · 运行收尾〕
                      ├─ persist_event()  事件落 DB (直写本地 SQLite)
                      │   └─ 双 DB 架构: 对话热数据 → 本地 SQLite[WAL] (<1ms)
@@ -622,16 +648,17 @@ Agent 运行时注入 (PromptAssembler):
 ```
 SDK ReAct loop 每轮迭代后:
   └─ 估算 token 占用 ratio = current_tokens / context_window
-     ├─ ratio < 0.70  → 无操作
-     ├─ ratio ≥ 0.70  → Stage 1: 语义摘要旧 tool 结果
-     ├─ ratio ≥ 0.80  → Stage 2: 更激进地重裁 Stage 1 摘要
+     ├─ ratio < 0.75  → 无操作
+     ├─ ratio ≥ 0.75  → Stage 1: 通用掩码旧 tool 结果 (结构化摘要替代原始输出)
      ├─ ratio ≥ 0.88  → Stage 3: 将更旧轮次折叠为单个 marker
      ├─ ratio ≥ 0.93  → Stage 4: 软收尾注入 (react_loop_termination)
      └─ ratio ≥ 0.95  → Stage 5: 强制终止 (react_loop_termination)
 
 特点:
-  - Stage 1/2/3 纯 regex + 结构化裁剪, 无 LLM 调用
+  - 原 Stage 2 已并入 Stage 1 (掩码后无需单独重裁), 路由层 stage in (1, 2) 同走掩码
+  - Stage 1/3 纯结构化裁剪, 无 LLM 调用
   - Token 估算只算 content + tool_calls.function.name/arguments + reasoning_content
+  - 基于 CompactMessage 统一抽象, Run 内压缩与 Layer 3 跨 run 压缩共用折叠逻辑
   - 独立于跨 run 的 conversation-context 压缩 (Tier 1) 和 LLM 全量压缩 (Tier 2/3)
 ```
 
@@ -658,9 +685,9 @@ SDK ReAct loop 每轮迭代后:
 |---|---|---|
 | `specs/` | 20 份编号详细规格（实体 / 事件 / 适配器 / 工具 / 编排 / 统一 Agent Loop ...），**语言无关契约** | 有效 |
 | `openspec/` | OpenSpec 能力契约（19 个 capability spec，含 **user-auth** / **run-internal-compaction** / **worktree-conflict-resolution**）+ 变更提案（`changes/` 下 100+ 提案，含 RAG 大重构 12 个 change） | 有效 |
-| `electron/` | 桌面版（`main.ts` 启动内嵌 Next server） | ⚠️ 待改造：内嵌 Next 已无后端，需改启 Python |
+| `electron/` | 桌面版（main / preload / paths / server-bootstrap）：Next 前端 + Python sidecar 双进程，单库 SQLite + 云端认证代理（Spec 12 v2） | 有效 |
 | `apps/mobile/` | 移动伴随 App（Capacitor / 远程审批，spec 14） | 独立模块 |
-| `scripts/` | 构建 / Electron / SQLite ABI 辅助（`.mjs`） | 前端用 |
+| `scripts/` | 构建 / Electron 辅助（`.mjs`，含 `prepare-python-runtime.mjs` 桌面 Python 运行时组装） | 前端用 |
 | `skills/` | 可复用开发任务模板（add-adapter / add-tool ...） | 参考 |
 | `.agenthub-data/` | 运行时：`workspaces/` + `deployments/` + `skills/` + `worktrees/` | 前后端共用 |
 

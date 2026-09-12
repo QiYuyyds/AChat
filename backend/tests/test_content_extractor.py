@@ -1,6 +1,5 @@
 """Unit tests for _ContentExtractor state machine and _path_from_extension helper."""
 
-import pytest
 
 from app.adapters.custom_adapter import _ContentExtractor, _path_from_extension
 

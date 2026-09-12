@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_conversation_ownership
 from app.db.engine import get_local_db, get_remote_db
 from app.db.models import Agent, AgentRun, Artifact, User
 from app.schemas.dispatch import AskUserAnswer, PendingQuestion, PendingWrite
@@ -123,8 +124,45 @@ async def _try_legacy_mobile_auth(req: Request) -> User | None:
         return result.scalar_one_or_none()
 
 
+class MobileAuthRequired(Exception):
+    """Raised by the mobile_auth dependency when the request must be rejected.
+
+    A dependency cannot `return` a JSONResponse to short-circuit the request
+    (FastAPI passes it through as a value), so the handler registered by
+    ``add_mobile_exception_handlers`` converts this into the mobile client's
+    expected ``{"error": ...}`` JSON body with CORS headers.
+
+    status 503 + "not configured" body when no token is configured at all
+    (matches _require_mobile_auth); 401 + "Unauthorized" on auth mismatch.
+    """
+
+    def __init__(self, req: Request, status: int = 401, body: dict | None = None):
+        self.req = req
+        self.status = status
+        self.body = body or {"error": "Unauthorized"}
+
+
+def add_mobile_exception_handlers(app) -> None:
+    """Register the MobileAuthRequired handler (idempotent).
+
+    Must be called on every app that mounts the mobile router — including
+    test apps that mount the router without create_app().
+    """
+
+    @app.exception_handler(MobileAuthRequired)
+    async def _mobile_auth_required_handler(request: Request, exc: MobileAuthRequired):
+        return _mobile_json(request, exc.body, status=exc.status)
+
+
 async def mobile_auth(req: Request) -> User:
     """Primary JWT auth with legacy mobile token fallback."""
+    # No token configured on this host at all → companion is disabled (503).
+    if not _expected_token():
+        raise MobileAuthRequired(
+            req,
+            status=503,
+            body={"error": "Mobile companion is not configured on the desktop host"},
+        )
     # Try JWT auth first
     try:
         return await get_current_user(req)
@@ -134,7 +172,7 @@ async def mobile_auth(req: Request) -> User:
     user = await _try_legacy_mobile_auth(req)
     if user is not None:
         return user
-    raise _mobile_json(req, {"error": "Unauthorized"}, status=401)  # type: ignore
+    raise MobileAuthRequired(req)
 
 
 def _require_mobile_auth(req: Request) -> JSONResponse | None:
@@ -155,6 +193,11 @@ def _require_mobile_auth(req: Request) -> JSONResponse | None:
 # ─── Request bodies ─────────────────────────────────────────────────────────
 class _ContentBody(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
+    # Optional sender receipt (clientMessageId) echoed back on message.added;
+    # consumed only by the send route, ignored by edit-and-resend.
+    client_message_id: str | None = Field(default=None, alias="clientMessageId")
+
+    model_config = {"populate_by_name": True}
 
 
 class _PendingWriteActionBody(BaseModel):
@@ -461,7 +504,10 @@ async def mobile_send_message(req: Request, conversation_id: str, user: User = D
         )
     try:
         result = await conversation_service.send_message(
-            conversation_id=conversation_id, content=body.content
+            conversation_id=conversation_id,
+            content=body.content,
+            client_message_id=body.client_message_id,
+            user_id=user.id,
         )
     except Exception as err:  # noqa: BLE001
         return _mobile_json(req, {"error": str(err)}, status=400)
@@ -483,9 +529,10 @@ async def mobile_edit_message(
         return _mobile_json(
             req, {"error": "Invalid body", "issues": _issues(err)}, status=400
         )
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
         result = await conversation_service.edit_and_resend_latest_user_message(
-            conversation_id, message_id, body.content
+            conversation_id, message_id, body.content, user_id=user.id
         )
     except Exception as err:  # noqa: BLE001
         return _mobile_json(req, {"error": str(err)}, status=400)
@@ -507,9 +554,10 @@ async def mobile_withdraw_message(
     req: Request, conversation_id: str, message_id: str,
     user: User = Depends(mobile_auth),
 ) -> Response:
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
         result = await conversation_service.withdraw_latest_user_message(
-            conversation_id, message_id
+            conversation_id, message_id, user_id=user.id
         )
     except Exception as err:  # noqa: BLE001
         return _mobile_json(req, {"error": str(err)}, status=400)
@@ -526,8 +574,11 @@ async def mobile_withdraw_message(
 # ─── POST /api/mobile/conversations/{id}/regenerate ─────────────────────────
 @router.post("/mobile/conversations/{conversation_id}/regenerate")
 async def mobile_regenerate(req: Request, conversation_id: str, user: User = Depends(mobile_auth)) -> Response:
+    await verify_conversation_ownership(conversation_id, user.id)
     try:
-        result = await conversation_service.regenerate_latest_response(conversation_id)
+        result = await conversation_service.regenerate_latest_response(
+            conversation_id, user_id=user.id
+        )
     except Exception as err:  # noqa: BLE001
         return _mobile_json(req, {"error": str(err)}, status=400)
     return _mobile_json(

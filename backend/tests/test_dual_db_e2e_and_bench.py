@@ -29,7 +29,7 @@ async def _seed_dual(dual_db):
     now = now_ms()
     async with dual_db.get_local_db() as session:
         conv = Conversation(
-            id="conv_e2e", user_id="u1", title="E2E", mode="single",
+            id="conv_e2e", title="E2E", mode="single",
             created_at=now, updated_at=now,
         )
         conv.agent_ids_list = []
@@ -41,7 +41,7 @@ async def _seed_dual(dual_db):
             id="ag_e2e", name="E2E Agent", avatar="E", description="e2e",
             system_prompt="test", adapter_name="mock", is_builtin=False,
             is_orchestrator=False,
-            created_at=now, user_id="u1",
+            created_at=now,
         )
         agent.capabilities_list = []
         agent.tool_names_list = []
@@ -58,7 +58,7 @@ async def _seed_single(single_db):
     now = now_ms()
     async with single_db.get_local_db() as session:
         conv = Conversation(
-            id="conv_e2e", user_id="u1", title="E2E", mode="single",
+            id="conv_e2e", title="E2E", mode="single",
             created_at=now, updated_at=now,
         )
         conv.agent_ids_list = []
@@ -70,7 +70,7 @@ async def _seed_single(single_db):
             id="ag_e2e", name="E2E Agent", avatar="E", description="e2e",
             system_prompt="test", adapter_name="mock", is_builtin=False,
             is_orchestrator=False,
-            created_at=now, user_id="u1",
+            created_at=now,
         )
         agent.capabilities_list = []
         agent.tool_names_list = []
@@ -105,7 +105,8 @@ async def dual_db(tmp_path, monkeypatch):
 async def single_db(tmp_path, monkeypatch):
     db_file = tmp_path / "single.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_file.as_posix()}")
-    monkeypatch.delenv("DATABASE_LOCAL_URL", raising=False)
+    # setenv "" not delenv — delenv falls back to .env.local's real value
+    monkeypatch.setenv("DATABASE_LOCAL_URL", "")
     monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path / "ws"))
     monkeypatch.setenv("JWT_SECRET", "test-secret-at-least-32-characters-long!!")
     from app.config import get_settings

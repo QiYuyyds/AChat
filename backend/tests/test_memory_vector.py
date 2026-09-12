@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+
 def test_vector_index_add_search():
     """7.1: VectorIndex add → search → remove → search returns empty."""
     from app.memory.search.vector_index import VectorIndex
@@ -75,12 +76,14 @@ def test_markdown_chunker_simple_headings():
         path="test.md",
         frontmatter=MemoryFrontmatter(name="Test Name", description="Test Desc"),
         body="""## 概述
-段落1
+""" + ("概述内容。" * 40) + """
 
 ## 详情
-段落2
+""" + ("详情内容。" * 40) + """
 """
     )
+    # Bodies exceed min_chunk_size (100) so adjacent short-section merging
+    # does not collapse them into one chunk.
     chunker = MarkdownChunker(chunk_size=512, min_chunk_size=100)
     chunks = chunker.chunk(mem_file)
     assert len(chunks) == 2
@@ -99,12 +102,13 @@ def test_markdown_chunker_nested_headings():
         path="test.md",
         frontmatter=MemoryFrontmatter(name="Test", description=""),
         body="""## 前端框架
-前端相关内容
+""" + ("前端框架综述。" * 40) + """
 
 ### React 19
-React 细节
+""" + ("React 版本细节。" * 40) + """
 """
     )
+    # Bodies exceed min_chunk_size so no short-section merging occurs.
     chunker = MarkdownChunker()
     chunks = chunker.chunk(mem_file)
     assert len(chunks) == 2
@@ -153,11 +157,11 @@ def test_markdown_chunker_no_headings_fallback():
 
 def test_hybrid_search_vector_and_bm25_rrf():
     """7.3: HybridSearch — two-way RRF fusion (mock embed_fn + vector_index with data)."""
+    from app.config import Settings
     from app.memory.search.bm25_index import BM25Index
-    from app.memory.search.hybrid_search import HybridSearch, SearchResult
+    from app.memory.search.hybrid_search import HybridSearch
     from app.memory.search.vector_index import VectorIndex
     from app.memory.search.wikilink_expander import WikilinkExpander
-    from app.config import Settings
 
     with TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
@@ -176,51 +180,63 @@ def test_hybrid_search_vector_and_bm25_rrf():
         expander = WikilinkExpander(tmpdir / "wikilinks.db")
         expander.initialize()
 
-        # Mock embed_fn
-        def embed(text: str):
-            if "前端" in text:
-                return [0.9, 0.5, 0.2]
-            return [0.1, 0.2, 0.3]
+        try:
+            # Mock embed_fn
+            def embed(text: str):
+                if "前端" in text:
+                    return [0.9, 0.5, 0.2]
+                return [0.1, 0.2, 0.3]
 
-        search = HybridSearch(
-            settings, bm25, expander, workspace_root=tmpdir, vector_index=vector, embed_fn=embed,
-        )
+            search = HybridSearch(
+                settings, bm25, expander, workspace_root=tmpdir, vector_index=vector, embed_fn=embed,
+            )
 
-        # Add test files to BM25
-        bm25.add("file1.md", "前端框架", "React 19 是前端框架", "agent_1", "wiki", [])
-        bm25.add("file2.md", "后端框架", "FastAPI 是后端", "agent_1", "wiki", [])
+            # Write real files (search only returns hits whose file exists on disk)
+            from app.memory.file_store.frontmatter import MemoryFrontmatter
+            from app.memory.file_store.markdown_io import write_markdown
+            write_markdown(tmpdir / "file1.md", MemoryFrontmatter(name="前端框架"), "React 19 是前端框架")
+            write_markdown(tmpdir / "file2.md", MemoryFrontmatter(name="后端框架"), "FastAPI 是后端")
 
-        # Add vectors
-        vector.add("file1.md", 0, "React 19 是前端框架", [0.9, 0.5, 0.2], "agent_1", "wiki")
-        vector.add("file2.md", 0, "FastAPI 是后端", [0.1, 0.2, 0.3], "agent_1", "wiki")
+            # Add test files to BM25
+            bm25.add("file1.md", "前端框架", "React 19 是前端框架", "agent_1", "wiki", [])
+            bm25.add("file2.md", "后端框架", "FastAPI 是后端", "agent_1", "wiki", [])
 
-        # Query
-        results = search._vector_search("前端框架", 5, None, None)
-        assert len(results) > 0
+            # Add vectors
+            vector.add("file1.md", 0, "React 19 是前端框架", [0.9, 0.5, 0.2], "agent_1", "wiki")
+            vector.add("file2.md", 0, "FastAPI 是后端", [0.1, 0.2, 0.3], "agent_1", "wiki")
 
-        # Search via hybrid
-        async def _search():
-            return await search.search("前端框架", top_k=5, agent_id=None, bucket=None)
-        import asyncio
-        results = asyncio.run(_search())
-        found_names = [r.name for r in results]
+            # Query
+            results = search._vector_search("前端框架", 5, None, None)
+            assert len(results) > 0
 
-        assert "前端框架" in found_names or "后端框架" in found_names
+            # Search via hybrid
+            async def _search():
+                return await search.search("前端框架", top_k=5, agent_id=None, bucket=None)
+            import asyncio
+            results = asyncio.run(_search())
+            found_names = [r.name for r in results]
 
-        for r in results:
-            assert "bm25" in r.scores
-            assert "vector" in r.scores
-            assert "rrf" in r.scores
-            assert r.scores["rrf"] == round(r.scores["bm25"] + r.scores["vector"], 6)
+            assert "前端框架" in found_names or "后端框架" in found_names
+
+            for r in results:
+                assert "bm25" in r.scores
+                assert "vector" in r.scores
+                assert "rrf" in r.scores
+                assert r.scores["rrf"] == round(r.scores["bm25"] + r.scores["vector"], 6)
+        finally:
+            # Close SQLite handles before TemporaryDirectory cleanup (Windows file locks)
+            bm25.close()
+            vector.close()
+            expander.close()
 
 
 def test_hybrid_search_vector_only():
     """7.3: HybridSearch — vector-only hit scenario."""
+    from app.config import Settings
     from app.memory.search.bm25_index import BM25Index
     from app.memory.search.hybrid_search import HybridSearch
     from app.memory.search.vector_index import VectorIndex
     from app.memory.search.wikilink_expander import WikilinkExpander
-    from app.config import Settings
 
     with TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
@@ -236,31 +252,37 @@ def test_hybrid_search_vector_only():
         expander = WikilinkExpander(tmpdir / "wikilinks.db")
         expander.initialize()
 
-        def embed(text: str):
-            return [0.9, 0.5, 0.2]
+        try:
+            def embed(text: str):
+                return [0.9, 0.5, 0.2]
 
-        search = HybridSearch(
-            settings, bm25, expander, workspace_root=tmpdir, vector_index=vector, embed_fn=embed,
-        )
+            search = HybridSearch(
+                settings, bm25, expander, workspace_root=tmpdir, vector_index=vector, embed_fn=embed,
+            )
 
-        # Add vectors only, no BM25 (BM25 behaves as if file didn't exist)
-        vector.add("semantic.md", 0, "语义相关但关键词不匹配", [0.9, 0.5, 0.2], "agent_1", "wiki")
+            # Add vectors only, no BM25 (BM25 behaves as if file didn't exist)
+            vector.add("semantic.md", 0, "语义相关但关键词不匹配", [0.9, 0.5, 0.2], "agent_1", "wiki")
 
-        async def _search():
-            return await search.search("语义查询", top_k=5)
-        import asyncio
-        results = asyncio.run(_search())
+            async def _search():
+                return await search.search("语义查询", top_k=5)
+            import asyncio
+            results = asyncio.run(_search())
 
-        assert len(results) == 0  # BM25 为空时返回空（避免只是有向量文件但不在 memory 上）
+            assert len(results) == 0  # BM25 为空时返回空（避免只是有向量文件但不在 memory 上）
+        finally:
+            # Close SQLite handles before TemporaryDirectory cleanup (Windows file locks)
+            bm25.close()
+            vector.close()
+            expander.close()
 
 
 def test_hybrid_search_wikilink_post_processing_only():
-    """7.4: HybridSearch — wikilink post-processing expansion still attached."""
+    """7.4: HybridSearch — wikilink expansion available via explicit build_expansion."""
+    from app.config import Settings
     from app.memory.search.bm25_index import BM25Index
     from app.memory.search.hybrid_search import HybridSearch
     from app.memory.search.vector_index import VectorIndex
     from app.memory.search.wikilink_expander import WikilinkExpander
-    from app.config import Settings
 
     with TemporaryDirectory() as tmpdir:
         tmpdir = Path(tmpdir)
@@ -276,31 +298,40 @@ def test_hybrid_search_wikilink_post_processing_only():
         expander = WikilinkExpander(tmpdir / "wikilinks.db")
         expander.initialize()
 
-        # Add file and wikilink edge
-        expander.add_edge_detailed("file1.md", [("file2.md", "related_to")])
-        bm25.add("file1.md", "关键词", "内容", "agent_1", "wiki", [])
+        try:
+            # Write real files so search Phase 3 can read them
+            (tmpdir / "file1.md").write_text("关键词 内容", encoding="utf-8")
+            (tmpdir / "file2.md").write_text("file2 target content", encoding="utf-8")
 
-        def embed(text: str):
-            return [0.1, 0.2, 0.3]
+            # Add file and wikilink edge
+            expander.add_edges_detailed("file1.md", [("file2.md", "related_to")])
+            bm25.add("file1.md", "关键词", "内容", "agent_1", "wiki", [])
 
-        search = HybridSearch(
-            settings, bm25, expander, workspace_root=tmpdir, vector_index=vector, embed_fn=embed,
-        )
+            def embed(text: str):
+                return [0.1, 0.2, 0.3]
 
-        async def _search():
-            return await search.search("关键词", top_k=5)
-        import asyncio
-        results = asyncio.run(_search())
+            search = HybridSearch(
+                settings, bm25, expander, workspace_root=tmpdir, vector_index=vector, embed_fn=embed,
+            )
 
-        # The search result should have expansion metadata
-        assert len(results) >= 1
-        found_expansion = False
-        for r in results:
-            if r.expansion["outlinks"] or r.expansion["inlinks"]:
-                found_expansion = True
-                # file2.md should NOT appear as a separate search result (only in expansion)
-                break
-        assert found_expansion
+            async def _search():
+                return await search.search("关键词", top_k=5)
+            import asyncio
+            results = asyncio.run(_search())
+
+            # Expansion metadata is lazy — build it explicitly for the hit path
+            assert len(results) >= 1
+            hit = results[0]
+            expansion = search.build_expansion(hit.path)
+            outlink_paths = [o["path"] for o in expansion["outlinks"]]
+            assert any(p.replace("\\", "/").endswith("file2.md") for p in outlink_paths)
+            # file2.md should NOT appear as a separate search result (only in expansion)
+            assert all(not r.path.replace("\\", "/").endswith("file2.md") for r in results)
+        finally:
+            # Close SQLite handles before TemporaryDirectory cleanup (Windows file locks)
+            bm25.close()
+            vector.close()
+            expander.close()
 
 
 def test_memory_service_embed_fn_injection():

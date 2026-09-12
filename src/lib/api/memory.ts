@@ -1,14 +1,5 @@
 import { API_BASE_URL } from '@/lib/config'
-import { authFetch } from '@/lib/api'
-
-async function json<T>(req: Promise<Response>): Promise<T> {
-  const res = await req
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`HTTP ${res.status}: ${body || res.statusText}`)
-  }
-  return res.json() as Promise<T>
-}
+import { authFetch, json } from '@/lib/api'
 
 // ─── Types: Memory Files (file-native) ─────────────────────────────────────
 
@@ -55,6 +46,18 @@ export interface MemoryFileWriteBody {
   bucket?: string
 }
 
+export interface MemoryExpansionEntry {
+  path: string
+  name: string
+  description: string
+  predicate: string | null
+}
+
+export interface MemoryExpansion {
+  outlinks: MemoryExpansionEntry[]
+  inlinks: MemoryExpansionEntry[]
+}
+
 export interface MemorySearchResult {
   path: string
   name: string
@@ -62,6 +65,7 @@ export interface MemorySearchResult {
   score: number
   source: string
   frontmatter: Record<string, unknown>
+  expansion: MemoryExpansion
 }
 
 export interface MemorySearchResponse {

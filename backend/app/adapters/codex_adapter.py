@@ -14,15 +14,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import sys
 import time as _time
-from pathlib import Path
 from collections.abc import AsyncIterator
 from typing import Any
 
 from app.adapters.base import AdapterInput, AdapterName
 from app.adapters.cli_base import BlockedArgMode, CLIAdapterBase, filter_custom_args
+from app.adapters.mcp_bridge_config import build_bridge_invocation
 from app.schemas.events import (
     MessageEndEvent,
     MessageStartEvent,
@@ -81,40 +79,21 @@ _next_rpc_id._counter = 0  # type: ignore[attr-defined]
 
 
 def _build_achat_mcp_overrides(input: AdapterInput) -> list[str]:
-    backend_dir = Path(__file__).resolve().parents[2]
-    bridge_args = [
-        "-m",
-        "app.mcp_bridge",
-        "--conversation-id",
-        input.conversation_id,
-        "--run-id",
-        input.run_id,
-        "--workspace-path",
-        input.workspace_path or "",
-        "--agent-id",
-        input.agent_id,
-    ]
-    if input.user_id:
-        bridge_args.extend(["--user-id", input.user_id])
-
-    env_overrides: dict[str, str] = {
-        "PYTHONPATH": str(backend_dir),
-        "PYTHONUNBUFFERED": "1",
-        "DATABASE_URL": os.environ.get("DATABASE_URL", ""),
-    }
-    if os.environ.get("DATABASE_LOCAL_URL"):
-        env_overrides["DATABASE_LOCAL_URL"] = os.environ["DATABASE_LOCAL_URL"]
+    # Invocation content (command/args/env/server name) is shared with the
+    # claude adapter; this function only formats it as Codex `-c` TOML
+    # override lines.
+    invocation = build_bridge_invocation(input)
 
     overrides = [
         "-c",
-        f"mcp_servers.achat-tools.command={json.dumps(sys.executable)}",
+        f"mcp_servers.{invocation.server_name}.command={json.dumps(invocation.command)}",
         "-c",
-        f"mcp_servers.achat-tools.args={json.dumps(bridge_args)}",
+        f"mcp_servers.{invocation.server_name}.args={json.dumps(invocation.args)}",
     ]
-    for key, value in env_overrides.items():
+    for key, value in invocation.env.items():
         overrides.extend([
             "-c",
-            f"mcp_servers.achat-tools.env.{key}={json.dumps(value)}",
+            f"mcp_servers.{invocation.server_name}.env.{key}={json.dumps(value)}",
         ])
     return overrides
 

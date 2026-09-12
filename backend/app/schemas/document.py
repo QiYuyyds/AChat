@@ -72,18 +72,6 @@ class VersionResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class LatestVersionMeta(BaseModel):
-    """Metadata of the latest version (joined into list responses)."""
-
-    filename: str | None = None
-    parser: str | None = None
-    pages: int | None = None
-    text_chars: int | None = Field(default=None, alias="textChars")
-    needs_ocr: bool | None = Field(default=None, alias="needsOcr")
-
-    model_config = {"populate_by_name": True}
-
-
 class DocumentListItem(DocumentResponse):
     """Document row in list responses, enriched with latest-version info."""
 
@@ -122,11 +110,18 @@ class VersionListResponse(BaseModel):
 
 
 class IngestResultResponse(BaseModel):
-    """Response for POST /api/documents/{id}/ingest."""
+    """Response for POST /api/documents/{id}/ingest.
+
+    Synchronous ingest fills chunk_count / doc_hash. When the RAG task worker
+    handles the ingest asynchronously, rag_task_id / status are set instead
+    and the RAG fields stay None.
+    """
 
     version_id: str = Field(alias="versionId")
-    chunk_count: int = Field(alias="chunkCount")
-    doc_hash: str = Field(alias="docHash")
+    chunk_count: int | None = Field(default=None, alias="chunkCount")
+    doc_hash: str | None = Field(default=None, alias="docHash")
+    rag_task_id: str | None = Field(default=None, alias="ragTaskId")
+    status: str | None = None
 
     model_config = {"populate_by_name": True}
 

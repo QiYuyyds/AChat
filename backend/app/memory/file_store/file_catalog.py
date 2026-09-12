@@ -96,8 +96,17 @@ class FileCatalog:
                 list(deleted),
             )
 
-        # Upsert all disk files
+        # Upsert all disk files, but preserve pending markers (mtime=0):
+        # If a catalog entry exists with mtime=0 (pending), keep it at 0 so
+        # that get_changed() will still pick it up after reconcile.
         for path_str, (mtime, bucket) in disk_files.items():
+            # Check if existing record is pending (mtime=0)
+            existing = self._conn.execute(
+                "SELECT st_mtime FROM memory_catalog WHERE path = ?", (path_str,)
+            ).fetchone()
+            if existing is not None and existing[0] == 0.0:
+                # Preserve pending marker — do not overwrite with real mtime
+                continue
             self._conn.execute(
                 "INSERT OR REPLACE INTO memory_catalog (path, st_mtime, bucket) VALUES (?, ?, ?)",
                 (path_str, mtime, bucket),
@@ -161,6 +170,49 @@ class FileCatalog:
             len(changed), len(to_remove),
         )
         return changed
+
+    def count_changed(self, bucket: str | None = None) -> int:
+        """Return the number of files whose mtime differs from catalog.
+
+        Read-only: does NOT update mtime, does NOT delete records. Safe for
+        use as a threshold check (unlike get_changed which consumes changes).
+        Pending records (mtime=0) are always counted as changed since their
+        real mtime will never be 0.
+        """
+        if not self._conn:
+            return 0
+
+        if bucket:
+            cursor = self._conn.execute(
+                "SELECT path, st_mtime FROM memory_catalog WHERE bucket = ?",
+                (bucket,),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT path, st_mtime FROM memory_catalog"
+            )
+
+        count = 0
+        for row in cursor.fetchall():
+            path_str, cat_mtime = row
+            # Pending records (mtime=0) always count as changed
+            if cat_mtime == 0.0:
+                count += 1
+                continue
+            p = Path(path_str)
+            if not p.exists():
+                # File missing — counts as changed (will be cleaned by get_changed later)
+                count += 1
+                continue
+            try:
+                actual_mtime = p.stat().st_mtime
+            except OSError:
+                count += 1
+                continue
+            if actual_mtime != cat_mtime:
+                count += 1
+
+        return count
 
     def upsert(self, path: str, st_mtime: float | None = None, bucket: str = "daily") -> None:
         """Insert or update a catalog entry. If st_mtime is None, use current file mtime."""

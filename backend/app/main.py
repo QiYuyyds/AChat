@@ -73,6 +73,18 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
 
     settings = get_settings()
 
+    # ─── Location warmup (first-token latency) ───
+    # With default_location='auto', kick off the IP-geolocation probe in the
+    # background NOW so the first message finds the cache warm instead of
+    # injecting "Unknown" (see speed-up-first-token-latency, decision 1).
+    if settings.default_location == "auto":
+        try:
+            from app.services.agent_runner import warm_location_cache
+            warm_location_cache()
+            logger.info("Location warmup scheduled (default_location='auto')")
+        except Exception as e:
+            logger.warning("Location warmup failed: %s", e)
+
     # ─── Optional source intelligence ───
     try:
         from app.code_intelligence.bootstrap import (
@@ -101,6 +113,41 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         except ImportError as e:
             logger.warning("Observability: auto-instrumentation skipped (%s)", e)
 
+    # ─── Aeval: inject real AChat runner (change ②, eval_integration) ───
+    # Runs here (not in create_app) because storage init is async and the
+    # trace bridge must install on the initialised OTel provider (§14.1.2).
+    # Needs EVAL_AGENT_ID (被评 agent); missing credentials → 明确告警, 子应用
+    # 保持 503 (POST /runs) 而非崩溃。
+    if settings.eval_harness_enabled:
+        try:
+            from agent_eval.api.app import set_runner
+
+            from app.eval_integration.config import create_aeval_runner
+
+            # 同进程嵌入: in_process 通道在这里才成立 (独立脚本请用默认 http)
+            runner = await create_aeval_runner(settings, completion_channel="in_process")
+            set_runner(runner)
+            logger.info(
+                "Aeval: real AChat runner injected (agent=%s, api_base=%s, "
+                "completion=in_process)",
+                settings.eval_agent_id,
+                settings.eval_api_base or f"http://127.0.0.1:{settings.port}",
+            )
+        except Exception as e:
+            logger.warning("Aeval runner injection failed: %s", e)
+            logger.warning(
+                "Aeval: eval API mounted without a runner — POST /runs returns "
+                "503. Check EVAL_AGENT_ID and related eval_* settings."
+            )
+
+    # ─── global_settings infra columns migration (must precede factory build —
+    # build_infrastructure reads the new columns via global_settings_service) ───
+    try:
+        from app.db.migrations.global_settings_infra import migrate_global_settings_infra
+        await migrate_global_settings_infra()
+    except Exception as e:
+        logger.warning("global_settings infra config migration failed: %s", e)
+
     # ─── Infrastructure factory ───
     try:
         from app.infra.factory import build_infrastructure, close_infrastructure
@@ -109,6 +156,7 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         logger.warning("Infrastructure build failed: %s", e)
 
     # ─── MemoryService ───
+    _curator_job = None
     try:
         from app.memory.memory_service import MemoryService
         _memory_service = MemoryService(settings)
@@ -116,6 +164,17 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning("MemoryService init failed: %s", e)
         _memory_service = None
+
+    # ─── CuratorJob (nightly memory lifecycle) ───
+    if _memory_service and settings.memory_curator_enabled:
+        try:
+            from app.memory.curator import CuratorJob
+            _curator_job = CuratorJob(settings, _memory_service)
+            await _curator_job.start()
+            logger.info("CuratorJob scheduled (cron=%s)", settings.memory_auto_dream_cron)
+        except Exception as e:
+            logger.warning("CuratorJob init failed: %s", e)
+            _curator_job = None
 
     # ─── RAG overhaul schema migration (before RAGService init) ───
     try:
@@ -336,9 +395,24 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
     except Exception as e:
         logger.warning("Recovery scan failed: %s", e)
 
+    # ─── Desktop stats reporter (usage-stats, design D4) ───
+    # 桌面模式：本地计数队列的后台批量上报（web 模式计数在业务路径直写云端，
+    # 无需 reporter）。
+    if settings.agenthub_desktop:
+        try:
+            from app.services.stats_reporter import get_stats_reporter
+            get_stats_reporter().start()
+        except Exception as e:
+            logger.warning("Stats reporter start failed: %s", e)
+
     yield
 
     # Shutdown
+    try:
+        from app.services.stats_reporter import get_stats_reporter
+        await get_stats_reporter().stop()
+    except Exception:
+        pass
     if _rag_task_worker:
         try:
             await _rag_task_worker.stop()
@@ -349,7 +423,18 @@ async def lifespan(app_instance: FastAPI) -> AsyncIterator[None]:
         await shutdown_code_intelligence_service()
     except Exception:
         pass
+    # Best-effort close of cached LLM HTTP clients (connection pools).
+    try:
+        from app.adapters.custom_adapter import close_cached_clients
+        await close_cached_clients()
+    except Exception:
+        pass
     shutdown_observability()
+    if _curator_job:
+        try:
+            await _curator_job.stop()
+        except Exception:
+            pass
     if _memory_service:
         try:
             await _memory_service.close()
@@ -661,27 +746,15 @@ def _make_embed_fn(settings):
 def _make_generate_fn(settings):
     """Create LLM generate function using OpenAI-compatible API.
 
-    Priority: llm_api_key > openai_api_key > deepseek_api_key.
-    When llm_api_key is set, uses llm_api_url and llm_model for full configurability
-    (e.g. DashScope, Ollama, or any OpenAI-compatible endpoint).
+    Key/url/model resolution (priority: llm_api_key > openai_api_key >
+    deepseek_api_key) is shared via settings_service.resolve_default_llm_config.
     """
-    # Priority 1: dedicated LLM config (supports DashScope and other OpenAI-compatible APIs)
-    if settings.llm_api_key:
-        api_key = settings.llm_api_key
-        api_url = settings.llm_api_url or "https://api.openai.com/v1"
-        model = settings.llm_model or "gpt-4o-mini"
-    # Priority 2: OpenAI key
-    elif settings.openai_api_key:
-        api_key = settings.openai_api_key
-        api_url = "https://api.openai.com/v1"
-        model = "gpt-4o-mini"
-    # Priority 3: DeepSeek key
-    elif settings.deepseek_api_key:
-        api_key = settings.deepseek_api_key
-        api_url = "https://api.deepseek.com/v1"
-        model = "deepseek-chat"
-    else:
+    from app.services.settings_service import resolve_default_llm_config
+
+    resolved = resolve_default_llm_config(settings)
+    if resolved is None:
         return None
+    api_key, api_url, model = resolved
     import httpx
     client = httpx.Client(timeout=60.0)
     def generate(system_prompt: str, user_msg: str) -> str:
@@ -1029,6 +1102,13 @@ def create_app() -> FastAPI:
     _allowed_origins = set(settings.cors_origins_list)
     # Also accept localhost variations (127.0.0.1, ::1) for dev environments
     _localhost_variants = {"http://127.0.0.1:3000", "http://[::1]:3000"}
+    # 桌面模式：前端 origin 是 127.0.0.1:<动态端口>，任何 loopback host 均放行
+    # （sidecar 仅绑定 loopback，局域网设备无法伪造该 origin）
+    _desktop_mode = settings.agenthub_desktop
+
+    def _is_loopback_origin(origin: str) -> bool:
+        parsed = urlparse(origin)
+        return parsed.hostname in ("127.0.0.1", "localhost", "::1")
 
     @app.middleware("http")
     async def csrf_origin_check(request: Request, call_next):
@@ -1040,7 +1120,11 @@ def create_app() -> FastAPI:
                 # to scheme://host:port so it matches the allowed-origin entries.
                 parsed = urlparse(raw)
                 origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else raw
-                if origin not in _allowed_origins and origin not in _localhost_variants:
+                if (
+                    origin not in _allowed_origins
+                    and origin not in _localhost_variants
+                    and not (_desktop_mode and _is_loopback_origin(origin))
+                ):
                     return JSONResponse(
                         status_code=403,
                         content={"detail": "Origin not allowed"},
@@ -1060,6 +1144,7 @@ def create_app() -> FastAPI:
         eval,
         fs,
         graph,
+        infra,
         mcp,
         memory,
         messages,
@@ -1073,6 +1158,7 @@ def create_app() -> FastAPI:
         rag_tasks,
         runs_misc,
         skills,
+        stats,
         stream,
         tasks,
         workspaces,
@@ -1082,7 +1168,18 @@ def create_app() -> FastAPI:
     )
     from app.api.mobile import routes as mobile_routes
 
-    app.include_router(auth.router, prefix="/api", tags=["auth"])
+    # Mobile auth 401s flow through MobileAuthRequired (a dependency cannot
+    # short-circuit with a JSONResponse), so the handler must be registered.
+    mobile_routes.add_mobile_exception_handlers(app)
+
+    if settings.agenthub_desktop:
+        # 桌面模式：/api/auth/* 走云端透明代理（真实 auth 路由不挂载，web 语义不变）
+        from app.api import auth_proxy, desktop
+
+        app.include_router(auth_proxy.router, prefix="/api", tags=["auth"])
+        app.include_router(desktop.router, prefix="/api", tags=["desktop"])
+    else:
+        app.include_router(auth.router, prefix="/api", tags=["auth"])
     app.include_router(profile.router, prefix="/api", tags=["profile"])
     app.include_router(conversations.router, prefix="/api", tags=["conversations"])
     app.include_router(code_intelligence.router, prefix="/api", tags=["code-intelligence"])
@@ -1111,9 +1208,31 @@ def create_app() -> FastAPI:
     app.include_router(rag_eval.router, prefix="/api", tags=["rag-eval"])
     app.include_router(rag_tasks.router, prefix="/api", tags=["rag-tasks"])
     app.include_router(rag_config.router, prefix="/api", tags=["rag-config"])
+    app.include_router(infra.router, prefix="/api", tags=["infra"])
+    app.include_router(stats.router, prefix="/api", tags=["stats"])
     # deployment preview assets served at root /deployments/{id}/... (no /api prefix);
     # the previewPath the agent emits is /deployments/{id}. Frontend proxies via rewrite.
     app.include_router(deployments.router, tags=["deployments"])
+
+    # ─── Aeval evaluation harness (change: add-eval-harness-core) ───
+    # Mounted AFTER the judge routes above: Starlette matches routes in
+    # registration order, so /api/eval/judge/* keeps matching first and the
+    # sub-app's routes (suites/tasks/runs/trials/compare/graders) coexist on
+    # the same prefix without overlap (design doc §10.1).
+    if settings.eval_harness_enabled:
+        try:
+            # agent_eval is consumed as an installed (editable) package —
+            # no sys.path routing needed. eval_integration is the AChat
+            # adapter layer inside this app package.
+            from agent_eval.api.app import create_app as create_eval_app
+
+            # Real runner injected later in lifespan (needs async DB init +
+            # OTel provider for the trace bridge). Without one, the
+            # storage-backed endpoints work and POST /runs returns 503.
+            app.mount("/api/eval", create_eval_app())
+            logger.info("Eval harness API mounted at /api/eval")
+        except Exception as e:
+            logger.warning("Eval harness mount failed: %s", e)
 
     @app.get("/health")
     async def health_check() -> dict[str, str]:

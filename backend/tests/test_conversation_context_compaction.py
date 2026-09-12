@@ -10,7 +10,6 @@ Covers the CompactMessage-based unified pipeline:
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 from app.services.compact_pipeline import (
@@ -21,7 +20,6 @@ from app.services.compact_pipeline import (
 )
 from app.services.transcript_renderer import estimate_dict_message_tokens
 from app.utils.model_registry import estimate_tokens
-
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 

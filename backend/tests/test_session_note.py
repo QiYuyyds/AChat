@@ -7,7 +7,6 @@ Verifies:
 - from_yaml can extract content from ```yaml code blocks
 """
 
-import pytest
 
 from app.memory.session_note import SessionNote
 
@@ -141,7 +140,7 @@ def test_to_xml_escapes_special_chars():
 
 def test_enforce_section_limits_trims_lists():
     """_enforce_section_limits trims oversized lists to their limits."""
-    from app.memory.session_note import _enforce_section_limits, SECTION_LIMITS
+    from app.memory.session_note import SECTION_LIMITS, _enforce_section_limits
 
     note = SessionNote(
         key_decisions=[f"decision_{i}" for i in range(25)],

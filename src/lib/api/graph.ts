@@ -1,4 +1,4 @@
-import { authFetch } from '@/lib/api'
+import { authFetch, json } from '@/lib/api'
 import { API_BASE_URL } from '@/lib/config'
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -38,15 +38,6 @@ export interface GraphData {
 }
 
 // ─── API ─────────────────────────────────────────────────────────────────────
-
-async function json<T>(req: Promise<Response>): Promise<T> {
-  const res = await req
-  if (!res.ok) {
-    const body = await res.text()
-    throw new Error(`HTTP ${res.status}: ${body || res.statusText}`)
-  }
-  return res.json() as Promise<T>
-}
 
 export async function fetchGraphStats(): Promise<GraphStats> {
   return json<GraphStats>(

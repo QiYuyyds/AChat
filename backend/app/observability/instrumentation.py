@@ -83,6 +83,9 @@ AGENTHUB_READY_COUNT = "agenthub.ready_count"
 AGENTHUB_SKIPPED_COUNT = "agenthub.skipped_count"
 AGENTHUB_NODE_STATUS = "agenthub.node_status"
 AGENTHUB_DEPENDS_ON = "agenthub.depends_on"
+AGENTHUB_TTFT_MS = "agenthub.ttft_ms"
+AGENTHUB_MEMORY_INJECTED_PATHS = "agenthub.memory.injected_paths"
+AGENTHUB_MEMORY_RESULT_SCORES = "agenthub.memory.result_scores"
 
 
 def _set_attrs(span, attrs: dict[str, Any]) -> None:
@@ -193,7 +196,12 @@ class _NoOpSpan:
     def set_status(self, status: Any) -> None:  # noqa: ARG002
         pass
 
-    def add_event(self, name: str, attributes: Any = None) -> None:  # noqa: ARG002
+    def add_event(
+        self,
+        name: str,  # noqa: ARG002
+        attributes: Any = None,  # noqa: ARG002
+        timestamp: int | None = None,  # noqa: ARG002
+    ) -> None:
         pass
 
 

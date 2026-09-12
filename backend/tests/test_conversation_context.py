@@ -1,7 +1,7 @@
 """Tests for conversation_context.build_history_for (phase 5 dep, spec 13)."""
 
 from app.db.engine import get_db
-from app.db.models import Artifact, ContextSummary, Conversation, Message
+from app.db.models import Artifact, Conversation, Message
 from app.services import conversation_context as cc
 from app.services.conversation_context import BuildHistoryOptions
 from app.utils.clock import now_ms

@@ -955,10 +955,15 @@ def _compact_messages(n_turns=4, tools_per_turn=3, result_size=500):
 
 
 def _mock_model_limit(monkeypatch, context_window=100_000):
-    """Patch get_model_limits to return a fake context window."""
+    """Patch get_model_limits to return a fake context window.
+
+    The runner reads effective_context_window (context_window minus the
+    output-token reserve); exposing only the old attribute would raise
+    AttributeError, silently swallowed into model_limit=0.
+    """
     monkeypatch.setattr(
         "app.services.agent_runner.get_model_limits",
-        lambda *a, **k: type("LM", (), {"context_window": context_window})(),
+        lambda *a, **k: type("LM", (), {"context_window": context_window, "effective_context_window": context_window})(),
     )
 
 

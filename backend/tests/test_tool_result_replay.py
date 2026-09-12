@@ -14,7 +14,6 @@ from app.services.conversation_context import (
     _render_agent_public_text,
 )
 
-
 # ─── _extract_tool_result_text ──────────────────────────────────────────────
 
 

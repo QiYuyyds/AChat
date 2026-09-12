@@ -11,6 +11,10 @@ a group member (existing behavior). Group-member dispatch messages are visible.
 The tool enforces:
 - ``MAX_DISPATCH_DEPTH`` limit (clone-self can recurse up to 3 levels)
 - Anti-loop: subagent runs can only clone themselves, not dispatch to other agents
+- Handoff (catch point ②): when the dispatched run ends via the ``handoff``
+  terminal tool, the handler re-dispatches the target agent in-place on the
+  same worktree and visibility — merge-back/cleanup happen once, after the
+  final executor finishes (chain cap: MAX_HANDOFF_CHAIN, cycle-free).
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from sqlalchemy import select
 from app.db.engine import get_local_db
 from app.db.models import Agent, AgentRun, Conversation
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
+from app.tools.handoff import MAX_HANDOFF_CHAIN, HandoffPayload
 
 logger = logging.getLogger(__name__)
 
@@ -143,58 +148,75 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         visibility,
     )
 
-    # Create worktree for isolation (degrades to shared workspace if None)
-    from app.services.worktree_service import (
-        cleanup_worktree,
-        create_worktree,
-        merge_worktree_back,
-    )
+    # Isolated worktree (degrades to shared workspace if None). Merge-back /
+    # cleanup run once after the final executor (or after the chain ended),
+    # regardless of how the loop below exits.
+    from app.services.worktree_service import isolated_workspace
     from app.utils.ids import new_tool_call_id
 
-    wt = None
-    if ctx.workspace_path:
-        agent_name = "agent"
-        async with get_local_db() as db:
-            agent_row = (
-                await db.execute(
-                    select(Agent).where(Agent.id == target_agent_id)
-                )
-            ).scalar_one_or_none()
-            if agent_row is not None:
-                agent_name = agent_row.name
-        wt_task_id = new_tool_call_id()
-        wt = await create_worktree(
-            main_workspace=ctx.workspace_path,
-            task_id=wt_task_id,
-            agent_name=agent_name,
-            conversation_id=ctx.conversation_id,
-            user_id=ctx.user_id,
+    async with isolated_workspace(
+        main_workspace=ctx.workspace_path,
+        task_id=new_tool_call_id(),
+        agent_id=target_agent_id,
+        conversation_id=ctx.conversation_id,
+        user_id=ctx.user_id,
+    ) as wt:
+        workspace_path_arg = wt.path if wt else None
+
+        # ── Executor-swap loop (catch point ②) ────────────────────────────
+        # Each iteration spawns one executor on the SAME worktree / visibility /
+        # dispatch depth; a run that ends via handoff is replaced in-place by its
+        # target.
+        result = await spawn_subagent_loop(
             agent_id=target_agent_id,
+            task_description=task_description,
+            conversation_id=ctx.conversation_id,
+            trigger_message_id=trigger_message_id,
+            parent_run_id=ctx.run_id,
+            parent_cancel_event=ctx.cancel_event,
+            dispatch_depth=ctx.dispatch_depth + 1,
+            dispatch_visibility=visibility,
+            user_id=ctx.user_id,
+            workspace_path=workspace_path_arg,
+            allow_handoff=True,
+            handoff_chain=[target_agent_id],
         )
 
-    workspace_path_arg = wt.path if wt else None
-
-    result = await spawn_subagent_loop(
-        agent_id=target_agent_id,
-        task_description=task_description,
-        conversation_id=ctx.conversation_id,
-        trigger_message_id=trigger_message_id,
-        parent_run_id=ctx.run_id,
-        parent_cancel_event=ctx.cancel_event,
-        dispatch_depth=ctx.dispatch_depth + 1,
-        dispatch_visibility=visibility,
-        user_id=ctx.user_id,
-        workspace_path=workspace_path_arg,
-    )
-
-    # Merge worktree back and cleanup (only if worktree was created)
-    if wt is not None:
-        try:
-            await merge_worktree_back(wt)
-        except Exception as exc:  # noqa: BLE001 - log but don't block result
-            logger.warning("[task_dispatch] merge_worktree_back failed: %s", exc)
-        finally:
-            await cleanup_worktree(wt)
+        chain = [target_agent_id]
+        rejection: str | None = None
+        while (
+            result.handoff is not None
+            and len(chain) < MAX_HANDOFF_CHAIN
+            and not ctx.cancel_event.is_set()
+        ):
+            handoff = result.handoff
+            rejection = await _validate_redispatch_target(ctx, handoff.agent_id, chain)
+            if rejection is not None:
+                break
+            next_agent_id = handoff.agent_id
+            chain.append(next_agent_id)
+            logger.info(
+                "[task_dispatch] handoff re-dispatch run=%s %s -> %s (chain=%s)",
+                ctx.run_id,
+                chain[-2],
+                next_agent_id,
+                chain,
+            )
+            result = await spawn_subagent_loop(
+                agent_id=next_agent_id,
+                task_description=task_description
+                + _format_handoff_note(chain[-2], handoff),
+                conversation_id=ctx.conversation_id,
+                trigger_message_id=trigger_message_id,
+                parent_run_id=ctx.run_id,
+                parent_cancel_event=ctx.cancel_event,
+                dispatch_depth=ctx.dispatch_depth + 1,  # unchanged: swap, not nest
+                dispatch_visibility=visibility,
+                user_id=ctx.user_id,
+                workspace_path=workspace_path_arg,
+                allow_handoff=True,
+                handoff_chain=chain,
+            )
 
     if result.status == "aborted":
         return err(f"Sub-agent run was aborted: {result.text}")
@@ -205,7 +227,98 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     }
     if result.stop_reason:
         payload["stopReason"] = result.stop_reason
+
+    # A pending handoff at loop exit means the last executor tried to hand off
+    # but the chain ended here: cap reached, cancel, or re-validation failed.
+    # Fall back to a normal tool result with an explanation — never interrupt
+    # the dispatch itself.
+    handoff_blocked: str | None = None
+    if result.handoff is not None:
+        if ctx.cancel_event.is_set():
+            handoff_blocked = "用户停止了本次运行"
+        elif len(chain) >= MAX_HANDOFF_CHAIN:
+            handoff_blocked = f"移交链已达上限（{MAX_HANDOFF_CHAIN}）"
+        else:
+            handoff_blocked = rejection or "移交目标校验未通过"
+        payload["status"] = "failed"
+        payload["summary"] = (
+            f"{chain[-1]} 尝试将任务移交给 {result.handoff.agent_id}，"
+            f"但{handoff_blocked}，移交未生效。前任移交说明：{result.text}"
+        )
+
+    if len(chain) > 1 or handoff_blocked is not None:
+        payload["executedBy"] = chain[-1]
+        payload["handoffChain"] = chain
+        await _record_dispatch_metadata(result.run_id, chain)
+
     return ok(payload)
+
+
+async def _validate_redispatch_target(
+    ctx: ToolContext, target: str, chain: list[str]
+) -> str | None:
+    """Second-chance validation before re-dispatch (window-race backstop).
+
+    Returns None when the target may take over, otherwise a rejection reason.
+    """
+    if target in chain:
+        return f"目标 {target} 已在移交链中，禁止成环"
+    async with get_local_db() as db:
+        conv = (
+            await db.execute(
+                select(Conversation).where(Conversation.id == ctx.conversation_id)
+            )
+        ).scalar_one_or_none()
+        if conv is None or target not in conv.agent_ids_list:
+            return f"目标 {target} 不在会话成员中"
+        busy = (
+            await db.execute(
+                select(AgentRun.id).where(
+                    AgentRun.conversation_id == ctx.conversation_id,
+                    AgentRun.agent_id == target,
+                    AgentRun.status.in_(["running", "queued"]),
+                )
+            )
+        ).first()
+    if busy is not None:
+        return f"目标 {target} 正忙（已有进行中的运行）"
+    return None
+
+
+def _format_handoff_note(previous_agent_id: str, handoff: HandoffPayload) -> str:
+    """Structured handoff summary appended to the task description for the
+    successor (same format family as the DAG upstream-output block)."""
+    lines = [
+        "\n\n---\n"
+        f"## 前任执行者移交说明（{previous_agent_id} → {handoff.agent_id}）",
+        f"移交理由：{handoff.reason}",
+        f"移交说明：\n{handoff.summary}",
+    ]
+    if handoff.files_changed:
+        lines.append(f"已变更文件：{'、'.join(handoff.files_changed)}")
+    if handoff.key_decisions:
+        lines.append(f"关键决策：{'、'.join(handoff.key_decisions)}")
+    lines.append(
+        "请从剩余工作继续。你的工作目录即前任的工作目录，"
+        "已产生的半成品文件可直接使用。"
+    )
+    return "\n".join(lines)
+
+
+async def _record_dispatch_metadata(run_id: str | None, chain: list[str]) -> None:
+    """Persist executedBy / handoffChain onto the final executor's run row."""
+    if run_id is None:
+        return
+    try:
+        async with get_local_db() as db:
+            run = await db.get(AgentRun, run_id)
+            if run is not None:
+                run.dispatch_results = {
+                    "executedBy": chain[-1],
+                    "handoffChain": chain,
+                }
+    except Exception as exc:  # noqa: BLE001 - metadata is best-effort
+        logger.warning("[task_dispatch] dispatch_results write failed: %s", exc)
 
 
 task_dispatch_tool = ToolDef(

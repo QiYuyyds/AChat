@@ -19,7 +19,6 @@ from app.services.compact_pipeline import to_compact_messages_orm
 from app.services.conversation_context import BuildHistoryOptions
 from app.utils.clock import now_ms
 
-
 # ─── helpers ────────────────────────────────────────────────────────────────
 
 
@@ -61,7 +60,6 @@ async def _seed_conversation(agent_id: str) -> str:
     async with get_db() as db:
         conv = Conversation(
             id=conv_id,
-            user_id="test_user_1",
             title="orm safety test",
             mode="single",
             archived=False,
@@ -230,8 +228,11 @@ async def test_to_compact_on_detached_objects_no_dirty_state(db, agents):
             f"Session has {len(dirty)} dirty objects after to_compact_messages_orm"
         )
 
-        assert len(compact_msgs) == 5
+        # 1 user + 4 assistant (tool_calls) + 4 role=tool (tool_results) —
+        # tool_result parts now split into their own CompactMessage.
+        assert len(compact_msgs) == 9
         assert compact_msgs[0].role == "user"
-        for i in range(1, 5):
-            assert compact_msgs[i].role == "assistant"
-            assert compact_msgs[i].tool_calls is not None
+        for i in range(4):
+            assert compact_msgs[1 + i * 2].role == "assistant"
+            assert compact_msgs[1 + i * 2].tool_calls is not None
+            assert compact_msgs[2 + i * 2].role == "tool"

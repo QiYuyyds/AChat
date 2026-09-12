@@ -87,6 +87,9 @@ class SendMessageRequest(BaseModel):
     parent_message_id: str | None = Field(default=None, alias="parentMessageId")
     attachment_ids: list[str] | None = Field(default=None, alias="attachmentIds")
     model_profile_id: str | None = Field(default=None, alias="modelProfileId")
+    # Sender's optimistic temp message id (temp_*). Echoed back on the broadcast
+    # message.added event so the sender can reconcile at event-arrival time.
+    client_message_id: str | None = Field(default=None, alias="clientMessageId")
 
     model_config = {"populate_by_name": True, "protected_namespaces": ()}
 
@@ -582,6 +585,40 @@ class ChangePasswordRequest(BaseModel):
 
     current_password: str = Field(alias="currentPassword", min_length=1, max_length=128)
     new_password: str = Field(alias="newPassword", min_length=8, max_length=128)
+
+    model_config = {"populate_by_name": True}
+
+
+# ─── Infra Config (rag-infra-config) ───────────────────
+class InfraConfigUpdate(BaseModel):
+    """PATCH-style update for infra connection overrides (global_settings).
+
+    Absent field → unchanged. ``neo4jPassword`` uses the secrets-form
+    convention: "" or the mask echo → unchanged (空=未修改); a new value
+    replaces it. Other string fields accept None to clear (回落 env).
+    """
+
+    milvus_host: str | None = Field(default=None, alias="milvusHost")
+    milvus_port: int | None = Field(default=None, alias="milvusPort", ge=1, le=65535)
+    neo4j_uri: str | None = Field(default=None, alias="neo4jUri")
+    neo4j_user: str | None = Field(default=None, alias="neo4jUser")
+    neo4j_password: str | None = Field(default=None, alias="neo4jPassword")
+    enable_graph: bool | None = Field(default=None, alias="enableGraph")
+
+    model_config = {"populate_by_name": True}
+
+
+class InfraConfigTestRequest(BaseModel):
+    """Connection-test request: un-persisted params, tested as-is.
+
+    ``neo4jPassword`` equal to the mask echo means "use the stored password".
+    """
+
+    milvus_host: str | None = Field(default=None, alias="milvusHost")
+    milvus_port: int | None = Field(default=None, alias="milvusPort", ge=1, le=65535)
+    neo4j_uri: str | None = Field(default=None, alias="neo4jUri")
+    neo4j_user: str | None = Field(default=None, alias="neo4jUser")
+    neo4j_password: str | None = Field(default=None, alias="neo4jPassword")
 
     model_config = {"populate_by_name": True}
 

@@ -17,7 +17,7 @@ contract byte-for-byte (the unchanged React frontend depends on it).
 from datetime import UTC, datetime
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from app.auth.dependencies import get_current_user
@@ -69,9 +69,13 @@ def _content_disposition(filename: str) -> str:
 
 
 @router.get("/artifacts")
-async def list_artifacts(user: User = Depends(get_current_user)) -> dict:
-    """List all artifacts, newest first."""
-    artifacts = await artifact_service.list_artifacts()
+async def list_artifacts(
+    conversation_id: str | None = None,
+    user: User = Depends(get_current_user),
+) -> dict:
+    """List all artifacts, newest first. Optional `conversation_id` filter
+    (Aeval integration — outcome collection); backwards compatible."""
+    artifacts = await artifact_service.list_artifacts(conversation_id=conversation_id)
     return {"artifacts": [a.to_camel() for a in artifacts]}
 
 
@@ -90,6 +94,10 @@ async def delete_artifact(artifact_id: str, user: User = Depends(get_current_use
     try:
         await verify_artifact_ownership(artifact_id, user.id)
         await artifact_service.delete_artifact(artifact_id)
+    except HTTPException as err:
+        # verify_artifact_ownership 对缺失 artifact 抛 HTTPException; 与本模块
+        # 其余 404 一致返回 {"error"} 而非 FastAPI 默认 {"detail"}。
+        return JSONResponse({"error": str(err.detail)}, status_code=err.status_code)
     except ValueError as err:
         return JSONResponse({"error": str(err)}, status_code=404)
     return {"ok": True}

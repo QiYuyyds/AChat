@@ -48,9 +48,18 @@ def slugify_key_part(text: str, max_len: int = 48) -> str:
 
 
 def make_stable_key(bucket: str, name: str, explicit: str | None = None) -> str:
-    """Build a stable merge key for digest units/files."""
+    """Build a stable merge key for digest units/files.
+
+    For personal bucket, the key MUST be topic-level (e.g. user.interest.music),
+    never fact-level (e.g. user.interest.music.doudou). This is a prerequisite
+    for SUPERSEDE to correctly hit the same card when preferences change.
+    """
     if explicit and str(explicit).strip():
-        return slugify_key_part(str(explicit).strip(), max_len=80)
+        key = slugify_key_part(str(explicit).strip(), max_len=80)
+        # For personal bucket, strip object-level suffixes to enforce topic-level
+        if normalize_bucket(bucket) == "personal":
+            key = _normalize_personal_key(key)
+        return key
 
     bucket = normalize_bucket(bucket)
     name = (name or "").strip()
@@ -60,9 +69,9 @@ def make_stable_key(bucket: str, name: str, explicit: str | None = None) -> str:
         if any(k in name for k in ("身份", "职业", "背景", "负责人", "identity", "job")):
             return "user.identity.profile"
         if any(k in low for k in ("doudou", "福禄寿", "音乐", "乐队")):
-            return "user.interest.music.doudou"
+            return "user.interest.music"  # topic-level, not .doudou
         if any(k in name for k in ("洛小阳", "匠人宇宙", "阅读", "小说")):
-            return "user.interest.reading.jiangren"
+            return "user.interest.reading"  # topic-level, not .jiangren
         if any(k in name for k in ("偏好", "喜欢", "约定", "禁忌", "不要")):
             return f"user.rule.{slugify_key_part(name)}"
         return f"user.misc.{slugify_key_part(name)}"
@@ -70,6 +79,24 @@ def make_stable_key(bucket: str, name: str, explicit: str | None = None) -> str:
     if bucket == "procedure":
         return f"proc.{slugify_key_part(name)}"
     return f"wiki.{slugify_key_part(name)}"
+
+
+# Object-level suffixes that should be stripped from personal keys
+_PERSONAL_OBJECT_SUFFIXES = (
+    "doudou", "福禄寿", "洛小阳", "匠人宇宙",
+)
+
+
+def _normalize_personal_key(key: str) -> str:
+    """Strip object-level suffix from a personal key to enforce topic-level.
+
+    E.g. "user.interest.music.doudou" → "user.interest.music"
+    """
+    parts = key.split(".")
+    # Remove trailing object-level suffixes
+    while len(parts) > 2 and parts[-1].lower() in _PERSONAL_OBJECT_SUFFIXES:
+        parts.pop()
+    return ".".join(parts) if parts else key
 
 
 def _shorten_personal_content(content: str, summary: str) -> str:

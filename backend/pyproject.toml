@@ -16,7 +16,9 @@ dependencies = [
 
     # Database
     "sqlalchemy[asyncio]>=2.0.36",
+    "sqlalchemy[postgresql_asyncio]>=2.0.36",
     "aiosqlite>=0.20.0",
+    "asyncpg>=0.29.0",
     "alembic>=1.14.0",
 
     # Validation
@@ -27,15 +29,34 @@ dependencies = [
     "anthropic>=0.40.0",
     "openai>=1.57.0",
 
+    # Observability (OpenTelemetry + Arize Phoenix)
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-exporter-otlp>=1.28.0",
+    "opentelemetry-instrumentation-fastapi>=0.49b0",
+    "opentelemetry-instrumentation-httpx>=0.49b0",
+    "arize-phoenix>=4.0.0",
+    "arize-phoenix-evals>=0.0.5",
+    "openinference-instrumentation-openai>=0.1.0",
+
+    # Search / graph stores
+    "pymilvus>=2.5.0",
+    "elasticsearch[async]>=8.14.0,<9.0.0",
+    "neo4j>=5.0.0",
+    "kafka-python>=2.0.0",
+
     # Utilities
     "nanoid>=2.0.0",
     "httpx>=0.28.0",
     "python-dotenv>=1.0.1",
+    "pathspec>=0.12.0",
     "pypdf>=5.1.0",  # read_attachment PDF text extraction (replaces TS pdf-parse)
+    "PyPDF2>=3.0.0",  # PDF parsing - pure-Python fallback
 
     # Document parsing (DOCX/PPTX text extraction)
     "python-docx>=1.1.0",
     "python-pptx>=0.6.23",
+    "pdfplumber>=0.9.0",  # PDF parsing - first-choice extractor
     "pypdfium2>=4.30.0",  # PDF page rendering for OCR (DeepSeek-OCR / RapidOCR)
     "json-repair>=0.25.0",  # repair LLM JSON output in OCR results
 
@@ -48,6 +69,9 @@ dependencies = [
 
     # Memory file-native (frontmatter parsing + Chinese BM25 tokenization)
     "python-frontmatter>=1.1.0",
+
+    # Eval harness (suite YAML loading)
+    "pyyaml>=6.0.0",
     "jieba>=0.42.1",
 ]
 
@@ -84,3 +108,16 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+filterwarnings = [
+    # aiosqlite 的连接工作线程在测试事件循环关闭后仍可能收到回调，抛
+    # "RuntimeError: Event loop is closed"（第三方库 × pytest-asyncio 循环
+    # 生命周期的收尾竞态，无功能影响）。消息正则精确限定到该线程报错。
+    'ignore:Exception in thread:pytest.PytestUnhandledThreadExceptionWarning',
+]
+markers = [
+    # 需 Docker 基础设施的集成测试（真实 PostgreSQL / Milvus / Neo4j）。
+    # 默认全量跑必须全绿；无 Docker 环境用 -m "not integration and not network" 快速子集。
+    "integration: requires Docker Compose infrastructure (PostgreSQL / Milvus / Neo4j)",
+    # 需要外网访问的测试（真实模型 API、公网下载等）。
+    "network: requires external network access",
+]

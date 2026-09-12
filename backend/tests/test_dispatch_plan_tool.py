@@ -220,7 +220,7 @@ async def test_handler_valid_plan_returns_results(db, monkeypatch):
 
     from app.services.dag_executor import NodeResult
 
-    async def mock_execute_dag(tasks, ctx):
+    async def mock_execute_dag(tasks, ctx, conflicts_out=None):
         return {
             t.id: NodeResult(
                 task_id=t.id,
@@ -372,7 +372,7 @@ async def test_plan_approval_approve_executes(db, monkeypatch):
     async def mock_await_plan_approval(items, ctx):
         return PlanReviewOutcome(kind="approve", plan=items)
 
-    async def mock_execute_dag(tasks, ctx):
+    async def mock_execute_dag(tasks, ctx, conflicts_out=None):
         return {
             t.id: NodeResult(
                 task_id=t.id,

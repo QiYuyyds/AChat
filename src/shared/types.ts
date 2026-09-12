@@ -516,7 +516,24 @@ export type StreamEvent = BaseEvent &
     | { type: 'message.start'; messageId: string; agentId: string; runId: string }
     | { type: 'message.end'; messageId: string }
     | { type: 'message.usage'; messageId: string; usage: MessageUsageEvent }
-    | { type: 'message.added'; message: MessageRecord }
+    | {
+        type: 'message.added'
+        message: MessageRecord
+        /** 发送方回执：POST 时带的乐观 temp 消息 id，服务端原样回带；未传时为 null/缺省 */
+        clientMessageId?: string | null
+      }
+    | {
+        type: 'agent.handoff'
+        /** 已落库的系统消息（role='system'），随事件幂等 upsert */
+        message: MessageRecord
+        fromAgentId?: string | null
+        toAgentId?: string | null
+        reason?: string | null
+        summary?: string | null
+        /** transferred=移交生效；failed/aborted=移交后目标运行失败/被停止 */
+        status: 'transferred' | 'failed' | 'aborted'
+        runId?: string | null
+      }
     | { type: 'message.removed'; messageIds: string[]; artifactIds: string[] }
     | { type: 'part.start'; messageId: string; partIndex: number; part: MessagePart }
     | { type: 'part.delta'; messageId: string; partIndex: number; delta: PartDelta }
@@ -545,6 +562,16 @@ export type StreamEvent = BaseEvent &
         attempt: number
         maxAttempts: number
         error?: string
+      }
+    | {
+        type: 'dispatch.peer'
+        parentRunId: string
+        fromTaskId: string
+        toTaskId?: string
+        question: string
+        status: 'asking' | 'answered' | 'unavailable' | 'limit_reached' | 'mailed'
+        answer?: string
+        askCount?: number
       }
     | { type: 'fs_write.pending'; pendingWrite: PendingWrite }
     | { type: 'fs_write.resolved'; pendingId: string; applied: boolean }

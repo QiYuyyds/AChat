@@ -12,6 +12,30 @@ from __future__ import annotations
 import hashlib
 import time
 
+import pytest_asyncio
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _seed_document_user(db):
+    """Seed a user row: documents.user_id is NOT NULL + FK to users.id.
+
+    These tests create documents directly (and via DocumentService with an
+    explicit user_id), so the referenced user must exist for the FK pragma.
+    """
+    from app.auth.password import hash_password
+    from app.db.engine import get_db
+    from app.db.models import User
+    from app.utils.clock import now_ms
+
+    now = now_ms()
+    async with get_db() as session:
+        session.add(User(
+            id="test_user_1", email="test@example.com", name="Test User",
+            password_hash=hash_password("testpass123"), token_version=0,
+            created_at=now, updated_at=now,
+        ))
+
+
 # ─── 7.1: pdftotext page count ─────────────────────────────────────────────
 
 
@@ -86,12 +110,10 @@ async def test_delete_versions_by_document_cleans_four_ways(db):
     rag_svc = RAGService(settings)
 
     # Track mock callback invocations
-    es_calls: list[list[int]] = []
+    # (es_calls removed: RAGService no longer has an ES delete hook — the
+    # memory pipeline optimization replaced Elasticsearch with SQLite FTS/BM25)
     milvus_calls: list[list[int]] = []
     kg_calls: list[str] = []
-
-    async def mock_es_delete(pg_ids):
-        es_calls.append(list(pg_ids))
 
     def mock_milvus_delete(pg_ids):
         milvus_calls.append(list(pg_ids))
@@ -99,7 +121,6 @@ async def test_delete_versions_by_document_cleans_four_ways(db):
     async def mock_kg_delete(doc_hash):
         kg_calls.append(doc_hash)
 
-    rag_svc.set_es_delete_fn(mock_es_delete)
     rag_svc.set_milvus_delete_fn(mock_milvus_delete)
     rag_svc.set_kg_delete_fn(mock_kg_delete)
 
@@ -111,6 +132,7 @@ async def test_delete_versions_by_document_cleans_four_ways(db):
     async with get_db() as session:
         doc = Document(
             id=doc_id,
+            user_id="test_user_1",
             title="Test Doc",
             doc_type="note",
             source="user_upload",
@@ -162,10 +184,6 @@ async def test_delete_versions_by_document_cleans_four_ways(db):
     # PG rows deleted
     assert deleted == 2
 
-    # ES callback called with pg_ids
-    assert len(es_calls) == 1
-    assert len(es_calls[0]) == 2
-
     # Milvus callback called with pg_ids
     assert len(milvus_calls) == 1
     assert len(milvus_calls[0]) == 2
@@ -196,13 +214,9 @@ async def test_delete_versions_by_document_empty_is_noop(db):
     settings = get_settings()
     rag_svc = RAGService(settings)
 
-    es_calls: list = []
-    rag_svc.set_es_delete_fn(lambda ids: es_calls.append(ids))
-
     svc = DocumentService(db=None, rag=rag_svc)
     deleted = await svc.delete_versions_by_document("doc_nonexistent")
     assert deleted == 0
-    assert len(es_calls) == 0
 
 
 # ─── 7.3: upload_file with document_id creates new version ─────────────────
@@ -216,7 +230,7 @@ async def test_upload_file_with_document_id_creates_new_version(db):
 
     # First upload creates a new document (v1)
     content1 = b"# First version\nThis is the initial content."
-    result1 = await svc.upload_file("test.md", "text/markdown", content1)
+    result1 = await svc.upload_file("test.md", "text/markdown", content1, user_id="test_user_1")
     assert result1["success"] is True
     assert result1["version"]["version"] == 1
     doc_id = result1["document"]["id"]
@@ -224,7 +238,7 @@ async def test_upload_file_with_document_id_creates_new_version(db):
     # Second upload with document_id creates a new version (v2)
     content2 = b"# Second version\nThis is updated content."
     result2 = await svc.upload_file(
-        "test_v2.md", "text/markdown", content2, document_id=doc_id
+        "test_v2.md", "text/markdown", content2, document_id=doc_id, user_id="test_user_1"
     )
     assert result2["success"] is True
     assert result2["document"]["id"] == doc_id  # Same document
@@ -238,6 +252,7 @@ async def test_upload_file_with_document_id_creates_new_version(db):
         "text/markdown",
         content3,
         document_id=doc_id,
+        user_id="test_user_1",
         title="Custom Title",
         doc_type="manual",
     )
@@ -254,8 +269,8 @@ async def test_upload_file_without_document_id_creates_new_doc(db):
 
     svc = DocumentService(db=None, rag=None)
 
-    result1 = await svc.upload_file("a.md", "text/markdown", b"content A")
-    result2 = await svc.upload_file("b.md", "text/markdown", b"content B")
+    result1 = await svc.upload_file("a.md", "text/markdown", b"content A", user_id="test_user_1")
+    result2 = await svc.upload_file("b.md", "text/markdown", b"content B", user_id="test_user_1")
 
     assert result1["document"]["id"] != result2["document"]["id"]
     assert result1["version"]["version"] == 1

@@ -6,7 +6,7 @@
 //       修：把这些 symlink **物化**成真目录（dereference + 拷贝），运行时 / 打包都安心。
 //
 //   (2) pnpm 的依赖 hoist 跟 Next tracer 配合不好，导致 next build 漏拷少量 server runtime
-//       依赖（@next/env / @swc/helpers / openai / drizzle-orm ...）以及它们的间接依赖。
+//       依赖（@next/env / @swc/helpers ...）以及它们的间接依赖。
 //       修：以 Next 已 trace 到 standalone 的包 + 明确 server runtime allowlist 为种子补齐。
 //       不从 root package.json 全量遍历，避免把 Mermaid / CodeMirror / UI 等纯前端依赖塞进
 //       Electron Node runtime，撑大 .next/standalone 和 DMG。
@@ -16,7 +16,8 @@
 //   - dangling symlink 清理（pnpm 的 .pnpm/node_modules/<pkg> hoist 入口可能指向未被
 //     standalone 拷贝的旧版本，例如 ../semver@6.3.1/...，而 standalone 只带了 7.8.1）。
 //
-// 详见 Spec 12 §6 / §7。
+// Next standalone 仅承担前端渲染与 /api/* rewrite 转发（业务后端为 Python sidecar），
+// server runtime 依赖因此只剩 Next 自身的最小集合。
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -32,20 +33,6 @@ const SERVER_RUNTIME_PACKAGE_ALLOWLIST = [
   'react-dom',
   '@next/env',
   '@swc/helpers',
-  'better-sqlite3',
-  'drizzle-orm',
-  'openai',
-  '@anthropic-ai/sdk',
-  '@anthropic-ai/claude-agent-sdk',
-  '@openai/codex-sdk',
-  '@openai/codex',
-  '@modelcontextprotocol/sdk',
-  'jszip',
-  'nanoid',
-  'zod',
-  'pptxgenjs',
-  'pdf-parse',
-  'pdfjs-dist',
 ]
 
 if (!fs.existsSync(standaloneDir)) {
@@ -193,12 +180,6 @@ function pruneNestedNodeModules(dir) {
 }
 
 function shouldSkipOptionalDependency(name) {
-  if (name.startsWith('@openai/codex-')) {
-    return !isCurrentPlatformPackage(name, '@openai/codex')
-  }
-  if (name.startsWith('@anthropic-ai/claude-agent-sdk-')) {
-    return !isCurrentPlatformPackage(name, '@anthropic-ai/claude-agent-sdk')
-  }
   if (name.startsWith('@napi-rs/canvas-')) {
     return !isCurrentPlatformPackage(name, '@napi-rs/canvas')
   }
@@ -383,45 +364,6 @@ if (skippedPlatformOptional.size > 0) {
     `✓ optional deps: ignored ${names.length} non-current platform package(s) while seeding` +
       ` (${names.slice(0, 5).join(', ')}${names.length > 5 ? ' ...' : ''})`,
   )
-}
-
-// @openai/codex 的平台 runtime 是 npm alias 包：
-//   @openai/codex-darwin-arm64 -> npm:@openai/codex@0.136.0-darwin-arm64
-// Next standalone 可能已经 trace 进 `.pnpm/@openai+codex@...-darwin-arm64`，
-// 下面补齐逻辑又会把 alias 包拷到顶层 `node_modules/@openai/codex-darwin-arm64`。
-// 运行时 SDK 通过顶层 alias 包解析 binary，.pnpm 那份会变成 190MB+ 的重复 vendor。
-function removeDuplicatedCodexRuntimeStores() {
-  const codexPackageJson = path.join(standaloneNodeModules, '@openai', 'codex', 'package.json')
-  if (!fs.existsSync(codexPackageJson)) return 0
-
-  let optionalDependencies
-  try {
-    optionalDependencies = JSON.parse(fs.readFileSync(codexPackageJson, 'utf8')).optionalDependencies
-  } catch {
-    return 0
-  }
-  if (!optionalDependencies || typeof optionalDependencies !== 'object') return 0
-
-  let removed = 0
-  for (const [aliasName, targetSpec] of Object.entries(optionalDependencies)) {
-    if (typeof targetSpec !== 'string') continue
-    if (!fs.existsSync(path.join(standaloneNodeModules, ...aliasName.split('/')))) continue
-
-    const match = /^npm:(@[^/]+)\/([^@]+)@(.+)$/.exec(targetSpec)
-    if (!match) continue
-    const [, scope, name, version] = match
-    const storeDir = path.join(standaloneNodeModules, '.pnpm', `${scope}+${name}@${version}`)
-    if (!fs.existsSync(storeDir)) continue
-
-    fs.rmSync(storeDir, { recursive: true, force: true })
-    removed++
-  }
-  return removed
-}
-
-const removedCodexRuntimeStores = removeDuplicatedCodexRuntimeStores()
-if (removedCodexRuntimeStores > 0) {
-  console.log(`✓ dedupe: removed ${removedCodexRuntimeStores} duplicate Codex runtime store package(s)`)
 }
 
 // ─── D: 走查 symlinks（dep-copy 之后再做，防止过程中又混入 symlink）────

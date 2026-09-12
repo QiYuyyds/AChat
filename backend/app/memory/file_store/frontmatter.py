@@ -24,7 +24,7 @@ class MemoryFrontmatter:
     tags: list[str] = field(default_factory=list)
     importance: float = 0.5
     bucket: str = "wiki"  # procedure | personal | wiki
-    status: str = "active"  # active | archived
+    status: str = "active"  # active | archived | superseded
     created_at: str = ""  # YYYY-MM-DD
     updated_at: str = ""  # YYYY-MM-DD
     source: str = ""  # relative path to source daily card
@@ -76,8 +76,8 @@ class MemoryFrontmatter:
             errors.append(
                 f"bucket must be one of {DIGEST_BUCKETS}, got '{self.bucket}'"
             )
-        if self.status not in ("active", "archived"):
-            errors.append(f"status must be 'active' or 'archived', got '{self.status}'")
+        if self.status not in ("active", "archived", "superseded"):
+            errors.append(f"status must be 'active', 'archived', or 'superseded', got '{self.status}'")
         if not (0.0 <= self.importance <= 1.0):
             errors.append(f"importance must be 0-1, got {self.importance}")
         return errors

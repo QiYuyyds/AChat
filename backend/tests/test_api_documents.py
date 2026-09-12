@@ -14,8 +14,12 @@ import pytest_asyncio
 
 
 @pytest_asyncio.fixture
-async def api_client(db):
-    """An httpx AsyncClient with documents router and DocumentService initialized."""
+async def api_client(db, test_user):
+    """An httpx AsyncClient with documents router and DocumentService initialized.
+
+    The documents routes require JWT auth (added in 62407ef), so the client
+    authenticates as the shared test user.
+    """
     import httpx
     from fastapi import FastAPI
 
@@ -29,6 +33,7 @@ async def api_client(db):
     app.include_router(documents.router, prefix="/api")
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.headers["Authorization"] = f"Bearer {test_user['token']}"
         yield client
 
     main_mod._document_service = None
@@ -167,8 +172,16 @@ async def test_get_nonexistent_document_returns_404(api_client):
     assert resp.status_code == 404
 
 
-async def test_ingest_version_without_rag(api_client):
-    """POST /documents/{id}/ingest works even without RAG (returns 0 chunks)."""
+async def test_ingest_version_without_rag(api_client, monkeypatch):
+    """POST /documents/{id}/ingest works even without RAG (returns 0 chunks).
+
+    The sync path requires the RAG task worker to be disabled (worker mode
+    returns a task handle instead — rag_task_worker_enabled defaults to true).
+    """
+    monkeypatch.setenv("RAG_TASK_WORKER_ENABLED", "false")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
     resp = await api_client.post("/api/documents", json={
         "title": "入库测试",
         "contentMd": "入库内容",
@@ -185,3 +198,4 @@ async def test_ingest_version_without_rag(api_client):
     assert body["versionId"] == version_id
     assert body["chunkCount"] == 0  # No RAG service in test
     assert len(body["docHash"]) == 16
+    get_settings.cache_clear()

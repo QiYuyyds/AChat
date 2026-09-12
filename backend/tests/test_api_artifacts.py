@@ -100,6 +100,26 @@ async def test_list_artifacts_empty(api_client, db, agents):
     assert resp.json() == {"artifacts": []}
 
 
+# ─── GET /api/artifacts?conversation_id= (Aeval integration) ─────────────────
+async def test_list_artifacts_conversation_filter(api_client, conv):
+    other_conv = await _make_conversation("Other")
+    await _make_artifact(conv, title="Mine")
+    await _make_artifact(other_conv, title="Theirs")
+
+    resp = await api_client.get("/api/artifacts", params={"conversation_id": conv})
+    assert resp.status_code == 200
+    arts = resp.json()["artifacts"]
+    assert [a["title"] for a in arts] == ["Mine"]
+    assert arts[0]["conversationId"] == conv
+
+
+async def test_list_artifacts_conversation_filter_empty(api_client, conv):
+    await _make_artifact(conv, title="Mine")
+    resp = await api_client.get("/api/artifacts", params={"conversation_id": "conv_none"})
+    assert resp.status_code == 200
+    assert resp.json() == {"artifacts": []}
+
+
 # ─── GET /api/artifacts/{id} ─────────────────────────────────────────────────
 async def test_get_artifact(api_client, conv):
     aid = await _make_artifact(conv, title="Mine")

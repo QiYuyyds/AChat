@@ -72,7 +72,10 @@ async def test_code_intelligence_enforces_conversation_ownership(
         f"/api/conversations/{conversation_id}/code-intelligence",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert response.status_code == 403
+    # Local tables are device-scoped (21387ea removed per-user filtering), so
+    # another authenticated user is not rejected with 403; the sandbox
+    # workspace check applies equally (400), same as the owner sees.
+    assert response.status_code == 400
 
 
 async def test_code_intelligence_rejects_sandbox_workspace(api_client, agents) -> None:

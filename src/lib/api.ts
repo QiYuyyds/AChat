@@ -32,6 +32,7 @@ import type {
 import type { AgentConfigDraft, AgentDraftRequest } from '@/shared/agent-builder-config'
 
 import { API_BASE_URL } from '@/lib/config'
+import { refreshAccessToken } from '@/lib/auth-refresh'
 
 export interface ArtifactListItem {
   id: string
@@ -47,44 +48,12 @@ export interface ArtifactListItem {
 
 // ─── authFetch: credentials + auto-refresh on 401 ───────────────────────────
 
-let _refreshInProgress: Promise<boolean> | null = null
-
 function _getStoredToken(): string | null {
   try {
     return localStorage.getItem('agenthub_access_token')
   } catch {
     return null
   }
-}
-
-async function _doRefresh(): Promise<boolean> {
-  if (_refreshInProgress) return _refreshInProgress
-  _refreshInProgress = (async () => {
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
-        method: 'POST',
-        credentials: 'include',
-      })
-      if (res.ok) {
-        const data = await res.json()
-        const token = data.tokens?.access_token
-        if (token) {
-          try {
-            localStorage.setItem('agenthub_access_token', token)
-          } catch {
-            // best-effort
-          }
-        }
-        return true
-      }
-      return false
-    } catch {
-      return false
-    } finally {
-      _refreshInProgress = null
-    }
-  })()
-  return _refreshInProgress
 }
 
 export async function authFetch(
@@ -104,7 +73,7 @@ export async function authFetch(
   let res = await fetch(input, merged)
 
   if (res.status === 401) {
-    const refreshed = await _doRefresh()
+    const refreshed = await refreshAccessToken()
     if (refreshed) {
       const newToken = _getStoredToken()
       const retryInit: RequestInit = {
@@ -125,7 +94,7 @@ export async function authFetch(
   return res
 }
 
-async function json<T>(req: Promise<Response>): Promise<T> {
+export async function json<T>(req: Promise<Response>): Promise<T> {
   const res = await req
   if (!res.ok) {
     const body = await res.text()
@@ -716,6 +685,8 @@ export interface SendMessageBody {
   parentMessageId?: string
   attachmentIds?: string[]
   modelProfileId?: string | null
+  /** 发送方乐观 temp 消息 id；后端在 message.added 事件上原样回带，用于事件到达即时认领 */
+  clientMessageId?: string
 }
 
 export interface SendMessageResult {
@@ -1113,6 +1084,98 @@ export async function regenerateMobileDeviceToken(): Promise<AppSettingsRow> {
   return settings
 }
 
+// ─── Infra config (rag-infra-config 基础设施接入) ───────────────
+
+/** GET /api/infra/config 返回的落库覆盖值（密码已掩码；null = 跟随 env）。 */
+export interface InfraConfig {
+  milvusHost: string | null
+  milvusPort: number | null
+  neo4jUri: string | null
+  neo4jUser: string | null
+  /** "********" = 已存储（回写视为未修改）；"" = 未存储 */
+  neo4jPassword: string
+  enableGraph: boolean | null
+}
+
+export interface InfraConfigResponse {
+  config: InfraConfig
+  sources: { milvus: string; neo4j: string; graph: string }
+  desktopMode: boolean
+}
+
+/** PUT /api/infra/config：缺省字段 = 不变；neo4jPassword 空串/掩码回显 = 未修改。 */
+export interface InfraConfigPatch {
+  milvusHost?: string | null
+  milvusPort?: number | null
+  neo4jUri?: string | null
+  neo4jUser?: string | null
+  neo4jPassword?: string
+  enableGraph?: boolean | null
+}
+
+export const INFRA_PASSWORD_MASK = '********'
+
+export async function fetchInfraConfig(): Promise<InfraConfigResponse> {
+  return json<InfraConfigResponse>(authFetch(API_BASE_URL + '/api/infra/config'))
+}
+
+export async function updateInfraConfig(
+  patch: InfraConfigPatch,
+): Promise<InfraConfigResponse & { restartRequired: boolean; message: string }> {
+  return json<InfraConfigResponse & { restartRequired: boolean; message: string }>(
+    authFetch(API_BASE_URL + '/api/infra/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  )
+}
+
+export interface InfraTestResult {
+  tested: boolean
+  ok?: boolean
+  latencyMs?: number
+  errorKind?: 'network' | 'auth' | 'protocol'
+  error?: string
+}
+
+export interface InfraTestBody {
+  milvusHost?: string
+  milvusPort?: number | null
+  neo4jUri?: string
+  neo4jUser?: string
+  /** 掩码回显 = 用存储密码测试 */
+  neo4jPassword?: string
+}
+
+export async function testInfraConnection(body: InfraTestBody): Promise<{
+  milvus: InfraTestResult
+  neo4j: InfraTestResult
+}> {
+  return json<{ milvus: InfraTestResult; neo4j: InfraTestResult }>(
+    authFetch(API_BASE_URL + '/api/infra/config/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  )
+}
+
+export interface InfraServiceState {
+  status: 'connected' | 'degraded' | 'disabled'
+  configSource: 'db' | 'env' | 'none'
+  detail: string | null
+}
+
+export interface InfraStatusResponse {
+  services: Record<string, InfraServiceState>
+  infraAvailable: boolean
+}
+
+export async function fetchInfraStatus(): Promise<InfraStatusResponse> {
+  return json<InfraStatusResponse>(authFetch(API_BASE_URL + '/api/infra/status'))
+}
+
 // ─── Documents (知识库) ──────────────────────────
 export async function fetchDocuments(): Promise<DocumentRow[]> {
   const { documents } = await json<{ documents: DocumentRow[] }>(
@@ -1283,6 +1346,10 @@ export interface SkillSummary {
 export async function listSkills(): Promise<SkillSummary[]> {
   const { skills } = await json<{ skills: SkillSummary[] }>(authFetch(API_BASE_URL + '/api/skills'))
   return skills
+}
+
+export async function getSkillContent(slug: string): Promise<{ content?: string }> {
+  return json<{ content?: string }>(authFetch(`${API_BASE_URL}/api/skills/${slug}`))
 }
 
 /**
@@ -1646,4 +1713,37 @@ export async function getSchedulerStatus(): Promise<{
   activeCount: number
 }> {
   return authJson(`${API_BASE_URL}/api/tasks/scheduler/status`)
+}
+
+// ─── 桌面目录绑定（add-desktop-runtime 任务 5.3 / 5.4）────────
+
+export interface BoundPathValidation {
+  path: string
+  safe: boolean
+  isDir: boolean
+  reason: string | null
+}
+
+/** 校验待绑定路径（拖拽与手动共用，is_path_safe 是唯一安全裁决点）。 */
+export async function validateBoundPath(path: string): Promise<BoundPathValidation> {
+  return json(
+    authFetch(`${API_BASE_URL}/api/workspaces/validate-bound-path`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    }),
+  )
+}
+
+export interface RecentProject {
+  path: string
+  lastUsedAt: number
+}
+
+/** 最近绑定的本地目录（去重、按最近使用排序）。 */
+export async function getRecentProjects(limit = 8): Promise<RecentProject[]> {
+  const res = await json<{ projects: RecentProject[] }>(
+    authFetch(`${API_BASE_URL}/api/workspaces/recent-projects?limit=${limit}`),
+  )
+  return res.projects
 }

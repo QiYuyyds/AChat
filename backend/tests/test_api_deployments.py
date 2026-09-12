@@ -15,7 +15,7 @@ from app.services import deployment_service as ds
 
 
 @pytest_asyncio.fixture
-async def deployed(tmp_path, monkeypatch):
+async def deployed(db, tmp_path, monkeypatch):
     data_dir = str(tmp_path / "data")
     monkeypatch.setenv("AGENTHUB_DATA_DIR", data_dir)
     ds.create_local_static_deployment(

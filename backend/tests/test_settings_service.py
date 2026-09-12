@@ -9,6 +9,7 @@ import json
 import os
 
 import pytest
+import pytest_asyncio
 
 from app.services import settings_service as svc
 
@@ -19,6 +20,26 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENTHUB_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("AGENTHUB_MOBILE_TOKEN", raising=False)
     yield
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _seed_legacy_user(db):
+    """Seed a user so the legacy singleton bridge can key its settings row.
+
+    user_settings.user_id has an FK to users.id; the bridge keys its compat
+    row to the first user (falling back to 'legacy' only with no users).
+    """
+    from app.db.engine import get_db
+    from app.db.models import User
+    from app.utils.clock import now_ms
+
+    now = now_ms()
+    async with get_db() as session:
+        session.add(User(
+            id="legacy", email="legacy@test.local", name="Legacy User",
+            password_hash="hash", token_version=0,
+            created_at=now, updated_at=now,
+        ))
 
 
 def test_new_mobile_device_token_is_urlsafe_and_unique():

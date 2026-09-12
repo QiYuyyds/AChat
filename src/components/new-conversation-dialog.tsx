@@ -1,6 +1,6 @@
 'use client'
 
-import { AlertTriangle, FolderSearch } from 'lucide-react'
+import { AlertTriangle, Clock, FolderSearch } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { AgentAvatar } from '@/components/agent-avatar'
@@ -15,7 +15,14 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { createConversation, getServerPlatform, type ServerPlatform } from '@/lib/api'
+import {
+  createConversation,
+  getRecentProjects,
+  getServerPlatform,
+  type RecentProject,
+  type ServerPlatform,
+} from '@/lib/api'
+import { getElectronBridge } from '@/lib/electron-bridge'
 import { cn } from '@/lib/utils'
 import { useAgentList, useAppStore } from '@/stores/app-store'
 
@@ -24,9 +31,12 @@ type WorkspaceMode = 'sandbox' | 'local'
 export function NewConversationDialog({
   open,
   onOpenChange,
+  preset,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** 桌面拖拽绑定预置（路径或拒绝原因），见 sidebar 的 window drop 处理 */
+  preset?: { path?: string; error?: string } | null
 }) {
   const agents = useAgentList()
   const upsertConversation = useAppStore((s) => s.upsertConversation)
@@ -39,6 +49,7 @@ export function NewConversationDialog({
   const [pickerOpen, setPickerOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [platform, setPlatform] = useState<ServerPlatform | null>(null)
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([])
 
   // 拉一次服务器平台，决定 boundPath placeholder 文案；失败不阻塞 UI（fallback posix）
   useEffect(() => {
@@ -46,6 +57,27 @@ export function NewConversationDialog({
       .then((p) => setPlatform(p))
       .catch(() => setPlatform('posix'))
   }, [])
+
+  // 本地模式展开时拉取「最近项目」（任务 5.4）；失败静默（非桌面 / 后端旧版）
+  useEffect(() => {
+    if (open && workspaceMode === 'local' && recentProjects.length === 0) {
+      getRecentProjects()
+        .then((projects) => setRecentProjects(projects.filter((p) => p.path !== boundPath)))
+        .catch(() => setRecentProjects([]))
+    }
+  }, [open, workspaceMode, recentProjects.length, boundPath])
+
+  // 拖拽绑定预置：路径 → 本地模式 + 预填；拒绝原因 → 错误横幅（任务 5.3）
+  useEffect(() => {
+    if (!open || !preset) return
+    if (preset.error) {
+      setWorkspaceMode('local')
+      setError(preset.error)
+    } else if (preset.path) {
+      setWorkspaceMode('local')
+      setBoundPath(preset.path)
+    }
+  }, [open, preset])
 
   const boundPathPlaceholder =
     platform === 'windows' ? 'D:\\projects\\foo' : '/Users/me/projects/foo'
@@ -71,6 +103,21 @@ export function NewConversationDialog({
     setWorkspaceMode('sandbox')
     setBoundPath('')
     setError(null)
+  }
+
+  // 桌面壳：OS 原生目录对话框（preload bridge）；不可用回退服务端 listdir
+  const browse = async () => {
+    const bridge = getElectronBridge()
+    if (!bridge) {
+      setPickerOpen(true)
+      return
+    }
+    try {
+      const path = await bridge.pickDirectory()
+      if (path) setBoundPath(path)
+    } catch {
+      setPickerOpen(true)
+    }
   }
 
   const submit = async () => {
@@ -218,12 +265,37 @@ export function NewConversationDialog({
                       type="button"
                       variant="outline"
                       size="sm"
-                      onClick={() => setPickerOpen(true)}
+                      onClick={() => void browse()}
                     >
                       <FolderSearch className="mr-1 size-3.5" />
                       浏览
                     </Button>
                   </div>
+                  {recentProjects.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                        <Clock className="size-3" />
+                        最近项目
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {recentProjects.map((p) => (
+                          <button
+                            key={p.path}
+                            type="button"
+                            title={p.path}
+                            onClick={() => setBoundPath(p.path)}
+                            className={cn(
+                              'max-w-[220px] truncate rounded border px-1.5 py-0.5 font-mono text-[10px]',
+                              'text-muted-foreground transition hover:border-foreground/30 hover:text-foreground',
+                              boundPath === p.path && 'border-primary text-foreground',
+                            )}
+                          >
+                            {p.path.split(/[\\/]/).filter(Boolean).pop() || p.path}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   <div className="flex items-start gap-1.5 text-[10px] text-warning">
                     <AlertTriangle className="mt-0.5 size-3 shrink-0" />
                     <span>Agent 将能读写此目录中的真实文件。请确保已 git 备份。</span>

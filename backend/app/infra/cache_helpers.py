@@ -175,6 +175,9 @@ async def invalidate_workspace_cache(conversation_id: str) -> None:
 _GLOBAL_SETTINGS_COLUMNS = [
     "id", "deployment_publish_enabled", "deployment_publish_dir",
     "deployment_public_base_url", "updated_at",
+    # Infra connection overrides (rag-infra-config)
+    "milvus_host", "milvus_port", "neo4j_uri", "neo4j_user",
+    "neo4j_password", "enable_graph",
 ]
 
 

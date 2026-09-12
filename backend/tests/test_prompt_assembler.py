@@ -99,10 +99,11 @@ class TestSources:
     @pytest.mark.asyncio
     async def test_profile_source_with_prefs(self):
         mock_pref = MagicMock()
-        mock_pref.get_all.return_value = {"姓名": "小明", "喜好": "编程"}
+        mock_pref.user_id = "u_test"  # DB read fails in unit tests; the
+        mock_pref.get_all.return_value = {"姓名": "小明", "喜好": "编程"}  # same-user fallback applies this mock
         src = ProfileSource(preference_provider=mock_pref)
         slot = Slot(kind=SlotProfile, filter=SlotFilter(top_k=5))
-        items = await src.fetch(slot, Query(text="hello"))
+        items = await src.fetch(slot, Query(text="hello", user_id="u_test"))
         assert len(items) == 2
 
     @pytest.mark.asyncio
@@ -383,10 +384,11 @@ class TestProfileSlotDynamicAndScored:
     async def test_7_2_profile_source_no_ltm(self):
         """Task 7.2: ProfileSource.fetch() returns items only from preference_provider."""
         mock_pref = MagicMock()
+        mock_pref.user_id = "u_test"
         mock_pref.get_all.return_value = {"姓名": "小明"}
         src = ProfileSource(preference_provider=mock_pref)
         slot = Slot(kind=SlotProfile, filter=SlotFilter(token_budget=600))
-        items = await src.fetch(slot, Query(text="hello"))
+        items = await src.fetch(slot, Query(text="hello", user_id="u_test"))
         # Should return data from preference_provider only
         assert len(items) == 1
         assert "小明" in items[0].text
@@ -401,6 +403,7 @@ class TestProfileSlotDynamicAndScored:
         Keys are chosen to match classify_memory_content rules.
         """
         mock_pref = MagicMock()
+        mock_pref.user_id = "u_test"
         mock_pref.get_all.return_value = {
             "姓名": "张三",        # identity → 0.9
             "偏好": "编程",        # preference → 0.7 (contains '偏好')
@@ -408,7 +411,7 @@ class TestProfileSlotDynamicAndScored:
         }
         src = ProfileSource(preference_provider=mock_pref)
         slot = Slot(kind=SlotProfile, filter=SlotFilter(token_budget=600))
-        items = await src.fetch(slot, Query(text="hello"))
+        items = await src.fetch(slot, Query(text="hello", user_id="u_test"))
         scores = {item.text.split(": ")[0]: item.score for item in items}
         assert scores["姓名"] == 0.9
         assert scores["偏好"] == 0.7
@@ -418,6 +421,7 @@ class TestProfileSlotDynamicAndScored:
     async def test_7_4_profile_source_sorted_by_score_desc(self):
         """Task 7.4: ProfileSource.fetch() sorts items by score descending."""
         mock_pref = MagicMock()
+        mock_pref.user_id = "u_test"
         mock_pref.get_all.return_value = {
             "天气": "晴",          # 0.3 (general)
             "姓名": "张三",        # 0.9 (identity)
@@ -425,7 +429,7 @@ class TestProfileSlotDynamicAndScored:
         }
         src = ProfileSource(preference_provider=mock_pref)
         slot = Slot(kind=SlotProfile, filter=SlotFilter(token_budget=600))
-        items = await src.fetch(slot, Query(text="hello"))
+        items = await src.fetch(slot, Query(text="hello", user_id="u_test"))
         # Should be sorted: identity(0.9) > preference(0.7) > general(0.3)
         assert items[0].score >= items[1].score >= items[2].score
         assert "姓名" in items[0].text   # highest score first

@@ -16,6 +16,8 @@ from collections.abc import Callable
 
 from openai import OpenAI
 
+from app.services.settings_service import DEFAULT_DEEPSEEK_MODEL
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +42,7 @@ def get_summary_generate_fn() -> Callable[[str, str], str] | None:
         )
         return None
 
-    model = os.environ.get("SUMMARY_LLM_MODEL", "deepseek-chat").strip()
+    model = os.environ.get("SUMMARY_LLM_MODEL", DEFAULT_DEEPSEEK_MODEL).strip()
     base_url = os.environ.get("SUMMARY_LLM_BASE_URL", "").strip()
     # provider kept for future extensibility; currently all go through openai SDK
     provider = os.environ.get("SUMMARY_LLM_PROVIDER", "deepseek").strip()

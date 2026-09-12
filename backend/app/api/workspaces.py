@@ -7,23 +7,32 @@ Endpoints for the workspace environment isolation feature
   - PATCH  /api/workspaces/{conversation_id}/env-preference
   - GET    /api/workspaces/{conversation_id}/env-status
 
+桌面目录绑定（add-desktop-runtime 任务 5.3/5.4）：
+
+  - POST   /api/workspaces/validate-bound-path   拖拽/手动路径的 is_path_safe 校验
+  - GET    /api/workspaces/recent-projects       最近绑定的本地目录（去重按最近使用）
+
 All mutation endpoints are protected by the global CSRF Origin middleware
 (see main.py) and the per-conversation ownership check.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+import os
+
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+from sqlalchemy import func, select
 
 from app.auth.dependencies import get_current_user
 from app.auth.ownership import verify_conversation_ownership
-from app.db.models import User
+from app.db.engine import get_local_db
+from app.db.models import User, Workspace
 from app.infra.cache_helpers import get_workspace_cached
 from app.schemas import UpdateEnvPreferenceRequest, WorkspaceEnvStatusResponse
 from app.services import workspace_env_service
-from app.utils.workspace_utils import get_effective_cwd
+from app.utils.workspace_utils import get_effective_cwd, is_path_safe
 
 router = APIRouter()
 
@@ -138,3 +147,64 @@ async def get_env_status(
         env_preference=workspace.env_preference,
     )
     return JSONResponse(content=response.model_dump(by_alias=True))
+
+
+# ─── POST /workspaces/validate-bound-path（桌面拖拽 / 手动路径统一校验）───────
+@router.post("/workspaces/validate-bound-path")
+async def validate_bound_path(
+    request: Request,
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """校验一个待绑定路径：必须存在、是目录、且通过 is_path_safe。
+
+    拖拽绑定与手动填写共用本端点，保证两条路径绑定语义一致（is_path_safe
+    是唯一安全裁决点）。创建会话时后端仍会再做一次完整校验。
+    """
+    body = await _read_json(request)
+    raw = body.get("path") if isinstance(body, dict) else None
+    if not isinstance(raw, str) or not raw.strip():
+        return JSONResponse(status_code=422, content={"error": "缺少 path"})
+
+    path = os.path.abspath(raw.strip())
+    if not os.path.exists(path):
+        return JSONResponse(content={"path": path, "safe": False, "isDir": False, "reason": "路径不存在"})
+    if not os.path.isdir(path):
+        return JSONResponse(content={"path": path, "safe": False, "isDir": False, "reason": "不是目录，只能绑定文件夹"})
+    if not is_path_safe(path):
+        return JSONResponse(
+            content={
+                "path": path,
+                "safe": False,
+                "isDir": True,
+                "reason": "路径位于系统或敏感目录（如 ~/.ssh、Windows、Program Files 等），禁止绑定",
+            }
+        )
+    return JSONResponse(content={"path": path, "safe": True, "isDir": True, "reason": None})
+
+
+# ─── GET /workspaces/recent-projects（最近项目 · 任务 5.4）────────────────────
+@router.get("/workspaces/recent-projects")
+async def recent_projects(
+    limit: int = Query(default=8, ge=1, le=20),
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """distinct bound_path 按最近一次绑定时间排序（新建会话入口「最近项目」）。"""
+    async with get_local_db() as session:
+        last_used = func.max(Workspace.created_at).label("last_used_at")
+        result = await session.execute(
+            select(Workspace.bound_path, last_used)
+            .where(Workspace.mode == "local", Workspace.bound_path.is_not(None))
+            .group_by(Workspace.bound_path)
+            .order_by(last_used.desc())
+            .limit(limit)
+        )
+        rows = result.all()
+
+    return JSONResponse(
+        content={
+            "projects": [
+                {"path": path, "lastUsedAt": last_used}
+                for path, last_used in rows
+            ]
+        }
+    )

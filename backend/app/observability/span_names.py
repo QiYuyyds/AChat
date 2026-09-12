@@ -21,6 +21,7 @@ SPAN_NAMES: dict[str, str] = {
     "rag.rrf_fuse": "rag.rrf_fuse · 结果融合",
     "adapter.stream": "adapter.stream · 模型推理",
     "llm.generate": "llm.generate · LLM生成",
+    "llm.first_token": "llm.first_token · 首Token到达",
     "tool.call": "tool.call · 工具调用",
     "tool.dispatch": "tool.dispatch · 任务派发",
     "eval.score": "eval.score · 评测打分",

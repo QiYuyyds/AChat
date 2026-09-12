@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 import pytest_asyncio
 
@@ -114,10 +115,12 @@ async def test_grep_skips_dependency_dirs(ctx):
     assert result.ok, result.error
     matches = result.value["matches"]
     files = {m["file"] for m in matches}
-    # Only src/real.ts should match
+    # Only src/real.ts should match. Note: a workspace-root .gitignore may
+    # legitimately match (ensure_git_init writes one containing "target/"),
+    # so check for a .git DIRECTORY component instead of a name substring.
     assert any("real.ts" in f for f in files)
     assert not any("node_modules" in f for f in files)
-    assert not any(".git" in f for f in files)
+    assert not any(".git" in Path(f).parts for f in files)
 
 
 # --- result truncation ---------------------------------------------------------

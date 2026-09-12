@@ -119,6 +119,11 @@ async def upload_avatar(
         db_user.avatar_url = "/api/profile/avatar"
         db_user.updated_at = int(time.time() * 1000)
 
+    # The auth layer caches User objects for 60s; without invalidation the
+    # immediate GET /profile/avatar would 404 on the stale avatar_url=None.
+    from app.auth.dependencies import _invalidate_user_cache
+    _invalidate_user_cache(user.id)
+
     logger.info("Avatar uploaded for user %s", user.id)
     return JSONResponse({"avatarUrl": "/api/profile/avatar"})
 

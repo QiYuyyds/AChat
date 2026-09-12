@@ -25,7 +25,7 @@ from datetime import date
 
 from app.memory.file_store.file_catalog import FileCatalog
 from app.memory.file_store.frontmatter import MemoryFrontmatter
-from app.memory.file_store.markdown_io import read_markdown, write_markdown
+from app.memory.file_store.markdown_io import read_markdown, strip_code_fence, write_markdown
 from app.memory.file_store.wikilinks import extract_wikilinks_detailed, retarget_wikilinks
 from app.memory.file_store.workspace import MemoryWorkspace
 from app.memory.search.wikilink_expander import WikilinkExpander
@@ -123,14 +123,6 @@ Return JSON:
 ## Conversation
 {conversation}
 """
-
-
-def _strip_code_fence(raw: str) -> str:
-    raw = (raw or "").strip()
-    raw = re.sub(r"^```json", "", raw)
-    raw = re.sub(r"^```", "", raw)
-    raw = re.sub(r"```$", "", raw)
-    return raw.strip()
 
 
 def _is_trivial(user_msg: str, assistant_msg: str) -> bool:
@@ -384,7 +376,7 @@ class AutoMemory:
             logger.warning("auto_memory LLM call failed: %s", e)
             return 0
 
-        raw = _strip_code_fence(raw)
+        raw = strip_code_fence(raw)
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
@@ -435,13 +427,13 @@ class AutoMemory:
         write_markdown(filepath, fm, body)
         logger.info("auto_memory: created daily card %s (name=%s)", filepath, display_name)
 
-        # Update file catalog
+        # Update file catalog with pending marker (mtime=0 signals "needs dream processing")
         if self.file_catalog:
             try:
                 rel = str(filepath.resolve().relative_to(self.workspace.root.resolve()))
             except ValueError:
                 rel = str(filepath)
-            self.file_catalog.upsert(rel, bucket="daily")
+            self.file_catalog.upsert(rel, st_mtime=0.0, bucket="daily")
 
         return 1
 
@@ -470,7 +462,7 @@ class AutoMemory:
             logger.warning("auto_memory LLM call failed: %s", e)
             return 0
 
-        raw = _strip_code_fence(raw)
+        raw = strip_code_fence(raw)
         try:
             parsed = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
@@ -510,9 +502,7 @@ class AutoMemory:
         safe_new_name = _sanitize_name(new_name) if new_name else existing_name
         if new_name:
             # Keep human-readable title in frontmatter even when file stem changes
-            if _is_machine_name(fm.name) or not fm.name:
-                fm.name = _display_name(new_name, body)
-            elif new_name != fm.name and not _is_machine_name(new_name):
+            if _is_machine_name(fm.name) or not fm.name or new_name != fm.name and not _is_machine_name(new_name):
                 fm.name = _display_name(new_name, body)
         if _is_placeholder_description(fm.description) or not fm.description:
             fm.description = _display_description(fm.description, body, conversation_id)
@@ -565,23 +555,23 @@ class AutoMemory:
                 if links:
                     self.wikilink_expander.add_edges_detailed(str(new_rel), links)
 
-            # Update file catalog
+            # Update file catalog with pending marker (mtime=0 signals "needs dream processing")
             if self.file_catalog:
                 self.file_catalog.remove(str(old_rel))
-                self.file_catalog.upsert(str(new_rel), bucket="daily")
+                self.file_catalog.upsert(str(new_rel), st_mtime=0.0, bucket="daily")
 
             logger.info("auto_memory: renamed and retargeted %s → %s", filepath, new_filepath)
         else:
             write_markdown(filepath, fm, body)
             logger.info("auto_memory: updated daily card %s", filepath)
 
-            # Update file catalog
+            # Update file catalog with pending marker (mtime=0 signals "needs dream processing")
             if self.file_catalog:
                 try:
                     rel = str(filepath.resolve().relative_to(self.workspace.root.resolve()))
                 except ValueError:
                     rel = str(filepath)
-                self.file_catalog.upsert(rel, bucket="daily")
+                self.file_catalog.upsert(rel, st_mtime=0.0, bucket="daily")
 
         return 1
 

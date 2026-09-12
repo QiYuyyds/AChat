@@ -15,6 +15,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.services import deploy_command_service
+from app.tools.ask_peer import ask_peer_tool
 from app.tools.ask_user import ask_user_tool
 from app.tools.base import ToolContext, ToolDef, ToolResult, err
 from app.tools.bash import bash_tool
@@ -36,6 +37,7 @@ from app.tools.fs_grep import fs_grep_tool
 from app.tools.fs_list import fs_list_tool
 from app.tools.fs_read import fs_read_tool
 from app.tools.fs_write import fs_write_tool
+from app.tools.handoff import handoff_tool
 from app.tools.manage_agents import manage_agents_tool
 from app.tools.manage_conversations import manage_conversations_tool
 from app.tools.manage_documents import manage_documents_tool
@@ -52,11 +54,13 @@ from app.tools.memory_rag import (
 )
 from app.tools.memory_store import (
     memory_proactive_tool,
+    memory_read_tool,
     memory_recall_tool,
     memory_store_tool,
 )
 from app.tools.read_artifact import read_artifact_tool
 from app.tools.read_attachment import read_attachment_tool
+from app.tools.report_result import report_result_tool
 from app.tools.skills import load_skill_tool, write_skill_tool
 from app.tools.task_dispatch import task_dispatch_tool
 from app.tools.task_tools import (
@@ -76,6 +80,23 @@ if TYPE_CHECKING:
     from app.services.hook_registry import HookRegistry
 
 logger = logging.getLogger(__name__)
+
+# Baseline tools always enabled for every SDK (custom) agent at runtime.
+# These are NOT selectable in the UI — they are implicitly always-on and merged
+# into the tool list by execute_simple_run (agent_runner).
+# CLI agents (claude-code / codex) use their own CLI built-in tools and skip
+# this merge.
+BASELINE_AGENT_TOOLS: tuple[str, ...] = (
+    "read_attachment",
+    "ask_user",
+    "fs_list",
+    "fs_read",
+    "fs_write",
+    "fs_edit",
+    "fs_grep",
+    "fs_glob",
+    "bash",
+)
 
 
 class ToolRegistry:
@@ -233,6 +254,7 @@ def _build_registry() -> ToolRegistry:
     reg.register(rag_list_documents_tool)
     reg.register(rag_delete_document_tool)
     reg.register(memory_recall_tool)
+    reg.register(memory_read_tool)
     reg.register(memory_store_tool)
     reg.register(memory_proactive_tool)
     reg.register(web_search_tool)
@@ -259,6 +281,11 @@ def _build_registry() -> ToolRegistry:
     reg.register(task_complete_tool)
     reg.register(task_move_tool)
     reg.register(task_comment_tool)
+    reg.register(report_result_tool)
+    reg.register(ask_peer_tool)
+    # handoff is terminal-tool injected by run shape only (agent_loop), never
+    # part of baseline/optional tool sets.
+    reg.register(handoff_tool)
     return reg
 
 

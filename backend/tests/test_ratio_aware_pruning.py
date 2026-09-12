@@ -117,20 +117,20 @@ async def test_ratio_below_threshold_no_prune(db, agents):
     assert "output_line_1_data" in all_content
 
 
-# ─── 4.2 ratio ≥ 0.65: pruning executes ─────────────────────────────────────
+# ─── 4.2 ratio ≥ 0.88: fold-compaction executes ─────────────────────────────
 
 
 async def test_ratio_above_threshold_prune(db, agents):
     alice = agents["alice"]
     conv_id = await _seed_conversation([alice])
 
-    # Use large tool_result content to push ratio above 0.65.
-    # Each result ~5000 chars ≈ 1250 tokens; 4 turns ≈ 5000 tokens.
-    # With model_context_limit=8000, prompt_estimate=1000:
-    #   ratio = (5000 + 1000) / 8000 = 0.75 ≥ 0.65 → pruning triggers.
-    big_result = "x" * 5000
+    # Use large tool_result content to push the ratio above the fold
+    # threshold (0.88). The ratio denominator is the fixed 200k context
+    # window (design doc §8.2); 6 tool_results × 180k chars ≈ 270k tokens
+    # → ratio ≈ 1.35 → Case E (Note + fold-compacted).
+    big_result = "x" * 180000
     ts = 100
-    for i in range(4):
+    for i in range(6):
         await _add_message(
             f"u{i}", conv_id, "user", [{"type": "text", "content": f"question {i}"}], ts,
         )
@@ -157,14 +157,14 @@ async def test_ratio_above_threshold_prune(db, agents):
     )
 
     all_content = "\n".join(m.get("content", "") for m in history)
-    # Old turns (0, 1) are folded into a fold marker — check marker is present
-    assert "folded" in all_content
-    assert "question 0" in all_content  # first_user in fold marker
-    # The big_result should NOT appear in full for old turns (pruned + folded)
-    assert big_result not in all_content
-    # Recent turns (2, 3) should preserve text
-    assert "answer 2" in all_content
-    assert "answer 3" in all_content
+    # Old turns beyond the recent window are replaced by a fold marker that
+    # keeps first_user / last_reply excerpts.
+    assert "已折叠" in all_content
+    assert "question 0" in all_content  # first_user excerpt inside the marker
+    # KEEP_RECENT_TURNS=3: the most recent 3 turns stay intact (text + full
+    # tool_result); the 3 old turns' big results are folded away.
+    assert all_content.count(big_result) == 3
+    assert "answer 5" in all_content  # recent turn preserved
 
 
 # ─── 4.3 model_context_limit=None: ratio=0.0, full injection ────────────────
@@ -213,46 +213,11 @@ async def test_session_memory_injected_when_no_context_summary(db, agents):
     assert "covers_up_to" in history[0]["content"]
 
 
-# ─── 4.5 Both exist → only ContextSummary ───────────────────────────────────
-
-
-async def test_context_summary_takes_priority_over_session_memory(db, agents):
-    alice = agents["alice"]
-    conv_id = await _seed_conversation([alice])
-    await _add_message("u1", conv_id, "user", [{"type": "text", "content": "hello"}], 200)
-
-    now = now_ms()
-    async with get_db() as session:
-        session.add(ContextSummary(
-            id="cs1",
-            conversation_id=conv_id,
-            summary="compaction summary",
-            covered_until_message_id="m0",
-            covered_until_created_at=50,
-            source_message_count=3,
-            token_estimate=10,
-            summary_type="compaction",
-            created_at=now,
-        ))
-        session.add(ContextSummary(
-            id="sm1",
-            conversation_id=conv_id,
-            summary="session summary content",
-            covered_until_message_id="session",
-            covered_until_created_at=100,
-            source_message_count=5,
-            token_estimate=20,
-            summary_type="session",
-            covers_up_to=100.0,
-            created_at=now + 1,
-        ))
-
-    history = await cc.build_history_for(alice, conv_id)
-
-    all_content = "\n".join(m.get("content", "") for m in history)
-    assert "<conversation_summary" in all_content
-    assert "compaction summary" in all_content
-    assert "<session_memory" not in all_content
+# ─── 4.5 Cross-run compaction summaries ────────────────────────────────────
+# The <conversation_summary> block was removed with the run-internal
+# compaction rewrite (a5e3660): cross-run compaction summaries no longer
+# inject into history; session notes (tested above) are the sole summary
+# channel. The old ContextSummary-priority test is obsolete.
 
 
 # ─── 4.6 Neither exists → no summary block ──────────────────────────────────

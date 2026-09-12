@@ -113,20 +113,21 @@ class TestDetectCacheStyleFromUsage:
         )
         assert detect_cache_style_from_usage(usage) == 'anthropic'
 
-    def test_zero_cache_creation_not_anthropic(self):
-        """cache_creation_input_tokens=0 should not trigger 'anthropic'."""
+    def test_zero_cache_creation_field_is_anthropic_by_presence(self):
+        """Presence-based detection (fix-openai-compat-cache-usage): a top-level
+        cache_creation field classifies 'anthropic' even at 0 — value thresholds
+        no longer apply, only field presence."""
         usage = SimpleNamespace(
             prompt_tokens=1000,
             completion_tokens=200,
             cache_creation_input_tokens=0,
             cached_tokens=300,
         )
-        assert detect_cache_style_from_usage(usage) == 'deepseek'
+        assert detect_cache_style_from_usage(usage) == 'anthropic'
 
     def test_dict_usage_works(self):
         """detect_cache_style_from_usage also accepts dict-like objects (via getattr)."""
         usage = SimpleNamespace(
-            cache_creation_input_tokens=0,
             prompt_cache_hit_tokens=200,
         )
         assert detect_cache_style_from_usage(usage) == 'deepseek'

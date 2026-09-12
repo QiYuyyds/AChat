@@ -39,7 +39,6 @@ def _setup_workspace():
     settings.memory_workspace_path = Path(tmpdir)
     settings.memory_search_top_k = 10
     settings.memory_bm25_weight = 0.7
-    settings.memory_wikilink_weight = 0.3
     settings.memory_rrf_k = 60
 
     workspace = MemoryWorkspace(settings)
@@ -568,7 +567,6 @@ class TestTopicNormalization:
             settings.memory_workspace_path = Path(tmpdir)
             settings.memory_search_top_k = 10
             settings.memory_bm25_weight = 0.7
-            settings.memory_wikilink_weight = 0.3
             settings.memory_rrf_k = 60
 
             workspace = MemoryWorkspace(settings)

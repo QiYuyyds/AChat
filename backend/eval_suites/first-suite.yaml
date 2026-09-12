@@ -1,0 +1,80 @@
+# Aeval 第一个真实链路 Suite (change: add-aeval-integration-dashboard, 任务 4.2)
+#
+# 前置:
+#   1. AChat 后端已启动且配置了可用模型 (backend/.env)
+#   2. EVAL_HARNESS_ENABLED=true 且 EVAL_AGENT_ID=<被评 agent id>
+#   3. Phoenix 已启动 (trace/spans 依赖)
+#
+# 导入方式 (二选一):
+#   a. Dashboard → Suites → YAML 导入
+#   b. python backend/scripts/run_first_suite.py  (导入 + 运行 + 打印汇总)
+#
+# 说明: grader 均为确定性检查 (不依赖 eval LLM), 便于真实链路首次验收。
+
+name: achat-first-suite
+description: AChat 真实 Agent 首个评测套件 — 简单问答 / 文件创建 / 种子文件读取
+version: 1.2.0
+metadata:
+  author: aeval
+  purpose: real-chain acceptance
+  # v1.0.0 的 max_trials=1: pass@1 只会是 0 或 1, 置信区间宽到没有决策价值。
+  # 提到 3 之后本 suite 的统计口径与 v1.0.0 的历史 run 不可比, 不要混看。
+  trial_change: "1.1.0 raises max_trials 1 -> 3"
+  # 1.2.0: file-creation 的判定基础换成评测侧独立取证 (harness 级) 的 state_check。
+  # 此前它用 code_based target=outcome 匹配适配层经 fs API 读回的 workspace 文本
+  # (runner 级证据 —— 可信, 但不是评测侧独立观测)。③ 之后那份读数走取证通道,
+  # 不再出现在 outcome 里, 故判据必须换; 与 1.1.x 的历史 run 不同证据口径。
+  evidence_change: "1.2.0 file-creation judged on harness evidence, not reported outcome"
+
+tasks:
+  - id: simple-qa
+    description: 单轮简单问答 — Agent 能正确回答固定事实问题
+    prompt: 请用一句话回答:HTTP 的默认端口号是多少?回答中请包含具体数字。
+    max_trials: 3
+    graders:
+      - type: code
+        name: code_based
+        config:
+          checks:
+            - type: contains
+              target: transcript
+              value: "80"
+
+  - id: file-creation
+    description: workspace 文件创建 — Agent 在 sandbox workspace 写出指定文件
+    prompt: >
+      请在 workspace 中创建文件 hello.md,内容为一行:
+      "Hello from Aeval!"。创建完成后简单说明你做了什么。
+    max_trials: 3
+    graders:
+      # 只认评测侧独立取证 (workspace 清单经环境的 probe() 在 teardown 之前读):
+      # agent 自称建了文件不再构成证据; 判定时刻用默认的「结束时」—— 建完又删掉
+      # 就是不成立。
+      - type: state
+        name: state_check
+        evidence: [harness]
+        judgment_moment: at_end
+        config:
+          expectations:
+            - { type: file_exists, path: "hello.md" }
+            - { type: file_contains, path: "hello.md", value: "Hello from Aeval!" }
+
+  - id: seed-file-qa
+    description: 种子文件读取 — Agent 能读取 env 注入的种子文件并回答内容
+    prompt: >
+      workspace 中有一个文件 project_code.txt,请读取它并回答:项目代号是什么?
+      只回答代号本身。
+    max_trials: 3
+    env:
+      files:
+        project_code.txt: |
+          项目代号: AEVAL-2026
+          用途: 评测框架真实链路验收
+    graders:
+      - type: code
+        name: code_based
+        config:
+          checks:
+            - type: contains
+              target: transcript
+              value: "AEVAL-2026"

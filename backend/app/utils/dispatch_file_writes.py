@@ -4,6 +4,14 @@ Port of src/server/dispatch-file-writes.ts. Records which workspace files each
 child run wrote via fs_write (absolute path -> content hash), so AgentRunner can
 detect "two child agents wrote the same file differently" after a parallel wave.
 
+Advisory only (specs/06): worktree tasks are physically isolated and cannot
+collide; detect_wave_conflicts runs only when a wave has tasks that degraded
+to the shared workspace (worktree creation failed).
+
+The cache is bounded: DAG waves read and clear their entries at wave end, but
+runs outside the DAG executor (task_dispatch sub-runs, main runs) have no
+consumer that clears them, so the dict evicts oldest entries past the cap.
+
 Blind spot (see specs/06): the bash tool and SDK-native write tools don't go
 through fs_write and so aren't recorded here.
 """
@@ -11,9 +19,15 @@ through fs_write and so aren't recorded here.
 from __future__ import annotations
 
 import hashlib
+from collections import OrderedDict
 from dataclasses import dataclass
 
-_writes_by_run: dict[str, dict[str, str]] = {}
+# Upper bound on tracked runs. Wave checks read entries immediately after the
+# wave completes, so eviction only ever hits stale entries from flows that
+# never clear them.
+_MAX_TRACKED_RUNS = 500
+
+_writes_by_run: OrderedDict[str, dict[str, str]] = OrderedDict()
 
 
 def record_file_write(run_id: str, absolute_path: str, content: str) -> None:
@@ -22,6 +36,9 @@ def record_file_write(run_id: str, absolute_path: str, content: str) -> None:
         files = {}
         _writes_by_run[run_id] = files
     files[absolute_path] = hashlib.sha1(content.encode("utf-8")).hexdigest()
+    _writes_by_run.move_to_end(run_id)
+    while len(_writes_by_run) > _MAX_TRACKED_RUNS:
+        _writes_by_run.popitem(last=False)
 
 
 def get_file_writes(run_id: str) -> dict[str, str]:

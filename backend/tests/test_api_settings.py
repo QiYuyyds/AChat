@@ -8,7 +8,8 @@ the isolated test DB) from conftest.
 from __future__ import annotations
 
 _FULL_KEYS = {
-    "id",
+    # Mirrors _serialize_user_settings + _serialize_global_settings output;
+    # the legacy "id": "singleton" key is no longer part of the response.
     "anthropicApiKey",
     "anthropicBaseUrl",
     "openaiApiKey",
@@ -16,6 +17,11 @@ _FULL_KEYS = {
     "arkApiKey",
     "companionMode",
     "mobileDeviceToken",
+    "obsidianVaultPath",
+    "ragChunkPreset",
+    "ragChunkSize",
+    "ragChunkOverlap",
+    "ocrEngine",
     "deploymentPublishEnabled",
     "deploymentPublishDir",
     "deploymentPublicBaseUrl",
@@ -31,7 +37,6 @@ async def test_get_settings_defaults(api_client, db):
     s = body["settings"]
     # Full AppSettingsRow shape (byte-for-byte with the frontend type).
     assert set(s.keys()) == _FULL_KEYS
-    assert s["id"] == "singleton"
     assert s["companionMode"] == "off"
     assert s["anthropicApiKey"] is None
     assert s["deploymentPublishEnabled"] is False
@@ -47,7 +52,6 @@ async def test_patch_upserts_and_returns_row(api_client, db):
     # Keys returned verbatim, no redaction (mirrors TS source).
     assert s["anthropicApiKey"] == "sk-ant-123"
     assert s["openaiApiKey"] == "sk-oai-456"
-    assert s["id"] == "singleton"
     assert s["updatedAt"] > 0
 
     # Persisted: a follow-up GET reflects the patch.

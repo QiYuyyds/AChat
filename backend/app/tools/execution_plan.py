@@ -16,11 +16,10 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.schemas.plan import PlanComplexity, PlanStep, PlanState
+from app.schemas.plan import PlanComplexity, PlanState, PlanStep
 from app.services.plan_registry import plan_registry
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
 from app.utils.ids import _gen_id
-
 
 # ─── create_plan ─────────────────────────────────────
 

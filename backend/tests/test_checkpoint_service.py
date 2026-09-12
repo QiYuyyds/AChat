@@ -19,11 +19,25 @@ SAMPLE_MESSAGES = [
 async def _seed_run(run_id: str = "run_test", agent_id: str = "ag_alice") -> None:
     """Insert a minimal AgentRun row so the FK on checkpoints is satisfied."""
     from app.db.engine import get_db
-    from app.db.models import AgentRun, Conversation, Workspace
+    from app.db.models import Agent, AgentRun, Conversation, Workspace
     from app.utils.clock import now_ms
 
     now = now_ms()
     async with get_db() as db:
+        agent = Agent(
+            id=agent_id,
+            name="Alice",
+            avatar="A",
+            description="helper",
+            system_prompt="alice prompt",
+            adapter_name="mock",
+            is_builtin=False,
+            is_orchestrator=False,
+            created_at=now,
+        )
+        agent.capabilities_list = []
+        agent.tool_names_list = []
+        db.add(agent)
         conv = Conversation(
             id="conv_test",
             title="test",

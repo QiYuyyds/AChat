@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.graph.types import ChunkRef, Entity, ExtractResult, Relation
-from app.rag.graph_build_task import GraphBuildTask, _make_entity_id, _make_triple_id
+from app.rag.graph_build_task import GraphBuildTask
 from app.rag.graph_retrieval import GraphRetrieval
 from app.rag.milvus_graph_vector_store import MilvusGraphVectorStore
 
@@ -286,29 +286,3 @@ class TestGraphRetrievalMilvusPath:
         mock_kg_store.search.assert_called_once()
         assert len(results) == 1
         assert results[0]["pg_id"] == 200
-
-
-class TestIdGeneration:
-    """Test deterministic ID generation for Milvus upsert."""
-
-    def test_entity_id_deterministic(self):
-        eid1 = _make_entity_id("hash", 0, "Entity")
-        eid2 = _make_entity_id("hash", 0, "Entity")
-        assert eid1 == eid2
-        assert len(eid1) == 32
-
-    def test_entity_id_different_inputs(self):
-        eid1 = _make_entity_id("hash1", 0, "Entity")
-        eid2 = _make_entity_id("hash2", 0, "Entity")
-        assert eid1 != eid2
-
-    def test_triple_id_deterministic(self):
-        tid1 = _make_triple_id("hash", 0, "A", "B", "RELATES_TO")
-        tid2 = _make_triple_id("hash", 0, "A", "B", "RELATES_TO")
-        assert tid1 == tid2
-        assert len(tid1) == 32
-
-    def test_triple_id_different_relations(self):
-        tid1 = _make_triple_id("hash", 0, "A", "B", "RELATES_TO")
-        tid2 = _make_triple_id("hash", 0, "A", "B", "PART_OF")
-        assert tid1 != tid2

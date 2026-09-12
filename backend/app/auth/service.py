@@ -18,6 +18,13 @@ from app.db.models import User
 from app.utils.clock import now_ms
 
 
+async def _count_login(user_id: str, client_type: str) -> None:
+    """登录成功分支埋点（usage-stats）。异常由 record_counter 内部隔离。"""
+    from app.services.stats_service import record_counter
+
+    await record_counter(user_id, "logins", client_type=client_type)
+
+
 class AuthTokens(TypedDict):
     """Token pair returned by login/register/refresh."""
 
@@ -87,7 +94,7 @@ async def register_user(
 
 
 async def authenticate_user(
-    db: AsyncSession, email: str, password: str
+    db: AsyncSession, email: str, password: str, client_type: str = "web"
 ) -> AuthResult:
     """Verify credentials and return tokens. Raises ValueError on failure."""
     result = await db.execute(select(User).where(User.email == email))
@@ -95,11 +102,12 @@ async def authenticate_user(
     if user is None or not verify_password(password, user.password_hash):
         raise ValueError("Invalid credentials")
 
+    await _count_login(user.id, client_type)
     return AuthResult(user=_user_profile(user), tokens=_tokens_for_user(user))
 
 
 async def authenticate_default_user(
-    db: AsyncSession, password: str
+    db: AsyncSession, password: str, client_type: str = "web"
 ) -> AuthResult:
     """Authenticate the configured default account without exposing its email."""
     email = get_settings().default_user_email
@@ -108,6 +116,7 @@ async def authenticate_default_user(
     if user is None or not verify_password(password, user.password_hash):
         raise ValueError("Invalid credentials")
 
+    await _count_login(user.id, client_type)
     return AuthResult(user=_user_profile(user), tokens=_tokens_for_user(user))
 
 

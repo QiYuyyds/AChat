@@ -23,6 +23,13 @@ class GlobalSettingsPatch(TypedDict, total=False):
     deployment_publish_enabled: bool
     deployment_publish_dir: str | None
     deployment_public_base_url: str | None
+    # Infra connection overrides (rag-infra-config): None = 未配置，回落 env
+    milvus_host: str | None
+    milvus_port: int | None
+    neo4j_uri: str | None
+    neo4j_user: str | None
+    neo4j_password: str | None
+    enable_graph: bool | None
 
 
 def _empty_global_settings() -> GlobalSettings:
@@ -92,6 +99,18 @@ async def update_global_settings(patch: GlobalSettingsPatch) -> GlobalSettings:
             row.deployment_public_base_url = _normalize_str(
                 patch["deployment_public_base_url"]
             )
+        if "milvus_host" in patch:
+            row.milvus_host = _normalize_str(patch["milvus_host"])
+        if "milvus_port" in patch:
+            row.milvus_port = patch["milvus_port"]
+        if "neo4j_uri" in patch:
+            row.neo4j_uri = _normalize_str(patch["neo4j_uri"])
+        if "neo4j_user" in patch:
+            row.neo4j_user = _normalize_str(patch["neo4j_user"])
+        if "neo4j_password" in patch:
+            row.neo4j_password = _normalize_str(patch["neo4j_password"])
+        if "enable_graph" in patch:
+            row.enable_graph = patch["enable_graph"]
 
         if row.deployment_publish_enabled is None:
             row.deployment_publish_enabled = False

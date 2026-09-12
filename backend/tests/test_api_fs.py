@@ -13,13 +13,15 @@ from app.services import conversation_service
 
 
 @pytest_asyncio.fixture
-async def api_client(db):
+async def api_client(db, test_user):
     """Client over an app that includes the fs router.
 
     main.py wiring of `app.api.fs` belongs to the Integrate stage, so until it
     lands the shared conftest app has no fs routes. This module-local fixture
     shadows the conftest one and mounts the fs router under /api so the routes
     are exercised exactly as they will be in production.
+    The fs routes require JWT auth (added in 62407ef), so the client
+    authenticates as the shared test user.
     """
     import httpx
     from fastapi import FastAPI
@@ -30,6 +32,7 @@ async def api_client(db):
     app.include_router(fs.router, prefix="/api", tags=["fs"])
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        client.headers["Authorization"] = f"Bearer {test_user['token']}"
         yield client
 
 
@@ -81,9 +84,29 @@ async def test_write_invalid_body_returns_400(api_client, conversation):
     assert "issues" in body
 
 
-async def test_write_missing_workspace_returns_404(api_client):
+async def test_write_missing_workspace_returns_404(api_client, db):
+    """Write to an existing conversation that has no workspace → 404.
+
+    The id must exist in the DB: verify_conversation_ownership 404s unknown
+    ids before the workspace lookup is reached.
+    """
+    from app.db.engine import get_local_db
+    from app.db.models import Conversation
+    from app.utils.clock import now_ms
+
+    now = now_ms()
+    async with get_local_db() as session:
+        conv = Conversation(
+            id="conv_no_ws", title="no workspace", mode="single",
+            created_at=now, updated_at=now,
+        )
+        conv.agent_ids_list = []
+        conv.pinned_message_ids_list = []
+        conv.bookmarked_message_ids_list = []
+        session.add(conv)
+
     resp = await api_client.post(
-        "/api/conversations/nope/fs/write",
+        "/api/conversations/conv_no_ws/fs/write",
         json={"path": "a.txt", "content": "x"},
     )
     assert resp.status_code == 404

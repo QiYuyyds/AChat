@@ -11,7 +11,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 
 from app.db.engine import get_local_db, get_remote_db
-from app.db.models import Agent, Artifact, Attachment, Conversation, Document
+from app.db.models import Artifact, Attachment, Conversation, Document
 
 
 async def verify_conversation_ownership(conversation_id: str, user_id: str) -> None:
@@ -61,19 +61,6 @@ async def verify_attachment_ownership(attachment_id: str, user_id: str) -> str:
                 detail=f"Attachment not found: {attachment_id}",
             )
         return conv_id
-
-
-async def verify_agent_ownership(agent_id: str, user_id: str, allow_builtin: bool = True) -> None:
-    """Raise 404 if agent doesn't exist. user_id is ignored (single-user mode)."""
-    async with get_local_db() as db:
-        result = await db.execute(
-            select(Agent.id).where(Agent.id == agent_id)
-        )
-        if result.scalar_one_or_none() is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Agent not found: {agent_id}",
-            )
 
 
 async def verify_document_ownership(document_id: str, user_id: str) -> None:

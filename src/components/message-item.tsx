@@ -1,6 +1,6 @@
 'use client'
 
-import { AtSign, CornerUpLeft, GitBranch, Loader2, Pencil, Pin, RotateCcw, Star, Trash2 } from 'lucide-react'
+import { AlertCircle, AtSign, CornerUpLeft, GitBranch, Loader2, Pencil, Pin, RotateCcw, Star, Trash2 } from 'lucide-react'
 import { memo, useState } from 'react'
 
 import { AgentAvatar } from '@/components/agent-avatar'
@@ -334,6 +334,13 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
               )}
 
               <PartList parts={message.parts} conversationId={message.conversationId} messageStatus={message.status} messageRole={message.role} />
+              {/* 用户消息发送失败标注（POST 失败的乐观消息；刷新即消失，语义为本地未送达，不做重试） */}
+              {isUser && message.status === 'error' && (
+                <div className="flex items-center gap-1 text-[11px] text-destructive" role="status">
+                  <AlertCircle className="size-3" />
+                  发送失败
+                </div>
+              )}
               {dispatch && (
                 <div className="mt-3">
                   <DispatchPlanCard conversationId={message.conversationId} dispatch={dispatch} />

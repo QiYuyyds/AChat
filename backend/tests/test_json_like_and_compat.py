@@ -51,7 +51,7 @@ async def test_json_like_search_local(dual_db):
                 id=f"ag_json_{i}", name=f"Agent{i}", avatar="A",
                 description="d", system_prompt="p", adapter_name="mock",
                 is_builtin=False, is_orchestrator=False,
-                created_at=now, user_id="u1",
+                created_at=now,
             )
             agent.capabilities_list = []
             agent.tool_names_list = tools
@@ -89,7 +89,7 @@ async def test_json_like_no_match(dual_db):
             id="ag_nomatch", name="NoMatch", avatar="A",
             description="d", system_prompt="p", adapter_name="mock",
             is_builtin=False, is_orchestrator=False,
-            created_at=now, user_id="u1",
+            created_at=now,
         )
         agent.capabilities_list = []
         agent.tool_names_list = ["fs_read"]
@@ -137,10 +137,15 @@ async def test_json_like_remote(dual_db):
 
 @pytest_asyncio.fixture
 async def single_db(tmp_path, monkeypatch):
-    """Single-DB mode: no DATABASE_LOCAL_URL set."""
+    """Single-DB mode: DATABASE_LOCAL_URL forced empty.
+
+    Must setenv to "" rather than delenv: pydantic-settings falls back to
+    .env.local (which defines a real DATABASE_LOCAL_URL), silently switching
+    the test into dual-DB mode against the developer's local database.
+    """
     db_file = tmp_path / "single.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{db_file.as_posix()}")
-    monkeypatch.delenv("DATABASE_LOCAL_URL", raising=False)
+    monkeypatch.setenv("DATABASE_LOCAL_URL", "")
     monkeypatch.setenv("WORKSPACE_ROOT", str(tmp_path / "ws"))
     monkeypatch.setenv("JWT_SECRET", "test-secret-at-least-32-characters-long!!")
 
@@ -173,7 +178,9 @@ async def test_single_db_all_tables_on_one_engine(single_db):
         "messages", "conversations", "agent_runs", "agents", "mcp_servers",
     }
     remote_tables = {
-        "users", "user_settings", "long_term_memory", "documents",
+        "users", "user_settings", "documents",
+        # long_term_memory excluded: the file-native memory rewrite removed it
+        # from the app schema (no model, no runtime references).
     }
     assert local_tables.issubset(all_tables), f"Missing local tables: {local_tables - all_tables}"
     assert remote_tables.issubset(all_tables), f"Missing remote tables: {remote_tables - all_tables}"
@@ -233,7 +240,7 @@ async def test_single_db_conversation_and_message(single_db):
 
     async with single_db.get_local_db() as session:
         conv = Conversation(
-            id="conv_s", user_id="u_s", title="T", mode="single",
+            id="conv_s", title="T", mode="single",
             created_at=now, updated_at=now,
         )
         conv.agent_ids_list = []

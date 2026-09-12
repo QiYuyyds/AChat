@@ -9,7 +9,6 @@ Exports:
   - _IMPORTANCE_BY_CATEGORY: Importance floor per category
   - extract_preferences: LLM-based preference extraction with rule fallback
   - _PREFERENCE_MERGE_PROMPT: LLM prompt for preference consolidation
-  - _strip_code_fence: Helper to strip markdown code fences from LLM output
 """
 
 from __future__ import annotations
@@ -17,8 +16,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from collections.abc import Callable
+
+from app.memory.file_store.markdown_io import strip_code_fence
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +31,6 @@ _IMPORTANCE_BY_CATEGORY: dict[str, float] = {
     "tool_failure": 0.3,
     "general": 0.3,
 }
-
-
-def _strip_code_fence(raw: str) -> str:
-    raw = (raw or "").strip()
-    raw = re.sub(r"^```json", "", raw)
-    raw = re.sub(r"^```", "", raw)
-    raw = re.sub(r"```$", "", raw)
-    return raw.strip()
 
 
 def _contains_any(s: str, *subs: str) -> bool:
@@ -185,7 +177,7 @@ async def extract_preferences_compat(
         logger.warning("Preference LLM extraction failed: %s", e)
         return _extract_rule_based(msg)
 
-    raw = _strip_code_fence(raw)
+    raw = strip_code_fence(raw)
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, ValueError):

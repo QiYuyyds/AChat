@@ -83,14 +83,21 @@ async def init_db() -> None:
     local_tables = get_local_table_objects()
     remote_tables = get_remote_table_objects()
 
-    # Remote engine: create remote tables
+    # Remote engine: create remote tables. In single-DB mode (no local
+    # engine — desktop / SQLite-only deployments) the remote engine hosts
+    # every table, so the local tables are created here too.
+    single_db_mode = _local_engine is None
+    remote_create_tables = remote_tables + local_tables if single_db_mode else remote_tables
     async with _remote_engine.begin() as conn:
         await conn.run_sync(
             lambda sync_conn: Base.metadata.create_all(
-                sync_conn, tables=remote_tables, checkfirst=True
+                sync_conn, tables=remote_create_tables, checkfirst=True
             )
         )
-        await _migrate_columns_pg(conn)
+        if remote_is_sqlite:
+            await _migrate_columns_sqlite(conn)
+        else:
+            await _migrate_columns_pg(conn)
 
     # Local engine: create local tables
     if _local_engine is not None:
@@ -320,11 +327,16 @@ async def close_db() -> None:
 
 @asynccontextmanager
 async def get_local_db() -> AsyncIterator[AsyncSession]:
-    """Get a session for local (SQLite) tables."""
-    if _local_session_factory is None:
-        raise RuntimeError("Local database not initialized. Call init_db() first.")
+    """Get a session for local (SQLite) tables.
 
-    async with _local_session_factory() as session:
+    In single-DB mode the local tables live on the remote engine, so the
+    remote session factory backs this context manager too.
+    """
+    factory = _local_session_factory or _remote_session_factory
+    if factory is None:
+        raise RuntimeError("Database not initialized. Call init_db() first.")
+
+    async with factory() as session:
         try:
             yield session
             await session.commit()

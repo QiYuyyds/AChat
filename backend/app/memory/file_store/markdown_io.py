@@ -2,6 +2,8 @@
 
 Uses python-frontmatter for parsing/serialization. Files are written
 atomically: write to temp file then rename (POSIX) or delete+rename (Windows).
+
+Also hosts strip_code_fence, shared by the memory LLM-output parsers.
 """
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +22,15 @@ from app.memory.file_store.frontmatter import MemoryFrontmatter
 from app.memory.file_store.wikilinks import retarget_wikilinks
 
 logger = logging.getLogger(__name__)
+
+
+def strip_code_fence(raw: str) -> str:
+    """Strip a surrounding ```/```json fence from LLM output before JSON parsing."""
+    raw = (raw or "").strip()
+    raw = re.sub(r"^```json", "", raw)
+    raw = re.sub(r"^```", "", raw)
+    raw = re.sub(r"```$", "", raw)
+    return raw.strip()
 
 
 @dataclass

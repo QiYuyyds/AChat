@@ -3,36 +3,27 @@
 Mirrors the pending_writes / pending_bash_commands pattern: each pending MCP
 call holds a resolver that the waiting tool call attaches; approve / reject /
 run-abort resolve it. Per-tool-per-conversation approval: after approval, the
-same tool is exempt for the remainder of that conversation.
+same tool is exempt for the remainder of that conversation. The shared
+entry-map / resolver skeleton lives in
+:mod:`app.services.pending_store_base`.
 """
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
 
 from app.schemas.events import McpCallPendingEvent, McpCallResolvedEvent, PendingMcpCall
-from app.services.event_bus import event_bus
+from app.services.pending_store_base import BasePendingEntry, PendingStoreBase
 from app.utils.clock import now_ms
 from app.utils.ids import new_pending_mcp_call_id
-
-logger = logging.getLogger(__name__)
 
 # decision -> {"approved": bool}
 McpCallResolver = Callable[[dict], None]
 
 
-@dataclass
-class _PendingEntry:
-    call: PendingMcpCall
-    user_id: str | None = None
-    resolver: McpCallResolver | None = field(default=None)
-
-
-class PendingMcpCallsStore:
+class PendingMcpCallsStore(PendingStoreBase):
     def __init__(self) -> None:
-        self._map: dict[str, _PendingEntry] = {}
+        super().__init__()
         # Per-conversation approved/rejected tool names: conversation_id → set
         self._approved: dict[str, set[str]] = {}
         self._rejected: dict[str, set[str]] = {}
@@ -59,34 +50,15 @@ class PendingMcpCallsStore:
             server_trust=server_trust,
             created_at=created_at,
         )
-        self._map[call.id] = _PendingEntry(call=call, user_id=user_id)
-
-        event_bus.publish(
+        self.register_entry(
+            BasePendingEntry(payload=call, user_id=user_id),
             McpCallPendingEvent(
                 conversation_id=conversation_id,
                 timestamp=created_at,
                 pending_call=call,
             ),
-            user_id=user_id,
         )
         return call
-
-    def attach_resolver(self, pending_id: str, resolver: McpCallResolver) -> None:
-        entry = self._map.get(pending_id)
-        if entry is not None:
-            entry.resolver = resolver
-
-    def get(self, pending_id: str) -> PendingMcpCall | None:
-        entry = self._map.get(pending_id)
-        return entry.call if entry else None
-
-    def list_by_conversation(self, conversation_id: str) -> list[PendingMcpCall]:
-        calls = [
-            e.call for e in self._map.values()
-            if e.call.conversation_id == conversation_id
-        ]
-        calls.sort(key=lambda c: c.created_at)
-        return calls
 
     def is_approved(self, conversation_id: str, tool_name: str) -> bool:
         return tool_name in self._approved.get(conversation_id, set())
@@ -98,46 +70,41 @@ class PendingMcpCallsStore:
         entry = self._map.get(pending_id)
         if entry is None:
             return False
-        conv_id = entry.call.conversation_id
-        tool_name = entry.call.tool_name
-        self._approved.setdefault(conv_id, set()).add(tool_name)
-        self._finalize(pending_id, approved=True)
+        call = entry.payload
+        # Decision memory is mcp-specific: record before finalizing so the
+        # exemption survives the entry being dropped.
+        self._approved.setdefault(call.conversation_id, set()).add(call.tool_name)
+        self._finalize(
+            pending_id,
+            resolver_payload={"approved": True},
+            resolved_event=self._resolved_event(pending_id, approved=True),
+        )
         return True
 
     def reject(self, pending_id: str) -> bool:
         entry = self._map.get(pending_id)
         if entry is None:
             return False
-        conv_id = entry.call.conversation_id
-        tool_name = entry.call.tool_name
-        self._rejected.setdefault(conv_id, set()).add(tool_name)
-        self._finalize(pending_id, approved=False)
+        call = entry.payload
+        self._rejected.setdefault(call.conversation_id, set()).add(call.tool_name)
+        self._finalize(
+            pending_id,
+            resolver_payload={"approved": False},
+            resolved_event=self._resolved_event(pending_id, approved=False),
+        )
         return True
 
     def cancel(self, pending_id: str) -> None:
         """Run-abort path: resolve as not-approved without emitting an SSE event."""
-        entry = self._map.get(pending_id)
-        if entry is None:
-            return
-        if entry.resolver is not None:
-            entry.resolver({"approved": False})
-        del self._map[pending_id]
+        self._cancel(pending_id, resolver_payload={"approved": False})
 
-    def _finalize(self, pending_id: str, *, approved: bool) -> None:
-        entry = self._map.get(pending_id)
-        if entry is None:
-            return
-        if entry.resolver is not None:
-            entry.resolver({"approved": approved})
-        del self._map[pending_id]
-        event_bus.publish(
-            McpCallResolvedEvent(
-                conversation_id=entry.call.conversation_id,
-                timestamp=now_ms(),
-                pending_id=pending_id,
-                approved=approved,
-            ),
-            user_id=entry.user_id,
+    def _resolved_event(self, pending_id: str, *, approved: bool) -> McpCallResolvedEvent:
+        entry = self._map[pending_id]
+        return McpCallResolvedEvent(
+            conversation_id=entry.payload.conversation_id,
+            timestamp=now_ms(),
+            pending_id=pending_id,
+            approved=approved,
         )
 
 

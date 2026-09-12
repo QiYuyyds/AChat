@@ -6,12 +6,20 @@ python-multipart>=0.0.17
 
 # Database
 sqlalchemy[postgresql_asyncio]>=2.0.36
+aiosqlite>=0.20.0
 asyncpg>=0.29.0
 alembic>=1.14.0
 
 # Validation
 pydantic>=2.10.0
 pydantic-settings>=2.6.0
+
+# Auth
+bcrypt>=4.2.0
+PyJWT>=2.10.0
+
+# MCP client (external MCP server support for Custom adapter)
+mcp>=1.0.0
 
 # AI SDKs
 anthropic>=0.40.0
@@ -38,12 +46,21 @@ httpx>=0.28.0
 python-dotenv>=1.0.1
 pypdf>=5.1.0  # read_attachment PDF text extraction (replaces TS pdf-parse)
 python-frontmatter>=1.1.0  # file-native memory frontmatter
+pyyaml>=6.0.0        # suite YAML loading (Aeval + AChat)
+
+# Aeval evaluation framework — optional, NOT installed by default (D4:
+# eval_harness_enabled opt-in). Install on demand from PyPI:
+#   pip install "aeval-framework[api,cli]"     # PyPI dist; import agent_eval
+# ([api]=FastAPI service, [cli]=eval-suite command line)
 jieba>=0.42.1  # Chinese tokenization for memory BM25/FTS5
 
 # Document Parser pipeline (ported from AGI-memory)
 pdfplumber>=0.9.0    # PDF parsing - first-choice extractor
 PyPDF2>=3.0.0        # PDF parsing - pure-Python fallback
 pypdfium2>=4.30.0    # PDF page rendering for OCR (DeepSeek-OCR / RapidOCR)
+python-docx>=1.1.0   # DOCX text extraction
+python-pptx>=0.6.23  # PPTX text extraction
+json-repair>=0.25.0  # repair LLM JSON output in OCR results
 
 # Observability (OpenTelemetry + Arize Phoenix)
 opentelemetry-api>=1.28.0

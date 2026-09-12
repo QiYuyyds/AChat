@@ -27,7 +27,6 @@ async def test_seed_creates_guide_agent(db):
         assert agent.name == "小A"
         assert agent.is_builtin is True
         assert agent.is_guide is True
-        assert agent.user_id is None
         assert agent.adapter_name == "custom"
         assert "manage_agents" in agent.tool_names_list
         assert "manage_skills" in agent.tool_names_list

@@ -29,7 +29,6 @@ async def simple_setup(db, agents, test_user, tmp_path):
     async with get_db() as session:
         conv = Conversation(
             id=conv_id,
-            user_id=test_user["id"],
             title="T",
             mode="single",
             archived=False,

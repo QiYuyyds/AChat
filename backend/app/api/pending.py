@@ -2,9 +2,17 @@
 
 Auth: every endpoint requires authentication and verifies conversation ownership
 before resolving any pending item.
+
+The six list routes share one body (:func:`_list_pending`) and the structurally
+identical approve/reject routes of writes / bash-commands / mcp-calls share
+:func:`_resolve_simple`. Questions / dispatch-plans / merge-conflicts keep
+specialized resolve bodies (answer validation, decision construction,
+approve/revise/reject branching) but reuse the shared helpers. The
+merge-conflicts resolve URL keeps its legacy ``/resolve`` suffix and each
+store's response key is unchanged.
 """
 
-from typing import Any
+from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
@@ -19,9 +27,20 @@ from app.services.pending_dispatch_plans import pending_dispatch_plans
 from app.services.pending_mcp_calls import pending_mcp_calls
 from app.services.pending_merge_conflicts import pending_merge_conflicts
 from app.services.pending_questions import pending_questions
+from app.services.pending_store_base import PendingStoreBase
 from app.services.pending_writes import pending_writes
 
 router = APIRouter()
+
+
+class _SimpleResolveStore(Protocol):
+    """Surface the approve/reject stores expose to :func:`_resolve_simple`."""
+
+    def get(self, pending_id: str) -> Any: ...
+
+    def approve(self, pending_id: str) -> bool: ...
+
+    def reject(self, pending_id: str) -> bool: ...
 
 
 async def _read_json(req: Request) -> Any:
@@ -38,17 +57,57 @@ def _invalid_body() -> JSONResponse:
     )
 
 
+def _not_found(message: str) -> JSONResponse:
+    return JSONResponse({"error": message}, status_code=404)
+
+
+async def _list_pending(
+    store: PendingStoreBase, response_key: str, conversation_id: str, user: User
+) -> JSONResponse:
+    """Shared body of the six pending list routes."""
+    await verify_conversation_ownership(conversation_id, user.id)
+    items = store.list_by_conversation(conversation_id)
+    return JSONResponse({response_key: [i.model_dump(by_alias=True) for i in items]})
+
+
+async def _resolve_simple(
+    store: _SimpleResolveStore,
+    pending_id: str,
+    conversation_id: str,
+    raw: Any,
+    *,
+    label: str,
+) -> JSONResponse:
+    """Shared approve/reject path for the writes / bash-commands / mcp-calls routes.
+
+    Enforces that the pending item belongs to the URL's conversation. This
+    check is the one deliberate behavior alignment of the generalize-pending-store
+    change: the writes route previously skipped it while the other five route
+    pairs had it.
+    """
+    existing = store.get(pending_id)
+    if existing is None or existing.conversation_id != conversation_id:
+        return _not_found(f"Pending {label} not found")
+
+    ok = (
+        store.approve(pending_id)
+        if raw["action"] == "approve"
+        else store.reject(pending_id)
+    )
+    if not ok:
+        return JSONResponse(
+            {"error": f"Failed to process pending {label}"}, status_code=500
+        )
+    return JSONResponse({"ok": True})
+
+
 # ─── pending-writes ──────────────────────────────────────────────────────────
 @router.get("/api/conversations/{conversation_id}/pending-writes")
 async def list_pending_writes(
     conversation_id: str,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    await verify_conversation_ownership(conversation_id, user.id)
-    writes = pending_writes.list_by_conversation(conversation_id)
-    return JSONResponse(
-        {"pendingWrites": [w.model_dump(by_alias=True) for w in writes]}
-    )
+    return await _list_pending(pending_writes, "pendingWrites", conversation_id, user)
 
 
 @router.post("/api/conversations/{conversation_id}/pending-writes/{pw_id}")
@@ -62,21 +121,7 @@ async def resolve_pending_write(
     raw = await _read_json(req)
     if not isinstance(raw, dict) or raw.get("action") not in ("approve", "reject"):
         return _invalid_body()
-
-    existing = pending_writes.get(pw_id)
-    if existing is None:
-        return JSONResponse({"error": "Pending write not found"}, status_code=404)
-
-    ok = (
-        pending_writes.approve(pw_id)
-        if raw["action"] == "approve"
-        else pending_writes.reject(pw_id)
-    )
-    if not ok:
-        return JSONResponse(
-            {"error": "Failed to process pending write"}, status_code=500
-        )
-    return JSONResponse({"ok": True})
+    return await _resolve_simple(pending_writes, pw_id, conversation_id, raw, label="write")
 
 
 # ─── pending-questions ───────────────────────────────────────────────────────
@@ -85,11 +130,7 @@ async def list_pending_questions(
     conversation_id: str,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    await verify_conversation_ownership(conversation_id, user.id)
-    questions = pending_questions.list_by_conversation(conversation_id)
-    return JSONResponse(
-        {"pendingQuestions": [q.model_dump(by_alias=True) for q in questions]}
-    )
+    return await _list_pending(pending_questions, "pendingQuestions", conversation_id, user)
 
 
 @router.post("/api/conversations/{conversation_id}/pending-questions/{qid}")
@@ -117,9 +158,7 @@ async def answer_pending_question(
 
     existing = pending_questions.get(qid)
     if existing is None:
-        return JSONResponse(
-            {"error": "Pending question not found"}, status_code=404
-        )
+        return _not_found("Pending question not found")
 
     ok = pending_questions.answer(qid, answers)
     if not ok:
@@ -133,11 +172,7 @@ async def list_pending_bash_commands(
     conversation_id: str,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    await verify_conversation_ownership(conversation_id, user.id)
-    commands = pending_bash_commands.list_by_conversation(conversation_id)
-    return JSONResponse(
-        {"pendingCommands": [c.model_dump(by_alias=True) for c in commands]}
-    )
+    return await _list_pending(pending_bash_commands, "pendingCommands", conversation_id, user)
 
 
 @router.post(
@@ -153,23 +188,9 @@ async def resolve_pending_bash_command(
     raw = await _read_json(req)
     if not isinstance(raw, dict) or raw.get("action") not in ("approve", "reject"):
         return _invalid_body()
-
-    existing = pending_bash_commands.get(command_id)
-    if existing is None or existing.conversation_id != conversation_id:
-        return JSONResponse(
-            {"error": "Pending command not found"}, status_code=404
-        )
-
-    ok = (
-        pending_bash_commands.approve(command_id)
-        if raw["action"] == "approve"
-        else pending_bash_commands.reject(command_id)
+    return await _resolve_simple(
+        pending_bash_commands, command_id, conversation_id, raw, label="command"
     )
-    if not ok:
-        return JSONResponse(
-            {"error": "Failed to process pending command"}, status_code=500
-        )
-    return JSONResponse({"ok": True})
 
 
 # ─── pending-dispatch-plans ──────────────────────────────────────────────────
@@ -178,10 +199,8 @@ async def list_pending_dispatch_plans(
     conversation_id: str,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    await verify_conversation_ownership(conversation_id, user.id)
-    plans = pending_dispatch_plans.list_by_conversation(conversation_id)
-    return JSONResponse(
-        {"pendingDispatchPlans": [p.model_dump(by_alias=True) for p in plans]}
+    return await _list_pending(
+        pending_dispatch_plans, "pendingDispatchPlans", conversation_id, user
     )
 
 
@@ -208,9 +227,7 @@ async def resolve_pending_dispatch_plan(
 
     existing = pending_dispatch_plans.get(plan_id)
     if existing is None or existing.conversation_id != conversation_id:
-        return JSONResponse(
-            {"error": "Pending dispatch plan not found"}, status_code=404
-        )
+        return _not_found("Pending dispatch plan not found")
 
     if action == "reject":
         ok = pending_dispatch_plans.reject(plan_id)
@@ -252,11 +269,7 @@ async def list_pending_mcp_calls(
     conversation_id: str,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    await verify_conversation_ownership(conversation_id, user.id)
-    calls = pending_mcp_calls.list_by_conversation(conversation_id)
-    return JSONResponse(
-        {"pendingMcpCalls": [c.model_dump(by_alias=True) for c in calls]}
-    )
+    return await _list_pending(pending_mcp_calls, "pendingMcpCalls", conversation_id, user)
 
 
 @router.post("/api/conversations/{conversation_id}/pending-mcp-calls/{call_id}")
@@ -270,23 +283,9 @@ async def resolve_pending_mcp_call(
     raw = await _read_json(req)
     if not isinstance(raw, dict) or raw.get("action") not in ("approve", "reject"):
         return _invalid_body()
-
-    existing = pending_mcp_calls.get(call_id)
-    if existing is None or existing.conversation_id != conversation_id:
-        return JSONResponse(
-            {"error": "Pending MCP call not found"}, status_code=404
-        )
-
-    ok = (
-        pending_mcp_calls.approve(call_id)
-        if raw["action"] == "approve"
-        else pending_mcp_calls.reject(call_id)
+    return await _resolve_simple(
+        pending_mcp_calls, call_id, conversation_id, raw, label="MCP call"
     )
-    if not ok:
-        return JSONResponse(
-            {"error": "Failed to process pending MCP call"}, status_code=500
-        )
-    return JSONResponse({"ok": True})
 
 
 # ─── pending-merge-conflicts ─────────────────────────────────────────────────
@@ -295,10 +294,8 @@ async def list_pending_merge_conflicts(
     conversation_id: str,
     user: User = Depends(get_current_user),
 ) -> JSONResponse:
-    await verify_conversation_ownership(conversation_id, user.id)
-    conflicts = pending_merge_conflicts.list_by_conversation(conversation_id)
-    return JSONResponse(
-        {"pendingMergeConflicts": [c.model_dump(by_alias=True) for c in conflicts]}
+    return await _list_pending(
+        pending_merge_conflicts, "pendingMergeConflicts", conversation_id, user
     )
 
 
@@ -333,9 +330,7 @@ async def resolve_pending_merge_conflict(
 
     existing = pending_merge_conflicts.get(pending_id)
     if existing is None or existing.conversation_id != conversation_id:
-        return JSONResponse(
-            {"error": "Pending merge conflict not found"}, status_code=404
-        )
+        return _not_found("Pending merge conflict not found")
 
     resolution_strategy = "manual" if action != "abandon" else "abandoned"
     resolved_files = list(existing.conflict_files) if action != "abandon" else []

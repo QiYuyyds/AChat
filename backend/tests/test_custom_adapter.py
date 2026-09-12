@@ -6,9 +6,12 @@ chat.completions.create yields stub ChatCompletionChunk-like objects.
 """
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest_asyncio
+from openai.types.completion_usage import CompletionUsage, PromptTokensDetails
 
 from app.adapters import custom_adapter
 from app.adapters.base import AdapterInput, CustomConfig
@@ -132,7 +135,6 @@ async def conversation(db, agents, tmp_path):
             fs_write_approval_mode="auto",
             created_at=now,
             updated_at=now,
-            user_id="test_user_1",
         )
         conv.agent_ids_list = [agents["alice"]]
         conv.pinned_message_ids_list = []
@@ -386,7 +388,7 @@ async def test_truncated_tool_args_emits_error(conversation, monkeypatch):
     truncation_result = tool_results[0]
     assert truncation_result.is_error is True
     assert "truncated" in truncation_result.result.get("error", "").lower()
-    assert "update_artifact" in truncation_result.result.get("error", "")
+    assert "fs_edit" in truncation_result.result.get("error", "")
 
 
 # ─── _try_extract_json unit tests ────────────────────────────────────────────
@@ -634,3 +636,400 @@ async def test_empty_args_no_recovery_emits_error(conversation, monkeypatch):
     assert "empty" in error_result.result.get("error", "").lower()
 
 
+
+
+# ─── LLM HTTP client cache (speed-up-first-token-latency task 4) ─────────────
+
+
+def test_build_client_reuses_cached_instance(monkeypatch):
+    """Same (provider, base_url, api_key) twice → the same cached AsyncOpenAI instance."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-cache-test")
+    custom_adapter._client_cache.clear()
+    try:
+        c1 = custom_adapter._build_client("deepseek", None, None)
+        c2 = custom_adapter._build_client("deepseek", None, None)
+        assert c1 is c2
+    finally:
+        custom_adapter._client_cache.clear()
+
+
+def test_build_client_new_instance_on_api_key_change(monkeypatch):
+    """A changed api_key yields a distinct client instance (new cache key)."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-unused-env")
+    custom_adapter._client_cache.clear()
+    try:
+        c1 = custom_adapter._build_client("deepseek", "sk-a", None)
+        c2 = custom_adapter._build_client("deepseek", "sk-b", None)
+        assert c1 is not c2
+        # deepseek resolves base_url to the provider default — cache holds both keys
+        assert set(custom_adapter._client_cache.values()) == {c1, c2}
+    finally:
+        custom_adapter._client_cache.clear()
+
+
+def test_build_client_new_instance_on_base_url_change(monkeypatch):
+    """A changed base_url (openai-compatible) yields a distinct client instance."""
+    custom_adapter._client_cache.clear()
+    try:
+        c1 = custom_adapter._build_client("openai-compatible", "sk-x", "https://a.example.com/v1")
+        c2 = custom_adapter._build_client("openai-compatible", "sk-x", "https://b.example.com/v1")
+        assert c1 is not c2
+    finally:
+        custom_adapter._client_cache.clear()
+
+
+def test_build_client_keyed_on_resolved_config(monkeypatch):
+    """Env-resolved and explicitly-passed keys resolving to the same value share one client."""
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-shared")
+    custom_adapter._client_cache.clear()
+    try:
+        from_env = custom_adapter._build_client("deepseek", None, None)
+        explicit = custom_adapter._build_client("deepseek", "sk-shared", None)
+        assert from_env is explicit
+    finally:
+        custom_adapter._client_cache.clear()
+
+
+async def test_close_cached_clients_closes_and_clears():
+    """close_cached_clients closes every cached client and empties the cache."""
+    closed: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        async def close(self) -> None:
+            closed.append(self.name)
+
+    custom_adapter._client_cache[("deepseek", "k1", None)] = _FakeClient("deepseek")
+    custom_adapter._client_cache[("openai", "k2", None)] = _FakeClient("openai")
+
+    await custom_adapter.close_cached_clients()
+
+    assert sorted(closed) == ["deepseek", "openai"]
+    assert custom_adapter._client_cache == {}
+
+
+async def test_close_cached_clients_tolerates_close_errors():
+    """A failing client.close() does not abort the shutdown sweep."""
+    class _BadClient:
+        async def close(self) -> None:
+            raise RuntimeError("boom")
+
+    custom_adapter._client_cache[("openai", "bad", None)] = _BadClient()
+
+    await custom_adapter.close_cached_clients()  # must not raise
+
+    assert custom_adapter._client_cache == {}
+
+
+# ─── unified cache-usage resolution (fix-openai-compat-cache-usage) ──────────
+
+
+def _sdk_usage(**overrides) -> CompletionUsage:
+    """Real SDK usage object; extra='allow' keeps vendor extras (LongCat et al.)."""
+    fields: dict = dict(prompt_tokens=1696, completion_tokens=64, total_tokens=1760)
+    fields.update(overrides)
+    return CompletionUsage(**fields)
+
+
+def _nested_details(**overrides) -> PromptTokensDetails:
+    """Real SDK nested container; extra='allow' keeps vendor extras like cache_write_tokens."""
+    fields: dict = dict(cached_tokens=0)
+    fields.update(overrides)
+    return PromptTokensDetails(**fields)
+
+
+class TestUsageCacheRead:
+    """4.1/4.2: _usage_cache_read priority chain across known wire formats."""
+
+    def test_nested_openai_standard_format(self):
+        """LongCat/OpenAI style: hits only in prompt_tokens_details.cached_tokens."""
+        usage = _sdk_usage(prompt_tokens_details=_nested_details(cached_tokens=1664))
+        assert custom_adapter._usage_cache_read(usage) == 1664
+
+    def test_nested_zero_fill_resolves_zero(self):
+        usage = _sdk_usage(prompt_tokens_details=_nested_details(cached_tokens=0))
+        assert custom_adapter._usage_cache_read(usage) == 0
+
+    def test_top_level_prompt_cache_hit_tokens_unchanged(self):
+        """DeepSeek top-level format (backward compat)."""
+        usage = _sdk_usage(prompt_cache_hit_tokens=1500)
+        assert custom_adapter._usage_cache_read(usage) == 1500
+
+    def test_top_level_cached_tokens_unchanged(self):
+        usage = _sdk_usage(cached_tokens=1200)
+        assert custom_adapter._usage_cache_read(usage) == 1200
+
+    def test_top_level_wins_over_nested(self):
+        usage = _sdk_usage(
+            prompt_cache_hit_tokens=1500,
+            prompt_tokens_details=_nested_details(cached_tokens=100),
+        )
+        assert custom_adapter._usage_cache_read(usage) == 1500
+
+    def test_zero_top_level_falls_through_to_nested(self):
+        """0-valued candidate falls through; harmless (all-zero formats resolve 0)."""
+        usage = _sdk_usage(
+            prompt_cache_hit_tokens=0,
+            prompt_tokens_details=_nested_details(cached_tokens=1400),
+        )
+        assert custom_adapter._usage_cache_read(usage) == 1400
+
+    def test_no_cache_fields_resolves_zero(self):
+        assert custom_adapter._usage_cache_read(_sdk_usage()) == 0
+
+    def test_missing_nested_container_resolves_zero(self):
+        usage = _sdk_usage(prompt_tokens_details=None)
+        assert custom_adapter._usage_cache_read(usage) == 0
+
+    def test_nested_usage_field_rejects_bool(self):
+        """_nested_usage_field mirrors _usage_field semantics (bool is not a count)."""
+        usage = SimpleNamespace(
+            prompt_tokens_details=SimpleNamespace(cached_tokens=True)
+        )
+        assert custom_adapter._nested_usage_field(
+            usage, "prompt_tokens_details", "cached_tokens"
+        ) == 0
+
+
+class TestUsageCacheCreation:
+    """4.3: _usage_cache_creation chain; accounting intact when fields absent."""
+
+    def test_nested_cache_write_tokens(self):
+        usage = _sdk_usage(
+            prompt_tokens_details=_nested_details(
+                cached_tokens=1664, cache_write_tokens=32
+            )
+        )
+        assert custom_adapter._usage_cache_creation(usage) == 32
+
+    def test_top_level_anthropic_creation(self):
+        usage = _sdk_usage(cache_creation_input_tokens=77)
+        assert custom_adapter._usage_cache_creation(usage) == 77
+
+    def test_top_level_creation_tokens_alias(self):
+        usage = _sdk_usage(cache_creation_tokens=88)
+        assert custom_adapter._usage_cache_creation(usage) == 88
+
+    def test_top_level_creation_wins_over_nested(self):
+        usage = _sdk_usage(
+            cache_creation_input_tokens=77,
+            prompt_tokens_details=_nested_details(cache_write_tokens=32),
+        )
+        assert custom_adapter._usage_cache_creation(usage) == 77
+
+    def test_no_cache_fields_creation_zero_accounting_intact(self):
+        usage = _sdk_usage()
+        assert custom_adapter._usage_cache_read(usage) == 0
+        assert custom_adapter._usage_cache_creation(usage) == 0
+        assert custom_adapter._usage_field(usage, "prompt_tokens") == 1696
+        assert custom_adapter._usage_field(usage, "completion_tokens") == 64
+
+
+class TestDetectCacheStylePresenceBased:
+    """4.4: detection classifies by field presence, not hit counts."""
+
+    def test_first_turn_cache_fill_is_deepseek(self):
+        """Zero-valued nested cached_tokens still classifies (container present)."""
+        usage = _sdk_usage(prompt_tokens_details=_nested_details(cached_tokens=0))
+        assert custom_adapter.detect_cache_style_from_usage(usage) == 'deepseek'
+
+    def test_no_cache_fields_is_none(self):
+        assert custom_adapter.detect_cache_style_from_usage(_sdk_usage()) == 'none'
+
+    def test_top_level_creation_field_is_anthropic_even_at_zero(self):
+        usage = _sdk_usage(cache_creation_input_tokens=0)
+        assert custom_adapter.detect_cache_style_from_usage(usage) == 'anthropic'
+
+    def test_nested_cache_write_tokens_alone_not_anthropic(self):
+        """LongCat nests cache_write_tokens in prompt_tokens_details → deepseek, not anthropic."""
+        usage = _sdk_usage(
+            prompt_tokens_details=_nested_details(
+                cached_tokens=0, cache_write_tokens=32
+            )
+        )
+        assert custom_adapter.detect_cache_style_from_usage(usage) == 'deepseek'
+
+    def test_none_usage_undetermined(self):
+        assert custom_adapter.detect_cache_style_from_usage(None) is None
+
+
+async def test_nested_cache_usage_flows_to_run_usage(conversation, monkeypatch):
+    """4.1: nested OpenAI-standard usage reaches run.usage and message.usage."""
+    _install_fake_client(
+        monkeypatch,
+        [
+            [
+                _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="hi"))]),
+                _FakeChunk(
+                    choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]
+                ),
+                _FakeChunk(
+                    choices=[],
+                    usage=_sdk_usage(
+                        prompt_tokens_details=_nested_details(
+                            cached_tokens=1664, cache_write_tokens=32
+                        )
+                    ),
+                ),
+            ]
+        ],
+    )
+
+    events = await _collect(CustomAdapter(), _input(conversation))
+
+    run_usage = next(e for e in events if e.type == "run.usage")
+    assert run_usage.usage.cache_read_tokens == 1664
+    assert run_usage.usage.cache_creation_tokens == 32
+    assert run_usage.usage.input_tokens == 1696
+    msg_usage = next(e for e in events if e.type == "message.usage")
+    assert msg_usage.usage.cache_read_tokens == 1664
+
+
+def _compatible_input(conversation, **overrides) -> AdapterInput:
+    return _input(
+        conversation,
+        custom_config=CustomConfig(
+            model_provider="openai-compatible", supports_vision=False
+        ),
+        model_profile_id="prof_1",
+        **overrides,
+    )
+
+
+async def test_streaming_run_persists_detected_cache_style(conversation, monkeypatch):
+    """4.5: openai-compatible run without declared style persists detection."""
+    persisted: list[tuple[str, str]] = []
+
+    async def _fake_persist(model_profile_id: str, cache_style: str) -> None:
+        persisted.append((model_profile_id, cache_style))
+
+    monkeypatch.setattr(custom_adapter, "_persist_detected_cache_style", _fake_persist)
+    _install_fake_client(
+        monkeypatch,
+        [
+            [
+                _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="hi"))]),
+                _FakeChunk(
+                    choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]
+                ),
+                _FakeChunk(
+                    choices=[],
+                    usage=_sdk_usage(
+                        prompt_tokens_details=_nested_details(cached_tokens=0)
+                    ),
+                ),
+            ]
+        ],
+    )
+
+    events = await _collect(CustomAdapter(), _compatible_input(conversation))
+    for _ in range(3):
+        await asyncio.sleep(0)  # let the fire-and-forget write-back task run
+
+    assert persisted == [("prof_1", "deepseek")]
+    run_usage = next(e for e in events if e.type == "run.usage")
+    assert run_usage.usage.cache_style == "deepseek"
+
+
+async def test_streaming_run_skips_writeback_for_none_detection(
+    conversation, monkeypatch
+):
+    """'none' is not persisted — profile stays un-learned for re-detection."""
+    persisted: list[tuple[str, str]] = []
+
+    async def _fake_persist(model_profile_id: str, cache_style: str) -> None:
+        persisted.append((model_profile_id, cache_style))
+
+    monkeypatch.setattr(custom_adapter, "_persist_detected_cache_style", _fake_persist)
+    _install_fake_client(
+        monkeypatch,
+        [
+            [
+                _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="hi"))]),
+                _FakeChunk(
+                    choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]
+                ),
+                _FakeChunk(choices=[], usage=_sdk_usage()),
+            ]
+        ],
+    )
+
+    events = await _collect(CustomAdapter(), _compatible_input(conversation))
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert persisted == []
+    run_usage = next(e for e in events if e.type == "run.usage")
+    assert run_usage.usage.cache_style == "none"
+
+
+async def test_streaming_run_no_detection_when_style_declared(
+    conversation, monkeypatch
+):
+    """4.5: user-declared cache_style disables detection and write-back."""
+    persisted: list[tuple[str, str]] = []
+
+    async def _fake_persist(model_profile_id: str, cache_style: str) -> None:
+        persisted.append((model_profile_id, cache_style))
+
+    monkeypatch.setattr(custom_adapter, "_persist_detected_cache_style", _fake_persist)
+    _install_fake_client(
+        monkeypatch,
+        [
+            [
+                _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="hi"))]),
+                _FakeChunk(
+                    choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]
+                ),
+                _FakeChunk(
+                    choices=[],
+                    usage=_sdk_usage(
+                        prompt_tokens_details=_nested_details(cached_tokens=999)
+                    ),
+                ),
+            ]
+        ],
+    )
+
+    events = await _collect(
+        CustomAdapter(), _compatible_input(conversation, cache_style="anthropic")
+    )
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    assert persisted == []
+    run_usage = next(e for e in events if e.type == "run.usage")
+    assert run_usage.usage.cache_style == "anthropic"
+
+
+async def test_usage_shape_logged_once_per_model(conversation, monkeypatch, caplog):
+    """4.6: first usage per model logs one DEBUG line; later usages don't repeat."""
+    custom_adapter._SEEN_USAGE_SHAPE_MODELS.clear()
+    usage = _sdk_usage(prompt_tokens_details=_nested_details(cached_tokens=1664))
+
+    with caplog.at_level(logging.DEBUG, logger="app.adapters.custom_adapter"):
+        for _ in range(2):
+            _install_fake_client(
+                monkeypatch,
+                [
+                    [
+                        _FakeChunk(
+                            choices=[_FakeChoice(delta=_FakeDelta(content="hi"))]
+                        ),
+                        _FakeChunk(
+                            choices=[
+                                _FakeChoice(delta=_FakeDelta(), finish_reason="stop")
+                            ]
+                        ),
+                        _FakeChunk(choices=[], usage=usage),
+                    ]
+                ],
+            )
+            await _collect(CustomAdapter(), _input(conversation))
+
+    shape_logs = [r for r in caplog.records if "[usage-shape]" in r.getMessage()]
+    assert len(shape_logs) == 1
+    assert "model=test-model" in shape_logs[0].getMessage()
+    assert "prompt_tokens_details.cached_tokens" in shape_logs[0].getMessage()

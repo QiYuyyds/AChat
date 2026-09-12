@@ -30,6 +30,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import delete, select
 
@@ -48,6 +49,7 @@ from app.db.models import (
     Workspace,
 )
 from app.schemas.events import (
+    AgentHandoffEvent,
     MessageAddedEvent,
     MessageRecord,
     MessageRemovedEvent,
@@ -76,6 +78,9 @@ from app.utils.platform import IS_WINDOWS
 from app.utils.workspace_utils import is_path_safe
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.tools.handoff import HandoffPayload
 
 # Per-conversation pin cap (port of shared/constants.ts PIN_LIMIT_PER_CONVERSATION):
 # bounds how many messages get re-injected into the system prompt.
@@ -173,11 +178,6 @@ class GitInitRequiredError(Exception):
     def __init__(self, source_path: str) -> None:
         self.source_path = source_path
         super().__init__(f"Git initialization required for: {source_path}")
-
-
-@dataclass
-class ForkConversationResult:
-    conversation: ConversationResponse
 
 
 async def fork_conversation(
@@ -658,6 +658,12 @@ async def create_conversation(
         db.add(conv)
         db.add(workspace)
 
+    # 会话创建埋点（usage-stats；桌面模式经 record_counter 分流进本地队列，
+    # 异常内部隔离不影响主路径）
+    from app.services.stats_service import record_counter
+
+    await record_counter(user_id, "sessions_created", client_type="web")
+
     if workspace_mode == "local" and resolved_bound_path:
         from app.code_intelligence.service import schedule_workspace_enable
 
@@ -1035,6 +1041,8 @@ async def _send_message_unlocked(
     parent_message_id: str | None = None,
     attachment_ids: list[str] | None = None,
     model_profile_id: str | None = None,
+    user_id: str | None = None,
+    client_message_id: str | None = None,
 ) -> SendMessageResult:
     mentioned_agent_ids = mentioned_agent_ids or []
     attachment_ids = attachment_ids or []
@@ -1046,7 +1054,7 @@ async def _send_message_unlocked(
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
-        conv_user_id = None
+        conv_user_id = user_id
 
         parts: list[dict] = []
         if content and content.strip():
@@ -1087,6 +1095,8 @@ async def _send_message_unlocked(
 
     # Broadcast the new user message so other connected clients insert it live.
     # The sender reconciles via optimistic update + POST return; idempotent by id.
+    # client_message_id echoes the sender's optimistic temp id so the sender can
+    # claim it at event-arrival time instead of waiting for the POST response.
     event_bus.publish(
         MessageAddedEvent(
             conversation_id=conversation_id,
@@ -1104,9 +1114,16 @@ async def _send_message_unlocked(
                 usage=None,
                 created_at=now,
             ),
+            client_message_id=client_message_id,
         ),
         user_id=None,
     )
+
+    # 消息发送埋点（usage-stats）：用户消息落库即计一次；与桌面共用同一入口
+    # （record_counter 按 D4 双模式分流，异常内部隔离不影响主路径）
+    from app.services.stats_service import record_counter
+
+    await record_counter(conv_user_id, "messages_sent", client_type="web")
 
     # Bare deploy command (only when it's a lone text message): handle inline.
     deploy_intent = None
@@ -1237,6 +1254,8 @@ async def send_message(
     parent_message_id: str | None = None,
     attachment_ids: list[str] | None = None,
     model_profile_id: str | None = None,
+    user_id: str | None = None,
+    client_message_id: str | None = None,
 ) -> SendMessageResult:
     async with _conv_locks.lock_for(conversation_id):
         return await _send_message_unlocked(
@@ -1246,6 +1265,8 @@ async def send_message(
             parent_message_id=parent_message_id,
             attachment_ids=attachment_ids,
             model_profile_id=model_profile_id,
+            user_id=user_id,
+            client_message_id=client_message_id,
         )
 
 
@@ -1264,6 +1285,261 @@ def _decide_responders(
     # Group with no @mention: hand it to the group's Orchestrator (if any).
     orchestrator = next((aid for aid, is_orch in agent_infos if is_orch), None)
     return [orchestrator] if orchestrator else []
+
+
+# ─── Agent handoff (catch point ①: responder run) ───────────────────────────
+def _handoff_announcement_text(
+    from_name: str, to_name: str, reason: str, summary: str
+) -> str:
+    """Visible system message text; doubles as the target agent's run prompt."""
+    return (
+        f"🔄 {from_name} 将任务移交给 {to_name}\n\n"
+        f"移交理由：{reason}\n\n"
+        f"移交说明：\n{summary}\n\n"
+        f"请 {to_name} 接手该任务，直接面向用户继续处理。"
+    )
+
+
+async def _insert_handoff_system_message(
+    conversation_id: str,
+    text: str,
+    *,
+    parent_message_id: str | None = None,
+) -> MessageRecord:
+    now = now_ms()
+    message_id = new_message_id()
+    parts = [{"type": "text", "content": text}]
+
+    async with get_local_db() as db:
+        msg = Message(
+            id=message_id,
+            conversation_id=conversation_id,
+            role="system",
+            agent_id=None,
+            status="complete",
+            parent_message_id=parent_message_id,
+            run_id=None,
+            created_at=now,
+        )
+        msg.parts_list = parts
+        msg.mentioned_agent_ids_list = []
+        db.add(msg)
+        conv = await _require_conversation(db, conversation_id)
+        conv.updated_at = now
+
+    return MessageRecord(
+        id=message_id,
+        conversation_id=conversation_id,
+        role="system",
+        agent_id=None,
+        parts=parts,
+        status="complete",
+        parent_message_id=parent_message_id,
+        mentioned_agent_ids=[],
+        run_id=None,
+        usage=None,
+        created_at=now,
+    )
+
+
+def _publish_handoff_event(
+    *,
+    message: MessageRecord,
+    from_agent_id: str | None,
+    to_agent_id: str | None,
+    status: Literal["transferred", "failed", "aborted"],
+    reason: str | None = None,
+    summary: str | None = None,
+    run_id: str | None = None,
+    user_id: str | None = None,
+) -> None:
+    event_bus.publish(
+        AgentHandoffEvent(
+            conversation_id=message.conversation_id,
+            timestamp=now_ms(),
+            message=message,
+            from_agent_id=from_agent_id,
+            to_agent_id=to_agent_id,
+            reason=reason,
+            summary=summary,
+            status=status,
+            run_id=run_id,
+        ),
+        user_id=user_id,
+    )
+
+
+async def _agent_name(agent_id: str) -> str:
+    from app.infra.cache_helpers import get_agent_cached
+
+    agent = await get_agent_cached(agent_id)
+    return agent.name if agent else agent_id
+
+
+async def handle_responder_handoff(
+    *,
+    conversation_id: str,
+    from_agent_id: str,
+    from_run_id: str,
+    trigger_message_id: str,
+    payload: HandoffPayload,
+    chain: list[str],
+    user_id: str | None = None,
+) -> None:
+    """Translate a responder run's terminal handoff into a new responder run.
+
+    Publishes a visible system message (from/to/reason/summary), then starts the
+    target agent's run facing the user — via the existing responder startup path
+    (runner.run, or enqueue_run when the conversation already has active runs).
+    No routing state is persisted: the next user message re-runs the stateless
+    _decide_responders rules. Called from agent_runner.execute_run (fire-and-forget).
+    """
+    from app.tools.handoff import MAX_HANDOFF_CHAIN
+
+    async with _conv_locks.lock_for(conversation_id):
+        target = payload.agent_id
+        new_chain = [*chain, target]
+
+        # Catch-layer re-validation (tool-level checks ran at terminal time;
+        # this closes the window before the new run starts).
+        rejection: str | None = None
+        if len(chain) >= MAX_HANDOFF_CHAIN:
+            rejection = f"移交链已达上限（{MAX_HANDOFF_CHAIN}），无法继续移交"
+        elif target in chain:
+            rejection = f"移交目标 {target} 已在移交链中，禁止成环"
+        if rejection is None:
+            async with get_local_db() as db:
+                conv = await _require_conversation(db, conversation_id)
+                if target not in conv.agent_ids_list:
+                    rejection = f"移交目标 {target} 不在会话成员中"
+            if rejection is None:
+                async with get_local_db() as db:
+                    busy = (
+                        await db.execute(
+                            select(AgentRun.id).where(
+                                AgentRun.conversation_id == conversation_id,
+                                AgentRun.agent_id == target,
+                                AgentRun.status.in_(["running", "queued"]),
+                            )
+                        )
+                    ).first()
+                if busy is not None:
+                    rejection = "移交目标正忙（已有进行中的运行）"
+        if rejection is not None:
+            logger.warning(
+                "[handoff] responder handoff %s -> %s rejected: %s",
+                from_agent_id,
+                target,
+                rejection,
+            )
+            message = await _insert_handoff_system_message(
+                conversation_id,
+                f"⚠️ 移交未生效：{await _agent_name(from_agent_id)} 尝试将任务移交给 "
+                f"{await _agent_name(target)}，但{rejection}。",
+                parent_message_id=trigger_message_id,
+            )
+            _publish_handoff_event(
+                message=message,
+                from_agent_id=from_agent_id,
+                to_agent_id=target,
+                status="failed",
+                reason=payload.reason,
+                run_id=from_run_id,
+                user_id=user_id,
+            )
+            return
+
+        text = _handoff_announcement_text(
+            await _agent_name(from_agent_id),
+            await _agent_name(target),
+            payload.reason,
+            payload.summary,
+        )
+        message = await _insert_handoff_system_message(
+            conversation_id, text, parent_message_id=trigger_message_id
+        )
+        _publish_handoff_event(
+            message=message,
+            from_agent_id=from_agent_id,
+            to_agent_id=target,
+            status="transferred",
+            reason=payload.reason,
+            summary=payload.summary,
+            run_id=from_run_id,
+            user_id=user_id,
+        )
+
+        # Existing responder startup path: enqueue when the conversation still
+        # has active top-level runs, start immediately otherwise.
+        async with get_local_db() as db:
+            active_result = await db.execute(
+                select(AgentRun.id).where(
+                    AgentRun.conversation_id == conversation_id,
+                    AgentRun.status.in_(["running", "queued"]),
+                    AgentRun.parent_run_id.is_(None),
+                )
+            )
+            has_active_runs = active_result.first() is not None
+
+        new_run_id: str
+        if has_active_runs:
+            from app.services.agent_runner import enqueue_run
+
+            new_run_id = enqueue_run(
+                agent_id=target,
+                conversation_id=conversation_id,
+                trigger_message_id=message.id,
+                user_id=user_id,
+            )
+        else:
+            handle = get_agent_runner().run(
+                agent_id=target,
+                conversation_id=conversation_id,
+                trigger_message_id=message.id,
+                user_id=user_id,
+            )
+            new_run_id = handle.run_id
+        # Register before any await so the target's own handoff handler sees
+        # the chain (sync registry write, run task cannot have reached a tool yet).
+        from app.tools.handoff import register_handoff_chain
+
+        register_handoff_chain(new_run_id, new_chain)
+
+
+async def handle_handoff_failure(
+    *,
+    conversation_id: str,
+    from_agent_id: str,
+    to_agent_id: str,
+    status: str,
+    run_id: str,
+    user_id: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Visible signal that a run started by a handoff ended failed/aborted.
+
+    Lets the user decide whether to go back to the previous executor or assign
+    someone else — failure visibility must not depend on the agent reporting it.
+    """
+    detail = (
+        "已被用户停止"
+        if status == "aborted"
+        else f"运行失败{f'：{error}' if error else ''}"
+    )
+    text = (
+        f"⚠️ 移交后运行未完成：{await _agent_name(to_agent_id)}"
+        f"（由 {await _agent_name(from_agent_id)} 移交接手）{detail}。"
+        "你可以让前者继续，或另行指派。"
+    )
+    message = await _insert_handoff_system_message(conversation_id, text)
+    _publish_handoff_event(
+        message=message,
+        from_agent_id=from_agent_id,
+        to_agent_id=to_agent_id,
+        status="aborted" if status == "aborted" else "failed",
+        run_id=run_id,
+        user_id=user_id,
+    )
 
 
 # ─── Revise pending dispatch plan ───────────────────────────────────────────
@@ -1341,7 +1617,7 @@ async def abort_run(run_id: str) -> bool:
 
 # ─── Withdraw latest user message ───────────────────────────────────────────
 async def _withdraw_latest_user_message_unlocked(
-    conversation_id: str, message_id: str
+    conversation_id: str, message_id: str, user_id: str | None = None
 ) -> WithdrawResult:
     """Withdraw the latest user message plus everything it triggered downstream.
 
@@ -1359,7 +1635,7 @@ async def _withdraw_latest_user_message_unlocked(
         msg_created_at = msg.created_at
 
         await _require_conversation(db, conversation_id)
-        conv_user_id = None
+        conv_user_id = user_id
 
         latest_user = await _latest_user_message(db, conversation_id)
         if latest_user is None or latest_user.id != message_id:
@@ -1406,20 +1682,24 @@ async def _withdraw_latest_user_message_unlocked(
 
 
 async def withdraw_latest_user_message(
-    conversation_id: str, message_id: str
+    conversation_id: str, message_id: str, user_id: str | None = None
 ) -> WithdrawResult:
     async with _conv_locks.lock_for(conversation_id):
-        return await _withdraw_latest_user_message_unlocked(conversation_id, message_id)
+        return await _withdraw_latest_user_message_unlocked(
+            conversation_id, message_id, user_id
+        )
 
 
 # ─── Regenerate latest response ─────────────────────────────────────────────
-async def _regenerate_latest_response_unlocked(conversation_id: str) -> RegenerateResult:
+async def _regenerate_latest_response_unlocked(
+    conversation_id: str, user_id: str | None = None
+) -> RegenerateResult:
     """Delete everything after the latest user message and re-run responders for it."""
     async with get_local_db() as db:
         conv = await _require_conversation(db, conversation_id)
         conv_agent_ids = conv.agent_ids_list
         conv_mode = conv.mode
-        conv_user_id = None
+        conv_user_id = user_id
 
         latest_user = await _latest_user_message(db, conversation_id)
         if latest_user is None:
@@ -1490,14 +1770,17 @@ async def _regenerate_latest_response_unlocked(conversation_id: str) -> Regenera
     )
 
 
-async def regenerate_latest_response(conversation_id: str) -> RegenerateResult:
+async def regenerate_latest_response(
+    conversation_id: str, user_id: str | None = None
+) -> RegenerateResult:
     async with _conv_locks.lock_for(conversation_id):
-        return await _regenerate_latest_response_unlocked(conversation_id)
+        return await _regenerate_latest_response_unlocked(conversation_id, user_id)
 
 
 # ─── Edit & resend latest user message ──────────────────────────────────────
 async def edit_and_resend_latest_user_message(
-    conversation_id: str, message_id: str, new_content: str
+    conversation_id: str, message_id: str, new_content: str,
+    user_id: str | None = None,
 ) -> EditAndResendResult:
     """Withdraw the latest user message, then resend with new content.
 
@@ -1524,7 +1807,9 @@ async def edit_and_resend_latest_user_message(
     # Acquire the conversation lock once for both withdraw + send to avoid
     # a self-deadlock (asyncio.Lock is non-reentrant) and to ensure atomicity.
     async with _conv_locks.lock_for(conversation_id):
-        withdrawn = await _withdraw_latest_user_message_unlocked(conversation_id, message_id)
+        withdrawn = await _withdraw_latest_user_message_unlocked(
+            conversation_id, message_id, user_id
+        )
 
         sent = await _send_message_unlocked(
             conversation_id=conversation_id,
@@ -1532,6 +1817,7 @@ async def edit_and_resend_latest_user_message(
             mentioned_agent_ids=original_mentions,
             parent_message_id=original_parent,
             attachment_ids=original_attachment_ids or None,
+            user_id=user_id,
         )
 
     async with get_local_db() as db:

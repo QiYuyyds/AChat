@@ -1,6 +1,6 @@
 # AChat 快速启动指南
 
-> 本指南帮助你从零搭建 AChat 本地开发环境。项目为前后端分离架构：前端 Next.js + 后端 Python FastAPI + 双 DB 架构（本地 SQLite[WAL] + 远端 PostgreSQL）+ 可选基础设施（Milvus / Elasticsearch / Neo4j / Phoenix 可观测性后端）。后端还集成了代码图谱智能（CodeGraph 本地运行时）、Obsidian 知识同步、外部 MCP 接入等增强能力。
+> 本指南帮助你从零搭建 AChat 本地开发环境。项目为前后端分离架构：前端 Next.js + 后端 Python FastAPI + 双 DB 架构（本地 SQLite[WAL] + 远端 PostgreSQL）+ 可选基础设施（Milvus / Neo4j / Phoenix 可观测性后端）。后端还集成了代码图谱智能（CodeGraph 本地运行时）、Obsidian 知识同步、外部 MCP 接入等增强能力。
 
 ## 环境要求
 
@@ -29,7 +29,7 @@ pnpm install
 
 ## 3. 启动基础设施服务（推荐）
 
-AChat 后端采用双 DB 架构：本地 SQLite[WAL] 承载对话热数据，远端 PostgreSQL 承载用户系统与知识/RAG 数据。RAG 混合检索和记忆系统还需要 Milvus、Elasticsearch、Neo4j；Phoenix 提供全链路追踪和评测（均可降级，不配也能跑）。
+AChat 后端采用双 DB 架构：本地 SQLite[WAL] 承载对话热数据，远端 PostgreSQL 承载用户系统与知识/RAG 数据。RAG 混合检索和记忆系统还需要 Milvus、Neo4j（全文检索由 Milvus 原生 BM25 sparse vector 承担）；Phoenix 提供全链路追踪和评测（均可降级，不配也能跑）。
 
 ### 方式 A：一键启动全部基础设施（Docker Compose）
 
@@ -37,7 +37,7 @@ AChat 后端采用双 DB 架构：本地 SQLite[WAL] 承载对话热数据，远
 docker compose -f docker-compose.infra.yml up -d
 ```
 
-这会启动 PostgreSQL（:5432）、Milvus（:19530）、Elasticsearch（:9200）、Neo4j（:7474/:7687）、Phoenix（:6006 Web UI / :4317 OTLP gRPC）。
+这会启动 PostgreSQL（:5432）、Milvus（:19530）、Neo4j（:7474/:7687）、Phoenix（:6006 Web UI / :4317 OTLP gRPC）。
 
 > ~~Redis~~ 已移除（双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代）。
 
@@ -116,12 +116,9 @@ ARK_API_KEY=
 # ── Web 搜索（web_search 工具）──
 TAVILY_API_KEY=
 
-# ── Milvus（向量检索，留空=禁用）──
+# ── Milvus（向量 + BM25 全文检索，留空=禁用）──
 MILVUS_HOST=localhost
 MILVUS_PORT=19530
-
-# ── Elasticsearch（全文检索，留空=禁用）──
-ES_ADDRESSES=http://localhost:9200
 
 # ── Neo4j（知识图谱，留空=禁用）──
 NEO4J_URI=bolt://localhost:7687
@@ -140,6 +137,17 @@ PHOENIX_ENDPOINT=http://localhost:4317  # OTLP gRPC endpoint
 PHOENIX_UI_URL=http://localhost:6006    # Phoenix Web UI
 EVAL_RULE_ENABLED=true       # 在线规则评测（默认开启）
 EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge（默认关闭）
+
+# ── 记忆 pipeline（可选）──
+# MEMORY_ENABLED=false        # 关闭记忆自动固化 pipeline（节省 API 调用，用于 RAG 测试场景）
+
+# ── Aeval 评测框架（可选，默认关闭）──
+# 先安装: pip install "aeval-framework[api,cli]"
+# EVAL_HARNESS_ENABLED=true   # 开启后在 /api/eval 挂载独立评测子应用
+# EVAL_AGENT_ID=              # 被评 agent 的 ID（必填，缺凭证时评测子应用返回 503）
+# EVAL_USER_TOKEN=            # 评测回调 token（留空自动铸造 default 用户 token）
+# EVAL_RUN_TIMEOUT=300        # 单次评测运行超时（秒）
+# AEVAL_JUDGE_API_KEY=        # LLM 输出质量评分（留空回退 EVAL_LLM_*，再回退 OPENAI_API_KEY）
 
 # ── 代码图谱智能（可选，留空=禁用）──
 # CodeGraph 运行时首次使用时会自动下载到 .agenthub-data/runtimes/codegraph/
@@ -160,7 +168,7 @@ EVAL_JUDGE_ENABLED=false     # 离线 LLM-as-Judge（默认关闭）
 # GUIDE_AGENT_API_BASE_URL=              # 自定义 base URL（留空用 provider 默认）
 ```
 
-> **降级说明**：Milvus / ES / Neo4j / Embedding / Phoenix 任一不配，后端仍能正常启动和对话，只是对应功能降级（向量检索退化为 TF cosine、无全文检索、无图谱、无语义召回、无 Trace/Eval 数据）。启动时后端会打印状态面板，一目了然。
+> **降级说明**：Milvus / Neo4j / Embedding / Phoenix 任一不配，后端仍能正常启动和对话，只是对应功能降级（向量检索退化为 TF cosine、无图谱、无语义召回、无 Trace/Eval 数据）。启动时后端会打印状态面板，一目了然。
 >
 > **Phoenix Web UI**：基础设施启动后访问 `http://localhost:6006` 可查看 Agent 运行的 Trace 瀑布流和 Eval 评分。`trace_enabled=false` 时可观测性全关闭。
 

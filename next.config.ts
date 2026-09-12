@@ -17,28 +17,6 @@ const nextConfig: NextConfig = {
     ]
   },
 
-  // 不让 webpack bundle native / SDK 依赖；运行时走 require/import，保留 native binding 与子进程能力
-  serverExternalPackages: [
-    'better-sqlite3',
-    '@anthropic-ai/claude-agent-sdk',
-    '@openai/codex-sdk',
-    '@openai/codex',
-    '@modelcontextprotocol/sdk',
-    'pptxgenjs',
-    'pdf-parse',
-  ],
-
-  outputFileTracingIncludes: {
-    '/*': [
-      'scripts/agenthub-codex-mcp.mjs',
-      // pdf-parse loads pdf.worker.mjs at runtime; keep worker assets in standalone/Electron.
-      'node_modules/pdf-parse/dist/**/*',
-      'node_modules/pdfjs-dist/**/*',
-      'node_modules/.pnpm/pdf-parse@*/node_modules/pdf-parse/dist/**/*',
-      'node_modules/.pnpm/pdfjs-dist@*/node_modules/pdfjs-dist/**/*',
-    ],
-  },
-
   outputFileTracingExcludes: {
     '/*': [
       '.agenthub-data/**',
@@ -62,7 +40,6 @@ const nextConfig: NextConfig = {
       'public/**',
       'release/**',
       'scripts/electron-*.mjs',
-      'scripts/run-electron-node.mjs',
       'skills/**',
       'specs/**',
       'src/**',

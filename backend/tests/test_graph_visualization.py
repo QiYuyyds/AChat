@@ -124,7 +124,13 @@ class TestCypherVisualizationTemplates:
         assert "UserKG" in query
         assert "u_abc123" in query
         assert "node_label" in query
-        assert "Entity" not in query.replace("MATCH (n:Entity:UserKG", "")
+        # WHERE clause must exclude structural labels (Entity / Chunk / UserKG)
+        # and per-user label partitions (u_* prefixes).
+        where = query[query.index("WHERE"):]
+        assert "node_label <> 'Entity'" in where
+        assert "node_label <> 'Chunk'" in where
+        assert "node_label <> 'UserKG'" in where
+        assert "NOT node_label STARTS WITH 'u_'" in where
 
 
 # ─── KGStore.get_stats tests ────────────────────────────────────────────────
