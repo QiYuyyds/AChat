@@ -15,6 +15,9 @@ jobs:
     defaults:
       run:
         working-directory: backend
+        # bash 而非默认 pwsh：pwsh 中原生命令失败不会中止多行步骤，
+        # 会导致 install 失败被吞、错误推迟到 pytest 才暴露。
+        shell: bash
     steps:
       - uses: actions/checkout@v4
 
@@ -24,9 +27,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: |
-          pip install -e ".[dev]"
-          pip install "aeval-framework[api,cli]"
+        run: pip install -e ".[dev]" "aeval-framework[api,cli]"
 
       - name: Ruff (non-blocking ratchet)
         run: python -m ruff check app
