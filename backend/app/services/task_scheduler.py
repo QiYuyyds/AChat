@@ -221,6 +221,24 @@ class TaskSchedulerService:
                 active_count=state.active_count,
             )
 
+    async def _block_undispatchable(
+        self, state: _SchedulerState, task: Task, reason: str
+    ) -> None:
+        """Move an undispatchable task to ``blocked``.
+
+        Without this the task silently stayed ``todo`` and was re-skipped on
+        every scan cycle with no user-visible signal.
+        """
+        try:
+            await task_service.move_task(
+                state.user_id, task.id, new_status="blocked", if_version=task.version
+            )
+            logger.info(
+                "[TaskScheduler] Task %s blocked: %s", task.id, reason
+            )
+        except Exception:
+            logger.exception("[TaskScheduler] Failed to block task %s", task.id)
+
     async def _dispatch_task(self, state: _SchedulerState, task: Task) -> None:
         from app.db.engine import get_local_db
         from app.db.models import Message
@@ -240,7 +258,10 @@ class TaskSchedulerService:
         agent_id = state.agent_id or task.assignee_agent_id
         if not agent_id:
             logger.warning(
-                "[TaskScheduler] No agent for task %s, skipping", task.id
+                "[TaskScheduler] No agent for task %s — marking blocked", task.id
+            )
+            await self._block_undispatchable(
+                state, task, "未指派 Agent 且调度器未配置默认 Agent"
             )
             return
 
@@ -250,8 +271,11 @@ class TaskSchedulerService:
         agent = await get_agent_cached(agent_id)
         if not agent:
             logger.warning(
-                "[TaskScheduler] Agent %s not found for task %s",
+                "[TaskScheduler] Agent %s not found for task %s — marking blocked",
                 agent_id, task.id,
+            )
+            await self._block_undispatchable(
+                state, task, f"指派的 Agent {agent_id} 不存在或已删除"
             )
             return
 
