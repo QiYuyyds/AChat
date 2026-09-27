@@ -27,6 +27,7 @@ from typing import Any
 from sqlalchemy import and_, select, update
 
 from app.adapters.base import AdapterAttachment, AdapterInput, CustomConfig
+from app.adapters.errors import ProviderError, classify_provider_error
 from app.adapters.registry import agent_registry
 from app.config import get_settings
 from app.db.engine import get_local_db
@@ -1147,12 +1148,17 @@ async def _run_react_loop(  # noqa: C901
                         continue
 
                     yield event
-            except Exception:
+            except Exception as e:
+                # Provider/SDK 错误不再吞成「假成功」：分类为可操作的中文
+                # 用户消息后重新抛出，走既有 failed 链路（finalize failed +
+                # _emit_error_visualisation 在会话渲染「[失败] {消息}」）。
+                # StopReason.BUDGET_EXHAUSTED 仅服务真实预算路径（design D5）。
                 logger.exception("[AgentRunner] _run_react_loop call_once error")
                 if force_final and saved_mcp is not None:
                     adapter_input.mcp_tools = saved_mcp
-                yield _emit_run_usage(StopReason.BUDGET_EXHAUSTED)
-                return
+                raise ProviderError(
+                    classify_provider_error(e) or str(e)
+                ) from e
 
             if force_final and saved_mcp is not None:
                 adapter_input.mcp_tools = saved_mcp
