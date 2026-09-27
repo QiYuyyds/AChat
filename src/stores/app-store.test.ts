@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MessageRow } from '@/db/schema'
-import type { DispatchPlanItem } from '@/shared/types'
+import type { DispatchPlanItem, StreamEvent } from '@/shared/types'
+
+import { fetchConversationRuns, fetchMessages, fetchPendingSummary } from '@/lib/api'
 
 import { selectDispatchForMessage, useAppStore } from './app-store'
+
+// 对账动作走 REST（fetchMessages / fetchPendingSummary / fetchConversationRuns），
+// 测试里 mock 掉网络层。
+vi.mock('@/lib/api', () => ({
+  fetchMessages: vi.fn(),
+  fetchPendingSummary: vi.fn(),
+  fetchConversationRuns: vi.fn(),
+}))
 
 const PLAN: DispatchPlanItem[] = [
   {
@@ -37,6 +47,7 @@ function resetStore(): void {
     mobileSidebarOpen: false,
     highlightedMessageId: null,
     streamConnected: false,
+    streamSeqWatermark: 0,
   })
 }
 
@@ -599,5 +610,136 @@ describe('app-store worktree event handling', () => {
 
     const wt = useAppStore.getState().dispatchesByRunId.run_orch?.worktreeByTask?.task_frontend
     expect(wt).toBeUndefined()
+  })
+})
+
+describe('app-store SSE seq watermark dedup', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  function messageStart(messageId: string, timestamp: number): StreamEvent {
+    return {
+      type: 'message.start',
+      conversationId: 'conv_1',
+      timestamp,
+      messageId,
+      agentId: 'ag_test',
+      runId: 'run_test',
+    }
+  }
+
+  it('skips events with seq <= watermark and advances on newer seq', () => {
+    const store = useAppStore.getState()
+    store.applyEvent(messageStart('m1', 1), 5)
+    store.applyEvent(messageStart('m2', 2), 5) // 重连重放的重复帧 → 跳过
+    store.applyEvent(messageStart('m3', 3), 3) // 旧 seq → 跳过
+    store.applyEvent(messageStart('m4', 4), 6) // 直播新事件 → 应用
+
+    const state = useAppStore.getState()
+    expect(state.messages.m1).toBeDefined()
+    expect(state.messages.m2).toBeUndefined()
+    expect(state.messages.m3).toBeUndefined()
+    expect(state.messages.m4).toBeDefined()
+    expect(state.streamSeqWatermark).toBe(6)
+  })
+
+  it('applies frames without seq unconditionally (synthetic / old backend)', () => {
+    const store = useAppStore.getState()
+    store.applyEvent(messageStart('m1', 1))
+    store.applyEvent(messageStart('m2', 2))
+
+    const state = useAppStore.getState()
+    expect(state.messages.m1).toBeDefined()
+    expect(state.messages.m2).toBeDefined()
+    expect(state.streamSeqWatermark).toBe(0)
+  })
+})
+
+describe('app-store stream.resync reconciliation', () => {
+  beforeEach(() => {
+    resetStore()
+    vi.mocked(fetchMessages).mockReset()
+    vi.mocked(fetchPendingSummary).mockReset()
+    vi.mocked(fetchPendingSummary).mockResolvedValue([])
+    vi.mocked(fetchConversationRuns).mockReset()
+    vi.mocked(fetchConversationRuns).mockResolvedValue([])
+  })
+
+  it('resets the watermark, overwrites with server truth, keeps in-flight temps', async () => {
+    useAppStore.setState({
+      activeConversationId: 'conv_1',
+      streamSeqWatermark: 5000,
+    })
+    useAppStore.getState().addLocalUserMessage({
+      tempId: 'temp_1',
+      conversationId: 'conv_1',
+      content: 'hello',
+      mentionedAgentIds: [],
+      attachments: [],
+    })
+    // 本地有、服务端没有（撤回等事件在断线窗口丢失）
+    useAppStore.getState().upsertMessage(agentMessage('msg_gone', 'run_1', 1))
+    useAppStore.getState().upsertMessage(agentMessage('msg_old', 'run_1', 2))
+
+    vi.mocked(fetchMessages).mockResolvedValue([
+      agentMessage('msg_old', 'run_1', 2),
+      agentMessage('msg_new', 'run_1', 3),
+    ])
+
+    useAppStore.getState().applyEvent({ type: 'stream.resync', timestamp: 1 } as unknown as StreamEvent)
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().messageIdsByConv.conv_1).toEqual([
+        'msg_old',
+        'msg_new',
+        'temp_1',
+      ])
+    })
+
+    const state = useAppStore.getState()
+    expect(state.streamSeqWatermark).toBe(0)
+    expect(state.messages.msg_new).toBeDefined()
+    expect(state.messages.temp_1).toBeDefined()
+    expect(state.messages.msg_gone).toBeUndefined()
+    // pending 汇总端点已存在 → 对账时一并刷新
+    expect(vi.mocked(fetchPendingSummary)).toHaveBeenCalled()
+  })
+
+  it('refetches when events apply during the fetch, then merges the caught-up snapshot', async () => {
+    useAppStore.setState({
+      activeConversationId: 'conv_1',
+      streamSeqWatermark: 5000,
+    })
+    // 第一轮快照滞后（拉取窗口内直播事件已应用），重拉后服务端追上。
+    let calls = 0
+    vi.mocked(fetchMessages).mockImplementation(async () => {
+      calls += 1
+      return calls === 1
+        ? []
+        : [
+            agentMessage('m_live', 'run_live', 2),
+          ]
+    })
+
+    useAppStore.getState().applyEvent({ type: 'stream.resync', timestamp: 1 } as unknown as StreamEvent)
+    // resync 后直播事件按归零的水位线正常应用（seq 1 > 0）
+    useAppStore.getState().applyEvent(
+      {
+        type: 'message.start',
+        conversationId: 'conv_1',
+        timestamp: 2,
+        messageId: 'm_live',
+        agentId: 'ag_test',
+        runId: 'run_live',
+      },
+      1,
+    )
+
+    await vi.waitFor(() => {
+      expect(useAppStore.getState().messageIdsByConv.conv_1).toEqual(['m_live'])
+    })
+    expect(calls).toBeGreaterThanOrEqual(2)
+    expect(useAppStore.getState().streamSeqWatermark).toBe(1)
   })
 })
