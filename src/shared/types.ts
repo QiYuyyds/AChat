@@ -649,6 +649,11 @@ export type StreamEvent = BaseEvent &
       }
     | { type: 'heartbeat' }
     | {
+        /** 合成传输事件（服务端无法重放缺口时下发）：客户端须对活跃会话做 REST 对账 */
+        type: 'stream.resync'
+        timestamp: number
+      }
+    | {
         type: 'turn.metric'
         runId: string
         turn: number
@@ -687,6 +692,16 @@ export type StreamEvent = BaseEvent &
       }
     | { type: 'conversation.created'; conversation: ConversationRecord }
   )
+
+/** 最后一轮请求的上下文构成（token 估算，六分类之和 = lastInputTokens）。SDK 路线专属；CLI/存量 run 无此字段 = 无构成数据。 */
+export interface ContextBreakdown {
+  systemPrompt: number
+  skills: number
+  systemTools: number
+  mcpTools: number
+  messages: number
+  other: number
+}
 
 /** RunUsage 事件 payload。与 db/schema.ts 的 RunUsage 同形，重复定义避开 client/server 边界 import。 */
 export interface RunUsageEvent {

@@ -9,7 +9,7 @@
  * 所有函数第一个参数是 cacheStyle，消除从数据反推 provider 的反模式。
  */
 
-import type { CacheStyle } from './types'
+import type { CacheStyle, ContextBreakdown } from './types'
 
 /**
  * 旧数据兼容：从 cacheCreationTokens 反推 cacheStyle。
@@ -189,4 +189,56 @@ export function computeCost(
   const savings = noCacheCost - actualCost
   const savingsPct = noCacheCost > 0 ? (savings / noCacheCost) * 100 : 0
   return { actualCost, noCacheCost, savings, savingsPct, currency: pricing.currency }
+}
+
+// ─── 上下文容量构成（context-usage-breakdown）─────────────────
+
+/** ContextBreakdown 的六个分类 key（与后端 camelCase 字段一一对应）。 */
+export type ContextBreakdownKey =
+  | 'systemPrompt'
+  | 'skills'
+  | 'systemTools'
+  | 'mcpTools'
+  | 'messages'
+  | 'other'
+
+/** 分类显示名，顺序即图例的固定枚举顺序（展示前会重排为占比降序）。 */
+export const CONTEXT_BREAKDOWN_LABELS: Record<ContextBreakdownKey, string> = {
+  messages: '消息',
+  mcpTools: 'MCP 工具',
+  systemTools: '系统工具',
+  systemPrompt: '系统提示词',
+  skills: '技能',
+  other: '其他',
+}
+
+/** 单个分类的占比切片（图例行 + 堆叠条共用）。 */
+export interface ContextBreakdownSlice {
+  key: ContextBreakdownKey
+  label: string
+  tokens: number
+  /** 占构成总量的百分比（0-100） */
+  pct: number
+}
+
+/**
+ * 分类占比切片：占比 = tokens / Σ(六分类)，按占比降序，占比为 0 的分类被过滤。
+ * 纯函数 —— UsageBadge 的「上下文容量」堆叠条与图例共用同一输出。
+ */
+export function computeBreakdownSlices(
+  breakdown: ContextBreakdown,
+): ContextBreakdownSlice[] {
+  const entries = Object.entries(CONTEXT_BREAKDOWN_LABELS) as [
+    ContextBreakdownKey,
+    string,
+  ][]
+  const total = entries.reduce((sum, [key]) => sum + (breakdown[key] ?? 0), 0)
+  if (total <= 0) return []
+  return entries
+    .map(([key, label]) => {
+      const tokens = breakdown[key] ?? 0
+      return { key, label, tokens, pct: (tokens / total) * 100 }
+    })
+    .filter((slice) => slice.pct > 0)
+    .sort((a, b) => b.pct - a.pct)
 }

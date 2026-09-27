@@ -92,6 +92,16 @@ interface RunUsageEvent {
   cacheReadTokens: number        // Anthropic prompt cache 命中；DeepSeek prompt_cache_hit_tokens 也映射到这
   lastInputTokens?: number       // 最近一次 input prompt 长度，UI 用作 ctx 仪表
   model?: string                 // 实际使用的模型 id
+  contextBreakdown?: ContextBreakdown | null  // 最近一轮请求的上下文构成快照（SDK 路线专属；CLI/存量 run 无此字段 = 无构成数据；六分类之和 = lastInputTokens）
+}
+
+interface ContextBreakdown {
+  systemPrompt: number           // system message 内容（不含技能元数据块）
+  skills: number                 // Agent 装备的 skill 元数据块（从 system prompt 结构化拆出）
+  systemTools: number            // 平台工具注册表注入的工具 schema
+  mcpTools: number               // 外部 MCP Server 注入的工具 schema
+  messages: number               // 全部非 system message（跨 run 历史 + 当前输入）
+  other: number                  // 残差兜底（多模态编码/舍入误差），恒 ≥ 0
 }
 
 interface PendingWrite {

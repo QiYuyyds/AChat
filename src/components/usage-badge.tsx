@@ -5,13 +5,15 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { cn } from '@/lib/utils'
 import { getModelLimits, getModelPricing } from '@/shared/model-registry'
 import {
+  computeBreakdownSlices,
   computeCacheHitRate,
   computeCost,
   computeLastNetInput,
   computeWeightedCacheHitRate,
   type CacheStyleBucket,
+  type ContextBreakdownSlice,
 } from '@/shared/usage'
-import type { CacheStyle } from '@/shared/types'
+import type { CacheStyle, ContextBreakdown } from '@/shared/types'
 import { useAppStore, useConversationUsageTotal, type AgentUsageDetail } from '@/stores/app-store'
 
 /**
@@ -142,13 +144,21 @@ export function UsageBadge({ conversationId }: { conversationId: string }) {
             最近一次调用{total.turnCount > 0 ? `（第 ${total.turnCount} 轮）` : ''}
           </div>
           {contextWindow > 0 ? (
-            <ContextRow
-              used={total.lastInputTokens}
-              ceiling={contextWindow}
-              lastCacheReadTokens={total.lastCacheReadTokens}
-              hasDecomposition={hasDecomposition}
-              netNew={lastNetNew}
-            />
+            total.lastContextBreakdown ? (
+              <ContextCapacityPanel
+                used={total.lastInputTokens}
+                ceiling={contextWindow}
+                breakdown={total.lastContextBreakdown}
+              />
+            ) : (
+              <ContextRow
+                used={total.lastInputTokens}
+                ceiling={contextWindow}
+                lastCacheReadTokens={total.lastCacheReadTokens}
+                hasDecomposition={hasDecomposition}
+                netNew={lastNetNew}
+              />
+            )
           ) : (
             <Row
               label="当前 ctx"
@@ -513,6 +523,89 @@ function ContextRow({
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * 上下文容量面板的分类色表：按占比降序由深到浅（蓝色系），堆叠条与图例
+ * 共用同一常量，保证同一下标的色块与图例色点一致（design D6）。
+ */
+const BREAKDOWN_BAR_COLORS = [
+  '#1D4ED8', // blue-700（占比最高 → 最深）
+  '#2563EB', // blue-600
+  '#3B82F6', // blue-500
+  '#60A5FA', // blue-400
+  '#93C5FD', // blue-300
+  '#BFDBFE', // blue-200（占比最低 → 最浅）
+]
+
+/**
+ * 上下文容量面板：最近一轮请求的构成快照（SDK 路线专属）。
+ * 头部 used/ceiling/pct + 按占比堆叠的占比条 + 降序分类图例（0 占比隐藏）。
+ * 有 breakdown 时替换现有 ContextRow；CLI/存量/Mock run 无 breakdown，不渲染。
+ */
+function ContextCapacityPanel({
+  used,
+  ceiling,
+  breakdown,
+}: {
+  used: number
+  ceiling: number
+  breakdown: ContextBreakdown
+}) {
+  const slices = computeBreakdownSlices(breakdown)
+  const hasData = used > 0
+  const pct = hasData ? Math.min(100, (used / ceiling) * 100) : 0
+  const tone = pct < 50 ? 'normal' : pct < 80 ? 'warn' : 'danger'
+  const toneColor =
+    tone === 'danger' ? 'text-red-600 dark:text-red-400'
+      : tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
+        : 'text-muted-foreground'
+
+  return (
+    <div className="space-y-1" title="最近一次请求的上下文构成（单轮快照，SDK 路线）/ 模型 contextWindow 上限">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className={cn('truncate', toneColor)}>上下文容量</span>
+        <span className={cn('shrink-0 font-mono', toneColor)}>
+          {hasData ? formatTok(used) : '—'} / {formatTok(ceiling)}
+          {hasData && ` (${pct.toFixed(0)}%)`}
+        </span>
+      </div>
+      {/* 堆叠占比条：各分类按占比水平堆叠，颜色按排名由深到浅 */}
+      {slices.length > 0 && (
+        <div className="flex h-1.5 overflow-hidden rounded-full bg-muted">
+          {slices.map((slice, i) => (
+            <div
+              key={slice.key}
+              className="h-full"
+              style={{
+                width: `${slice.pct}%`,
+                backgroundColor: BREAKDOWN_BAR_COLORS[i % BREAKDOWN_BAR_COLORS.length],
+              }}
+              title={`${slice.label} ${formatTok(slice.tokens)}（${Math.round(slice.pct)}%）`}
+            />
+          ))}
+        </div>
+      )}
+      {/* 分类图例：占比降序，与堆叠条共用色表 */}
+      {slices.map((slice: ContextBreakdownSlice, i) => (
+        <div
+          key={slice.key}
+          className="flex items-baseline justify-between gap-3 pl-2 text-[10px] text-muted-foreground"
+        >
+          <span className="flex min-w-0 items-center gap-1.5 truncate">
+            <span
+              className="size-1.5 shrink-0 rounded-full"
+              style={{ backgroundColor: BREAKDOWN_BAR_COLORS[i % BREAKDOWN_BAR_COLORS.length] }}
+            />
+            {slice.label}
+          </span>
+          <span className="shrink-0 font-mono">
+            {formatTok(slice.tokens)} · {Math.round(slice.pct)}%
+          </span>
+        </div>
+      ))}
     </div>
   )
 }

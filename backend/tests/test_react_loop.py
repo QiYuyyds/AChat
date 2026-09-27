@@ -1171,3 +1171,101 @@ async def test_compact_mask_triggers_and_updates_state(conversation, monkeypatch
     assert events[-1].type == "run.usage"
     assert call_count[0] >= 1
 
+
+
+# ─── context-usage-breakdown (openspec/changes/add-context-usage-breakdown) ──
+
+
+async def test_react_loop_run_usage_carries_context_breakdown(conversation, monkeypatch):
+    """Production ReAct loop (call_once path): run.usage carries a rescaled
+    contextBreakdown — skills split from the system prompt via sections,
+    registry tools counted, six categories summing to lastInputTokens."""
+    from app.services.agent_runner import _run_react_loop
+
+    _install_fake_client(
+        monkeypatch,
+        [
+            [
+                _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="hello"))]),
+                _FakeChunk(
+                    choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]
+                ),
+                _FakeChunk(
+                    choices=[],
+                    usage=_FakeUsage(prompt_tokens=123, completion_tokens=7),
+                ),
+            ]
+        ],
+    )
+
+    adapter = CustomAdapter()
+    cancel = asyncio.Event()
+    # "you are a test agent" = 20 chars → 5 est tokens; skills section = 8 chars.
+    inp = _input(
+        conversation,
+        system_prompt_sections={"base": 12, "skills": 8},
+        tool_names=["fs_list"],
+    )
+
+    events = [
+        ev async for ev in _run_react_loop(
+            adapter, inp, cancel,
+            run_id="run_test",
+            agent_id=conversation["agent_id"],
+            conversation_id=conversation["conversation_id"],
+            model_id="test-model",
+        )
+    ]
+    assert events[-1].type == "run.usage"
+
+    run_usage = events[-1]
+    assert run_usage.usage.last_input_tokens == 123
+    bd = run_usage.usage.context_breakdown
+    assert bd is not None
+    # skills > 0 proves system_prompt_sections flowed through the loop and the
+    # skill block was carved out of the system message (without sections it
+    # stays 0; exact split math is covered by the pure-function tests — after
+    # rescale only proportions remain, dominated by the tool schema).
+    assert bd.skills > 0
+    assert bd.system_tools > 0  # fs_list schema sent by call_once
+    assert bd.mcp_tools == 0  # no MCP servers in this run
+    assert bd.messages > 0
+    total = (
+        bd.system_prompt + bd.skills + bd.system_tools
+        + bd.mcp_tools + bd.messages + bd.other
+    )
+    assert total == 123
+
+
+async def test_react_loop_breakdown_absent_without_usage(conversation, monkeypatch):
+    """No usage chunk → no lastInputTokens either; breakdown stays absent
+    (never fabricated), same semantics as the snapshot fields."""
+    from app.services.agent_runner import _run_react_loop
+
+    _install_fake_client(
+        monkeypatch,
+        [
+            [
+                _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="hello"))]),
+                _FakeChunk(
+                    choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]
+                ),
+            ]
+        ],
+    )
+
+    adapter = CustomAdapter()
+    cancel = asyncio.Event()
+    inp = _input(conversation)
+
+    events = [
+        ev async for ev in _run_react_loop(
+            adapter, inp, cancel,
+            run_id="run_test",
+            agent_id=conversation["agent_id"],
+            conversation_id=conversation["conversation_id"],
+            model_id="test-model",
+        )
+    ]
+    assert events[-1].type == "run.usage"
+    assert events[-1].usage.context_breakdown is None

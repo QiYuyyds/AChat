@@ -63,6 +63,12 @@ class AdapterInput:
     # full messages list for SDK call_once path (system + history + user + prior turns);
     # when provided, the adapter uses it directly instead of constructing its own.
     messages: list[dict] | None = None
+    # SDK route only: char lengths of the separable system-prompt segments,
+    # recorded by build_adapter_input at assembly time (known keys: "base",
+    # "toolGuidance", "skills"). Lets the adapter split the skill block out of
+    # the system prompt when measuring context composition instead of guessing
+    # from the concatenated string. CLI/Mock leave it None.
+    system_prompt_sections: dict[str, int] | None = None
 
     # ── CLI agent fields ───────────────────────────────────────
     # CLI binary path; empty → adapter uses its default PATH lookup.

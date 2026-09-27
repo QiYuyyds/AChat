@@ -6,7 +6,7 @@
 
 import { sql } from 'drizzle-orm'
 import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
-import type { ArtifactContent, ArtifactType, AdapterName, CacheStyle, MessagePart, ModelProvider } from '@/shared/types'
+import type { ArtifactContent, ArtifactType, AdapterName, CacheStyle, ContextBreakdown, MessagePart, ModelProvider } from '@/shared/types'
 
 // ─── Agents ──────────────────────────────────────────────────
 export const agents = sqliteTable('agents', {
@@ -272,6 +272,8 @@ export interface RunUsage {
   model?: string
   /** cache 语义声明：'deepseek' | 'anthropic' | 'none' */
   cacheStyle?: CacheStyle
+  /** 最近一轮请求的上下文构成快照（SDK 路线专属；CLI/存量 run 无此字段 = 无构成数据） */
+  contextBreakdown?: ContextBreakdown | null
 }
 
 // ─── Conversation context summaries ────────────────────────────────────────

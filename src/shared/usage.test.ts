@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  computeBreakdownSlices,
   computeCacheHitRate,
   computeCost,
   computeLastNetInput,
@@ -11,6 +12,7 @@ import {
   inferCacheStyle,
   type CacheStyleBucket,
 } from '@/shared/usage'
+import type { ContextBreakdown } from '@/shared/types'
 
 // ─── inferCacheStyle (11.6) ───────────────────────────────
 
@@ -228,5 +230,61 @@ describe('computeCost', () => {
   it('zero output → cost is cache + netNew only', () => {
     const result = computeCost('deepseek', flashPricing, 1_000, 500, 0, 0)
     expect(result.actualCost).toBeCloseTo(0.00001 + 0.0005, 5)
+  })
+})
+
+// ─── computeBreakdownSlices (context-usage-breakdown) ──────
+
+describe('computeBreakdownSlices', () => {
+  const full: ContextBreakdown = {
+    systemPrompt: 100,
+    skills: 50,
+    systemTools: 250,
+    mcpTools: 150,
+    messages: 400,
+    other: 50,
+  }
+
+  it('computes pct against the six-category total', () => {
+    const slices = computeBreakdownSlices(full)
+    const total = 1000
+    const messages = slices.find((s) => s.key === 'messages')!
+    expect(messages.pct).toBeCloseTo(40, 5)
+    expect(messages.tokens).toBe(400)
+    // Σ pct = 100
+    expect(slices.reduce((sum, s) => sum + s.pct, 0)).toBeCloseTo(100, 5)
+  })
+
+  it('sorts descending by pct', () => {
+    const slices = computeBreakdownSlices(full)
+    const pcts = slices.map((s) => s.pct)
+    expect([...pcts].sort((a, b) => b - a)).toEqual(pcts)
+    expect(slices[0].key).toBe('messages')
+  })
+
+  it('filters out zero-pct categories', () => {
+    const slices = computeBreakdownSlices({
+      systemPrompt: 0,
+      skills: 0,
+      systemTools: 0,
+      mcpTools: 0,
+      messages: 800,
+      other: 200,
+    })
+    expect(slices.map((s) => s.key)).toEqual(['messages', 'other'])
+  })
+
+  it('returns [] for an all-zero breakdown (no NaN)', () => {
+    expect(
+      computeBreakdownSlices({
+        systemPrompt: 0, skills: 0, systemTools: 0, mcpTools: 0, messages: 0, other: 0,
+      }),
+    ).toEqual([])
+  })
+
+  it('carries the display label per category', () => {
+    const slices = computeBreakdownSlices(full)
+    const mcp = slices.find((s) => s.key === 'mcpTools')!
+    expect(mcp.label).toBe('MCP 工具')
   })
 })

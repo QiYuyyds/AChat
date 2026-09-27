@@ -7,12 +7,15 @@ import { immer } from 'zustand/middleware/immer'
 import type { AgentRunRow, AgentRow, ArtifactRow, AttachmentRow, ConversationWithMeta, MessageRow } from '@/db/schema'
 import { computeWaves, type ChildRunWaveInfo } from '@/lib/wave-utils'
 import type {
+  ContextBreakdown,
   DispatchPlanItem,
   DispatchTaskStatus,
   MessagePart,
   ModelProfile,
   PendingBashCommand,
+  PendingConversationSummary,
   PendingDispatchPlan,
+  PendingKind,
   PendingMcpCall,
   PendingQuestion,
   PendingWrite,
@@ -478,6 +481,7 @@ export const useAppStore = create<AppState>()(
     },
     guideRefreshTargets: {},
     streamConnected: false,
+    streamSeqWatermark: 0,
     userId: null,
 
     // ─── Task Board initial state ─────────────────────
@@ -1853,7 +1857,8 @@ export const useAppStore = create<AppState>()(
           default:
             return
         }
-      }),
+      })
+    },
   })),
 )
 
@@ -2527,6 +2532,8 @@ export interface ConversationUsageTotal {
   lastCacheReadTokens: number
   /** 最近一次 run 的 output token 数（单次拆解用） */
   lastOutputTokens: number
+  /** 最近一次有 usage 的 run 的上下文构成快照（SDK 路线专属；CLI/存量/Mock run 无 → undefined，ctxOverride 接管时亦为 undefined） */
+  lastContextBreakdown?: ContextBreakdown
   /** 最近一次 run 的 ReAct 模型调用次数（顶部 “· N 轮” 标注用） */
   turnCount: number
   /** key = agentId，value = 该 agent 的累计 input+output tokens */
@@ -2729,8 +2736,10 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
 // totalTokens 和 d.totalTokens 已在循环内按 provider 语义逐条累加，此处不再重算
 
     // 压缩后的乐观覆盖：仅当覆盖值比最新实测的 run/message 更新时接管「当前 ctx」。
+    // 覆盖值是压缩估算、无构成快照 —— breakdown 一并清空，避免面板 Σ ≠ lastInput。
     if (ctxOverride && ctxOverride.at > lastInputTs) {
       result.lastInputTokens = ctxOverride.tokens
+      result.lastContextBreakdown = undefined
     }
     return result
   }, [runs, messageIds, messages, agents, ctxOverride])

@@ -1033,3 +1033,114 @@ async def test_usage_shape_logged_once_per_model(conversation, monkeypatch, capl
     assert len(shape_logs) == 1
     assert "model=test-model" in shape_logs[0].getMessage()
     assert "prompt_tokens_details.cached_tokens" in shape_logs[0].getMessage()
+
+
+# ─── context-usage-breakdown (openspec/changes/add-context-usage-breakdown) ──
+
+
+async def test_run_usage_carries_context_breakdown(conversation, monkeypatch):
+    """SDK stream() run.usage carries a contextBreakdown whose six categories
+    sum to the turn's real inputTokens (lastInputTokens)."""
+    _install_fake_client(
+        monkeypatch,
+        [
+            [
+                _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="Hi"))]),
+                _FakeChunk(
+                    choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]
+                ),
+                _FakeChunk(
+                    choices=[],
+                    usage=_FakeUsage(prompt_tokens=100, completion_tokens=5),
+                ),
+            ]
+        ],
+    )
+
+    inp = _input(
+        conversation,
+        system_prompt="you are a helpful test agent for measurement",
+        system_prompt_sections={"base": 46, "skills": 40},
+        tool_names=["fs_list"],
+    )
+    events = await _collect(CustomAdapter(), inp)
+
+    run_usage = next(e for e in events if e.type == "run.usage")
+    assert run_usage.usage.last_input_tokens == 100
+    bd = run_usage.usage.context_breakdown
+    assert bd is not None
+    # skills > 0 proves the sections pipeline split the skill block out of the
+    # system prompt (without sections it would be 0 — see 4.1 for exact math;
+    # rescale redistributes proportionally, so assert presence not magnitude).
+    assert bd.skills > 0
+    assert bd.system_tools > 0  # fs_list schema from the registry
+    assert bd.mcp_tools == 0  # legacy stream() route sends no MCP tools
+    assert bd.messages > 0
+    total = (
+        bd.system_prompt + bd.skills + bd.system_tools
+        + bd.mcp_tools + bd.messages + bd.other
+    )
+    assert total == 100
+
+
+async def test_context_breakdown_reports_last_turn_snapshot(conversation, monkeypatch):
+    """Multi-turn run: breakdown reflects the FINAL turn (Σ = lastInputTokens)."""
+    _install_fake_client(
+        monkeypatch,
+        [
+            [
+                _FakeChunk(
+                    choices=[
+                        _FakeChoice(
+                            delta=_FakeDelta(
+                                tool_calls=[
+                                    _FakeToolCallDelta(
+                                        index=0,
+                                        id="call_1",
+                                        function=_FakeFunction(
+                                            name="fs_list",
+                                            arguments='{"path":""}',
+                                        ),
+                                    )
+                                ]
+                            )
+                        )
+                    ]
+                ),
+                _FakeChunk(
+                    choices=[
+                        _FakeChoice(delta=_FakeDelta(), finish_reason="tool_calls")
+                    ]
+                ),
+                _FakeChunk(
+                    choices=[],
+                    usage=_FakeUsage(prompt_tokens=100, completion_tokens=5),
+                ),
+            ],
+            [
+                _FakeChunk(choices=[_FakeChoice(delta=_FakeDelta(content="all set"))]),
+                _FakeChunk(
+                    choices=[_FakeChoice(delta=_FakeDelta(), finish_reason="stop")]
+                ),
+                _FakeChunk(
+                    choices=[],
+                    usage=_FakeUsage(prompt_tokens=999, completion_tokens=3),
+                ),
+            ],
+        ],
+    )
+
+    events = await _collect(
+        CustomAdapter(), _input(conversation, tool_names=["fs_list"])
+    )
+    assert [e.type for e in events].count("run.usage") == 1
+
+    run_usage = next(e for e in events if e.type == "run.usage")
+    assert run_usage.usage.last_input_tokens == 999
+    bd = run_usage.usage.context_breakdown
+    assert bd is not None
+    total = (
+        bd.system_prompt + bd.skills + bd.system_tools
+        + bd.mcp_tools + bd.messages + bd.other
+    )
+    assert total == 999

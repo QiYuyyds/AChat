@@ -63,9 +63,7 @@ from app.tools.base import ToolContext
 from app.tools.registry import (
     BASELINE_AGENT_TOOLS as _BASELINE_AGENT_TOOLS,
 )
-from app.tools.registry import (
-    tool_registry,  # noqa: F401 - parity import (tool resolution lives in adapters)
-)
+from app.tools.registry import tool_registry
 from app.utils.clock import now_ms
 from app.utils.dispatch_run_evidence import (
     clear_run_tool_evidence,
@@ -872,7 +870,13 @@ async def _run_react_loop(  # noqa: C901
     compact → soft → forced → hard pipeline and behavioral circuit breakers.
     See ``react_loop_termination``.
     """
-    from app.adapters.custom_adapter import _RunUsage, _to_run_usage
+    from app.adapters.custom_adapter import (
+        _measure_context_breakdown,
+        _rescale_context_breakdown,
+        _RunUsage,
+        _to_api_tool,
+        _to_run_usage,
+    )
     from app.config import get_settings
     from app.services.compact_pipeline import estimate_messages_tokens, run_compact_pipeline
     from app.services.hook_registry import HookContext, HookEvent
@@ -1111,6 +1115,24 @@ async def _run_react_loop(  # noqa: C901
             turn_output_tokens = 0
             turn_cache_read_tokens = 0
 
+            # Context composition of the exact payload call_once is about to
+            # send (context-usage-breakdown): tool schemas are rebuilt with the
+            # same helpers call_once uses, so the registry/MCP split matches
+            # the request. tool_names/mcp_tools already reflect forced-final
+            # adjustments at this point. Best-effort — None disables reporting.
+            turn_breakdown_raw: dict[str, int] | None = None
+            try:
+                turn_breakdown_raw = _measure_context_breakdown(
+                    messages,
+                    [_to_api_tool(t) for t in tool_registry.resolve(adapter_input.tool_names)],
+                    list(adapter_input.mcp_tools) if adapter_input.mcp_tools else None,
+                    adapter_input.system_prompt_sections,
+                )
+            except Exception:  # noqa: BLE001 - measurement must never break the stream
+                logger.debug(
+                    "[AgentRunner] context breakdown measurement failed", exc_info=True
+                )
+
             try:
                 async for event in adapter.call_once(adapter_input, cancel_event):
                     if event.type == "message.start":
@@ -1145,6 +1167,13 @@ async def _run_react_loop(  # noqa: C901
                         run_usage.last_input_tokens = event.usage.input_tokens
                         run_usage.last_cache_read_tokens = event.usage.cache_read_tokens
                         run_usage.last_output_tokens = event.usage.output_tokens
+                        # Rescale this turn's raw composition onto the real
+                        # input count and keep it as the last-turn snapshot
+                        # (always paired with last_input_tokens).
+                        if turn_breakdown_raw is not None:
+                            run_usage.last_turn_breakdown = _rescale_context_breakdown(
+                                turn_breakdown_raw, event.usage.input_tokens
+                            )
                         turn_input_tokens += event.usage.input_tokens
                         turn_output_tokens += event.usage.output_tokens
                         turn_cache_read_tokens += event.usage.cache_read_tokens
@@ -3525,21 +3554,30 @@ async def build_adapter_input(
 
     # ── system prompt (shared by both paths) ──────────────────────────
     base_system_prompt = system_prompt_override or agent.system_prompt
-    system_prompt_with_workspace = (
-        _build_workspace_context_block(workspace, effective_cwd)
-        + "\n\n" + base_system_prompt
-    )
+    workspace_block = _build_workspace_context_block(workspace, effective_cwd)
+    system_prompt_with_workspace = workspace_block + "\n\n" + base_system_prompt
+
+    # Context-composition measurement (context-usage-breakdown): record each
+    # separable segment's char length at assembly time so the adapter can
+    # split the skill block out of the system prompt structurally (design D2)
+    # instead of pattern-matching the concatenated string. Segments appended
+    # later (group note / assembler enrichment / [session] meta) have no
+    # boundary here and stay inside the system-prompt category.
+    prompt_sections: dict[str, int] | None = None
 
     # ── tool guidance: SDK only (CLI agents bring their own tools) ────
     if is_sdk:
+        prompt_sections = {"base": len(system_prompt_with_workspace)}
         tool_guidance = _build_agent_hub_tool_guidance(agent, tool_names, workspace)
         if tool_guidance:
+            prompt_sections["toolGuidance"] = len(tool_guidance)
             system_prompt_with_workspace += "\n\n" + tool_guidance
 
     # ── skill metadata: SDK only (CLI agents skip AChat skill injection) ─
     if is_sdk:
         skill_block = _build_skill_metadata_block(agent)
         if skill_block:
+            prompt_sections["skills"] = len(skill_block)
             system_prompt_with_workspace += "\n\n" + skill_block
 
     # ── API key ─────────────────────────────────────────────────────
@@ -3760,6 +3798,7 @@ async def build_adapter_input(
         prompt=effective_prompt,
         workspace_path=effective_cwd,
         system_prompt=system_prompt_with_workspace,
+        system_prompt_sections=prompt_sections,
         api_key=effective_api_key,
         api_base_url=effective_api_base_url,
         model_id=model_profile.model_id if is_sdk and model_profile else None,

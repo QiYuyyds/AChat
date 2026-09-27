@@ -46,7 +46,7 @@ from app.schemas.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from app.schemas.messages import DeployStatusRecord, MessageUsage, RunUsage
+from app.schemas.messages import ContextBreakdown, DeployStatusRecord, MessageUsage, RunUsage
 from app.services.ttft_tracker import mark as ttft_mark
 from app.services.ttft_tracker import record_turn1_usage as ttft_record_turn1_usage
 from app.tools.base import ToolContext, ToolDef
@@ -346,6 +346,11 @@ class _RunUsage:
     last_cache_read_tokens: int = 0
     last_output_tokens: int = 0
     cache_style: str = 'deepseek'
+    # Last-turn context composition, rescaled onto the turn's real
+    # inputTokens (context-usage-breakdown). Only set when a turn's usage
+    # arrives, so it always pairs with last_input_tokens; None = no data
+    # (request failed before usage, or CLI route).
+    last_turn_breakdown: dict[str, int] | None = None
 
 
 @dataclass
@@ -1023,6 +1028,13 @@ class CustomAdapter(AgentPlatformAdapter):
                         len(api_tools), len(str(user_content)),
                     )
                 max_tokens = _compute_max_tokens(model_provider, model_id, messages)
+                # Context composition of the exact payload about to be sent
+                # (context-usage-breakdown). The legacy stream() route does not
+                # merge MCP tools into the request, so mcp_tool_schemas stays
+                # empty → they are correctly not counted.
+                turn_breakdown_raw = _measure_context_breakdown(
+                    messages, api_tools, None, input.system_prompt_sections
+                )
                 with start_span("llm.generate", suffix=f"第{turn}轮", turn=turn):
                     stream = await client.chat.completions.create(
                         model=model_id,
@@ -1067,6 +1079,12 @@ class CustomAdapter(AgentPlatformAdapter):
                     run_usage.last_input_tokens = inp
                     run_usage.last_cache_read_tokens = cached
                     run_usage.last_output_tokens = out
+                    # Rescale this turn's raw composition onto the real input
+                    # count (exact total, approximate proportions) and keep it
+                    # as the run's last-turn snapshot.
+                    run_usage.last_turn_breakdown = _rescale_context_breakdown(
+                        turn_breakdown_raw, inp
+                    )
                     # Auto-detect cacheStyle for openai-compatible on first usage
                     if (
                         model_provider == 'openai-compatible'
@@ -1495,6 +1513,121 @@ def _to_message_usage(u: _MsgUsage) -> MessageUsage:
     )
 
 
+# ─── context composition measurement (context-usage-breakdown) ─────
+
+# The five measured categories; "other" is never measured — the rescale step
+# derives it as the residual against the turn's real inputTokens (design D4).
+_BREAKDOWN_MEASURED_KEYS = ("system_prompt", "skills", "system_tools", "mcp_tools", "messages")
+_BREAKDOWN_KEYS = _BREAKDOWN_MEASURED_KEYS + ("other",)
+
+
+def _measure_context_breakdown(
+    messages: list[dict],
+    registry_tool_schemas: list[dict],
+    mcp_tool_schemas: list[dict] | None = None,
+    system_prompt_sections: dict[str, int] | None = None,
+) -> dict[str, int]:
+    """Raw per-category token estimates of one LLM request payload (pre-rescale).
+
+    Pure function over the exact payload about to be sent (design D1/D2):
+    - system message content → ``system_prompt``, minus the skill block whose
+      char length was recorded at assembly time in
+      ``system_prompt_sections["skills"]`` (→ ``skills``); missing/short
+      sections degrade to skills=0 without error;
+    - tool schemas split by origin: registry → ``system_tools``, MCP →
+      ``mcp_tools``;
+    - every non-system message serialized whole → ``messages`` (history +
+      current user input + accumulated assistant/tool turns).
+
+    Values are proportional RAW estimates (estimate_tokens, len/4); call
+    :func:`_rescale_context_breakdown` with the turn's real inputTokens
+    before reporting. Measurement is best-effort — never raises.
+    """
+    try:
+        skills_chars = 0
+        if system_prompt_sections:
+            section = system_prompt_sections.get("skills", 0)
+            if isinstance(section, (int, float)) and not isinstance(section, bool):
+                skills_chars = max(0, int(section))
+
+        system_tokens = 0
+        skills_tokens = 0
+        non_system: list[dict] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "system":
+                content = msg.get("content")
+                text = (
+                    content
+                    if isinstance(content, str)
+                    else json.dumps(content, ensure_ascii=False, default=str)
+                )
+                system_tokens += estimate_tokens(text)
+                if skills_chars > 0:
+                    # The skill block was appended to the main system prompt —
+                    # carve it out of the first system message that can hold it.
+                    taken = min(skills_chars, len(text))
+                    skills_tokens += estimate_tokens("x" * taken)
+                    skills_chars -= taken
+            else:
+                non_system.append(msg)
+
+        tool_tokens = (
+            estimate_tokens(json.dumps(registry_tool_schemas, ensure_ascii=False, default=str))
+            if registry_tool_schemas else 0
+        )
+        mcp_tokens = (
+            estimate_tokens(json.dumps(mcp_tool_schemas, ensure_ascii=False, default=str))
+            if mcp_tool_schemas else 0
+        )
+        messages_tokens = (
+            estimate_tokens(json.dumps(non_system, ensure_ascii=False, default=str))
+            if non_system else 0
+        )
+        return {
+            "system_prompt": max(0, system_tokens - skills_tokens),
+            "skills": skills_tokens,
+            "system_tools": tool_tokens,
+            "mcp_tools": mcp_tokens,
+            "messages": messages_tokens,
+        }
+    except Exception:  # noqa: BLE001 - measurement must never break the stream
+        logger.debug("[CustomAdapter] context breakdown measurement failed", exc_info=True)
+        return {key: 0 for key in _BREAKDOWN_MEASURED_KEYS}
+
+
+def _rescale_context_breakdown(raw: dict[str, int], input_tokens: int) -> dict[str, int]:
+    """Rescale raw category estimates onto the turn's real inputTokens.
+
+    Total exact, proportions approximate (design D3/D4): each measured
+    category gets ``round(raw_i / Σraw * inputTokens)``; ``other`` = the
+    residual ``inputTokens - Σ(measured)``, floored at 0 — it absorbs
+    multimodal encodings and rounding error so the six categories always sum
+    to inputTokens. All-zero payloads (empty tools + empty history) put
+    everything into ``other`` instead of dividing by zero.
+    """
+    inp = input_tokens if isinstance(input_tokens, int) and not isinstance(input_tokens, bool) else 0
+    if inp <= 0:
+        return dict.fromkeys(_BREAKDOWN_KEYS, 0)
+    total_raw = 0
+    for key in _BREAKDOWN_MEASURED_KEYS:
+        value = raw.get(key, 0)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            total_raw += value
+    scaled: dict[str, int] = dict.fromkeys(_BREAKDOWN_MEASURED_KEYS, 0)
+    remaining = inp
+    if total_raw > 0:
+        for key in _BREAKDOWN_MEASURED_KEYS:
+            value = raw.get(key, 0)
+            value = value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+            share = min(max(0, round(value / total_raw * inp)), remaining)
+            scaled[key] = share
+            remaining -= share
+    scaled["other"] = max(0, remaining)
+    return scaled
+
+
 def _to_run_usage(u: _RunUsage, model_id: str, turn_count: int = 0) -> RunUsage:
     return RunUsage(
         input_tokens=u.input_tokens,
@@ -1507,6 +1640,9 @@ def _to_run_usage(u: _RunUsage, model_id: str, turn_count: int = 0) -> RunUsage:
         turn_count=turn_count,
         model=model_id,
         cache_style=u.cache_style,
+        context_breakdown=(
+            ContextBreakdown(**u.last_turn_breakdown) if u.last_turn_breakdown else None
+        ),
     )
 
 

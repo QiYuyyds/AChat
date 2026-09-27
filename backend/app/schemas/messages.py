@@ -203,6 +203,26 @@ class MessageUsage(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ContextBreakdown(BaseModel):
+    """Per-category token estimate of the final turn's LLM request context.
+
+    Values are the raw char-based estimates rescaled so that the six
+    categories always sum to that turn's real ``inputTokens`` (exact total,
+    approximate proportions). Absent on CLI routes — the CLI subprocess owns
+    its context, so there is nothing to report; consumers MUST treat a
+    missing field as "no composition data", not as all-zero.
+    """
+
+    system_prompt: int = Field(default=0, alias="systemPrompt")
+    skills: int = 0
+    system_tools: int = Field(default=0, alias="systemTools")
+    mcp_tools: int = Field(default=0, alias="mcpTools")
+    messages: int = 0
+    other: int = 0
+
+    model_config = {"populate_by_name": True}
+
+
 class RunUsage(BaseModel):
     """Per-run token usage.
 
@@ -221,6 +241,11 @@ class RunUsage(BaseModel):
     turn_count: int = Field(default=0, alias="turnCount")
     model: str | None = None
     cache_style: CacheStyle = Field(default='deepseek', alias='cacheStyle')
+    # Last-turn context composition (SDK route only; None = no data — CLI /
+    # legacy runs). Sum of the six categories equals lastInputTokens.
+    context_breakdown: ContextBreakdown | None = Field(
+        default=None, alias="contextBreakdown"
+    )
 
     model_config = {"populate_by_name": True}
 
