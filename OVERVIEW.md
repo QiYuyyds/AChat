@@ -84,7 +84,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | Workspace 沙箱 | ✅ | sandbox/local 双模式 · fs_write 审批 · 双平台 Bash 黑名单 |
 | Worktree 隔离 | ✅ | DAG 波调度并行任务用 git worktree 隔离 · 非 git 目录用目录拷贝降级 · 自动 merge-back |
 | Workspace 环境隔离 | ✅ | 按会话/用户隔离环境变量 · CLI Agent HOME/USERPROFILE 按用户隔离 |
-| Token 计量 | ✅ | per-run/per-message · cache 命中率 · 全局分析 |
+| Token 计量 | ✅ | per-run/per-message · cache 命中率 · 全局分析 · 上下文构成快照（SDK 路线） |
 | 跨 run 对话记忆 | ✅ | 历史序列化注入 · token 预算 · 群聊跨 agent 可见 |
 | 平台抽象（Win/POSIX） | ✅ | shell 选择 · 多盘符 DirPicker · 子进程清理 |
 | 全局 API Key 设置面板 | ✅ | app_settings 单行表 · 三层 key 优先级 |
@@ -113,7 +113,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | **ModelProfile** | ✅ | ★ 用户级模型配置（独立于 Agent 实体）· 运行时解析（显式 → 默认 → 拒绝）· 连通性测试 · 迁移机制 |
 | Electron 桌面版 | ⚠️ | 打包脚本就绪；内嵌 Next 已无后端，需改启 Python |
 | 移动端伴随 App | ⏳ | 响应式 Web 已适配；Capacitor 原生壳脚手架已建，配对通信待打通 |
-| **用户认证与多用户隔离** | ✅ | JWT(access 1h + refresh 7d) + bcrypt · 登录/注册页 · auth-gate · 个人资料弹窗 · VIP 快捷登录 · CSRF 防护 · 所有用户数据表 `user_id` 隔离 |
+| **用户认证与多用户隔离** | ✅ | JWT(access 1h + refresh 7d) + bcrypt · 登录对话框（含注册模式，受 `allowRegistration` 控制） · auth-gate · 个人资料弹窗 · VIP 快捷登录 · CSRF 防护 · 所有用户数据表 `user_id` 隔离 |
 | ~~Redis 元数据缓存 + 异步 DB~~ | ❌ 已移除 | 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代 |
 | **记忆管理 UI** | ✅ | 记忆库面板 · 长期记忆/偏好/短期记忆三面板 · 查看/删除/固化 |
 | **Agent 可观测性与评测** | ✅ | OpenTelemetry 全链路追踪(Level 4 深度埋点) · Arize Phoenix(:6006) · 在线规则评测(默认开) · 离线 LLM-as-Judge(手动触发) · 5+4 维评测指标体系 |
@@ -134,13 +134,13 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | 关注点 | 文件 |
 |---|---|
 | App 入口 / 布局 | `src/app/page.tsx` · `src/app/layout.tsx` |
-| 认证页面 | `src/app/login/page.tsx` · `src/app/register/page.tsx` |
+| 登录对话框（含注册模式） | `src/components/login-dialog.tsx`（`replace-login-page-with-dialog` 后独立登录/注册页已移除） |
 | 认证守卫 | `src/components/auth-gate.tsx` · `src/stores/auth-store.ts` |
 | SSE 全局连接（客户端） | `src/components/stream-provider.tsx` |
 | 前端状态总线（Zustand+Immer） | `src/stores/app-store.ts` |
 | API base 配置 | `src/lib/config.ts`（读 `NEXT_PUBLIC_API_BASE_URL`） |
 | REST 客户端 | `src/lib/api.ts` · `src/lib/api/memory.ts` |
-| 登录对话框 | `login-dialog.tsx` |
+| 登录对话框 | `login-dialog.tsx`（含注册模式切换） |
 | 主题 | `src/components/theme-provider.tsx` · `theme-toggle.tsx` |
 
 ### L5 UI 组件（`src/components/`）
@@ -159,7 +159,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | MCP 调用审批 | `pending-mcp-call-card.tsx` · `mcp-server-library.tsx` · `mcp-server-edit-dialog.tsx` |
 | 代码图谱控制 | `code-intelligence-control.tsx` · `code-intelligence-switch.tsx` |
 | ask_user 结构化弹窗 | `ask-user-question-dialog.tsx` |
-| Token 计量 | `usage-dashboard.tsx` · `usage-badge.tsx` |
+| Token 计量 | `usage-dashboard.tsx` · `usage-badge.tsx`（上下文容量构成面板） |
 | 文件浏览器 | `file-explorer-panel.tsx` · `file-tab.tsx` · `file-library-dialog.tsx` |
 | 选区改写 / 引用 | `selection-popover.tsx` · `quoted-message.tsx` |
 | 导航辅助 | `pinned-messages-bar.tsx` · `conversation-outline.tsx` |
@@ -231,7 +231,7 @@ L1 Persistence                          backend/app/db/（SQLAlchemy + PostgreSQ
 | bash 命令审批 | `bash_command_approval.py` | bash 命令审批逻辑 |
 | 设置 / Key | `settings_service.py` · `global_settings_service.py` | 三层 key 优先级解析 · 全局设置缓存（进程内 dict TTL） |
 | ★ 异步 DB 写入 | `async_db_writer.py` | ★ 已移除 (Redis Stream write-behind 废弃，双 DB 架构直写 SQLite) |
-| ★ 崩溃恢复 | `recovery_scan.py` | 启动时扫描 `status=streaming` 的消息，标记为 interrupted（SQLite WAL 自带崩溃恢复） |
+| ★ 崩溃恢复 / 运行态恢复 | `recovery_scan.py` | 启动时把非终态 `AgentRun` 行与 `status=streaming` 消息一律标为 interrupted（无时间阈值；残留 running 行曾让 `has_active_runs` 饿死新消息）· 运行态读取端点 `GET /api/conversations/{id}/runs`（内存活跃 run + DB JSONB 兜底）供前端刷新后重建进度卡 / wave map / 中止按钮 |
 | **★ 可观测性** | `observability/` | OTel 全链路追踪（Level 4 深度埋点）· span 中英文映射 · ★ run_collector per-run 内存 span 收集 · 在线规则评测 · 离线 LLM-as-Judge · shutdown 清理 |
 | 搜索 | `search_service.py` | 消息全文搜索 |
 | runner 注册 | `runner_registry.py` | per-conversation runner 生命周期 |
@@ -402,6 +402,7 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 ## 附 · 当前现状（易过时，以 git 为准）
 
 ### ✅ 近期完成
+- **★ 上下文用量构成（context-usage-breakdown）**：SDK 路线逐轮测量 LLM 请求 payload 构成（系统提示词/技能/系统工具/MCP 工具/消息/其他）· `build_adapter_input` 结构化记录 system prompt 分段长度（技能块独立统计）· `RunUsage.contextBreakdown` optional 字段（按真实 inputTokens 比例修正，Σ=lastInputTokens）随 `run.usage` 流转并持久化 · UsageBadge popover「上下文容量」面板（堆叠占比条 + 降序分类图例，0 占比隐藏）· CLI/存量 run 无字段优雅降级（`openspec/changes/add-context-usage-breakdown`）
 - **★ Aeval Agent 评测框架（独立包化）**：抽取为独立 PyPI 包 `aeval-framework`（import 名 `agent_eval`，含 API/CLI/graders/metrics/storage/trace）· AChat 侧保留 `eval_integration/` 接入层（AChatAgentRunner + Workspace 环境 + Artifact/Dispatch graders + RunTraceBridge）· `EVAL_HARNESS_ENABLED` 开启后 `/api/eval` 挂载子应用（suites/tasks/runs/trials/compare/graders）· task 级会话配置（套件 env 支持选择被评 agent 与会话形态）· Metrics P1 + 数据集/任务库 Dashboard（框架内置）· 声明式套件 `backend/eval_suites/*.yaml` · 独立 SQLite 存储（aeval.db）
 - **★ 压缩管线重写 + 会话笔记**：compact_pipeline 重写为通用掩码管线（stage 1 ratio ≥ 0.75 掩码旧工具结果 / stage 3 ≥ 0.88 折叠旧轮次，原 Stage 2 并入 Stage 1）· CompactMessage 统一抽象（Run 内压缩与 Layer 3 跨 run 压缩共用）· `session_note.py` 结构化 10 段 YAML 会话笔记（YAML 存储 / XML 注入 / UI 面板 + API）
 - **★ DAG 内 Agent 通信**：`ask_peer` 兄弟会话提问（重建对方历史跑 mini-run / 父邮箱兜底，per-peer 限 3 次）· `report_result` 结构化汇报 terminal tool（立即终止 + spawn_subagent_loop 提取）· `agent_session_registry.py` DAG 会话注册表（300s TTL）
@@ -427,7 +428,7 @@ DB 文件：双 DB 架构（本地 SQLite[WAL] 承载对话热数据 + 远端 Po
 - **VIP 快捷登录**：服务端默认密码重置 · VIP 登录端点 · 前端快捷对话框
 - **Thinking/Tool 耗时 UI**：实时显示思考与工具调用耗时
 - **Agent 可观测性与评测系统**：OpenTelemetry SDK 全链路采集（FastAPI/httpx/openai 自动 instrumentation + Level 4 深度手动埋点 18 处）· OTLP gRPC 发送至 Arize Phoenix（独立 Docker :6006）· 在线规则评测（默认开启，14 指标自动从 trace 计算）· 离线 LLM-as-Judge（默认关闭，手动触发 `POST /api/eval/judge/{trace_id}`）· Agent 全过程评测（5 维度）· 多 Agent 协作评测（4 维度）· `trace_enabled` 开关（关闭后全 no-op）
-- **用户认证与多用户隔离**：JWT(access 1h + refresh 7d) + bcrypt 密码哈希 · 登录/注册页面 · auth-gate 路由保护 · 个人资料弹窗 · CSRF 防护(Origin header) · SSE 连接认证 · 所有用户数据表 `user_id` 隔离 · builtin agent `user_id IS NULL` 共享 · CLI Agent `HOME`/`USERPROFILE` 按用户隔离
+- **用户认证与多用户隔离**：JWT(access 1h + refresh 7d) + bcrypt 密码哈希 · 登录对话框（含注册模式，`ALLOW_REGISTRATION` 控制） · auth-gate 路由保护 · 个人资料弹窗 · CSRF 防护(Origin header) · SSE 连接认证 · 所有用户数据表 `user_id` 隔离 · builtin agent `user_id IS NULL` 共享 · CLI Agent `HOME`/`USERPROFILE` 按用户隔离
 - **Redis 元数据缓存 + 异步 DB 写入**：~~已移除~~ — 双 DB 架构下 SQLite 直写 + 进程内 dict TTL 缓存替代
 - **记忆管理 UI**：记忆库面板 · 长期记忆/偏好/短期记忆三面板 · 查看/删除/固化操作
 - **统一 Agent Loop**（spec 19）：solo / coordinated / subagent 三模式统一为 `run_agent_loop` while-loop，移除旧三阶段 Orchestrator
