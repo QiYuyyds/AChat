@@ -17,6 +17,12 @@ const eslintConfig = defineConfig([
     ".understand-anything/**",
     "learn-claude-code/**",
     "release/**",
+    // 运行期数据目录：部署产物 / 下载的 runtime bundle，永远不是 lint 目标。
+    ".agenthub-data/**",
+    // Python virtualenv（内部含第三方 .js 产物）与 vendored skill 脚本。
+    "backend/.venv/**",
+    "backend/.venv-ci/**",
+    ".claude/skills/**",
     "apps/mobile/android/**/build/**",
     "apps/mobile/android/app/src/main/assets/**",
     "apps/mobile/dist/**",
