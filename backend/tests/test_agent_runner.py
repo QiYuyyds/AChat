@@ -88,15 +88,16 @@ async def test_simple_run_end_to_end(simple_setup):
 
     collected = []
 
-    async def _drain(queue):
+    async def _drain(sub):
         try:
             while True:
-                collected.append(await asyncio.wait_for(queue.get(), timeout=2.0))
+                _, ev = await asyncio.wait_for(sub.queue.get(), timeout=2.0)
+                collected.append(ev)
         except TimeoutError:
             return
 
-    async with event_bus.subscribe(user_id=simple_setup["user_id"]) as queue:
-        drainer = asyncio.create_task(_drain(queue))
+    async with event_bus.subscribe(user_id=simple_setup["user_id"]) as sub:
+        drainer = asyncio.create_task(_drain(sub))
 
         runner = AgentRunnerImpl()
         handle = runner.run(
@@ -162,17 +163,17 @@ async def test_simple_run_missing_workspace_finalizes_failed(simple_setup):
 
     run_end = []
 
-    async def _drain(queue):
+    async def _drain(sub):
         try:
             while True:
-                ev = await asyncio.wait_for(queue.get(), timeout=2.0)
+                _, ev = await asyncio.wait_for(sub.queue.get(), timeout=2.0)
                 if getattr(ev, "type", None) == "run.end":
                     run_end.append(ev)
         except TimeoutError:
             return
 
-    async with event_bus.subscribe(user_id=simple_setup["user_id"]) as queue:
-        drainer = asyncio.create_task(_drain(queue))
+    async with event_bus.subscribe(user_id=simple_setup["user_id"]) as sub:
+        drainer = asyncio.create_task(_drain(sub))
         runner = AgentRunnerImpl()
         handle = runner.run(
             agent_id=simple_setup["agent_id"],

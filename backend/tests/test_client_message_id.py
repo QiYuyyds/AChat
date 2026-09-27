@@ -44,11 +44,11 @@ def capturing_runner(monkeypatch):
     return runner
 
 
-def _drain_messages_added(queue: asyncio.Queue) -> list[MessageAddedEvent]:
+def _drain_messages_added(sub) -> list[MessageAddedEvent]:
     events = []
     while True:
         try:
-            event = queue.get_nowait()
+            _, event = sub.queue.get_nowait()
         except asyncio.QueueEmpty:
             break
         if isinstance(event, MessageAddedEvent):
@@ -59,13 +59,13 @@ def _drain_messages_added(queue: asyncio.Queue) -> list[MessageAddedEvent]:
 async def test_send_message_echoes_client_message_id(db, agents, capturing_runner):
     """clientMessageId supplied with the send is echoed verbatim on the broadcast."""
     conv = await cs.create_conversation(mode="single", agent_ids=[agents["alice"]])
-    async with event_bus.subscribe() as queue:
+    async with event_bus.subscribe() as sub:
         await cs.send_message(
             conversation_id=conv.id,
             content="hello",
             client_message_id="temp_abc123",
         )
-        added = _drain_messages_added(queue)
+        added = _drain_messages_added(sub)
 
     assert len(added) == 1
     event = added[0]
@@ -79,9 +79,9 @@ async def test_send_message_echoes_client_message_id(db, agents, capturing_runne
 async def test_send_message_without_client_message_id_is_none(db, agents, capturing_runner):
     """Callers that don't send a clientMessageId keep the old wire shape (None)."""
     conv = await cs.create_conversation(mode="single", agent_ids=[agents["alice"]])
-    async with event_bus.subscribe() as queue:
+    async with event_bus.subscribe() as sub:
         await cs.send_message(conversation_id=conv.id, content="hello")
-        added = _drain_messages_added(queue)
+        added = _drain_messages_added(sub)
 
     assert len(added) == 1
     assert added[0].client_message_id is None

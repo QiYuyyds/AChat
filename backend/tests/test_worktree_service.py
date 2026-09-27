@@ -305,7 +305,7 @@ class TestWorktreeEvents:
         ws = str(worktree_env / "evt_ws")
         await _init_repo(ws)
         events: list = []
-        async with event_bus.subscribe() as queue:
+        async with event_bus.subscribe() as sub:
             ref = await wt.create_worktree(ws, "t1", "Writer", "conv_evt")
             assert ref is not None
             await wt.merge_worktree_back(ref)
@@ -314,7 +314,7 @@ class TestWorktreeEvents:
             # Drain all queued events (operations are done, events are buffered).
             while True:
                 try:
-                    ev = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    _, ev = await asyncio.wait_for(sub.queue.get(), timeout=1.0)
                     events.append(ev)
                 except TimeoutError:
                     break

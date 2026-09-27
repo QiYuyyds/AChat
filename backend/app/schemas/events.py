@@ -504,6 +504,23 @@ class HeartbeatEvent(BaseEvent):
     type: Literal["heartbeat"] = "heartbeat"
 
 
+# ─── Stream Resync Event ─────────────────────────────────────
+class StreamResyncEvent(BaseModel):
+    """Synthetic transport event telling the client to reconcile via REST.
+
+    Emitted by the SSE layer (never published on the bus) when a reconnect
+    cannot be satisfied from the replay buffer — gap beyond the window,
+    unknown/ahead-of-current seq (server restart), or a subscriber whose queue
+    overflowed and shed events. Carries no payload: the client's action is
+    fixed (re-fetch the active conversation's state), so no ``conversationId``
+    either — same shape as the ``connected``/``heartbeat`` wire frames, hence
+    deliberately not part of the ``StreamEvent`` bus union.
+    """
+
+    type: Literal["stream.resync"] = "stream.resync"
+    timestamp: int
+
+
 # ─── Turn Metric Event ─────────────────────────────────────
 class TurnTokenBreakdown(BaseModel):
     """Per-turn token breakdown."""

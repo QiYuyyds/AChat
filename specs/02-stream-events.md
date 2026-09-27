@@ -71,6 +71,9 @@ type StreamEvent = BaseEvent & (
   // —— 心跳 ——
   | { type: 'heartbeat' }
 
+  // —— 流对账（合成传输事件，服务端无法重放缺口时下发）——
+  | { type: 'stream.resync' }   // 无 payload：客户端动作固定（REST 对账活跃会话）
+
   // —— Guide Agent 管理操作副作用通知 ——
   | { type: 'guide_side_effect', target: 'agents' | 'skills' | 'mcp' | 'documents' | 'memory' | 'profile' | 'conversations', action: 'create' | 'update' | 'delete' | 'refresh', payload?: unknown }
 
@@ -295,6 +298,7 @@ dispatch.end      (parentRunId=r1, taskId=t3, status='skipped', error='Upstream 
 | `bash_command.resolved` | ❌ 透传 | approved=true/false 由前端 store 用来移除对应 pending |
 | `run.usage` | ✅ 落到 `agent_runs.usage` JSON 列 | adapter 在 run 结束前 emit；前端 store 同步更新该 run 行 |
 | `heartbeat` | ❌ 透传 | |
+| `stream.resync` | ❌ 透传 | 合成传输事件（SSE 层生成，不经 EventBus publish）；见上方「缺口对账」 |
 | `plan.created` | ❌ 透传 | 触发 consume_stream 注入 execution_plan part |
 | `plan.step_update` | ✅ 更新 parts_buffer 中 execution_plan part 的 steps | 全量替换 steps 数组 |
 | `file_write_preview.complete` | ✅ 更新 parts_buffer 中 file_write_preview part 的 status/path/oldContent/newContent | 对称于 plan.step_update 更新 execution_plan |
@@ -316,10 +320,22 @@ const flushInterval = setInterval(() => {
 ## SSE 编码
 
 ```
+id: 42
 data: {"type":"part.delta","conversationId":"conv_abc","timestamp":1715000000000,...}\n\n
 ```
 
 **不使用 SSE 的 `event:` 字段**（每个事件类型不同 event 名，前端切分支麻烦）。统一 `data:` 一个字段，前端 `JSON.parse` 后 switch type。
+
+**帧序号（`id:` 字段）**：每个事件帧由 EventBus 分配全局单调 seq 并写入 SSE `id:`；seq 只属于传输层，不进事件 payload。`connected` / `heartbeat` / `stream.resync` 等合成帧不带 `id:`。
+
+**断线重连重放**：EventSource 自动重连时浏览器回传 `Last-Event-ID` header，服务端从有界重放缓冲（`SSE_REPLAY_BUFFER` 配置，默认 2000 条）重放 `seq > last_seq` 的全部事件，再进直播流。重放与直播的切点在订阅时同步快照，无重叠窗口；客户端仍按 seq 水位线幂等去重兜底。
+
+**缺口对账（`stream.resync`）**：以下情形无法重放，服务端下发合成 `stream.resync`（无 payload），客户端对活跃会话执行 REST 全量对账（消息覆盖合并，保留在途乐观 temp 消息）：
+
+- `Last-Event-ID` 落在重放缓冲窗口之外（缺口）
+- id 未知 / 无法解析 / 大于当前 seq（服务端重启 seq 归零）
+- 订阅者队列溢出丢过事件（溢出时置 `needs_resync`，下一条常规事件前注入 resync）
+- 兜底：重连成功但宽限期内无 seq 前进（浏览器不回传 Last-Event-ID 的环境），前端主动对账
 
 **心跳间隔 15s**，防止中间代理 / 浏览器空闲断连。
 

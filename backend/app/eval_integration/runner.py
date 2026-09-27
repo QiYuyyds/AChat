@@ -478,7 +478,7 @@ class AChatAgentRunner:
         from app.services.event_bus import event_bus
 
         ended: dict[str, RunEndEvent] = {}
-        async with event_bus.subscribe() as queue:
+        async with event_bus.subscribe() as sub:
             send = await self.client.send_message(conversation_id, prompt)
             send_holder.append(send)
             remaining = set(send["run_ids"])
@@ -487,8 +487,8 @@ class AChatAgentRunner:
                 if timeout <= 0:
                     raise self._timeout_error(send["run_ids"], started)
                 try:
-                    event = await asyncio.wait_for(
-                        queue.get(), timeout=min(timeout, self.poll_interval)
+                    _, event = await asyncio.wait_for(
+                        sub.queue.get(), timeout=min(timeout, self.poll_interval)
                     )
                 except TimeoutError:
                     continue

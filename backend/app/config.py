@@ -183,6 +183,11 @@ class Settings(BaseSettings):
         p = self.memory_workspace_dir or str(self.data_path / "memory")
         return Path(p).resolve()
 
+    # ─── SSE ───
+    # 重放缓冲大小（条数）：/api/stream 每帧带 seq，断线重连按 Last-Event-ID
+    # 从缓冲重放；缺口超出窗口时改发 stream.resync 触发客户端 REST 对账。
+    sse_replay_buffer: int = 2000
+
     # ─── Auth ───
     jwt_secret: str = ""
     jwt_access_token_expiry: int = 315360000  # seconds (10 years — effectively non-expiring)

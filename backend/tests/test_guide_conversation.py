@@ -187,7 +187,7 @@ async def test_guide_side_effect_event_bus_user_filtering():
 
     from app.services.event_bus import event_bus
 
-    async with event_bus.subscribe(user_id="user_1") as queue:
+    async with event_bus.subscribe(user_id="user_1") as sub:
         evt = GuideSideEffectEvent(
             conversation_id="conv_1",
             timestamp=now_ms(),
@@ -199,8 +199,8 @@ async def test_guide_side_effect_event_bus_user_filtering():
         # Give the event loop a tick to deliver
         await asyncio.sleep(0.05)
 
-        assert not queue.empty()
-        received = queue.get_nowait()
+        assert not sub.queue.empty()
+        _, received = sub.queue.get_nowait()
         assert received.target == "agents"
 
 
@@ -215,7 +215,7 @@ async def test_guide_side_effect_event_bus_broadcasts_to_all():
 
     from app.services.event_bus import event_bus
 
-    async with event_bus.subscribe(user_id="user_1") as queue:
+    async with event_bus.subscribe(user_id="user_1") as sub:
         evt = GuideSideEffectEvent(
             conversation_id="conv_1",
             timestamp=now_ms(),
@@ -226,6 +226,6 @@ async def test_guide_side_effect_event_bus_broadcasts_to_all():
 
         await asyncio.sleep(0.05)
 
-        assert not queue.empty()
-        received = queue.get_nowait()
+        assert not sub.queue.empty()
+        _, received = sub.queue.get_nowait()
         assert received.target == "skills"

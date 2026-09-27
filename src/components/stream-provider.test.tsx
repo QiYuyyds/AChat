@@ -1,21 +1,32 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, act } from '@testing-library/react'
 
 // Mock stores before importing StreamProvider
 const mockApplyEvent = vi.fn()
 const mockSetStreamConnected = vi.fn()
+const mockReconcile = vi.fn()
+let mockWatermark = 0
 
 vi.mock('@/stores/app-store', () => ({
-  useAppStore: vi.fn((selector) => {
-    if (typeof selector === 'function') {
-      return selector({
-        applyEvent: mockApplyEvent,
-        setStreamConnected: mockSetStreamConnected,
-      })
-    }
-    return mockApplyEvent
-  }),
+  useAppStore: Object.assign(
+    vi.fn((selector: (s: unknown) => unknown) => {
+      if (typeof selector === 'function') {
+        return selector({
+          applyEvent: mockApplyEvent,
+          setStreamConnected: mockSetStreamConnected,
+        })
+      }
+      return mockApplyEvent
+    }),
+    {
+      // StreamProvider reads connection-level state via getState() on reconnect.
+      getState: () => ({
+        streamSeqWatermark: mockWatermark,
+        reconcileActiveConversation: mockReconcile,
+      }),
+    },
+  ),
 }))
 
 vi.mock('@/stores/auth-store', () => ({
@@ -40,7 +51,7 @@ import { StreamProvider } from '@/components/stream-provider'
 class MockEventSource {
   onopen: (() => void) | null = null
   onerror: (() => void) | null = null
-  onmessage: ((e: { data: string }) => void) | null = null
+  onmessage: ((e: { data: string; lastEventId: string }) => void) | null = null
   url: string
   closed = false
 
@@ -53,9 +64,17 @@ class MockEventSource {
     this.closed = true
   }
 
-  // Helper to simulate SSE message
-  emit(data: unknown) {
-    this.onmessage?.({ data: JSON.stringify(data) })
+  // Helper to simulate SSE message (id mirrors the frame's SSE `id:` field)
+  emit(data: unknown, lastEventId = '') {
+    this.onmessage?.({ data: JSON.stringify(data), lastEventId })
+  }
+
+  open() {
+    this.onopen?.()
+  }
+
+  error() {
+    this.onerror?.()
   }
 }
 
@@ -71,6 +90,8 @@ beforeEach(() => {
   rafCallbacks = []
   mockApplyEvent.mockClear()
   mockSetStreamConnected.mockClear()
+  mockReconcile.mockClear()
+  mockWatermark = 0
 
   // Provide rAF mocks on window
   ;(window as unknown as Record<string, unknown>).requestAnimationFrame = vi.fn(
@@ -132,6 +153,31 @@ describe('StreamProvider rAF batching', () => {
     }
   })
 
+  it('forwards each frame id as the dedup seq to applyEvent', () => {
+    render(<StreamProvider>test</StreamProvider>)
+
+    const source = mockEventSourceInstances[0]
+    source.emit({ type: 'message.start', messageId: 'm1', agentId: 'a', runId: 'r' }, '7')
+    source.emit({ type: 'message.end', messageId: 'm1' }, '8')
+    // 合成帧没有 id（stream.resync / 旧后端）→ seq undefined，不去重
+    source.emit({ type: 'stream.resync', timestamp: 1 })
+
+    flushRaf()
+
+    expect(mockApplyEvent.mock.calls[0]).toEqual([
+      expect.objectContaining({ type: 'message.start' }),
+      7,
+    ])
+    expect(mockApplyEvent.mock.calls[1]).toEqual([
+      expect.objectContaining({ type: 'message.end' }),
+      8,
+    ])
+    expect(mockApplyEvent.mock.calls[2]).toEqual([
+      expect.objectContaining({ type: 'stream.resync' }),
+      undefined,
+    ])
+  })
+
   it('applies heartbeat immediately without rAF queue', () => {
     render(<StreamProvider>test</StreamProvider>)
 
@@ -160,6 +206,62 @@ describe('StreamProvider rAF batching', () => {
     // Connected should immediately set streamConnected (not queued)
     expect(mockSetStreamConnected).toHaveBeenCalledWith(true)
     expect(rafCallbacks.length).toBe(0)
+  })
+})
+
+describe('StreamProvider reconnect reconciliation fallback', () => {
+  it('triggers reconciliation when no replay arrives within the grace window', () => {
+    vi.useFakeTimers()
+    try {
+      render(<StreamProvider>test</StreamProvider>)
+
+      const source = mockEventSourceInstances[0]
+      // 断线 → 自动重连成功
+      act(() => source.error())
+      act(() => source.open())
+
+      expect(mockReconcile).not.toHaveBeenCalled()
+      act(() => vi.advanceTimersByTime(1000))
+
+      // 水位线未前进（无重放）→ 对活跃会话兜底对账
+      expect(mockReconcile).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('skips reconciliation when replayed events advanced the watermark', () => {
+    vi.useFakeTimers()
+    try {
+      render(<StreamProvider>test</StreamProvider>)
+
+      const source = mockEventSourceInstances[0]
+      act(() => source.error())
+      act(() => source.open())
+
+      // 重连后重放帧先到，水位线前进
+      mockWatermark = 42
+      act(() => vi.advanceTimersByTime(1000))
+
+      expect(mockReconcile).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not reconcile on the first connect (no prior disconnect)', () => {
+    vi.useFakeTimers()
+    try {
+      render(<StreamProvider>test</StreamProvider>)
+
+      const source = mockEventSourceInstances[0]
+      act(() => source.open())
+      act(() => vi.advanceTimersByTime(2000))
+
+      expect(mockReconcile).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

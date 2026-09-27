@@ -700,6 +700,7 @@ export interface RunUsageEvent {
   turnCount?: number
   model?: string
   cacheStyle?: CacheStyle
+  contextBreakdown?: ContextBreakdown | null
 }
 
 /** Per-message usage 事件 payload。与 db/schema.ts 的 MessageUsage 同形。 */

@@ -294,6 +294,8 @@ interface AppState {
 
   // ─── 流连接状态 ────────────────────────────────────
   streamConnected: boolean
+  /** 已应用的最大 SSE seq（重连重放去重水位线；stream.resync 时归零）。 */
+  streamSeqWatermark: number
 
   // ─── 当前用户 ID（从 AuthStore 同步）──────────────
   userId: string | null
@@ -425,7 +427,8 @@ interface AppState {
   popUndo(): void
   clearUndoStack(): void
 
-  applyEvent(event: StreamEvent): void
+  /** seq 来自 SSE 帧的 id 字段（stream-provider 传入）；无 seq 时不去重。 */
+  applyEvent(event: StreamEvent, seq?: number): void
 }
 
 export const useAppStore = create<AppState>()(
@@ -504,6 +507,107 @@ export const useAppStore = create<AppState>()(
     setStreamConnected: (connected) =>
       set((s) => {
         s.streamConnected = connected
+      }),
+
+    reconcileActiveConversation: async () => {
+      if (reconcileInFlight) return
+      const conversationId = useAppStore.getState().activeConversationId
+      if (!conversationId) return
+      reconcileInFlight = true
+      try {
+        // 最小对账 = 活跃会话消息全量覆盖（服务端真值，含流式中断丢尾巴的修复）。
+        // pending 汇总端点已存在，一并刷新；运行态快照并行拉取，覆盖
+        // runsByConv[conv]——断线窗口内丢掉 run.end 的 run 会以「运行中」
+        // 假象挂在本端，服务端快照是纠正它的唯一真值源。
+        //
+        // 快照稳定性：流式仍在进行时，拉取窗口内应用到本地的事件可能比快照新，
+        // 直接覆盖会丢 delta。水位线在整轮拉取期间未前进才合并（快照必然覆盖
+        // 全部已应用事件）；仍在前进则再拉一轮，最多 3 轮兜底收敛。
+        const runsPromise = fetchConversationRuns(conversationId).catch(() => null)
+        let watermarkBefore = useAppStore.getState().streamSeqWatermark
+        let serverMessages = await fetchMessages(conversationId)
+        for (let round = 0; round < 3; round++) {
+          const watermarkAfter = useAppStore.getState().streamSeqWatermark
+          if (watermarkAfter === watermarkBefore) break
+          watermarkBefore = watermarkAfter
+          serverMessages = await fetchMessages(conversationId)
+        }
+        const convRuns = await runsPromise
+        set((s) => {
+          const bucket = s.messageIdsByConv[conversationId] ?? []
+          const serverIds = new Set(serverMessages.map((m) => m.id))
+          // 在途乐观消息（POST 未返回或已标记发送失败）不归服务端管，原样保留。
+          const temps = bucket.filter((id) => id.startsWith('temp_') && s.messages[id])
+          for (const id of bucket) {
+            if (!serverIds.has(id) && !temps.includes(id)) delete s.messages[id]
+          }
+          for (const m of serverMessages) {
+            s.messages[m.id] = m
+          }
+          s.messageIdsByConv[conversationId] = [...serverMessages.map((m) => m.id), ...temps]
+          if (convRuns) {
+            applyRunSnapshot(s, conversationId, convRuns, { overwrite: true })
+          }
+        })
+        void useAppStore.getState().refreshPendingSummary()
+      } catch (err) {
+        console.warn('[app-store] stream resync reconcile failed', err)
+      } finally {
+        reconcileInFlight = false
+      }
+    },
+
+    rebuildRunStateFromSnapshot: (conversationId, runs) =>
+      set((s) => {
+        applyRunSnapshot(s, conversationId, runs)
+        s.runSnapshotLoadedByConv[conversationId] = true
+      }),
+
+    ensureRunStateRebuilt: async (conversationId) => {
+      if (useAppStore.getState().runSnapshotLoadedByConv[conversationId]) return
+      try {
+        const runs = await fetchConversationRuns(conversationId)
+        useAppStore.getState().rebuildRunStateFromSnapshot(conversationId, runs)
+      } catch (err) {
+        console.warn('[app-store] run state rebuild failed', err)
+      }
+    },
+
+    refreshPendingSummary: async () => {
+      try {
+        const summary = await fetchPendingSummary()
+        set((s) => {
+          s.pendingSummary = {}
+          for (const item of summary) s.pendingSummary[item.conversationId] = item
+        })
+      } catch (err) {
+        console.warn('[app-store] pending summary fetch failed', err)
+      }
+    },
+
+    pushPendingToast: (conversationId, kind) =>
+      set((s) => {
+        const existing = s.pendingToasts.find(
+          (t) => t.conversationId === conversationId && t.kind === kind,
+        )
+        if (existing) {
+          existing.count += 1
+          return
+        }
+        s.pendingToasts.push({
+          id: `ptoast_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          conversationId,
+          kind,
+          count: 1,
+          createdAt: Date.now(),
+        })
+        // 最多同时挂 4 条，避免连续审批把屏幕糊满。
+        if (s.pendingToasts.length > 4) s.pendingToasts.splice(0, s.pendingToasts.length - 4)
+      }),
+
+    dismissPendingToast: (id) =>
+      set((s) => {
+        s.pendingToasts = s.pendingToasts.filter((t) => t.id !== id)
       }),
 
     setUserId: (userId) =>
@@ -1039,8 +1143,24 @@ export const useAppStore = create<AppState>()(
         }
       }),
 
-    applyEvent: (event) =>
-      set((s) => {
+    applyEvent: (event, seq) => {
+      // 合成对账事件：seq 空间不再可信（服务端重启 / 缓冲缺口 / 订阅溢出），
+      // 水位线归零并触发活跃会话 REST 对账；随后的事件按新空间正常应用。
+      if (event.type === 'stream.resync') {
+        set((s) => {
+          s.streamSeqWatermark = 0
+        })
+        void useAppStore.getState().reconcileActiveConversation()
+        return
+      }
+      handlePendingEventSideEffects(event)
+      return set((s) => {
+        // 重连重放去重：重放窗口与断线前已应用的事件可能重叠（竞态兜底），
+        // seq <= 水位线的事件必然已应用过，跳过即幂等。
+        if (typeof seq === 'number' && Number.isFinite(seq) && seq > 0) {
+          if (seq <= s.streamSeqWatermark) return
+          s.streamSeqWatermark = seq
+        }
         switch (event.type) {
           case 'heartbeat':
             return
@@ -2538,6 +2658,7 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
             result.lastInputTokens = u.lastInputTokens ?? u.inputTokens
             result.lastCacheReadTokens = u.lastCacheReadTokens ?? 0
             result.lastOutputTokens = u.lastOutputTokens ?? 0
+            result.lastContextBreakdown = u.contextBreakdown ?? undefined
             result.turnCount = u.turnCount ?? 0
           }
         }
@@ -2598,6 +2719,8 @@ export const useConversationUsageTotal = (conversationId: string | null): Conver
           result.lastInputTokens = u.inputTokens
           result.lastCacheReadTokens = u.cacheReadTokens
           result.lastOutputTokens = u.outputTokens
+          // message.usage 不携带构成数据 —— 覆盖为无构成，与 lastInput 语义对齐
+          result.lastContextBreakdown = undefined
           result.turnCount = 0
         }
       }

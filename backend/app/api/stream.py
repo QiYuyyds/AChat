@@ -1,6 +1,14 @@
 """Global SSE stream. Port of src/app/api/stream/route.ts — one connection for
 all conversations; each event carries conversationId and the frontend buckets by
-id. See specs/02-stream-events.md."""
+id. See specs/02-stream-events.md.
+
+Reconnect replay: every event frame carries ``id: <seq>`` (monotonic seq from
+the event bus). On reconnect EventSource sends ``Last-Event-ID``; events still
+in the bus's replay buffer are re-sent before the live loop. When the gap
+cannot be replayed (buffer overflow, unknown/stale seq after a server
+restart), a synthetic ``stream.resync`` frame tells the client to reconcile
+the active conversation via REST instead.
+"""
 
 import asyncio
 import json
@@ -13,6 +21,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.auth.dependencies import COOKIE_NAME
 from app.auth.jwt_handler import verify_token
 from app.db.models import User
+from app.schemas.events import StreamResyncEvent
 from app.services.event_bus import event_bus
 from app.utils.clock import now_ms
 
@@ -20,6 +29,23 @@ router = APIRouter()
 
 # idle gap after which we emit a JSON heartbeat (TS uses a 15s setInterval)
 _HEARTBEAT_SECONDS = 15.0
+
+
+def _resync_frame() -> dict:
+    """Synthetic ``stream.resync`` frame (no SSE ``id:`` — the client must
+    reconcile via REST rather than resume from a sequence id)."""
+    event = StreamResyncEvent(timestamp=now_ms())
+    return {"data": event.model_dump_json(by_alias=True)}
+
+
+def _parse_last_event_id(raw: str | None) -> int | None:
+    """``Last-Event-ID`` header value → seq, or None when absent/unparseable."""
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 async def _resolve_sse_user(request: Request, token: str | None) -> str | None:
@@ -60,20 +86,51 @@ async def _resolve_sse_user(request: Request, token: str | None) -> str | None:
     return user_id
 
 
-async def _event_stream(user_id: str | None) -> AsyncIterator[dict]:
+async def _event_stream(
+    user_id: str | None, last_event_id: str | None = None
+) -> AsyncIterator[dict]:
     # data-only frames (no SSE `event:` field) so the frontend reads them via
-    # EventSource.onmessage; the event type lives inside the JSON payload.
-    async with event_bus.subscribe(user_id=user_id) as queue:
+    # EventSource.onmessage; the event type lives inside the JSON payload and
+    # the replay seq goes into the SSE `id:` field.
+    async with event_bus.subscribe(user_id=user_id) as sub:
+        # Reconnect replay. Snapshot the buffer synchronously BEFORE the first
+        # yield: publish() never awaits, so everything published up to this
+        # point is in the buffer and everything after lands in the queue —
+        # an exact replay/live cut with no overlap (specs/02-stream-events.md).
+        last_seq = _parse_last_event_id(last_event_id)
+        replayed = event_bus.replay_since(last_seq) if last_seq is not None else None
+        # A present-but-unusable Last-Event-ID (unparseable, unknown, gap
+        # beyond the buffer, or post-restart seq) must resync, never replay
+        # partially — a partial replay would silently lose events.
+        must_resync = bool(last_event_id) and replayed is None
+
         # tell the client the connection is live immediately (mirrors TS hello)
         yield {"data": json.dumps({"type": "connected", "timestamp": now_ms()})}
+
+        if must_resync:
+            yield _resync_frame()
+        elif replayed:
+            for seq, event in replayed:
+                yield {"id": str(seq), "data": event.model_dump_json(by_alias=True)}
+
         while True:
+            # Overflow compensation: a resync must precede the next regular
+            # event after this subscriber shed queued events.
+            if sub.needs_resync:
+                sub.needs_resync = False
+                yield _resync_frame()
             try:
-                event = await asyncio.wait_for(queue.get(), timeout=_HEARTBEAT_SECONDS)
+                seq, event = await asyncio.wait_for(sub.queue.get(), timeout=_HEARTBEAT_SECONDS)
             except TimeoutError:
                 yield {"data": json.dumps({"type": "heartbeat", "timestamp": now_ms()})}
                 continue
+            # Overflow may also have happened while older events were still
+            # queued ahead of this one — keep the resync-before-event order.
+            if sub.needs_resync:
+                sub.needs_resync = False
+                yield _resync_frame()
             # StreamEvent is Pydantic with camelCase aliases — serialize by alias
-            yield {"data": event.model_dump_json(by_alias=True)}
+            yield {"id": str(seq), "data": event.model_dump_json(by_alias=True)}
 
 
 @router.get("/stream")
@@ -91,7 +148,7 @@ async def stream_events(
             content={"detail": "Not authenticated"},
         )
     return EventSourceResponse(
-        _event_stream(user_id),
+        _event_stream(user_id, request.headers.get("last-event-id")),
         headers={
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
