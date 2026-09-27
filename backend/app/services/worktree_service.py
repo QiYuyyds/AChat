@@ -23,6 +23,7 @@ import subprocess
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from typing import Literal
 
 from sqlalchemy import select
 
@@ -69,6 +70,9 @@ class WorktreeRef:
     conversation_id: str
     user_id: str | None = None
     agent_id: str | None = None
+    # Set by isolated_workspace after merge-back so callers can detect a
+    # failed merge (the child run itself may still report complete).
+    last_merge_result: MergeResult | None = None
 
 
 @dataclass
@@ -78,7 +82,10 @@ class MergeResult:
     success: bool
     conflict_files: list[str] = field(default_factory=list)
     error: str | None = None
-    resolution_strategy: str = "auto"  # "auto" / "llm" / "manual" / "abandoned"
+    # "failed": merge (or post-resolution commit) failed without resolution
+    resolution_strategy: Literal[
+        "auto", "llm", "manual", "abandoned", "timeout", "failed"
+    ] = "auto"
     resolved_files: list[str] = field(default_factory=list)
 
 
@@ -155,8 +162,12 @@ def _validate_worktree_path(path: str) -> bool:
     return is_path_within(os.path.abspath(path), root)
 
 
-def _parse_conflict_files(workspace_path: str) -> list[str]:
-    """Return unmerged file paths from the main workspace after a failed merge."""
+def _parse_conflict_files(workspace_path: str) -> list[str] | None:
+    """Return unmerged file paths from the main workspace after a failed merge.
+
+    Returns ``None`` when the listing itself fails — callers must treat that
+    as "unknown", not as "no conflicts" (fail-closed).
+    """
     try:
         out = subprocess.check_output(
             ["git", "diff", "--name-only", "--diff-filter=U"],
@@ -164,7 +175,7 @@ def _parse_conflict_files(workspace_path: str) -> list[str]:
             stderr=subprocess.DEVNULL,
         )
     except Exception:  # noqa: BLE001 - best-effort conflict listing
-        return []
+        return None
     return [
         line.decode("utf-8", "replace").strip()
         for line in out.splitlines()
@@ -409,6 +420,51 @@ async def _save_conflict_snapshots(
     return artifact_ids
 
 
+async def _save_branch_patch_artifact(wt: WorktreeRef) -> None:
+    """Preserve a failed branch's unmerged changes as a diff artifact.
+
+    Best-effort backup run before ``cleanup_worktree`` deletes the branch, so
+    changes that never reached the main workspace remain inspectable instead
+    of being silently destroyed. Empty diffs are skipped quietly.
+    """
+    if not wt.is_git or not wt.agent_id:
+        return
+    rc, patch, err = await _run_git(
+        wt.main_workspace_path, "diff", f"HEAD...{wt.branch_name}"
+    )
+    if rc != 0:
+        logger.warning(
+            "[worktree] branch patch backup unavailable task=%s rc=%s err=%s",
+            wt.task_id,
+            rc,
+            err,
+        )
+        return
+    if not patch.strip():
+        return
+    try:
+        async with get_local_db() as db:
+            artifact = Artifact(
+                id=new_artifact_id(),
+                conversation_id=wt.conversation_id,
+                type="diff",
+                title=f"未合并改动备份: {wt.task_id}",
+                version=1,
+                created_by_agent_id=wt.agent_id,
+                created_at=now_ms(),
+            )
+            artifact.content_dict = {
+                "type": "branch_patch",
+                "branch": wt.branch_name,
+                "patch": patch,
+            }
+            db.add(artifact)
+    except Exception as exc:  # noqa: BLE001 - backup is best-effort
+        logger.warning(
+            "[worktree] branch patch backup failed task=%s: %s", wt.task_id, exc
+        )
+
+
 async def _git_show_stage(
     workspace_path: str,
     stage: int,
@@ -505,7 +561,16 @@ async def _human_resolve_conflicts(
         resolved_files.append(file_path)
 
     # All conflicts resolved — complete the merge
-    await _run_git(wt.main_workspace_path, "commit", "--no-edit")
+    commit_rc, _out, commit_err = await _run_git(
+        wt.main_workspace_path, "commit", "--no-edit"
+    )
+    if commit_rc != 0:
+        return MergeResult(
+            success=False,
+            conflict_files=conflict_files,
+            error=f"post-resolution commit failed: {commit_err}",
+            resolution_strategy="manual",
+        )
     return MergeResult(
         success=True,
         resolution_strategy="manual",
@@ -674,20 +739,46 @@ async def merge_worktree_back(wt: WorktreeRef) -> MergeResult:
             )
             if rc != 0:
                 conflict_files = _parse_conflict_files(wt.main_workspace_path)
-                # Layer 2: LLM-assisted conflict resolution
-                llm_ok, resolved = await _llm_resolve_conflicts(
-                    wt.main_workspace_path, conflict_files
-                )
-                if llm_ok:
-                    await _run_git(wt.main_workspace_path, "commit", "--no-edit")
+                if not conflict_files:
+                    # Fail-closed: a failed merge whose conflicts cannot be
+                    # enumerated must never be reported as resolved. Leave the
+                    # merge state in place for manual handling.
                     result = MergeResult(
-                        success=True,
-                        resolution_strategy="llm",
-                        resolved_files=resolved,
+                        success=False,
+                        error=(
+                            "merge failed but conflict files could not be "
+                            f"listed ({err.strip() or 'unknown git error'}); "
+                            "conflict state left for manual resolution"
+                        ),
+                        resolution_strategy="failed",
                     )
                 else:
-                    # Layer 3: human approval
-                    result = await _human_resolve_conflicts(wt, conflict_files)
+                    # Layer 2: LLM-assisted conflict resolution
+                    llm_ok, resolved = await _llm_resolve_conflicts(
+                        wt.main_workspace_path, conflict_files
+                    )
+                    if llm_ok:
+                        commit_rc, _cout, commit_err = await _run_git(
+                            wt.main_workspace_path, "commit", "--no-edit"
+                        )
+                        if commit_rc != 0:
+                            result = MergeResult(
+                                success=False,
+                                conflict_files=conflict_files,
+                                error=(
+                                    f"post-LLM-resolve commit failed: {commit_err}"
+                                ),
+                                resolution_strategy="failed",
+                            )
+                        else:
+                            result = MergeResult(
+                                success=True,
+                                resolution_strategy="llm",
+                                resolved_files=resolved,
+                            )
+                    else:
+                        # Layer 3: human approval
+                        result = await _human_resolve_conflicts(wt, conflict_files)
             else:
                 result = MergeResult(success=True, resolution_strategy="auto")
         else:
@@ -777,11 +868,19 @@ async def isolated_workspace(
     finally:
         if wt is not None:
             try:
-                await merge_worktree_back(wt)
+                merge_result = await merge_worktree_back(wt)
             except Exception as exc:  # noqa: BLE001 - log but don't block result
                 logger.warning("[isolated_workspace] merge_worktree_back failed: %s", exc)
-            finally:
-                await cleanup_worktree(wt)
+                merge_result = MergeResult(
+                    success=False, error=str(exc), resolution_strategy="failed"
+                )
+            wt.last_merge_result = merge_result
+            # None return (contract violation / loose mocks) means "no info":
+            # record it as-is and skip the failure backup.
+            if merge_result is not None and not merge_result.success:
+                # Backup unmerged branch changes before the branch is deleted.
+                await _save_branch_patch_artifact(wt)
+            await cleanup_worktree(wt)
 
 
 async def prune_orphan_worktrees(
@@ -844,12 +943,17 @@ def _publish_worktree_event(
             elif strategy == "manual":
                 resolution_status = "manual_resolved"
             else:
+                logger.warning(
+                    "[worktree] unexpected merge resolution strategy: %s", strategy
+                )
                 resolution_status = "success"
         else:
             merge_status = "conflict"
             conflict_files = merge_result.conflict_files if merge_result else None
             if merge_result and merge_result.resolution_strategy == "abandoned":
                 resolution_status = "abandoned"
+            elif merge_result and merge_result.resolution_strategy == "timeout":
+                resolution_status = "timeout"
             else:
                 resolution_status = "conflict"
     event = WorktreeEvent(

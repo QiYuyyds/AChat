@@ -506,6 +506,7 @@ async def _build_retry_overrides(
     compaction if ratio >= 0.75, and appends a retry instruction.
     """
     from app.services.compact_pipeline import (
+        COMPACT_FOLD_RATIO,
         COMPACT_MASK_RATIO,
         from_compact_messages,
         run_compact_pipeline_unified,
@@ -578,7 +579,7 @@ async def _build_retry_overrides(
 
     if ratio >= COMPACT_MASK_RATIO:
         compact_msgs = to_compact_messages(rebuilt)
-        stage = 3 if ratio >= 0.88 else 1
+        stage = 3 if ratio >= COMPACT_FOLD_RATIO else 1
         compact_result = run_compact_pipeline_unified(
             compact_msgs,
             stage=stage,
@@ -771,6 +772,22 @@ async def _execute_node(
 
         child_run_id = child_run_id_holder[0] if child_run_id_holder else None
 
+        # Fail-closed: a failed merge-back means the child's work never reached
+        # the main workspace, so the node must not report complete.
+        node_status = result.status
+        merge_error: str | None = None
+        if (
+            wt is not None
+            and wt.last_merge_result is not None
+            and not wt.last_merge_result.success
+        ):
+            node_status = "failed"
+            merge_error = (
+                "worktree merge-back failed: "
+                f"{wt.last_merge_result.error or 'unknown error'}"
+            )
+
+        _record_dispatch_progress(ctx, task.id, status=node_status)
         event_bus.publish(
             DispatchEndEvent(
                 conversation_id=ctx.conversation_id,
@@ -778,14 +795,15 @@ async def _execute_node(
                 parent_run_id=ctx.parent_run_id,
                 child_run_id=child_run_id,
                 task_id=task.id,
-                status=result.status,
+                status=node_status,
+                error=merge_error,
             ),
             user_id=ctx.user_id,
         )
 
         # Auto-update: mark linked plan step as done/failed based on dispatch result
         if task.plan_step_id is not None:
-            _pdm.update_task_status(task.id, result.status)
+            _pdm.update_task_status(task.id, node_status)
             mapping_key = _pdm.lookup_by_task(task.id)
             if mapping_key is not None:
                 plan_id, step_id = mapping_key
@@ -809,10 +827,10 @@ async def _execute_node(
                                 user_id=ctx.user_id,
                             )
 
-        node_status = result.status
-        # Update session status in the registry
+        # Update session status in the registry (fail-closed: only a complete
+        # run counts as completed — skipped nodes never register a session)
         if ctx.dag_id:
-            session_status = "failed" if node_status in ("failed", "aborted") else "completed"
+            session_status = "completed" if node_status == "complete" else "failed"
             agent_session_registry.update_status(task.id, session_status)
         if node_span.is_recording():
             node_span.set_attribute(AGENTHUB_NODE_STATUS, node_status)
@@ -830,12 +848,13 @@ async def _execute_node(
 
         return NodeResult(
             task_id=task.id,
-            status=result.status,
+            status=node_status,
             summary=result.text,
             child_run_id=child_run_id,
             workspace_changes=getattr(result, "workspace_changes", []),
             artifact_ids=getattr(result, "artifact_ids", []),
             key_decisions=getattr(result, "key_decisions", []),
-            error_detail=result.text if result.status == "failed" else None,
+            error_detail=merge_error
+            or (result.text if node_status == "failed" else None),
             degraded_workspace=wt is None,
         )

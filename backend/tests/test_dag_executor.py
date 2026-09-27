@@ -1768,3 +1768,81 @@ def test_dag_exec_context_retry_defaults():
     )
     assert ctx.original_dag_id is None
     assert ctx.retry_mode is False
+
+
+# ─── worktree merge-back failure propagation ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_node_failed_when_worktree_merge_fails(monkeypatch):
+    """A failed merge-back must fail the node even though the child run completed."""
+    from contextlib import asynccontextmanager
+
+    from app.services import worktree_service as wts
+    from app.services.dag_executor import _execute_node
+    from app.services.worktree_service import MergeResult, WorktreeRef
+
+    ref = WorktreeRef(
+        task_id="t1",
+        branch_name="agent/x/t1",
+        path="unused",
+        main_workspace_path="",
+        is_git=True,
+        conversation_id="conv_test",
+        agent_id="ag_1",
+        last_merge_result=MergeResult(
+            success=False, error="boom", resolution_strategy="failed"
+        ),
+    )
+
+    @asynccontextmanager
+    async def fake_isolated(**kwargs):
+        yield ref
+
+    monkeypatch.setattr(wts, "isolated_workspace", fake_isolated)
+
+    async def _spawn(**kwargs):
+        from app.services.agent_loop import LoopRunResult
+
+        return LoopRunResult(status="complete", text="done", run_id="run_t1")
+
+    node_result = await _execute_node(_item("t1"), _ctx(), {}, _spawn)
+
+    assert node_result.status == "failed"
+    assert "boom" in (node_result.error_detail or "")
+
+
+@pytest.mark.asyncio
+async def test_node_complete_when_merge_succeeds(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from app.services import worktree_service as wts
+    from app.services.dag_executor import _execute_node
+    from app.services.worktree_service import MergeResult, WorktreeRef
+
+    ref = WorktreeRef(
+        task_id="t1",
+        branch_name="agent/x/t1",
+        path="unused",
+        main_workspace_path="",
+        is_git=True,
+        conversation_id="conv_test",
+        agent_id="ag_1",
+        last_merge_result=MergeResult(success=True, resolution_strategy="auto"),
+    )
+
+    @asynccontextmanager
+    async def fake_isolated(**kwargs):
+        yield ref
+
+    monkeypatch.setattr(wts, "isolated_workspace", fake_isolated)
+
+    async def _spawn(**kwargs):
+        from app.services.agent_loop import LoopRunResult
+
+        return LoopRunResult(status="complete", text="done", run_id="run_t1")
+
+    node_result = await _execute_node(_item("t1"), _ctx(), {}, _spawn)
+
+    assert node_result.status == "complete"
+    assert node_result.error_detail is None

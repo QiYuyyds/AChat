@@ -331,3 +331,221 @@ class TestWorktreeEvents:
 
         merged = next(e for e in events if e.type == "worktree.merged")
         assert merged.merge_status == "success"
+
+
+# ─── fail-closed merge handling ──────────────────────────────────────────────
+
+
+def _ref(ws: str, task_id: str) -> wt.WorktreeRef:
+    wt_path = str(os.path.join(os.path.dirname(ws), f"wt_{task_id}"))
+    os.makedirs(wt_path, exist_ok=True)
+    return wt.WorktreeRef(
+        task_id=task_id,
+        branch_name=f"agent/x/{task_id}",
+        path=wt_path,
+        main_workspace_path=ws,
+        is_git=True,
+        conversation_id="conv1",
+        agent_id="ag1",
+    )
+
+
+class TestMergeFailClosed:
+    async def test_unlistable_conflicts_fail_closed(self, worktree_env, monkeypatch):
+        ws = str(worktree_env / "ws_a")
+        await _init_repo(ws)
+        ref = _ref(ws, "t_a")
+
+        monkeypatch.setattr(wt, "_parse_conflict_files", lambda p: None)
+        llm_calls: list = []
+
+        async def _no_llm(*a, **k):
+            llm_calls.append(1)
+            return True, []
+
+        monkeypatch.setattr(wt, "_llm_resolve_conflicts", _no_llm)
+
+        result = await wt.merge_worktree_back(ref)
+
+        assert result.success is False
+        assert result.resolution_strategy == "failed"
+        assert llm_calls == []
+
+    async def test_empty_conflict_list_fail_closed(self, worktree_env, monkeypatch):
+        ws = str(worktree_env / "ws_b")
+        await _init_repo(ws)
+        ref = _ref(ws, "t_b")
+
+        monkeypatch.setattr(wt, "_parse_conflict_files", lambda p: [])
+
+        result = await wt.merge_worktree_back(ref)
+
+        assert result.success is False
+        assert result.resolution_strategy == "failed"
+
+    async def test_post_llm_commit_failure_fail_closed(
+        self, worktree_env, monkeypatch
+    ):
+        ws = str(worktree_env / "ws_c")
+        await _init_repo(ws)
+        ref = _ref(ws, "t_c")
+
+        monkeypatch.setattr(wt, "_parse_conflict_files", lambda p: ["f.txt"])
+
+        async def _llm_ok(*a, **k):
+            return True, ["f.txt"]
+
+        monkeypatch.setattr(wt, "_llm_resolve_conflicts", _llm_ok)
+        real_run_git = wt._run_git
+
+        async def fake_run_git(cwd, *args):
+            if args[:2] == ("commit", "--no-edit") and cwd == ws:
+                return 1, "", "commit failed (simulated)"
+            return await real_run_git(cwd, *args)
+
+        monkeypatch.setattr(wt, "_run_git", fake_run_git)
+
+        result = await wt.merge_worktree_back(ref)
+
+        assert result.success is False
+        assert result.resolution_strategy == "failed"
+        assert "commit failed" in (result.error or "")
+
+    async def test_parse_conflict_files_none_outside_repo(self, tmp_path):
+        assert wt._parse_conflict_files(str(tmp_path)) is None
+
+
+class TestMergeFailurePropagation:
+    async def test_isolated_workspace_records_failed_merge(
+        self, worktree_env, db, monkeypatch
+    ):
+        ws = str(worktree_env / "ws_d")
+        await _init_repo(ws)
+        ref = _ref(ws, "t_d")
+
+        async def fake_create(**kwargs):
+            return ref
+
+        async def fake_merge(target):
+            return wt.MergeResult(
+                success=False, error="boom", resolution_strategy="failed"
+            )
+
+        backup_calls: list[str] = []
+
+        async def fake_backup(target):
+            backup_calls.append(target.task_id)
+
+        cleaned: list[str] = []
+
+        async def fake_cleanup(target):
+            cleaned.append(target.task_id)
+
+        monkeypatch.setattr(wt, "create_worktree", fake_create)
+        monkeypatch.setattr(wt, "merge_worktree_back", fake_merge)
+        monkeypatch.setattr(wt, "_save_branch_patch_artifact", fake_backup)
+        monkeypatch.setattr(wt, "cleanup_worktree", fake_cleanup)
+
+        yieldeds: list = []
+        async with wt.isolated_workspace(
+            main_workspace=ws,
+            task_id="t_d",
+            agent_id="ag1",
+            conversation_id="conv1",
+            user_id=None,
+        ) as yielded:
+            yieldeds.append(yielded)
+
+        assert yieldeds == [ref]
+        assert ref.last_merge_result is not None
+        assert ref.last_merge_result.success is False
+        assert backup_calls == ["t_d"]
+        assert cleaned == ["t_d"]
+
+    async def test_successful_merge_skips_backup(
+        self, worktree_env, db, monkeypatch
+    ):
+        ws = str(worktree_env / "ws_e")
+        await _init_repo(ws)
+        ref = _ref(ws, "t_e")
+
+        async def fake_create(**kwargs):
+            return ref
+
+        async def fake_merge(target):
+            return wt.MergeResult(success=True, resolution_strategy="auto")
+
+        backup_calls: list[str] = []
+
+        async def fake_backup(target):
+            backup_calls.append(target.task_id)
+
+        async def fake_cleanup(target):
+            pass
+
+        monkeypatch.setattr(wt, "create_worktree", fake_create)
+        monkeypatch.setattr(wt, "merge_worktree_back", fake_merge)
+        monkeypatch.setattr(wt, "_save_branch_patch_artifact", fake_backup)
+        monkeypatch.setattr(wt, "cleanup_worktree", fake_cleanup)
+
+        async with wt.isolated_workspace(
+            main_workspace=ws,
+            task_id="t_e",
+            agent_id="ag1",
+            conversation_id="conv1",
+            user_id=None,
+        ):
+            pass
+
+        assert ref.last_merge_result is not None
+        assert ref.last_merge_result.success is True
+        assert backup_calls == []
+
+
+class TestBranchPatchBackup:
+    async def test_saves_patch_artifact(self, worktree_env, monkeypatch):
+        ref = _ref(str(worktree_env / "ws_f"), "t_f")
+        added: list = []
+
+        class _FakeDB:
+            def add(self, obj):
+                added.append(obj)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        async def fake_run_git(cwd, *args):
+            return 0, "diff --git a/x b/x\n+new line\n", ""
+
+        monkeypatch.setattr(wt, "get_local_db", lambda: _FakeDB())
+        monkeypatch.setattr(wt, "_run_git", fake_run_git)
+
+        await wt._save_branch_patch_artifact(ref)
+
+        assert len(added) == 1
+        assert added[0].type == "diff"
+        assert added[0].content_dict.get("type") == "branch_patch"
+
+    async def test_skips_without_agent(self, worktree_env, monkeypatch):
+        ref = _ref(str(worktree_env / "ws_g"), "t_g")
+        ref.agent_id = None
+        added: list = []
+
+        class _FakeDB:
+            def add(self, obj):
+                added.append(obj)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        monkeypatch.setattr(wt, "get_local_db", lambda: _FakeDB())
+
+        await wt._save_branch_patch_artifact(ref)
+
+        assert added == []
