@@ -59,7 +59,12 @@ _PARAMETERS: dict[str, Any] = {
 async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     summary = args.get("summary", "") if isinstance(args, dict) else ""
     if not summary:
-        return ok({"status": "reported", "warning": "empty summary"})
+        # Terminal tool: the run ends either way, but an empty payload must
+        # not be cached — callers fall back to the run's final output text.
+        return ok({
+            "status": "error",
+            "error": "summary is required and cannot be empty",
+        })
 
     payload = ReportResultPayload(
         summary=summary,

@@ -82,7 +82,10 @@ async def test_report_result_handler_empty_summary():
     _report_result_cache.clear()
     result = await report_result_tool.handler({"summary": ""}, _ctx("run_3"))
     assert result.ok is True
-    assert result.value.get("warning") is not None
+    assert result.value.get("status") == "error"
+    assert result.value.get("error") is not None
+    # Empty payloads must not be cached — callers fall back to final text.
+    assert "run_3" not in _report_result_cache
     _report_result_cache.clear()
 
 
