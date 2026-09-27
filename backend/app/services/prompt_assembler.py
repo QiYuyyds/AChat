@@ -428,6 +428,15 @@ class TaskMemSource(ContextSource):
         if not observations:
             return []
 
+        # Wire the declared-but-never-enforced max_age_hours filter: drop
+        # observations older than the slot's freshness window.
+        max_age_hours = slot.filter.max_age_hours
+        if max_age_hours > 0:
+            cutoff = time.time() - max_age_hours * 3600
+            observations = [o for o in observations if o.created_at >= cutoff]
+            if not observations:
+                return []
+
         top_k = slot.filter.top_k or 0
         if top_k > 0 and len(observations) > top_k:
             observations = observations[-top_k:]  # keep most recent
@@ -543,6 +552,7 @@ class RecallSource(ContextSource):
             # Exclude archived/superseded from auto-injection (RecallSource).
             # memory_recall tool path remains unfiltered (handled in tools/memory_store.py).
             _EXCLUDED_STATUSES = {"archived", "superseded"}
+            min_score = slot.filter.min_score
             return [
                 ContextItem(
                     text=item.content,
@@ -555,6 +565,7 @@ class RecallSource(ContextSource):
                 )
                 for item in results
                 if item.frontmatter.get("status", "active") not in _EXCLUDED_STATUSES
+                and (min_score <= 0 or item.score >= min_score)
             ]
         except Exception as e:
             logger.warning("RecallSource fetch failed: %s", e)
@@ -628,6 +639,10 @@ class ContextAssembler:
     async def _fill_slot(self, slot: Slot, q: Query) -> FilledSlot:
         sources = self.registry.for_kind(slot.kind)
         if not sources:
+            if slot.required:
+                logger.warning(
+                    "promptctx required slot %r has no source registered", slot.kind
+                )
             return FilledSlot(kind=slot.kind, skipped=not slot.required, reason="no source registered")
 
         all_items: list[ContextItem] = []
@@ -636,16 +651,26 @@ class ContextAssembler:
                 items = await src.fetch(slot, q) or []
             except Exception as e:
                 logger.warning("promptctx source %s fetch failed: %s", src.id(), e)
-                break
+                continue
             all_items.extend(items)
 
         if not all_items:
+            if slot.required:
+                logger.warning(
+                    "promptctx required slot %r empty (source returned empty)",
+                    slot.kind,
+                )
             return FilledSlot(kind=slot.kind, skipped=not slot.required, reason="source returned empty")
 
         if slot.filter.token_budget > 0:
             all_items = _trim_by_budget(all_items, slot.filter.token_budget)
 
         if not all_items:
+            if slot.required:
+                logger.warning(
+                    "promptctx required slot %r empty (trimmed to empty by budget)",
+                    slot.kind,
+                )
             return FilledSlot(kind=slot.kind, skipped=not slot.required, reason="trimmed to empty by budget")
 
         return FilledSlot(kind=slot.kind, items=all_items)
@@ -669,6 +694,11 @@ class ContextAssembler:
             if not fs.items:
                 fs.skipped = not rc.schema.slots[idx].required
                 fs.reason = "global budget exceeded"
+                if rc.schema.slots[idx].required:
+                    logger.warning(
+                        "promptctx required slot %r emptied by global budget",
+                        fs.kind,
+                    )
 
 
 def _trim_by_budget(items: list[ContextItem], budget: int) -> list[ContextItem]:
