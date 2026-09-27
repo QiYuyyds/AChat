@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AgentAvatar } from '@/components/agent-avatar'
 import { Button } from '@/components/ui/button'
+import { WaitingDuration } from '@/components/waiting-duration'
 import {
   approvePendingWrite as approveApi,
   fetchPendingWrites,
@@ -136,7 +137,12 @@ function PendingWriteCard({
           {removed > 0 && <span className="font-mono text-destructive">−{removed}</span>}
           {added === 0 && removed === 0 && <span>无内容变化</span>}
           <span>·</span>
-          <span>等待审批</span>
+          <span className="shrink-0">等待审批</span>
+          <span>·</span>
+          <WaitingDuration
+            startedAt={pending.createdAt}
+            className="inline-flex shrink-0 items-center gap-0.5 text-warning"
+          />
           {error && <span className="text-destructive">· {error}</span>}
         </div>
       </div>

@@ -192,6 +192,14 @@ class Settings(BaseSettings):
     default_user_email: str = "admin@local"
     default_user_password: str = ""
 
+    # ─── Approval timeouts (审批等待超时，秒；env 可覆盖。超时绝不自动批准) ───
+    approval_timeout_write: float = 600.0
+    approval_timeout_bash: float = 600.0
+    approval_timeout_mcp: float = 600.0
+    approval_timeout_ask_user: float = 1800.0
+    approval_timeout_dispatch_review: float = 1800.0
+    approval_timeout_merge_conflict: float = 1800.0
+
     # ─── ReAct Loop ───
     # When True, SDK agents (Custom) use the AgentRunner ReAct loop (call_once).
     # Set to False to fall back to the legacy adapter.stream() path.

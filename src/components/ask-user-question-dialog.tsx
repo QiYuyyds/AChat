@@ -1,6 +1,6 @@
 'use client'
 
-import { CheckCheck, HelpCircle, Loader2, Sparkles } from 'lucide-react'
+import { CheckCheck, Clock, HelpCircle, Loader2, Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { AgentAvatar } from '@/components/agent-avatar'
@@ -15,7 +15,9 @@ import {
 } from '@/components/ui/dialog'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { fetchPendingQuestions, submitQuestionAnswers } from '@/lib/api'
+import { useElapsedTimer } from '@/lib/use-elapsed-timer'
 import { cn } from '@/lib/utils'
+import { formatWaitingLabel } from '@/components/waiting-duration'
 import type { AskUserAnswer, AskUserQuestionItem } from '@/shared/types'
 import { useAppStore, usePendingQuestions } from '@/stores/app-store'
 
@@ -67,6 +69,7 @@ export function AskUserQuestionDialog({ conversationId }: { conversationId: stri
             agentId={current.agentId}
             questions={current.questions}
             queueSize={pending.length}
+            startedAt={current.createdAt}
           />
         )}
       </DialogContent>
@@ -81,6 +84,7 @@ function AskUserBody({
   agentId,
   questions,
   queueSize,
+  startedAt,
 }: {
   conversationId: string
   questionId: string
@@ -88,6 +92,7 @@ function AskUserBody({
   agentId: string
   questions: AskUserQuestionItem[]
   queueSize: number
+  startedAt: number
 }) {
   const agent = useAppStore((s) => s.agents[agentId])
   const [draft, setDraft] = useState<Record<string, AskUserAnswer>>(() =>
@@ -190,11 +195,10 @@ function AskUserBody({
             <HelpCircle className="size-4 text-primary" />
           )}
           <span>{agentName} 想确认几件事</span>
-          {queueSize > 1 && (
-            <span className="ml-auto text-xs font-normal text-muted-foreground">
-              还有 {queueSize - 1} 组待答
-            </span>
-          )}
+          <span className="ml-auto inline-flex items-center gap-1.5 text-xs font-normal text-muted-foreground">
+            {queueSize > 1 && <span>还有 {queueSize - 1} 组待答</span>}
+            <WaitingChip startedAt={startedAt} />
+          </span>
         </DialogTitle>
         <DialogDescription>
           点选项给出选择；勾选「其他」可填自由文本说明。所有问题答完后提交。
@@ -240,6 +244,18 @@ function AskUserBody({
         </Button>
       </DialogFooter>
     </>
+  )
+}
+
+/** 「已等待 Xm」计时 chip：仅展示已等待时长，不显示倒计时（超时值可被 env 改）。 */
+function WaitingChip({ startedAt }: { startedAt: number }) {
+  const elapsed = useElapsedTimer(startedAt, true)
+  if (elapsed === null) return null
+  return (
+    <span className="inline-flex items-center gap-1 rounded-md bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning">
+      <Clock className="size-3" />
+      已等待 {formatWaitingLabel(elapsed)}
+    </span>
   )
 }
 

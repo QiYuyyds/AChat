@@ -13,10 +13,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from app.config import get_settings
 from app.schemas.dispatch import AskUserAnswer, AskUserOption, AskUserQuestionItem
 from app.services.pending_questions import pending_questions
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
-from app.utils.approval import await_pending_decision
+from app.utils.approval import APPROVAL_TIMEOUT, await_pending_decision
 
 
 class _Option(BaseModel):
@@ -124,8 +125,11 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         cancel=lambda: pending_questions.cancel(pending.id),
         cancel_event=ctx.cancel_event,
         cancelled_value=None,
+        timeout_s=get_settings().approval_timeout_ask_user,
     )
 
+    if decision is APPROVAL_TIMEOUT:
+        return err("用户暂未回答（超时）")
     if not decision:
         return err("User did not answer the question (aborted)")
 

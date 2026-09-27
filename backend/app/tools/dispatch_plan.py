@@ -29,6 +29,7 @@ from app.services.pending_dispatch_plans import (
     pending_dispatch_plans,
 )
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
+from app.utils.approval import APPROVAL_TIMEOUT, ApprovalTimeout
 from app.utils.clock import now_ms
 
 logger = logging.getLogger(__name__)
@@ -210,14 +211,15 @@ def _revalidation_validator(
 async def _await_plan_approval(
     items: list[DispatchPlanItem],
     ctx: ToolContext,
-) -> PlanReviewOutcome | None:
+) -> PlanReviewOutcome | None | ApprovalTimeout:
     """Register a pending plan and await the user's decision.
 
-    Returns the ``PlanReviewOutcome`` or ``None`` if the run was cancelled
-    while waiting.
+    Returns the ``PlanReviewOutcome``, ``None`` if the run was cancelled while
+    waiting, or :data:`APPROVAL_TIMEOUT` when the review window lapses — the
+    caller treats that as a rejection (never an auto-approval).
     """
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future[PlanReviewOutcome] = loop.create_future()
+    from app.config import get_settings
+    from app.utils.approval import await_pending_decision
 
     pending_plan = pending_dispatch_plans.register(
         conversation_id=ctx.conversation_id,
@@ -227,35 +229,17 @@ async def _await_plan_approval(
         validator=_revalidation_validator,
         user_id=ctx.user_id,
     )
-    pending_dispatch_plans.attach_resolver(
-        pending_plan.id,
-        lambda outcome: (
-            future.set_result(outcome)
-            if not future.done()
-            else None
+
+    decision = await await_pending_decision(
+        attach_resolver=lambda r: pending_dispatch_plans.attach_resolver(
+            pending_plan.id, r
         ),
+        cancel=lambda: pending_dispatch_plans.cancel(pending_plan.id),
+        cancel_event=ctx.cancel_event,
+        cancelled_value=None,
+        timeout_s=get_settings().approval_timeout_dispatch_review,
     )
-
-    cancel_task = asyncio.ensure_future(ctx.cancel_event.wait())
-
-    try:
-        done, _pending = await asyncio.wait(
-            {future, cancel_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-    finally:
-        if not cancel_task.done():
-            cancel_task.cancel()
-
-    if ctx.cancel_event.is_set():
-        pending_dispatch_plans.cancel(pending_plan.id)
-        return None
-
-    if future in done:
-        return future.result()
-
-    pending_dispatch_plans.cancel(pending_plan.id)
-    return None
+    return decision
 
 
 async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
@@ -320,6 +304,11 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     if approval_enabled:
         logger.info("[dispatch_plan] plan approval enabled, awaiting user decision run=%s", ctx.run_id)
         outcome = await _await_plan_approval(items, ctx)
+        if outcome is APPROVAL_TIMEOUT:
+            # Timeout = rejection (never auto-approve); note the reason so the
+            # orchestrator can tell it apart from an explicit user rejection.
+            logger.info("[dispatch_plan] plan review timed out run=%s", ctx.run_id)
+            return ok({"status": "rejected", "reason": "计划审批超时，按拒绝处理"})
         if outcome is None:
             return ok({"status": "aborted"})
         if outcome.kind == "reject":

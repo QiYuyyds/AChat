@@ -636,8 +636,9 @@ async def _execute_tool_call_to_result(
         trust = mcp_manager.get_trust(server_name) if server_name else "ask"
         needs_approval = trust == "ask"
         if needs_approval:
+            from app.config import get_settings
             from app.services.pending_mcp_calls import pending_mcp_calls
-            from app.utils.approval import await_pending_decision
+            from app.utils.approval import APPROVAL_TIMEOUT, await_pending_decision
 
             if pending_mcp_calls.is_rejected(conversation_id, tc.name):
                 value = {"error": "User denied MCP tool call", "isError": True}
@@ -670,10 +671,16 @@ async def _execute_tool_call_to_result(
                     cancel=lambda pid=pending.id: pending_mcp_calls.cancel(pid),
                     cancel_event=cancel_event,
                     cancelled_value={"approved": False},
+                    timeout_s=get_settings().approval_timeout_mcp,
                 )
                 approved = bool(decision.get("approved")) if isinstance(decision, dict) else False
                 if not approved:
-                    value = {"error": "User denied MCP tool call", "isError": True}
+                    mcp_denied = (
+                        "MCP 调用审批超时"
+                        if decision is APPROVAL_TIMEOUT
+                        else "User denied MCP tool call"
+                    )
+                    value = {"error": mcp_denied, "isError": True}
                     events.append(ToolResultEvent(
                         conversation_id=conversation_id,
                         timestamp=now_ms(),

@@ -38,11 +38,11 @@ def _entry(
 async def test_register_parks_entry_publishes_pending_event():
     store = PendingStoreBase()
     pending_event = object()
-    async with event_bus.subscribe() as queue:
+    async with event_bus.subscribe() as sub:
         payload = store.register_entry(_entry("p1"), pending_event)
         assert payload.id == "p1"
         assert store.get("p1") is payload
-        received = await asyncio.wait_for(queue.get(), timeout=1)
+        _, received = await asyncio.wait_for(sub.queue.get(), timeout=1)
         assert received is pending_event
 
 
@@ -57,11 +57,11 @@ async def test_finalize_fires_resolver_before_drop_then_publishes():
 
     store.register_entry(_entry("p1", resolver=resolver), object())
     resolved_event = object()
-    async with event_bus.subscribe() as queue:
+    async with event_bus.subscribe() as sub:
         store._finalize("p1", resolved_event=resolved_event, resolver_payload={"applied": True})
     assert seen == [({"applied": True}, True)]
     assert store.get("p1") is None
-    received = await asyncio.wait_for(queue.get(), timeout=1)
+    _, received = await asyncio.wait_for(sub.queue.get(), timeout=1)
     assert received is resolved_event
 
 
@@ -71,11 +71,11 @@ async def test_finalize_without_payload_skips_resolver():
     seen: list = []
     store.register_entry(_entry("p1", resolver=seen.append), object())
     resolved_event = object()
-    async with event_bus.subscribe() as queue:
+    async with event_bus.subscribe() as sub:
         store._finalize("p1", resolved_event=resolved_event)
     assert seen == []
     assert store.get("p1") is None
-    received = await asyncio.wait_for(queue.get(), timeout=1)
+    _, received = await asyncio.wait_for(sub.queue.get(), timeout=1)
     assert received is resolved_event
 
 
@@ -85,39 +85,27 @@ async def test_finalize_missing_id_is_noop():
     assert store.get("missing") is None
 
 
-async def test_cancel_silent_by_default():
-    store = PendingStoreBase()
-    seen: list = []
-    store.register_entry(_entry("p1", resolver=seen.append), object())
-    async with event_bus.subscribe() as queue:
-        store._cancel("p1", resolver_payload={"applied": False})
-    assert seen == [{"applied": False}]
-    assert store.get("p1") is None
-    assert queue.empty()
-
-
-async def test_cancel_emit_event_publishes_resolved_event():
-    """Bash / dispatch-plans shape: cancel also emits the resolved SSE."""
+async def test_cancel_fires_resolver_and_publishes_resolved_event():
+    """Design D3 已决策：统一必发 — cancel always emits the resolved SSE."""
     store = PendingStoreBase()
     seen: list = []
     store.register_entry(_entry("p1", resolver=seen.append), object())
     resolved_event = object()
-    async with event_bus.subscribe() as queue:
+    async with event_bus.subscribe() as sub:
         store._cancel(
             "p1",
             resolver_payload={"approved": False},
-            emit_event=True,
             resolved_event=resolved_event,
         )
     assert seen == [{"approved": False}]
     assert store.get("p1") is None
-    received = await asyncio.wait_for(queue.get(), timeout=1)
+    _, received = await asyncio.wait_for(sub.queue.get(), timeout=1)
     assert received is resolved_event
 
 
 async def test_cancel_missing_id_is_noop():
     store = PendingStoreBase()
-    store._cancel("missing", resolver_payload=None)
+    store._cancel("missing", resolver_payload=None, resolved_event=object())
     assert store.get("missing") is None
 
 

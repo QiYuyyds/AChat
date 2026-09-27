@@ -167,6 +167,7 @@ Custom agent（SDK 路线）的工具分两层：
 - CLI agent（Claude Code / Codex）**不参与** baseline 合并，使用各自 CLI 内置工具集
 - 前端 `src/shared/agent-builder-config.ts` 与后端 `backend/app/api/agents.py` 的 `_BASELINE_AGENT_TOOLS` 必须保持一致
 - 工具注册表共 **47 个**工具（含 baseline + optional + guide 管理 + task 工具 + 派发 + 计划 + DAG 通信等），定义在 `backend/app/tools/registry.py`
+- **审批超时**：所有审批等待（fs_write / fs_edit / bash / MCP / ask_user / dispatch 计划 / merge 冲突）均有可配置超时（`APPROVAL_TIMEOUT_*` 环境变量，默认 600s / 1800s）。超时后 pending 条目作废、Agent 收到超时错误并自行收尾——**永不自动批准**（dispatch 计划超时按「拒绝」处理，merge 冲突超时保留冲突标记等人工处理）。run 中止或超时的取消统一发 resolved SSE，前端不留残卡
 
 ### 3.8 RAG 是可选增强；记忆是文件原生
 

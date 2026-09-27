@@ -241,7 +241,7 @@ write_artifact({
 
 **返回值**：`{ answers: Record<question, string> }`，其中 value 是用户选择的 label 列表与可选 freeform note 拼接后的文本。
 
-**运行机制**：handler 注册 `PendingQuestion`，通过 SSE 推 `ask_user.pending`；桌面端 `AskUserQuestionDialog` 与移动端 pending question UI 都可以提交答案。答案提交后 `pendingQuestions.answer()` 唤醒工具调用并继续 agent run。
+**运行机制**：handler 注册 `PendingQuestion`，通过 SSE 推 `ask_user.pending`；桌面端 `AskUserQuestionDialog` 与移动端 pending question UI 都可以提交答案。答案提交后 `pendingQuestions.answer()` 唤醒工具调用并继续 agent run。等待有超时（`APPROVAL_TIMEOUT_ASK_USER`，默认 1800s）：超时作废条目并返回「用户暂未回答（超时）」，run 不再无限挂起；弹窗标题区显示「已等待 Xm」。
 
 **装备与注入**：
 - Custom agent 只有 `toolNames` 包含 `ask_user` 才能调用；内置 agents 与新建自定义 agent 默认装备。
@@ -392,7 +392,8 @@ write_artifact({
   显示 `react-diff-viewer-continued` 双栏 diff。用户决定后：
   - **应用** → handler 调 `writeFileInWorkspace` 真写盘，发 `fs_write.resolved { applied: true }`，工具返回 `applied: 'review'`
   - **拒绝** → 不写盘，发 `fs_write.resolved { applied: false }`，工具返回 `{ ok: false, error: 'User rejected the file change' }`
-  - **run abort** → 静默取消（不发 SSE），工具返回 rejected
+  - **run abort / 超时** → 作废 pending 条目并**发 `fs_write.resolved { applied: false }`**（取消统一必发 resolved SSE，前端不留残卡），工具返回 rejected
+  - **超时语义**：审批等待超过 `APPROVAL_TIMEOUT_WRITE`（默认 600s，env 可覆盖）时作废条目，工具返回「审批超时，未应用文件修改」。超时**永不自动批准**
 
 实现细节：
 - `pendingWrites` 是模块级单例（HMR-safe via globalThis），见 `src/server/pending-writes.ts`
@@ -474,7 +475,7 @@ write_artifact({
 
 **流程**：
 1. 命中 `getBannedPatterns(currentPlatform())` 黑名单（POSIX / Windows 各一套，详见 Spec 11）→ 拒
-2. 命中关键命令审批规则 → 注册 `PendingBashCommand`，发 `bash_command.pending` SSE，等待用户批准；拒绝则不执行命令并返回错误
+2. 命中关键命令审批规则 → 注册 `PendingBashCommand`，发 `bash_command.pending` SSE，等待用户批准；拒绝则不执行命令并返回错误。超过 `APPROVAL_TIMEOUT_BASH`（默认 600s）未决策时作废条目，返回「命令执行审批超时」（超时永不自动批准/执行）
 3. `child_process.spawn(shell.cmd, shell.args(command), { cwd: getEffectiveCwd(workspace), windowsHide: true, detached: platform !== 'windows' })`
    - 跨平台 shell（详见 Spec 11 「Shell 选择」节）：
      - POSIX：优先用用户 `zsh` / `bash` login+interactive shell：`$SHELL -l -i -c <command>`；无法确认时回退 `sh -c <command>`
@@ -731,6 +732,7 @@ trust 级别为 `ask` 的 server，其某个工具在某个会话内**首次**�
 - 前端展示 `PendingMcpCallCard`（Approve / Reject 按钮）
 - 批准后该会话内该工具免再问；拒绝则该次调用返回 `isError`
 - 复用 `await_pending_decision` 机制（同 `pending_writes` / `pending_bash_commands`）
+- 审批等待有超时（`APPROVAL_TIMEOUT_MCP`，默认 600s）：超时作废条目、返回 `isError`「MCP 调用审批超时」，且不记录会话级拒绝（下次调用仍会重新弹审批）
 
 ### 与内置工具的区别
 

@@ -11,8 +11,9 @@ import asyncio
 import re
 from dataclasses import dataclass
 
+from app.config import get_settings
 from app.services.pending_bash_commands import pending_bash_commands
-from app.utils.approval import await_pending_decision
+from app.utils.approval import APPROVAL_TIMEOUT, ApprovalTimeout, await_pending_decision
 
 
 @dataclass
@@ -97,7 +98,13 @@ async def wait_for_bash_approval(
     reason: str,
     cancel_event: asyncio.Event,
     user_id: str | None = None,
-) -> bool:
+) -> bool | ApprovalTimeout:
+    """Wait for the user's approve/reject decision.
+
+    Returns ``APPROVAL_TIMEOUT`` when no decision arrives within
+    ``APPROVAL_TIMEOUT_BASH`` — the caller maps it to a timeout tool error
+    (never an approval). ``False`` covers both explicit reject and run abort.
+    """
     pending = pending_bash_commands.register(
         conversation_id=conversation_id,
         agent_id=agent_id,
@@ -113,5 +120,8 @@ async def wait_for_bash_approval(
         cancel=lambda: pending_bash_commands.cancel(pending.id),
         cancel_event=cancel_event,
         cancelled_value={"approved": False},
+        timeout_s=get_settings().approval_timeout_bash,
     )
+    if decision is APPROVAL_TIMEOUT:
+        return APPROVAL_TIMEOUT
     return bool(decision.get("approved")) if isinstance(decision, dict) else False

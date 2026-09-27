@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { AgentAvatar } from '@/components/agent-avatar'
 import { Button } from '@/components/ui/button'
+import { WaitingDuration } from '@/components/waiting-duration'
 import {
   approvePendingMcpCall as approveApi,
   fetchPendingMcpCalls,
@@ -116,6 +117,11 @@ function PendingMcpCallCard({
           </span>
           <span>·</span>
           <span>等待审批</span>
+          <span>·</span>
+          <WaitingDuration
+            startedAt={pending.createdAt}
+            className="inline-flex shrink-0 items-center gap-0.5 text-warning"
+          />
           {error && <span className="text-destructive">· {error}</span>}
         </div>
       </div>

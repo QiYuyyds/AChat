@@ -14,10 +14,10 @@ Two shapes the base deliberately absorbs:
   only when ``resolver_payload`` is passed (writes / bash / mcp / questions /
   merge shape). Dispatch-plans resolves the waiter itself and calls
   ``_finalize`` payload-less, which just drops the entry and publishes the event.
-- **Cancel SSE divergence (design D3, 待产品决策)**: bash-commands and
-  dispatch-plans ``cancel`` emit a resolved SSE event today while the other
-  four stores cancel silently. ``cancel(emit_event=...)`` preserves that split
-  instead of unifying it — unifying is a product decision, not a refactor.
+- **Cancel SSE (design D3, 已决策：统一必发)**: every store's ``cancel`` —
+  run abort, timeout, or any other teardown — fires the resolver AND publishes
+  its resolved SSE event, so the frontend never keeps a stale approval card.
+  Decided in OpenSpec change ``add-approval-timeout-visibility``.
 
 All stores stay in-memory singletons: a restart drops every pending entry.
 """
@@ -81,6 +81,14 @@ class PendingStoreBase:
         items.sort(key=lambda item: item.created_at)
         return items
 
+    def all_payloads(self) -> list[Any]:
+        """Snapshot of every parked payload, any conversation.
+
+        Cross-conversation aggregation surfaces (``GET /api/pending/summary``)
+        scan this instead of guessing conversation ids up front.
+        """
+        return [entry.payload for entry in self._map.values()]
+
     # ── resolution ───────────────────────────────────────────────────────────
     def _finalize(
         self,
@@ -109,17 +117,15 @@ class PendingStoreBase:
         pending_id: str,
         *,
         resolver_payload: Any,
-        emit_event: bool = False,
-        resolved_event: Any = None,
+        resolved_event: Any,
     ) -> None:
-        """Run-abort path: fire the resolver, drop the entry — no user decision.
+        """Teardown path (run abort / timeout): fire the resolver, drop the
+        entry, and publish the resolved event — design D3 已决策：统一必发.
 
         ``resolver_payload`` is the decision handed to the waiting tool (e.g.
         ``{"applied": False}``; questions passes ``None`` on purpose). The
-        ``emit_event`` flag keeps today's divergence (design D3, 待产品决策):
-        bash-commands and dispatch-plans cancel publish a resolved SSE event,
-        the other four stores stay silent. Unifying that split is a product
-        decision, deliberately out of scope for this refactor.
+        resolved event guarantees the frontend removes the approval card even
+        when no user decision was made.
         """
         entry = self._map.get(pending_id)
         if entry is None:
@@ -127,5 +133,4 @@ class PendingStoreBase:
         if entry.resolver is not None:
             entry.resolver(resolver_payload)
         del self._map[pending_id]
-        if emit_event:
-            event_bus.publish(resolved_event, user_id=entry.user_id)
+        event_bus.publish(resolved_event, user_id=entry.user_id)

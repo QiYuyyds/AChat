@@ -464,6 +464,29 @@ export interface PendingMcpCall {
   createdAt: number
 }
 
+/** 审批类别（与后端 /api/pending/summary 的 counts 键一致）。 */
+export type PendingKind = 'writes' | 'questions' | 'bash' | 'mcp' | 'dispatch' | 'merge'
+
+/** 单个会话的各类 pending 计数。 */
+export type PendingKindCounts = Record<PendingKind, number>
+
+/** GET /api/pending/summary 的单条聚合：仅返回 total > 0 的会话。 */
+export interface PendingConversationSummary {
+  conversationId: string
+  counts: PendingKindCounts
+  total: number
+}
+
+/** 审批类别的中文展示名（toast / 徽标 / 卡片共用）。 */
+export const PENDING_KIND_LABELS: Record<PendingKind, string> = {
+  writes: '文件修改',
+  questions: '提问',
+  bash: '命令执行',
+  mcp: 'MCP 调用',
+  dispatch: '计划审批',
+  merge: '合并冲突',
+}
+
 /** Conversation record carried by the conversation.created SSE event. */
 export interface ConversationRecord {
   id: string
@@ -599,7 +622,7 @@ export type StreamEvent = BaseEvent &
         path?: string
         mergeStatus?: 'success' | 'conflict'
         conflictFiles?: string[]
-        resolutionStatus?: 'success' | 'llm_resolved' | 'manual_resolved' | 'abandoned' | 'conflict'
+        resolutionStatus?: 'success' | 'llm_resolved' | 'manual_resolved' | 'abandoned' | 'conflict' | 'timeout'
       }
     | {
         type: 'merge_conflict.pending'

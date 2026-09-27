@@ -110,8 +110,15 @@ class PendingWritesStore(PendingStoreBase):
         return True
 
     def cancel(self, pending_id: str) -> None:
-        """Run-abort path: resolve as not-applied without emitting an SSE event."""
-        self._cancel(pending_id, resolver_payload={"applied": False})
+        """Run-abort/timeout path: resolve as not-applied; emits resolved SSE
+        (design D3 已决策：统一必发) so the approval card is removed."""
+        if pending_id not in self._map:
+            return
+        self._cancel(
+            pending_id,
+            resolver_payload={"applied": False},
+            resolved_event=self._resolved_event(pending_id, applied=False),
+        )
 
     def _resolved_event(self, pending_id: str, *, applied: bool) -> FsWriteResolvedEvent:
         entry = self._map[pending_id]

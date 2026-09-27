@@ -67,8 +67,21 @@ class PendingQuestionsStore(PendingStoreBase):
         return True
 
     def cancel(self, pending_id: str) -> None:
-        """Run-abort path: resolve as None without emitting an SSE event."""
-        self._cancel(pending_id, resolver_payload=None)
+        """Run-abort/timeout path: resolve as None; emits resolved SSE
+        (design D3 已决策：统一必发) so the dialog is removed."""
+        entry = self._map.get(pending_id)
+        if entry is None:
+            return
+        self._cancel(
+            pending_id,
+            resolver_payload=None,
+            resolved_event=AskUserResolvedEvent(
+                conversation_id=entry.payload.conversation_id,
+                timestamp=now_ms(),
+                pending_id=pending_id,
+                answered=False,
+            ),
+        )
 
 
 pending_questions = PendingQuestionsStore()

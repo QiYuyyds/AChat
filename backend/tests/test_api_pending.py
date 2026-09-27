@@ -15,6 +15,8 @@ from app.schemas.dispatch import AskUserQuestionItem
 from app.services import conversation_service
 from app.services.pending_bash_commands import pending_bash_commands
 from app.services.pending_dispatch_plans import pending_dispatch_plans
+from app.services.pending_mcp_calls import pending_mcp_calls
+from app.services.pending_merge_conflicts import pending_merge_conflicts
 from app.services.pending_questions import pending_questions
 from app.services.pending_writes import pending_writes
 
@@ -73,6 +75,8 @@ def _reset_pending_stores():
         pending_questions,
         pending_bash_commands,
         pending_dispatch_plans,
+        pending_mcp_calls,
+        pending_merge_conflicts,
     ):
         store._map.clear()
     yield
@@ -81,6 +85,8 @@ def _reset_pending_stores():
         pending_questions,
         pending_bash_commands,
         pending_dispatch_plans,
+        pending_mcp_calls,
+        pending_merge_conflicts,
     ):
         store._map.clear()
 
@@ -375,3 +381,122 @@ async def test_pending_dispatch_plan_wrong_conversation_404(api_client):
     )
     assert resp.status_code == 404
     assert resp.json() == {"error": "Pending dispatch plan not found"}
+
+
+# ─── pending summary (cross-conversation) ────────────────────────────────────
+async def test_pending_summary_empty(api_client):
+    resp = await api_client.get("/api/pending/summary")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_pending_summary_aggregates_all_six_stores(api_client):
+    for _ in range(2):
+        pending_writes.register(
+            conversation_id="conv_x",
+            agent_id="ag_alice",
+            run_id="run_1",
+            path="a.txt",
+            absolute_path="/tmp/ws/a.txt",
+            old_content=None,
+            new_content="hello",
+            workspace=_make_workspace(),
+            skip_write=True,
+        )
+    pending_questions.register(
+        conversation_id="conv_x",
+        agent_id="ag_alice",
+        run_id="run_1",
+        questions=[],
+    )
+    pending_bash_commands.register(
+        conversation_id="conv_x",
+        agent_id="ag_alice",
+        run_id="run_1",
+        command="ls",
+        cwd="/tmp",
+        reason="test",
+    )
+    pending_mcp_calls.register(
+        conversation_id="conv_x",
+        agent_id="ag_alice",
+        run_id="run_1",
+        tool_name="mcp__srv__tool",
+        args={},
+        server_trust="ask",
+    )
+    pending_dispatch_plans.register(
+        conversation_id="conv_x",
+        agent_id="ag_alice",
+        run_id="run_1",
+        plan=[],
+        validator=lambda p: p,
+    )
+    pending_merge_conflicts.register(
+        conversation_id="conv_x",
+        task_id="t1",
+        conflict_files=["a.txt"],
+        workspace_path="/tmp/ws",
+    )
+    # A second conversation with a single pending write.
+    pending_writes.register(
+        conversation_id="conv_other",
+        agent_id="ag_alice",
+        run_id="run_1",
+        path="b.txt",
+        absolute_path="/tmp/ws/b.txt",
+        old_content=None,
+        new_content="x",
+        workspace=_make_workspace(),
+        skip_write=True,
+    )
+
+    resp = await api_client.get("/api/pending/summary")
+    assert resp.status_code == 200
+    body = resp.json()
+    by_conv = {entry["conversationId"]: entry for entry in body}
+    assert set(by_conv) == {"conv_x", "conv_other"}
+    assert by_conv["conv_x"]["counts"] == {
+        "writes": 2,
+        "questions": 1,
+        "bash": 1,
+        "mcp": 1,
+        "dispatch": 1,
+        "merge": 1,
+    }
+    assert by_conv["conv_x"]["total"] == 7
+    assert by_conv["conv_other"]["counts"]["writes"] == 1
+    assert by_conv["conv_other"]["total"] == 1
+
+
+async def test_pending_summary_drops_entries_for_deleted_conversations(api_client):
+    """Entries parked for a conversation that no longer exists are hidden."""
+    from app.db.engine import get_local_db
+    from app.db.models import Conversation
+
+    async with get_local_db() as session:
+        result = await session.execute(
+            Conversation.__table__.select().where(Conversation.id == "conv_other")
+        )
+        row = result.first()
+        if row is not None:
+            await session.execute(
+                Conversation.__table__.delete().where(Conversation.id == "conv_other")
+            )
+            await session.commit()
+
+    pending_writes.register(
+        conversation_id="conv_other",
+        agent_id="ag_alice",
+        run_id="run_1",
+        path="b.txt",
+        absolute_path="/tmp/ws/b.txt",
+        old_content=None,
+        new_content="x",
+        workspace=_make_workspace(),
+        skip_write=True,
+    )
+
+    resp = await api_client.get("/api/pending/summary")
+    assert resp.status_code == 200
+    assert all(e["conversationId"] != "conv_other" for e in resp.json())

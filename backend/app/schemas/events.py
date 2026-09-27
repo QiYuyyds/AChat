@@ -467,7 +467,7 @@ class WorktreeEvent(BaseEvent):
     merge_status: Literal["success", "conflict"] | None = Field(default=None, alias="mergeStatus")
     conflict_files: list[str] | None = Field(default=None, alias="conflictFiles")
     resolution_status: Literal[
-        "success", "llm_resolved", "manual_resolved", "abandoned", "conflict"
+        "success", "llm_resolved", "manual_resolved", "abandoned", "conflict", "timeout"
     ] | None = Field(default=None, alias="resolutionStatus")
 
     model_config = {"populate_by_name": True}

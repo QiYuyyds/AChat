@@ -10,6 +10,7 @@ import { FileExplorerPanel } from '@/components/file-explorer-panel'
 import { GuideFloatingPanel } from '@/components/guide-floating-panel'
 import { LoginDialog } from '@/components/login-dialog'
 import { MessageHighlightLayer } from '@/components/message-highlight-layer'
+import { PendingToast } from '@/components/pending-toast'
 import { ResourcesMainPanel } from '@/components/resources-main-panel'
 import { SelectionPopover } from '@/components/selection-popover'
 import { SessionNoteSidePanel } from '@/components/session-note-side-panel'
@@ -52,6 +53,7 @@ export default function Home() {
       <TaskDetailPanel />
       <SelectionPopover />
       <MessageHighlightLayer />
+      <PendingToast />
       {isAuthenticated && <GuideFloatingPanel />}
       <LoginDialog />
     </div>

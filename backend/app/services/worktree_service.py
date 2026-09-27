@@ -428,8 +428,9 @@ async def _human_resolve_conflicts(
     conflict_files: list[str],
 ) -> MergeResult:
     """Layer 3: save snapshots, register pending conflict, block for user decision."""
+    from app.config import get_settings
     from app.services.pending_merge_conflicts import pending_merge_conflicts
-    from app.utils.approval import await_pending_decision
+    from app.utils.approval import APPROVAL_TIMEOUT, await_pending_decision
 
     # Save conflict snapshots as artifacts (data preservation)
     await _save_conflict_snapshots(wt, conflict_files)
@@ -443,9 +444,8 @@ async def _human_resolve_conflicts(
         user_id=wt.user_id,
     )
 
-    # Block until user resolves or run is cancelled
-    # No timeout — user explicitly requested "block indefinitely"
-    # Use a dummy cancel_event that never fires (no cancellation in merge context)
+    # Wait for the user's decision, the run being cancelled, or the timeout.
+    # No cancellation in merge context → dummy cancel_event that never fires.
     dummy_cancel = asyncio.Event()
     decision = await await_pending_decision(
         attach_resolver=lambda r: pending_merge_conflicts.attach_resolver(
@@ -454,7 +454,25 @@ async def _human_resolve_conflicts(
         cancel=lambda: pending_merge_conflicts.cancel(conflict.id),
         cancel_event=dummy_cancel,
         cancelled_value={"action": "abandon", "resolution_strategy": "abandoned"},
+        timeout_s=get_settings().approval_timeout_merge_conflict,
     )
+
+    if decision is APPROVAL_TIMEOUT:
+        # Timeout → never merge-back: the main workspace keeps its conflict
+        # markers for manual resolution (snapshots above preserve base/ours/
+        # theirs), and the dispatch task is flagged needs-attention via the
+        # worktree event's "timeout" resolution status.
+        logger.warning(
+            "[worktree] merge-conflict approval timed out task=%s files=%s",
+            wt.task_id,
+            conflict_files,
+        )
+        return MergeResult(
+            success=False,
+            conflict_files=conflict_files,
+            error="合并冲突审批超时：未自动合并，主工作区保留冲突标记，请手动解决",
+            resolution_strategy="timeout",
+        )
 
     if not isinstance(decision, dict):
         decision = {"action": "abandon", "resolution_strategy": "abandoned"}

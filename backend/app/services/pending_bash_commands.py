@@ -75,15 +75,13 @@ class PendingBashCommandsStore(PendingStoreBase):
         return True
 
     def cancel(self, pending_id: str) -> None:
-        # 分歧登记（design D3，待产品决策）：bash 的 cancel 会发 resolved SSE，
-        # 与 writes / questions / mcp-calls / merge-conflicts 的静默 cancel 不同。
-        # 此处用 emit_event=True 保留现状，不在此顺手统一。
+        """Run-abort/timeout path: resolve as not-approved; emits resolved SSE
+        (design D3 已决策：统一必发)."""
         if pending_id not in self._map:
             return
         self._cancel(
             pending_id,
             resolver_payload={"approved": False},
-            emit_event=True,
             resolved_event=self._resolved_event(pending_id, approved=False),
         )
 

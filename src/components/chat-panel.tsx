@@ -365,6 +365,13 @@ export function ChatPanel() {
         </div>
       )}
 
+      {/* 审批面板常显（add-approval-timeout-visibility）：diff / file tab 下也保持可见，
+          用户无需离开当前视图即可处理其它待审批项。 */}
+      <PendingBashCommandsPanel conversationId={conv.id} />
+      <PendingMcpCallsPanel conversationId={conv.id} />
+      <PendingWritesPanel conversationId={conv.id} />
+      <MergeConflictPanel conversationId={conv.id} />
+
       {/* 主体：chat / file tab / pending diff tab */}
       {activeTab === 'chat' || !openFiles.includes(activeTab) ? (
         <>
@@ -386,10 +393,6 @@ export function ChatPanel() {
           )}
           <WorkspaceEnvHintCard conversationId={conv.id} />
           <MessageList conversationId={conv.id} />
-          <PendingBashCommandsPanel conversationId={conv.id} />
-          <PendingMcpCallsPanel conversationId={conv.id} />
-          <PendingWritesPanel conversationId={conv.id} />
-          <MergeConflictPanel conversationId={conv.id} />
           <MessageInput conversationId={conv.id} handleFiles={handleFiles} uploading={uploading} />
         </>
       ) : isDiffTabId(activeTab) ? (

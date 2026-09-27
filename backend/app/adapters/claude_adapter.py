@@ -994,8 +994,12 @@ class ClaudeCLIAdapter(CLIAdapterBase):
                         mode = "review"
 
                     if mode == "review":
+                        from app.config import get_settings
                         from app.services.pending_writes import pending_writes
-                        from app.utils.approval import await_pending_decision
+                        from app.utils.approval import (
+                            APPROVAL_TIMEOUT,
+                            await_pending_decision,
+                        )
                         new_content = str(tool_input.get("content") or tool_input.get("new_string") or "")
                         write = pending_writes.register(
                             conversation_id=input.conversation_id,
@@ -1013,7 +1017,15 @@ class ClaudeCLIAdapter(CLIAdapterBase):
                             cancel=lambda: pending_writes.cancel(write.id),
                             cancel_event=cancel_event,
                             cancelled_value={"applied": False},
+                            timeout_s=get_settings().approval_timeout_write,
                         )
+                        if decision is APPROVAL_TIMEOUT:
+                            await self._deny(proc, msg, "File write approval timed out")
+                            self._emit_write_approval_event(
+                                input, msg.request_id, applied=False,
+                                reason="审批超时，未应用文件修改",
+                            )
+                            return
                         applied = isinstance(decision, dict) and decision.get("applied", False)
                         if not applied:
                             await self._deny(proc, msg, "User rejected file write")

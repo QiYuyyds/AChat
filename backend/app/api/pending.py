@@ -16,10 +16,12 @@ from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 
 from app.auth.dependencies import get_current_user
 from app.auth.ownership import verify_conversation_ownership
-from app.db.models import User
+from app.db.engine import get_local_db
+from app.db.models import Conversation, User
 from app.schemas.dispatch import AskUserAnswer, DispatchPlanItem
 from app.services import conversation_service
 from app.services.pending_bash_commands import pending_bash_commands
@@ -31,6 +33,17 @@ from app.services.pending_store_base import PendingStoreBase
 from app.services.pending_writes import pending_writes
 
 router = APIRouter()
+
+# Per-conversation pending summary (GET /api/pending/summary): every store with
+# its bucket key. Order defines the counts object's key order.
+_PENDING_KINDS: tuple[tuple[PendingStoreBase, str], ...] = (
+    (pending_writes, "writes"),
+    (pending_questions, "questions"),
+    (pending_bash_commands, "bash"),
+    (pending_mcp_calls, "mcp"),
+    (pending_dispatch_plans, "dispatch"),
+    (pending_merge_conflicts, "merge"),
+)
 
 
 class _SimpleResolveStore(Protocol):
@@ -99,6 +112,45 @@ async def _resolve_simple(
             {"error": f"Failed to process pending {label}"}, status_code=500
         )
     return JSONResponse({"ok": True})
+
+
+# ─── pending summary (cross-conversation) ────────────────────────────────────
+@router.get("/api/pending/summary")
+async def pending_summary(
+    user: User = Depends(get_current_user),
+) -> JSONResponse:
+    """Per-conversation pending-approval counts aggregated over all six stores.
+
+    Returns ``[{conversationId, counts: {writes, questions, bash, mcp,
+    dispatch, merge}, total}]`` — only conversations with at least one pending
+    item, and only ones that still exist in the DB (a deleted conversation's
+    leftovers are never surfaced).
+    """
+    counts: dict[str, dict[str, int]] = {}
+    for store, kind in _PENDING_KINDS:
+        for item in store.all_payloads():
+            per_conv = counts.setdefault(
+                item.conversation_id, dict.fromkeys((k for _, k in _PENDING_KINDS), 0)
+            )
+            per_conv[kind] += 1
+
+    if not counts:
+        return JSONResponse([])
+
+    async with get_local_db() as db:
+        rows = await db.execute(select(Conversation.id))
+        existing = {row_id for (row_id,) in rows.all()}
+
+    summary = [
+        {
+            "conversationId": conv_id,
+            "counts": per_conv,
+            "total": sum(per_conv.values()),
+        }
+        for conv_id, per_conv in sorted(counts.items())
+        if conv_id in existing
+    ]
+    return JSONResponse(summary)
 
 
 # ─── pending-writes ──────────────────────────────────────────────────────────

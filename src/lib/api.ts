@@ -462,6 +462,13 @@ export async function rejectPendingWrite(
   )
 }
 
+// ─── Pending summary (cross-conversation) ─────
+export async function fetchPendingSummary(): Promise<PendingConversationSummary[]> {
+  return json<PendingConversationSummary[]>(
+    authFetch(`${API_BASE_URL}/api/pending/summary`),
+  )
+}
+
 // ─── Pending merge conflicts ─────
 export interface PendingMergeConflict {
   id: string

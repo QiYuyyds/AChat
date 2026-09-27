@@ -95,8 +95,16 @@ class PendingMcpCallsStore(PendingStoreBase):
         return True
 
     def cancel(self, pending_id: str) -> None:
-        """Run-abort path: resolve as not-approved without emitting an SSE event."""
-        self._cancel(pending_id, resolver_payload={"approved": False})
+        """Run-abort/timeout path: resolve as not-approved; emits resolved SSE
+        (design D3 已决策：统一必发). Does NOT record a session-level rejection
+        — the tool stays askable on the next call."""
+        if pending_id not in self._map:
+            return
+        self._cancel(
+            pending_id,
+            resolver_payload={"approved": False},
+            resolved_event=self._resolved_event(pending_id, approved=False),
+        )
 
     def _resolved_event(self, pending_id: str, *, approved: bool) -> McpCallResolvedEvent:
         entry = self._map[pending_id]

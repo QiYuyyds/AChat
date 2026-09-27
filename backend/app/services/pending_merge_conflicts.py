@@ -83,10 +83,21 @@ class PendingMergeConflictsStore(PendingStoreBase):
         return True
 
     def cancel(self, pending_id: str) -> None:
-        """Run-abort path: resolve as abandoned without emitting an SSE event."""
+        """Run-abort/timeout path: resolve as abandoned; emits resolved SSE
+        (design D3 已决策：统一必发)."""
+        entry = self._map.get(pending_id)
+        if entry is None:
+            return
         self._cancel(
             pending_id,
             resolver_payload={"action": "abandon", "resolution_strategy": "abandoned"},
+            resolved_event=MergeConflictResolvedEvent(
+                conversation_id=entry.payload.conversation_id,
+                timestamp=now_ms(),
+                pending_id=pending_id,
+                resolution_strategy="abandoned",
+                resolved_files=[],
+            ),
         )
 
 

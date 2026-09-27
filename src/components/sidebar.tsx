@@ -51,7 +51,7 @@ import { subscribeUiCommand } from '@/lib/ui-command-events'
 import { useGuideSideEffectRefresh } from '@/lib/use-guide-refresh'
 import { cn } from '@/lib/utils'
 import type { AgentRow, ConversationRow } from '@/db/schema'
-import { useAppStore, useConversationList, useUnreadCount } from '@/stores/app-store'
+import { useAppStore, useConversationList, usePendingSummary, useUnreadCount, schedulePendingSummaryRefresh } from '@/stores/app-store'
 import type { SidebarMode } from '@/stores/app-store'
 import { hasToken, useAuthStore } from '@/stores/auth-store'
 
@@ -147,6 +147,8 @@ export function Sidebar() {
     fetchConversations().then(setConversations).catch(console.error)
     fetchAgents().then(setAgents).catch(console.error)
     fetchModelProfiles().then(setModelProfiles).catch(console.error)
+    // 跨会话 pending 审批汇总的首次兜底拉取（后续由 SSE 防抖刷新）。
+    schedulePendingSummaryRefresh()
   }, [setConversations, setAgents, setModelProfiles])
 
   // 桌面拖拽绑定（任务 5.3）：拖文件夹进窗口 → is_path_safe 校验 → 预填新建对话。
@@ -576,6 +578,7 @@ function ConversationItem({
 }) {
   const isPinned = !!conversation.pinnedAt
   const unread = useUnreadCount(conversation.id)
+  const pendingTotal = usePendingSummary(conversation.id)?.total ?? 0
   return (
     <div
       className={cn(
@@ -599,6 +602,14 @@ function ConversationItem({
           {unread > 0 && !isActive && (
             <span className="absolute -right-1 -top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium leading-none text-white">
               {unread > 99 ? '99+' : unread}
+            </span>
+          )}
+          {pendingTotal > 0 && (
+            <span
+              className="absolute -bottom-1 -right-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-warning px-1 text-[10px] font-semibold leading-none text-foreground ring-1 ring-background"
+              title={`${pendingTotal} 项待审批`}
+            >
+              {pendingTotal > 9 ? '9+' : pendingTotal}
             </span>
           )}
         </div>

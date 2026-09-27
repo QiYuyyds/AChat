@@ -31,6 +31,7 @@ from app.services.bash_command_approval import (
     wait_for_bash_approval,
 )
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
+from app.utils.approval import APPROVAL_TIMEOUT
 from app.utils.dispatch_run_evidence import RunCommandEvidence, record_run_command
 from app.utils.env_isolation import build_tool_env, detect_project_venv
 from app.utils.platform import IS_WINDOWS
@@ -173,6 +174,8 @@ async def execute_bash_command(args: BashExecutionArgs, ctx: ToolContext) -> Too
             cancel_event=ctx.cancel_event,
             user_id=ctx.user_id,
         )
+        if approved is APPROVAL_TIMEOUT:
+            return err("命令执行审批超时")
         if not approved:
             return err(f"User rejected command execution: {approval.reason}")
 

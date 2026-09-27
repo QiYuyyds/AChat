@@ -22,7 +22,8 @@ import type {
   TaskRow,
   TurnMetricData,
 } from '@/shared/types'
-import type { PendingMergeConflict } from '@/lib/api'
+import type { ConversationRunRow, PendingMergeConflict } from '@/lib/api'
+import { fetchConversationRuns, fetchMessages, fetchPendingSummary } from '@/lib/api'
 import {
   computeTotalTokens,
   computeMessageTotalTokens,
@@ -33,6 +34,53 @@ import {
 import type { CacheStyle } from '@/shared/types'
 
 enableMapSet()
+
+// ─── pending 汇总的防抖刷新 ─────────────────────────────────────────────────
+// 单端点、低频：pending.* 事件到达或切换会话时合并为一次拉取。
+let pendingSummaryRefreshTimer: ReturnType<typeof setTimeout> | null = null
+export function schedulePendingSummaryRefresh(): void {
+  if (pendingSummaryRefreshTimer !== null) return
+  pendingSummaryRefreshTimer = setTimeout(() => {
+    pendingSummaryRefreshTimer = null
+    void useAppStore.getState().refreshPendingSummary()
+  }, 400)
+}
+
+// pending 审批到达事件 → 汇总里的类别；resolved 事件只触发防抖刷新。
+const PENDING_ARRIVAL_KIND: Partial<Record<string, PendingKind>> = {
+  'fs_write.pending': 'writes',
+  'bash_command.pending': 'bash',
+  'ask_user.pending': 'questions',
+  'mcp_call.pending': 'mcp',
+  'dispatch.plan.pending': 'dispatch',
+  'merge_conflict.pending': 'merge',
+}
+const PENDING_RESOLVED_EVENT_TYPES = new Set([
+  'fs_write.resolved',
+  'bash_command.resolved',
+  'ask_user.resolved',
+  'mcp_call.resolved',
+  'dispatch.plan.resolved',
+  'merge_conflict.resolved',
+])
+
+/** stream.resync 对账的在途标记：缺口可能连发多条 resync，只跑一次对账。 */
+let reconcileInFlight = false
+
+/** applyEvent 的 pending 副作用：防抖刷新汇总 + 非活跃会话弹 toast。 */
+function handlePendingEventSideEffects(event: StreamEvent): void {
+  const type = event.type as string
+  const arrivalKind = PENDING_ARRIVAL_KIND[type]
+  if (arrivalKind) {
+    const state = useAppStore.getState()
+    if (state.activeConversationId !== event.conversationId) {
+      state.pushPendingToast(event.conversationId, arrivalKind)
+    }
+  }
+  if (arrivalKind || PENDING_RESOLVED_EVENT_TYPES.has(type)) {
+    schedulePendingSummaryRefresh()
+  }
+}
 
 export type SidebarMode =
   | 'conversations'
@@ -84,7 +132,7 @@ export interface DispatchState {
     branchName: string
     path: string
     mergeStatus?: 'success' | 'conflict'
-    resolutionStatus?: 'success' | 'llm_resolved' | 'manual_resolved' | 'abandoned' | 'conflict'
+    resolutionStatus?: 'success' | 'llm_resolved' | 'manual_resolved' | 'abandoned' | 'conflict' | 'timeout'
   }>
   peerActivity?: PeerActivity[]
 }
@@ -93,6 +141,16 @@ export interface DispatchState {
 export interface UndoEntry {
   message: string
   undo: () => Promise<void>
+}
+
+/** 非活跃会话到达审批时的右上角 toast 条目。 */
+export interface PendingToastItem {
+  id: string
+  conversationId: string
+  kind: PendingKind
+  /** 该会话该类别的累计未处理条数（同类事件再到达则 +1）。 */
+  count: number
+  createdAt: number
 }
 
 /** Run state in store — extends DB row with in-memory turn metrics. */
@@ -193,6 +251,12 @@ interface AppState {
   // ─── 未读计数（流式响应到达时，非 active 会话 +1；切到该会话清零）
   unreadByConv: Record<string, number>
 
+  // ─── 跨会话 pending 审批汇总（GET /api/pending/summary；会话切换/防抖刷新）─
+  pendingSummary: Record<string, PendingConversationSummary>
+
+  // ─── PendingToast：非活跃会话收到 pending.* 事件的右上角提示 ──
+  pendingToasts: PendingToastItem[]
+
   // ─── 移动端 sidebar 抽屉开关 ──
   mobileSidebarOpen: boolean
 
@@ -237,6 +301,31 @@ interface AppState {
 
   // ─── actions ───────────────────────────────────────
   setStreamConnected(connected: boolean): void
+
+  /**
+   * REST 对账活跃会话：拉取服务端消息全量覆盖本地（保留在途乐观 temp 消息），
+   * 并刷新跨会话 pending 汇总。由 stream.resync 或重连兜底触发。
+   */
+  reconcileActiveConversation(): Promise<void>
+
+  /** 运行态快照已拉取标记（按会话），防止重建逻辑重复请求。 */
+  runSnapshotLoadedByConv: Record<string, boolean>
+
+  /**
+   * 运行态重建（add-run-state-recovery）：把 GET /api/conversations/{id}/runs
+   * 快照合入 runsByConv / dispatchesByRunId。本地已有运行态时跳过（SSE 构建
+   * 优先，不重复构建）；仅 reconcile 走 overwrite 模式纠正幽灵 run。
+   */
+  rebuildRunStateFromSnapshot(conversationId: string, runs: ConversationRunRow[]): void
+
+  /** 会话加载路径：本地无运行态快照时拉取 runs 端点并重建（幂等，失败静默）。 */
+  ensureRunStateRebuilt(conversationId: string): Promise<void>
+
+  /** 拉取跨会话 pending 汇总并整体替换（失败静默，徽标保持旧值）。 */
+  refreshPendingSummary(): Promise<void>
+  /** 非活跃会话收到 pending 审批时压入 toast（同类合并计数）。 */
+  pushPendingToast(conversationId: string, kind: PendingKind): void
+  dismissPendingToast(id: string): void
 
   setConversations(list: ConversationWithMeta[]): void
   upsertConversation(conv: ConversationWithMeta): void
@@ -367,6 +456,8 @@ export const useAppStore = create<AppState>()(
     pendingMergeConflictsByConv: {},
     workspaceEnvByConv: {},
     unreadByConv: {},
+    pendingSummary: {},
+    pendingToasts: [],
     mobileSidebarOpen: false,
     sidebarMode: 'conversations',
     memoryTab: 'long-term',
@@ -601,14 +692,16 @@ export const useAppStore = create<AppState>()(
         attachDispatchToMessageForRun(s.dispatchesByRunId, message.runId, message.id)
       }),
 
-    setActiveConversation: (id) =>
+    setActiveConversation: (id) => {
+      schedulePendingSummaryRefresh()
       set((s) => {
         s.activeConversationId = id
         // 切到该会话即视为已读
         if (id) delete s.unreadByConv[id]
         // 切会话时自动收起移动 sidebar
         if (id) s.mobileSidebarOpen = false
-      }),
+      })
+    },
 
     setMobileSidebarOpen: (open) =>
       set((s) => {
@@ -2174,6 +2267,16 @@ export const usePendingMcpCalls = (conversationId: string | null): PendingMcpCal
 /** 该会话的未读消息数。0 = 无未读。 */
 export const useUnreadCount = (conversationId: string): number =>
   useAppStore((s) => s.unreadByConv[conversationId] ?? 0)
+
+/** 该会话的跨会话 pending 审批汇总（/api/pending/summary）。undefined = 暂无数据。 */
+export const usePendingSummary = (
+  conversationId: string,
+): PendingConversationSummary | undefined =>
+  useAppStore((s) => s.pendingSummary[conversationId])
+
+/** 当前挂着的审批 toast（非活跃会话到达审批时压入）。 */
+export const usePendingToasts = (): PendingToastItem[] =>
+  useAppStore((s) => s.pendingToasts)
 
 /** 单个 agent 的累计 token 用量明细。 */
 export interface AgentUsageDetail {

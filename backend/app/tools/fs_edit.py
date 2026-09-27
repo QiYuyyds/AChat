@@ -17,6 +17,7 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.db.engine import get_local_db
 from app.db.models import Conversation
 from app.services.fs_service import (
@@ -26,7 +27,7 @@ from app.services.fs_service import (
 )
 from app.services.pending_writes import pending_writes
 from app.tools.base import ToolContext, ToolDef, ToolResult, err, ok
-from app.utils.approval import await_pending_decision
+from app.utils.approval import APPROVAL_TIMEOUT, await_pending_decision
 from app.utils.dispatch_file_writes import record_file_write
 from app.utils.dispatch_run_evidence import RunFileEvidence, record_run_file_write
 from app.utils.workspace_utils import assert_path_within_workspace
@@ -172,8 +173,11 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         cancel=lambda: pending_writes.cancel(pending.id),
         cancel_event=ctx.cancel_event,
         cancelled_value={"applied": False},
+        timeout_s=get_settings().approval_timeout_write,
     )
 
+    if decision is APPROVAL_TIMEOUT:
+        return err("审批超时，未应用文件修改")
     if not (isinstance(decision, dict) and decision.get("applied")):
         return err("User rejected the file change")
 
