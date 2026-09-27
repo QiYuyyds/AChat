@@ -19,6 +19,7 @@ from app.db.models import User
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "agenthub_token"
+REFRESH_COOKIE_NAME = "agenthub_refresh_token"
 
 # In-process user cache: user_id -> (User, expires_at)
 _user_cache: dict[str, tuple[User, float]] = {}
@@ -191,8 +192,11 @@ async def get_current_user_optional(
         return None
 
 
-def set_auth_cookie(response, token: str) -> None:
-    """Set the JWT as an HttpOnly cookie on the response."""
+def _set_httponly_cookie(response, key: str, token: str, max_age: int) -> None:
+    """Shared cookie policy for auth cookies.
+
+    HttpOnly, HTTPS-only outside debug, samesite per cross-origin setup.
+    """
     settings = get_settings()
     # Determine if we're in a cross-origin dev setup
     origins = settings.cors_origins_list
@@ -201,16 +205,35 @@ def set_auth_cookie(response, token: str) -> None:
     )
 
     response.set_cookie(
-        key=COOKIE_NAME,
+        key=key,
         value=token,
         httponly=True,
         secure=not settings.debug,  # HTTPS-only in production
         samesite="none" if (is_cross_origin and not settings.debug) else "lax",
         path="/",
-        max_age=settings.jwt_access_token_expiry,
+        max_age=max_age,
+    )
+
+
+def set_auth_cookie(response, token: str) -> None:
+    """Set the JWT as an HttpOnly cookie on the response."""
+    _set_httponly_cookie(
+        response, COOKIE_NAME, token, get_settings().jwt_access_token_expiry
+    )
+
+
+def set_refresh_cookie(response, token: str) -> None:
+    """Set the refresh token as an HttpOnly cookie on the response."""
+    _set_httponly_cookie(
+        response, REFRESH_COOKIE_NAME, token, get_settings().jwt_refresh_token_expiry
     )
 
 
 def clear_auth_cookie(response) -> None:
     """Remove the JWT cookie."""
     response.delete_cookie(key=COOKIE_NAME, path="/")
+
+
+def clear_refresh_cookie(response) -> None:
+    """Remove the refresh token cookie."""
+    response.delete_cookie(key=REFRESH_COOKIE_NAME, path="/")

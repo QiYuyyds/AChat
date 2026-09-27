@@ -10,9 +10,12 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.auth.dependencies import (
+    REFRESH_COOKIE_NAME,
     clear_auth_cookie,
+    clear_refresh_cookie,
     get_current_user,
     set_auth_cookie,
+    set_refresh_cookie,
 )
 from app.auth.service import (
     AuthResult,
@@ -40,7 +43,7 @@ router = APIRouter()
 
 
 def _auth_response(result: AuthResult) -> JSONResponse:
-    """Build a JSON response with the auth cookie set."""
+    """Build a JSON response with the auth cookies set (access + refresh)."""
     response = JSONResponse(
         content={
             "user": result["user"],
@@ -49,6 +52,7 @@ def _auth_response(result: AuthResult) -> JSONResponse:
         }
     )
     set_auth_cookie(response, result["tokens"]["access_token"])
+    set_refresh_cookie(response, result["tokens"]["refresh_token"])
     return response
 
 
@@ -178,19 +182,28 @@ async def auth_config() -> JSONResponse:
 # ─── POST /api/auth/refresh ────────────────────────────
 @router.post("/auth/refresh")
 async def refresh(request: Request) -> JSONResponse:
-    """Issue a new access token from a valid refresh token."""
-    try:
-        body = await request.json()
-        req = RefreshRequest(**body)
-    except (ValidationError, Exception) as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Invalid request body: {e}",
-        ) from e
+    """Issue a new access token from a valid refresh token.
+
+    The refresh token arrives via the HttpOnly cookie (browser) or, for
+    backward compatibility (desktop proxy, API clients), a `refreshToken`
+    JSON body field. Missing both is an auth failure (401), not a
+    malformed request (422).
+    """
+    refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
+    if not refresh_token:
+        try:
+            body = await request.json()
+            req = RefreshRequest(**body)
+        except (ValidationError, Exception) as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing refresh token",
+            ) from e
+        refresh_token = req.refresh_token
 
     async with get_remote_db() as db:
         try:
-            tokens = await refresh_access_token(db, req.refresh_token)
+            tokens = await refresh_access_token(db, refresh_token)
         except ValueError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -213,15 +226,19 @@ async def refresh(request: Request) -> JSONResponse:
             }
         )
         set_auth_cookie(response, tokens["access_token"])
+        # Re-issue the refresh cookie with the newly signed refresh token
+        # (lightweight rotation — see openspec fix-token-refresh-cookie D3).
+        set_refresh_cookie(response, tokens["refresh_token"])
         return response
 
 
 # ─── POST /api/auth/logout ─────────────────────────────
 @router.post("/auth/logout")
 async def logout() -> JSONResponse:
-    """Clear the auth cookie (client-side logout)."""
+    """Clear the auth cookies (client-side logout)."""
     response = JSONResponse(content={"ok": True})
     clear_auth_cookie(response)
+    clear_refresh_cookie(response)
     return response
 
 
@@ -257,6 +274,7 @@ async def change_password_endpoint(
 
     response = JSONResponse(content={"tokens": tokens})
     set_auth_cookie(response, tokens["access_token"])
+    set_refresh_cookie(response, tokens["refresh_token"])
     return response
 
 
@@ -275,4 +293,5 @@ async def logout_all(
 
     response = JSONResponse(content={"ok": True})
     clear_auth_cookie(response)
+    clear_refresh_cookie(response)
     return response

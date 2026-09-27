@@ -6,7 +6,7 @@ and error cases: duplicate email, invalid credentials, disabled registration.
 
 from __future__ import annotations
 
-from app.auth.dependencies import COOKIE_NAME
+from app.auth.dependencies import COOKIE_NAME, REFRESH_COOKIE_NAME
 
 # ─── register ─────────────────────────────────────────────────────────────
 
@@ -187,12 +187,57 @@ async def test_refresh_invalid_token(raw_client):
     assert resp.status_code == 401
 
 
+async def test_refresh_via_cookie(raw_client, test_user, monkeypatch):
+    """Login sets the refresh cookie; an empty-body refresh uses it."""
+    # DEBUG=true → secure=False so the httpx cookie jar resends cookies
+    # over the plain-http test transport (mirrors browser credentials:'include').
+    monkeypatch.setenv("DEBUG", "true")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    login_resp = await raw_client.post("/api/auth/login", json={
+        "email": test_user["email"],
+        "password": "testpass123",
+    })
+    assert REFRESH_COOKIE_NAME in login_resp.cookies
+
+    resp = await raw_client.post("/api/auth/refresh")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "access_token" in body["tokens"]
+    assert "refresh_token" in body["tokens"]
+    assert body["user"]["email"] == test_user["email"]
+    # Refresh cookie is re-issued with the newly signed refresh token
+    assert resp.cookies.get(REFRESH_COOKIE_NAME) == body["tokens"]["refresh_token"]
+
+
+async def test_refresh_missing_credentials_returns_401(raw_client):
+    """No refresh cookie and no body token → 401 (auth failure), not 422."""
+    resp = await raw_client.post("/api/auth/refresh")
+    assert resp.status_code == 401
+
+
 # ─── logout ───────────────────────────────────────────────────────────────
 
 async def test_logout_clears_cookie(api_client):
     resp = await api_client.post("/api/auth/logout")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
+
+
+async def test_logout_clears_refresh_cookie(raw_client, test_user):
+    await raw_client.post("/api/auth/login", json={
+        "email": test_user["email"],
+        "password": "testpass123",
+    })
+
+    resp = await raw_client.post("/api/auth/logout")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    # Both auth cookies are explicitly cleared via expired Set-Cookie headers
+    set_cookie_headers = resp.headers.get_list("set-cookie")
+    assert any(h.startswith(f"{COOKIE_NAME}=") for h in set_cookie_headers)
+    assert any(h.startswith(f"{REFRESH_COOKIE_NAME}=") for h in set_cookie_headers)
 
 
 # ─── change-password ──────────────────────────────────────────────────────
@@ -205,6 +250,7 @@ async def test_change_password_success(api_client):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert "access_token" in body["tokens"]
+    assert REFRESH_COOKIE_NAME in resp.cookies
 
 
 async def test_change_password_wrong_current(api_client):

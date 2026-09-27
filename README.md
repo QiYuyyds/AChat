@@ -94,7 +94,7 @@ AChat 正是为这套工作流而生。它默认本地运行，采用双 DB 架�
 
 ### 用户认证与多用户隔离
 
-- **注册 / 登录**：密码用 bcrypt（cost factor 12）哈希存储，JWT 分 access token（1h）和 refresh token（7d），存在 HttpOnly cookie 中。
+- **注册 / 登录**：密码用 bcrypt（cost factor 12）哈希存储，JWT 分 access token 和 refresh token（默认均 10 年有效，可经 `JWT_ACCESS_TOKEN_EXPIRY` / `JWT_REFRESH_TOKEN_EXPIRY` 调整），存在 HttpOnly cookie 中；会话不经 token 过期失效，而是通过登出或后端重启（未设 `JWT_SECRET` 时密钥重新生成）失效。
 - **多用户隔离**：所有用户数据表通过 `user_id` 列隔离（Agent / Conversation / Document / McpServer / LongTermMemory / UserSettings / UserPreference / Task / TaskComment 等）。builtin agent 的 `user_id IS NULL`，所有用户共享。
 - **CSRF 防护**：POST / PATCH / DELETE 请求必须携带匹配的 `Origin` header。
 - **SSE 认证**：同源时自动携带 cookie；跨域 dev 时 SSE 连接通过 `?token=` query param 认证。
@@ -430,7 +430,7 @@ http://localhost:3000
 http://localhost:8000/docs
 ```
 
-首次启动时，后端会自动建表并 seed 内置 Agent。启动后查看后端终端的 **Startup Status** 面板，确认各服务连接状态。首次访问需要注册一个账号。
+首次启动时，后端会自动建表并 seed 内置 Agent。启动后查看后端终端的 **Startup Status** 面板，确认各服务连接状态。首次访问在弹出的登录对话框中切换到「注册」，填写邮箱 / 昵称 / 密码（至少 8 位）即可创建账号并自动登录；重复邮箱会提示直接登录。注册默认开放，可在 `backend/.env` 中设 `ALLOW_REGISTRATION=false` 关闭（关闭后对话框不显示注册入口）。
 
 API key 既可以配在 `backend/.env`，也可以在应用的设置面板里配（存入 `user_settings` 表，按用户隔离）。SDK (Custom) Agent 的 key 从 ModelProfile 解析（显式选中的 profile 或用户默认 profile）；CLI Agent 走 CLI 自带认证。详见 [CLAUDE.md](./CLAUDE.md) §5.4。
 
@@ -664,7 +664,7 @@ AChat 假定 LLM 的输出是不可信输入。
 系统支持多用户，基于 JWT + bcrypt 密码认证：
 
 - 密码用 bcrypt（cost factor 12）哈希存储。
-- JWT 分 access token（1h）和 refresh token（7d），存在 HttpOnly cookie 中。
+- JWT 分 access token 和 refresh token（默认均 10 年有效，可经 `JWT_ACCESS_TOKEN_EXPIRY` / `JWT_REFRESH_TOKEN_EXPIRY` 调整），存在 HttpOnly cookie 中；登出或后端重启（未设 `JWT_SECRET` 时重新生成密钥）即失效。
 - `token_version` 字段用于全局吊销（改密码 / logout-all 时 +1）。
 - 所有用户数据表通过 `user_id` 列隔离。
 - POST / PATCH / DELETE 请求必须携带匹配的 `Origin` header（CSRF 防护）。

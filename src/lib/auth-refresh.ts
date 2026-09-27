@@ -53,6 +53,10 @@ export function refreshAccessToken(): Promise<boolean> {
     try {
       const res = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
         method: 'POST',
+        // No body: the refresh token rides in the HttpOnly refresh cookie set
+        // by the auth endpoints (credentials:'include' carries it). The
+        // backend still accepts a `refreshToken` JSON body for non-browser
+        // clients; the refresh token itself is never stored in JS.
         credentials: 'include',
       })
       if (!res.ok) return false
