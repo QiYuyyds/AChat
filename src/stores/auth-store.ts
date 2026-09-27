@@ -290,7 +290,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     })
     if (!res.ok) {
       const body = await res.text()
-      throw new Error(extractErrorMessage(body, `Registration failed (${res.status})`))
+      // status 附在错误上，LoginDialog 据此把 409/403 映射为中文文案
+      const error: Error & { status?: number } = new Error(
+        extractErrorMessage(body, `Registration failed (${res.status})`),
+      )
+      error.status = res.status
+      throw error
     }
     const data = await res.json()
     storeToken(data.tokens?.access_token ?? '')
