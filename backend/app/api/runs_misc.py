@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 
 from app.auth.dependencies import get_current_user
+from app.auth.ownership import verify_conversation_ownership
 from app.db.engine import get_local_db
 from app.db.models import AgentRun, User
 from app.schemas import (
@@ -33,9 +34,88 @@ from app.services.network_hints import get_connection_hints
 from app.services.search_service import search_messages
 from app.services.settings_service import DEFAULT_COMPANION_PORT, get_user_settings
 from app.services.usage_summary_service import get_usage_summary, get_usage_timeseries
+from app.utils.clock import now_ms
 from app.utils.platform import IS_WINDOWS
 
 router = APIRouter()
+
+# How far back the runs list reaches for terminal runs without dispatch data
+# (non-terminal runs and dispatch-carrying runs are always included).
+RECENT_RUN_WINDOW_MS = 24 * 60 * 60 * 1000
+
+
+# ─── GET /api/conversations/{id}/runs ────────────────────────────────────────
+@router.get("/conversations/{conversation_id}/runs")
+async def list_conversation_runs(
+    conversation_id: str, user: User = Depends(get_current_user)
+) -> JSONResponse:
+    """List a conversation's active and recent runs for frontend run-state rebuild.
+
+    In-memory active runs are the live truth (merged over DB rows by run id);
+    DB rows back non-terminal runs left by a previous process and recent /
+    dispatch-carrying terminal runs. Dispatch plan/results come from the
+    persisted JSONB columns (progressively written during the run).
+    """
+    from app.services.agent_runner import get_active_runs_for_conversation
+
+    await verify_conversation_ownership(conversation_id, user.id)
+
+    cutoff = now_ms() - RECENT_RUN_WINDOW_MS
+    async with get_local_db() as db:
+        rows = (
+            await db.execute(
+                select(AgentRun).where(AgentRun.conversation_id == conversation_id)
+            )
+        ).scalars().all()
+
+    # Dispatch-carrying inclusion is checked in Python: SQLite stores JSON
+    # NULL as the string 'null', so a SQL IS NOT NULL predicate is not
+    # portable across the dual-DB dialects.
+    rows = [
+        row
+        for row in rows
+        if row.status in ("queued", "running")
+        or row.started_at >= cutoff
+        or row.dispatch_plan is not None
+    ]
+
+    rows_by_id = {row.id: row for row in rows}
+    merged: dict[str, dict] = {}
+
+    def _row_dict(row: AgentRun, status: str | None = None) -> dict:
+        return {
+            "id": row.id,
+            "conversationId": row.conversation_id,
+            "agentId": row.agent_id,
+            "triggerMessageId": row.trigger_message_id,
+            "status": status or row.status,
+            "error": row.error,
+            "parentRunId": row.parent_run_id,
+            "usage": row.usage_dict,
+            "startedAt": row.started_at,
+            "finishedAt": row.finished_at,
+            "stopReason": None,
+            "stopReasonLabel": None,
+            "dispatchPlan": row.dispatch_plan,
+            "dispatchResults": row.dispatch_results,
+        }
+
+    # Memory first: live runs keep their in-memory status, dispatch state
+    # always comes from the DB row (progressively persisted JSONB).
+    for mem in get_active_runs_for_conversation(conversation_id):
+        row = rows_by_id.get(mem["id"])
+        entry = dict(mem)
+        if row is not None:
+            entry["dispatchPlan"] = row.dispatch_plan
+            entry["dispatchResults"] = row.dispatch_results
+        merged[mem["id"]] = entry
+
+    for run_id, row in rows_by_id.items():
+        if run_id not in merged:
+            merged[run_id] = _row_dict(row)
+
+    runs = sorted(merged.values(), key=lambda r: r["startedAt"])
+    return JSONResponse({"runs": runs})
 
 
 # ─── POST /api/runs/{id}/abort ───────────────────────────────────────────────

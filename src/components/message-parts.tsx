@@ -1,6 +1,6 @@
 'use client'
 
-import { Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, File as FileIcon, FileText, FolderGit2, Image as ImageIcon, Layers, Loader2, Package, Presentation, Rocket, Sparkles, Terminal, XCircle } from 'lucide-react'
+import { Ban, Check, ChevronDown, ChevronRight, Copy, Download, ExternalLink, File as FileIcon, FileText, FolderGit2, Image as ImageIcon, Layers, Loader2, Package, Presentation, Rocket, RotateCcw, Sparkles, Terminal, XCircle } from 'lucide-react'
 import type { KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -35,11 +35,14 @@ export function PartList({
   conversationId,
   messageStatus = 'complete',
   messageRole = 'agent',
+  onRegenerate,
 }: {
   parts: MessagePart[]
   conversationId: string
   messageStatus?: MessageStatus
   messageRole?: 'user' | 'agent' | 'system'
+  /** interrupted 消息的「重新生成」入口（复用既有 regenerate 链路；未提供则只渲染提示条）。 */
+  onRegenerate?: () => void
 }) {
   const isUser = messageRole === 'user'
 
@@ -89,6 +92,9 @@ export function PartList({
 
   return (
     <div className="space-y-3">
+      {messageStatus === 'interrupted' && !isUser && (
+        <InterruptedBanner onRegenerate={onRegenerate} />
+      )}
       {items.map((item, i) => {
         if (item.kind === 'process') {
           return (
@@ -114,6 +120,29 @@ export function PartList({
           />
         )
       })}
+    </div>
+  )
+}
+
+// ─── InterruptedBanner: 中断语义提示条 ────────────────────
+function InterruptedBanner({ onRegenerate }: { onRegenerate?: () => void }) {
+  return (
+    <div
+      className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-800 dark:text-amber-200"
+      role="status"
+    >
+      <Ban className="size-3 shrink-0" />
+      <span>回复已被中断</span>
+      {onRegenerate && (
+        <button
+          type="button"
+          onClick={onRegenerate}
+          className="ml-auto inline-flex items-center gap-1 rounded px-1 py-0.5 transition hover:bg-amber-500/15 disabled:opacity-50"
+        >
+          <RotateCcw className="size-3" />
+          重新生成
+        </button>
+      )}
     </div>
   )
 }
@@ -394,7 +423,7 @@ function TextPart({
     userError &&
       'rounded-2xl rounded-br-md border border-destructive/60 bg-destructive/10 px-3.5 py-1.5 text-destructive [&_p]:my-0 [&_p]:leading-relaxed',
     !isUser && messageStatus === 'error' && 'rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3',
-    !isUser && (messageStatus === 'aborted' || messageStatus === 'interrupted') && 'rounded-lg border border-muted-foreground/40 bg-muted/60 px-4 py-3',
+    !isUser && messageStatus === 'aborted' && 'rounded-lg border border-muted-foreground/40 bg-muted/60 px-4 py-3',
   )
 
   // Streaming fallback: plain <pre> to avoid O(N×S) markdown re-parsing per delta.

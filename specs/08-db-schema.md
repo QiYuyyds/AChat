@@ -234,8 +234,8 @@ agent_runs {
   conversation_id     text NOT NULL FK→conversations.id  ON DELETE CASCADE
   agent_id            text NOT NULL FK→agents.id
   trigger_message_id  text              // 可空：错误降级 run 没有触发消息
-  status              text NOT NULL     // 'queued'|'running'|'complete'|'failed'|'aborted'
-  error               text              // failed 时存错误概要
+  status              text NOT NULL     // 'queued'|'running'|'complete'|'failed'|'aborted'|'interrupted'
+  error               text              // failed 时存错误概要；interrupted 时为 "interrupted by restart"
   parent_run_id       text              // Orchestrator 派出的子 run 指向父 run
   usage               text JSON         // RunUsage：{ inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, lastInputTokens?, model? }；null = 该 run 未上报（mock / 中途失败）
   cli_session_id      text              // CLI agent 会话恢复 ID（claude --resume / codex thread resume）；SDK agent 或失败 run 为 NULL
@@ -248,6 +248,7 @@ INDEX idx_runs_parent ON (parent_run_id)
 **索引说明**：`idx_runs_parent` 用于 DispatchPlanCard 聚合子 run 状态（按 parent_run_id 拿子 run 列表）。
 
 **生命周期**：`queued → running → (complete|failed|aborted)`，单向流转，service 层 enforce 不允许回退。
+另有一个只在启动时产生的终态：上次进程残留的 `queued` / `running` 行在启动恢复扫描中被整体标为 `interrupted`（无时间阈值）——进程重启后这些 run 不可能仍在执行。`dispatch_plan` / `dispatch_results` JSONB 由 dispatch_plan 工具（DAG 启动时）与 dag_executor（任务 start/end 渐进）写入，供 `GET /api/conversations/{id}/runs` 做前端运行态重建。
 
 ---
 

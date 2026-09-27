@@ -438,6 +438,7 @@ export const useAppStore = create<AppState>()(
     artifacts: {},
     messageIdsByConv: {},
     runsByConv: {},
+    runSnapshotLoadedByConv: {},
     ctxOverrideByConv: {},
     dispatchesByRunId: {},
     activeConversationId: null,
@@ -619,6 +620,7 @@ export const useAppStore = create<AppState>()(
         for (const mid of msgIds) delete s.messages[mid]
         delete s.messageIdsByConv[id]
         delete s.runsByConv[id]
+        delete s.runSnapshotLoadedByConv[id]
         delete s.ctxOverrideByConv[id]
         delete s.pendingWritesByConv[id]
         delete s.pendingBashCommandsByConv[id]
@@ -854,6 +856,7 @@ export const useAppStore = create<AppState>()(
         }
 
         delete s.runsByConv[conversationId]
+        delete s.runSnapshotLoadedByConv[conversationId]
         delete s.ctxOverrideByConv[conversationId]
         delete s.replyTargetByConv[conversationId]
         delete s.pendingWritesByConv[conversationId]
@@ -1756,6 +1759,88 @@ function findLatestAgentMessageIdForRun(
   return attachMsgId
 }
 
+const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(['complete', 'failed', 'aborted', 'interrupted'])
+
+/**
+ * 运行态重建纯函数（add-run-state-recovery）：把服务端 runs 快照合入
+ * runsByConv / dispatchesByRunId，shape 对齐 SSE 事件（run.start / dispatch.plan
+ * / dispatch.start / dispatch.end）的构建路径，wave map 经既有
+ * useChildRunWaveMap 推导自然恢复。
+ *
+ * - 非 overwrite：本地已有运行态时整体跳过——SSE 实时构建优先，不重复构建。
+ * - overwrite（reconcile）：快照覆盖本会话 bucket，并清掉已不在快照中的
+ *   本会话 dispatch（断线窗口丢 run.end 的幽灵 run）。
+ *
+ * 直接在 immer draft 上原地变更；测试可用普通对象调用。
+ */
+export function applyRunSnapshot(
+  state: Pick<AppState, 'runsByConv' | 'dispatchesByRunId' | 'messages'>,
+  conversationId: string,
+  runs: ConversationRunRow[],
+  options: { overwrite?: boolean } = {},
+): void {
+  const { overwrite = false } = options
+  const existing = state.runsByConv[conversationId] ?? {}
+  if (!overwrite && Object.keys(existing).length > 0) return
+
+  const bucket: Record<string, RunState> = overwrite ? {} : { ...existing }
+  const snapshotRunIds = new Set<string>()
+
+  for (const run of runs) {
+    snapshotRunIds.add(run.id)
+    const isTerminal = TERMINAL_RUN_STATUSES.has(run.status)
+    bucket[run.id] = {
+      id: run.id,
+      conversationId: run.conversationId,
+      agentId: run.agentId,
+      triggerMessageId: run.triggerMessageId,
+      status: run.status,
+      error: run.error,
+      parentRunId: run.parentRunId,
+      usage: run.usage,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      turnMetrics: {},
+      turnMetricsComplete: isTerminal,
+      stopReason: run.stopReason,
+      stopReasonLabel: run.stopReasonLabel,
+    }
+
+    const plan = run.dispatchPlan?.tasks
+    if (!plan || plan.length === 0) continue
+
+    const taskStatus: DispatchState['taskStatus'] = {}
+    for (const t of plan) taskStatus[t.id] = 'pending'
+    const persisted = run.dispatchResults?.taskStatus ?? {}
+    for (const taskId of Object.keys(persisted)) taskStatus[taskId] = persisted[taskId]
+    // 重启残留 / 中止的 run：卡在 running 的任务不可能再有下文，收敛为
+    // 终态，避免进度卡上的任务永远转圈。
+    if (isTerminal) {
+      const fallback: DispatchState['taskStatus'][string] =
+        run.status === 'failed' ? 'failed' : 'aborted'
+      for (const taskId of Object.keys(taskStatus)) {
+        if (taskStatus[taskId] === 'running') taskStatus[taskId] = fallback
+      }
+    }
+
+    state.dispatchesByRunId[run.id] = {
+      runId: run.id,
+      messageId: findLatestAgentMessageIdForRun(state.messages, run.id),
+      plan,
+      taskStatus,
+      childRunIds: run.dispatchResults?.childRunIds ?? {},
+      reviewStatus: 'approved',
+    }
+  }
+  state.runsByConv[conversationId] = bucket
+
+  if (overwrite) {
+    for (const runId of Object.keys(existing)) {
+      if (!snapshotRunIds.has(runId)) delete state.dispatchesByRunId[runId]
+    }
+  }
+}
+
 function attachDispatchToMessageForRun(
   dispatches: Record<string, DispatchState>,
   runId: string | null,
@@ -2181,12 +2266,19 @@ export const usePendingPlanReviewForConversation = (conversationId: string) =>
   )
 
 export function selectDispatchForMessage(
-  state: Pick<AppState, 'dispatchesByRunId'>,
+  state: Pick<AppState, 'dispatchesByRunId' | 'messages'>,
   messageId: string,
 ): DispatchState | null {
   for (const id in state.dispatchesByRunId) {
     const dispatch = state.dispatchesByRunId[id]
     if (dispatch.messageId === messageId) return dispatch
+  }
+  // 运行态重建兜底：快照应用早于消息落地时 dispatch.messageId 为空串，
+  // 按消息的 runId 关联（attachDispatchToMessageForRun 的重建路径等价物）。
+  const message = state.messages[messageId]
+  if (message?.runId) {
+    const dispatch = state.dispatchesByRunId[message.runId]
+    if (dispatch && !dispatch.messageId) return dispatch
   }
   return null
 }

@@ -16,6 +16,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
+from app.db.engine import get_local_db
+from app.db.models import AgentRun
 from app.observability.instrumentation import (
     AGENTHUB_CHILD_AGENT_ID,
     AGENTHUB_CONVERSATION_ID,
@@ -52,6 +54,54 @@ from app.utils.dispatch_file_writes import (
 logger = logging.getLogger(__name__)
 
 NodeStatus = Literal["complete", "failed", "aborted", "skipped"]
+
+# Per-parent-run dispatch progress (taskStatus + childRunIds), accumulated in
+# memory (authoritative, avoids concurrent JSONB read-modify-write between
+# parallel nodes) and mirrored fire-and-forget onto AgentRun.dispatch_results
+# so the runs-list endpoint can rebuild dispatch state after a page refresh.
+_dispatch_progress: dict[str, dict] = {}
+
+
+def _record_dispatch_progress(
+    ctx: DagExecContext,
+    task_id: str,
+    *,
+    status: str | None = None,
+    child_run_id: str | None = None,
+) -> None:
+    state = _dispatch_progress.setdefault(
+        ctx.parent_run_id, {"taskStatus": {}, "childRunIds": {}}
+    )
+    if status is not None:
+        state["taskStatus"][task_id] = status
+    if child_run_id:
+        state["childRunIds"][task_id] = child_run_id
+    _persist_dispatch_results(ctx.parent_run_id, state)
+
+
+def reset_dispatch_progress(parent_run_id: str) -> None:
+    """Drop accumulated progress (new DAG / retry reuses the parent run id)."""
+    _dispatch_progress.pop(parent_run_id, None)
+
+
+def _persist_dispatch_results(parent_run_id: str, state: dict) -> None:
+    async def _write() -> None:
+        try:
+            async with get_local_db() as db:
+                run = await db.get(AgentRun, parent_run_id)
+                if run is not None:
+                    run.dispatch_results = {
+                        "taskStatus": dict(state["taskStatus"]),
+                        "childRunIds": dict(state["childRunIds"]),
+                    }
+        except Exception as exc:  # noqa: BLE001 - persistence is best-effort
+            logger.warning(
+                "[dag_executor] dispatch_results persist failed run=%s: %s",
+                parent_run_id,
+                exc,
+            )
+
+    asyncio.ensure_future(_write())
 
 
 @dataclass
@@ -187,6 +237,11 @@ async def execute_dag(
     results: dict[str, NodeResult] = {}
     failed_ids: set[str] = set()
 
+    # A fresh DAG (or a retry DAG reusing the parent run id) starts with a
+    # clean progress slate — stale task statuses from a previous attempt
+    # would otherwise leak into the persisted dispatch_results.
+    reset_dispatch_progress(ctx.parent_run_id)
+
     logger.info(
         "[dag_executor] starting DAG execution parent_run=%s waves=%d total_tasks=%d",
         ctx.parent_run_id,
@@ -264,6 +319,7 @@ async def execute_dag(
                         child_run_id=None,
                     )
                     failed_ids.add(t.id)
+                    _record_dispatch_progress(ctx, t.id, status="skipped")
                     event_bus.publish(
                         DispatchEndEvent(
                             conversation_id=ctx.conversation_id,
@@ -640,6 +696,7 @@ async def _execute_node(
                 ),
                 user_id=ctx.user_id,
             )
+            _record_dispatch_progress(ctx, task.id, status="running", child_run_id=run_id)
             # Auto-update: mark linked plan step as in_progress
             if task.plan_step_id is not None:
                 mapping_key = _pdm.lookup_by_task(task.id)

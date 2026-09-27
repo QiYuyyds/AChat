@@ -368,6 +368,10 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
     dag_id = uuid.uuid4().hex
     all_task_ids = [item.id for item in items]
 
+    # Persist the plan onto the parent run row so the runs-list endpoint can
+    # rebuild the dispatch card after a page refresh (run-state recovery).
+    _persist_dispatch_plan(ctx.run_id, dag_id, visibility, items)
+
     dag_ctx = DagExecContext(
         conversation_id=ctx.conversation_id,
         trigger_message_id=trigger_message_id,
@@ -444,6 +448,35 @@ async def _handler(args: Any, ctx: ToolContext) -> ToolResult:
         ]
 
     return ok(result_data)
+
+
+def _persist_dispatch_plan(
+    run_id: str,
+    dag_id: str,
+    visibility: str,
+    items: list[DispatchPlanItem],
+) -> None:
+    """Persist the DAG plan onto the parent run row (fire-and-forget).
+
+    The runs-list endpoint serves this JSONB back so the frontend can rebuild
+    the dispatch card / wave map after a page refresh. Best-effort: failures
+    are logged and never block dispatch.
+    """
+
+    async def _write() -> None:
+        try:
+            async with get_local_db() as db:
+                run = await db.get(AgentRun, run_id)
+                if run is not None:
+                    run.dispatch_plan = {
+                        "dagId": dag_id,
+                        "visibility": visibility,
+                        "tasks": [item.model_dump(by_alias=True) for item in items],
+                    }
+        except Exception as exc:  # noqa: BLE001 - persistence is best-effort
+            logger.warning("[dispatch_plan] dispatch_plan persist failed: %s", exc)
+
+    asyncio.ensure_future(_write())
 
 
 dispatch_plan_tool = ToolDef(

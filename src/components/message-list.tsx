@@ -26,6 +26,8 @@ export function MessageList({ conversationId }: { conversationId: string }) {
   )
   const setMessagesForConversation = useAppStore((s) => s.setMessagesForConversation)
   const messageIdsByConv = useAppStore((s) => s.messageIdsByConv[conversationId])
+  const ensureRunStateRebuilt = useAppStore((s) => s.ensureRunStateRebuilt)
+  const runSnapshotLoaded = useAppStore((s) => s.runSnapshotLoadedByConv[conversationId] ?? false)
 
   const viewportRef = useRef<HTMLDivElement>(null)
   const scrollFrameRef = useRef<number | null>(null)
@@ -112,6 +114,15 @@ export function MessageList({ conversationId }: { conversationId: string }) {
       cancelled = true
     }
   }, [conversationId, messageIdsByConv, setMessagesForConversation])
+
+  // 运行态重建（add-run-state-recovery）：会话加载且本地无运行态快照时拉取
+  // runs 端点。排在消息落地之后——dispatch 卡片的 messageId 依赖 store 里的
+  // 消息；本地已有运行态（SSE 实时构建）时 applyRunSnapshot 会整体跳过，
+  // 不与 SSE 事件重复构建。
+  useEffect(() => {
+    if (runSnapshotLoaded || !messageIdsByConv) return
+    void ensureRunStateRebuilt(conversationId)
+  }, [conversationId, messageIdsByConv, runSnapshotLoaded, ensureRunStateRebuilt])
 
   useLayoutEffect(() => {
     if (messages.length === 0) return

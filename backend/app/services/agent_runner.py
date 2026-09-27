@@ -1544,7 +1544,58 @@ async def _wait_event(event: asyncio.Event) -> None:
 # ─── Module state ────────────────────────────────────────────────────────────
 # run_id -> (task, cancel_event)
 _active_runs: dict[str, tuple[asyncio.Task[RunResult], asyncio.Event]] = {}
+# run_id -> registration metadata (for conversation-scoped active-run queries;
+# mirrors _active_runs lifecycle — populated/removed at the same moments)
+_active_run_meta: dict[str, dict] = {}
 sub_agent_run_semaphore = _Semaphore(MAX_CONCURRENT_SUB_AGENT_RUNS)
+
+
+def _register_active_run(
+    run_id: str,
+    task: asyncio.Task[RunResult],
+    cancel_event: asyncio.Event,
+    args: RunArgs,
+) -> None:
+    """Track a spawned run in both the task map and the metadata map."""
+    _active_runs[run_id] = (task, cancel_event)
+    _active_run_meta[run_id] = {
+        "agent_id": args.agent_id,
+        "conversation_id": args.conversation_id,
+        "trigger_message_id": args.trigger_message_id,
+        "parent_run_id": args.parent_run_id,
+        "started_at": now_ms(),
+    }
+    task.add_done_callback(lambda _t: _active_runs.pop(run_id, None))
+    task.add_done_callback(lambda _t: _active_run_meta.pop(run_id, None))
+
+
+def get_active_runs_for_conversation(conversation_id: str) -> list[dict]:
+    """Snapshot of in-memory active runs for a conversation.
+
+    Returns DB-row-shaped dicts (camelCase, same keys the runs list endpoint
+    emits for AgentRun rows) so callers can merge the two sources uniformly.
+    """
+    out: list[dict] = []
+    for run_id, meta in list(_active_run_meta.items()):
+        if meta["conversation_id"] != conversation_id:
+            continue
+        out.append(
+            {
+                "id": run_id,
+                "conversationId": conversation_id,
+                "agentId": meta["agent_id"],
+                "triggerMessageId": meta["trigger_message_id"],
+                "status": "running",
+                "error": None,
+                "parentRunId": meta["parent_run_id"],
+                "usage": None,
+                "startedAt": meta["started_at"],
+                "finishedAt": None,
+                "stopReason": None,
+                "stopReasonLabel": None,
+            }
+        )
+    return out
 
 
 # ─── Queued runs (per-conversation FIFO queue) ──────────────────────────────
@@ -1673,8 +1724,7 @@ def _start_queued_run(spec: _QueuedRunSpec) -> None:
         model_profile_id=spec.model_profile_id,
     )
     task = asyncio.create_task(execute_run(run_id, cancel_event, args))
-    _active_runs[run_id] = (task, cancel_event)
-    task.add_done_callback(lambda _t: _active_runs.pop(run_id, None))
+    _register_active_run(run_id, task, cancel_event, args)
     task.add_done_callback(_log_uncaught)
 
 
@@ -1725,8 +1775,7 @@ class AgentRunnerImpl:
             model_profile_id=model_profile_id,
         )
         task = asyncio.create_task(execute_run(run_id, cancel_event, args))
-        _active_runs[run_id] = (task, cancel_event)
-        task.add_done_callback(lambda _t: _active_runs.pop(run_id, None))
+        _register_active_run(run_id, task, cancel_event, args)
         task.add_done_callback(_log_uncaught)
         return RunHandle(run_id=run_id)
 
@@ -1775,8 +1824,7 @@ def run_with_args(args: RunArgs) -> tuple[str, asyncio.Task[RunResult], asyncio.
             watcher.add_done_callback(lambda _t: cancel_event.set())
 
     task = asyncio.create_task(execute_run(run_id, cancel_event, args))
-    _active_runs[run_id] = (task, cancel_event)
-    task.add_done_callback(lambda _t: _active_runs.pop(run_id, None))
+    _register_active_run(run_id, task, cancel_event, args)
     task.add_done_callback(_log_uncaught)
     if watcher is not None:
         task.add_done_callback(lambda _t: watcher.cancel())

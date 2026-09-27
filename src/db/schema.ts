@@ -236,7 +236,9 @@ export const agentRuns = sqliteTable(
       .references(() => agents.id),
     triggerMessageId: text('trigger_message_id'),
 
-    status: text('status', { enum: ['queued', 'running', 'complete', 'failed', 'aborted'] }).notNull(),
+    status: text('status', {
+      enum: ['queued', 'running', 'complete', 'failed', 'aborted', 'interrupted'],
+    }).notNull(),
     error: text('error'),
 
     parentRunId: text('parent_run_id'),

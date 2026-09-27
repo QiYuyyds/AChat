@@ -104,6 +104,157 @@ async def _seed_run(conv_id: str, agent_id: str, usage: dict | None, started_at:
     return rid
 
 
+async def _seed_run_with_status(
+    conv_id: str,
+    agent_id: str,
+    status: str,
+    started_at: int,
+    *,
+    dispatch_plan: dict | None = None,
+    dispatch_results: dict | None = None,
+    finished_at: int | None = None,
+    parent_run_id: str | None = None,
+) -> str:
+    rid = new_run_id()
+    async with get_db() as session:
+        session.add(
+            AgentRun(
+                id=rid,
+                conversation_id=conv_id,
+                agent_id=agent_id,
+                status=status,
+                started_at=started_at,
+                finished_at=finished_at,
+                parent_run_id=parent_run_id,
+                dispatch_plan=dispatch_plan,
+                dispatch_results=dispatch_results,
+            )
+        )
+    return rid
+
+
+def _register_memory_run(run_id: str, conv_id: str, agent_id: str, started_at: int) -> None:
+    """Insert a fake in-memory active run (as execute_run registration would)."""
+    from app.services import agent_runner
+
+    agent_runner._active_run_meta[run_id] = {
+        "agent_id": agent_id,
+        "conversation_id": conv_id,
+        "trigger_message_id": None,
+        "parent_run_id": None,
+        "started_at": started_at,
+    }
+
+
+def _unregister_memory_run(run_id: str) -> None:
+    from app.services import agent_runner
+
+    agent_runner._active_run_meta.pop(run_id, None)
+    agent_runner._active_runs.pop(run_id, None)
+
+
+# ─── GET /conversations/{id}/runs ────────────────────────────────────────────
+async def test_list_runs_empty(client, agents, tmp_path):
+    conv_id = await _seed_conversation(agents["alice"], tmp_path)
+    resp = await client.get(f"/api/conversations/{conv_id}/runs")
+    assert resp.status_code == 200
+    assert resp.json() == {"runs": []}
+
+
+async def test_list_runs_unknown_conversation_returns_404(client):
+    resp = await client.get("/api/conversations/conv_missing/runs")
+    assert resp.status_code == 404
+
+
+async def test_list_runs_orphaned_db_run_returned(client, agents, tmp_path):
+    """A run row left 'running' by a previous process is served from the DB."""
+    conv_id = await _seed_conversation(agents["alice"], tmp_path)
+    now = now_ms()
+    rid = await _seed_run_with_status(
+        conv_id, agents["alice"], "running", now - 1000
+    )
+
+    resp = await client.get(f"/api/conversations/{conv_id}/runs")
+    assert resp.status_code == 200
+    runs = resp.json()["runs"]
+    assert len(runs) == 1
+    run = runs[0]
+    assert run["id"] == rid
+    assert run["status"] == "running"
+    assert run["conversationId"] == conv_id
+    assert run["agentId"] == agents["alice"]
+    assert run["dispatchPlan"] is None
+    assert run["dispatchResults"] is None
+
+
+async def test_list_runs_active_memory_state_wins(client, agents, tmp_path):
+    """A live run is served from memory; dispatch JSONB comes from the DB row."""
+    conv_id = await _seed_conversation(agents["alice"], tmp_path)
+    now = now_ms()
+    rid = await _seed_run_with_status(
+        conv_id,
+        agents["alice"],
+        "running",
+        now - 5000,
+        dispatch_plan={"dagId": "dag1", "visibility": "hidden", "tasks": [{"id": "t1"}]},
+        dispatch_results={"taskStatus": {"t1": "running"}, "childRunIds": {}},
+    )
+    _register_memory_run(rid, conv_id, agents["alice"], now - 4000)
+    try:
+        resp = await client.get(f"/api/conversations/{conv_id}/runs")
+        assert resp.status_code == 200
+        runs = resp.json()["runs"]
+        assert len(runs) == 1
+        run = runs[0]
+        # memory truth: startedAt from registration, status running
+        assert run["startedAt"] == now - 4000
+        assert run["status"] == "running"
+        # dispatch JSONB attached from the DB row
+        assert run["dispatchPlan"]["dagId"] == "dag1"
+        assert run["dispatchResults"]["taskStatus"] == {"t1": "running"}
+    finally:
+        _unregister_memory_run(rid)
+
+
+async def test_list_runs_dedupe_memory_first(client, agents, tmp_path):
+    """The same run id in memory and DB is not duplicated; memory status wins."""
+    conv_id = await _seed_conversation(agents["alice"], tmp_path)
+    now = now_ms()
+    rid = await _seed_run_with_status(conv_id, agents["alice"], "complete", now - 5000)
+    _register_memory_run(rid, conv_id, agents["alice"], now - 6000)
+    try:
+        resp = await client.get(f"/api/conversations/{conv_id}/runs")
+        runs = resp.json()["runs"]
+        assert len(runs) == 1
+        assert runs[0]["status"] == "running"
+    finally:
+        _unregister_memory_run(rid)
+
+
+async def test_list_runs_includes_old_dispatch_run_and_excludes_old_plain(client, agents, tmp_path):
+    """Old terminal runs restore only when they carry dispatch data."""
+    conv_id = await _seed_conversation(agents["alice"], tmp_path)
+    now = now_ms()
+    month_ago = now - 30 * 24 * 60 * 60 * 1000
+    old_dispatch = await _seed_run_with_status(
+        conv_id,
+        agents["alice"],
+        "complete",
+        month_ago,
+        dispatch_plan={"dagId": "dag-old", "visibility": "hidden", "tasks": [{"id": "t1"}]},
+    )
+    await _seed_run_with_status(
+        conv_id, agents["alice"], "complete", month_ago, finished_at=month_ago
+    )
+
+    resp = await client.get(f"/api/conversations/{conv_id}/runs")
+    runs = resp.json()["runs"]
+    ids = [r["id"] for r in runs]
+    assert old_dispatch in ids
+    assert len(ids) == 1
+    assert runs[0]["dispatchPlan"]["dagId"] == "dag-old"
+
+
 # ─── abort ───────────────────────────────────────────────────────────────────
 async def test_abort_unknown_run_returns_404(client):
     resp = await client.post("/api/runs/run_does_not_exist/abort")

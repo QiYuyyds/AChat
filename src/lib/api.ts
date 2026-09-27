@@ -5,6 +5,7 @@ import type {
   AttachmentRow,
   ConversationWithMeta,
   MessageRow,
+  RunUsage,
 } from '@/db/schema'
 import type {
   AskUserAnswer,
@@ -13,11 +14,13 @@ import type {
   DeployCandidateRecord,
   DeployStatusRecord,
   DispatchPlanItem,
+  DispatchTaskStatus,
   DocumentRow,
   IngestResult,
   ModelProfile,
   ModelProfileTestResult,
   PendingBashCommand,
+  PendingConversationSummary,
   PendingDispatchPlan,
   PendingMcpCall,
   PendingQuestion,
@@ -638,6 +641,45 @@ export async function fetchMessages(conversationId: string): Promise<MessageRow[
     authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/messages`),
   )
   return messages
+}
+
+// ─── Run state recovery ──────────────────────────────────────
+/** AgentRun.dispatch_plan JSONB 的前端镜像（dispatch_plan 工具在 DAG 启动时落盘）。 */
+export interface RunDispatchPlanSnapshot {
+  dagId?: string
+  visibility?: 'hidden' | 'visible'
+  tasks: DispatchPlanItem[]
+}
+
+/** AgentRun.dispatch_results JSONB 的前端镜像（dag_executor 随任务进度渐进落盘）。 */
+export interface RunDispatchResultsSnapshot {
+  taskStatus?: Record<string, DispatchTaskStatus>
+  childRunIds?: Record<string, string>
+}
+
+/** GET /api/conversations/{id}/runs 返回的 run 记录（DB 行 + dispatch JSONB）。 */
+export interface ConversationRunRow {
+  id: string
+  conversationId: string
+  agentId: string
+  triggerMessageId: string | null
+  status: 'queued' | 'running' | 'complete' | 'failed' | 'aborted' | 'interrupted'
+  error: string | null
+  parentRunId: string | null
+  usage: RunUsage | null
+  startedAt: number
+  finishedAt: number | null
+  stopReason: string | null
+  stopReasonLabel: string | null
+  dispatchPlan: RunDispatchPlanSnapshot | null
+  dispatchResults: RunDispatchResultsSnapshot | null
+}
+
+export async function fetchConversationRuns(conversationId: string): Promise<ConversationRunRow[]> {
+  const { runs } = await json<{ runs: ConversationRunRow[] }>(
+    authFetch(`${API_BASE_URL}/api/conversations/${conversationId}/runs`),
+  )
+  return runs
 }
 
 // ─── Search ──────────────────────────────────────

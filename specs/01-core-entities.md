@@ -233,7 +233,7 @@ interface AgentRun {
   agentId: string
   triggerMessageId?: string     // 由哪条消息触发；错误降级 run 可能没有 trigger
 
-  status: 'queued' | 'running' | 'complete' | 'failed' | 'aborted'
+  status: 'queued' | 'running' | 'complete' | 'failed' | 'aborted' | 'interrupted'
   error?: string
 
   parentRunId?: string          // Orchestrator 调度的子 run 通过此字段链回
@@ -248,6 +248,10 @@ interface AgentRun {
 - 一次 run 可能产生多条 Message（thinking → tool_use → 文本输出 → artifact_ref）
 - Orchestrator 的子 run `parentRunId` 必须指向其父 run
 - 同一 `triggerMessageId` 可能触发多个并行 run（群聊多 @ 场景）
+- `interrupted` 是启动终态：进程重启后内存 run 不可能还活着，启动恢复扫描
+  （`recovery_scan`）把所有非终态（`queued` / `running`）行标为 `interrupted`
+  （`error="interrupted by restart"`），不设时间阈值——随之中断消息不可再饿死
+  新消息的排队判定（`has_active_runs` 为假）。
 
 ---
 

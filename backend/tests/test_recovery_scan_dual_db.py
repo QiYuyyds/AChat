@@ -3,7 +3,8 @@
 Covers:
 - scan_interrupted_messages finds messages stuck in "streaming" status
 - Stuck messages are marked as "interrupted" (using direct DB update)
-- Recent streaming messages are NOT marked (below 5min threshold)
+- Streaming messages are marked regardless of age (threshold removed: at
+  startup no message can still be streaming)
 - Recovery uses local SQLite (get_local_db), not Redis Stream replay
 """
 
@@ -85,8 +86,10 @@ async def test_stuck_streaming_marked_interrupted(dual_db):
 
 
 @pytest.mark.asyncio
-async def test_recent_streaming_not_marked(dual_db):
-    """Messages streaming for <5min are NOT marked as interrupted."""
+async def test_recent_streaming_also_marked(dual_db):
+    """Streaming messages are marked interrupted regardless of age — at
+    startup a streaming message must be leftover from the previous process
+    (the 5-minute grace threshold was an erroneous defense)."""
     await _seed_conversation(dual_db)
 
     # Create a message with streaming status, recent timestamp (1min ago)
@@ -105,13 +108,13 @@ async def test_recent_streaming_not_marked(dual_db):
 
     # Run recovery scan
     resolved = await scan_interrupted_messages()
-    assert resolved == 0
+    assert resolved == 1
 
-    # Verify message is still streaming
+    # Verify message is interrupted
     async with dual_db.get_local_db() as session:
         result = await session.execute(select(Message).where(Message.id == "msg_recent"))
         msg = result.scalar_one()
-        assert msg.status == "streaming"
+        assert msg.status == "interrupted"
 
 
 @pytest.mark.asyncio

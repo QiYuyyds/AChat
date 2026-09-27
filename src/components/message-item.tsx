@@ -342,8 +342,19 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
                 </div>
               )}
 
-              <PartList parts={message.parts} conversationId={message.conversationId} messageStatus={message.status} messageRole={message.role} />
-              {/* 用户消息发送失败标注（POST 失败的乐观消息；刷新即消失，语义为本地未送达，不做重试） */}
+              <PartList
+                parts={message.parts}
+                conversationId={message.conversationId}
+                messageStatus={message.status}
+                messageRole={message.role}
+                onRegenerate={
+                  !isUser && isLatestAgent && message.status === 'interrupted'
+                    ? () => void handleRegenerate()
+                    : undefined
+                }
+              />
+              {/* 用户消息发送失败标注（POST 失败的乐观消息；刷新即消失，语义为本地未送达）。
+                  重试以原内容（文本/@/附件/引用回复）重发，clientMessageId 复用原 tempId，无双气泡。 */}
               {isUser && message.status === 'error' && (
                 <div className="flex items-center gap-1 text-[11px] text-destructive" role="status">
                   <AlertCircle className="size-3" />
