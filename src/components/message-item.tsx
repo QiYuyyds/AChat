@@ -31,6 +31,7 @@ import {
 import type { ForkGitInitError } from '@/lib/api'
 import { API_BASE_URL } from '@/lib/config'
 import { formatDuration } from '@/lib/format'
+import { retryFailedMessage } from '@/lib/message-retry'
 import { cn } from '@/lib/utils'
 import type { MessageRow } from '@/db/schema'
 import { PIN_LIMIT_PER_CONVERSATION } from '@/shared/constants'
@@ -112,6 +113,14 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
       el.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }
     highlightMessage(parentMessage.id)
+  }
+
+  const [retrying, setRetrying] = useState(false)
+  // 重试发起后 status 复位为乐观态，失败态区块随即卸载；retrying 仅兜底禁用重渲染前的窗口期
+  const handleRetry = () => {
+    if (retrying) return
+    setRetrying(true)
+    void retryFailedMessage(message.conversationId, message.id).finally(() => setRetrying(false))
   }
 
   const handleWithdraw = async () => {
@@ -339,6 +348,16 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
                 <div className="flex items-center gap-1 text-[11px] text-destructive" role="status">
                   <AlertCircle className="size-3" />
                   发送失败
+                  <button
+                    type="button"
+                    onClick={handleRetry}
+                    disabled={retrying}
+                    className="ml-1 inline-flex items-center gap-0.5 transition hover:text-foreground disabled:opacity-50"
+                    title="用原内容重发（@、附件与引用回复保持不变）"
+                  >
+                    {retrying ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                    重试
+                  </button>
                 </div>
               )}
               {dispatch && (
@@ -422,7 +441,8 @@ function MessageItemImpl({ message, grouped = false }: { message: MessageRow; gr
             >
               <Pin className={cn('size-3.5', isPinned && 'fill-primary')} />
             </button>
-            {isLatestUser && (
+            {/* 编辑重发 / 撤回依赖服务端消息 id：乐观 temp 消息（含发送失败态）调用必 404，不渲染 */}
+            {isLatestUser && !message.id.startsWith('temp_') && message.status !== 'error' && (
               <>
                 <button
                   type="button"
